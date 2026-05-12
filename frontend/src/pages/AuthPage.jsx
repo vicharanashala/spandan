@@ -1,6 +1,24 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import useAuthStore from '../stores/authStore'
+import useSocketStore from '../stores/socketStore'
 
 function AuthPage() {
+  const navigate = useNavigate()
+  const { 
+    user, 
+    token, 
+    isAuthenticated, 
+    isLoading, 
+    error,
+    login, 
+    register,
+    logout,
+    clearError 
+  } = useAuthStore()
+  
+  const { connect, disconnect } = useSocketStore()
+  
   const [step, setStep] = useState('auth') // 'auth' | 'role' | 'forgot'
   const [isLogin, setIsLogin] = useState(true)
   const [formData, setFormData] = useState({
@@ -11,27 +29,69 @@ function AuthPage() {
   })
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSent, setForgotSent] = useState(false)
+  const [validationError, setValidationError] = useState('')
 
-  const handleAuthSubmit = (e) => {
+  // Connect socket when authenticated
+  useEffect(() => {
+    if (token && isAuthenticated) {
+      connect(token)
+    } else {
+      disconnect()
+    }
+  }, [token, isAuthenticated, connect, disconnect])
+
+  const handleAuthSubmit = async (e) => {
     e.preventDefault()
-    
+    setValidationError('')
+    clearError()
+
+    // Validate password match for signup
     if (!isLogin && formData.password !== formData.confirmPassword) {
-      alert('Passwords do not match!')
+      setValidationError('Passwords do not match!')
       return
     }
-    
-    // Simulate successful auth, move to role selection
-    setStep('role')
+
+    try {
+      if (isLogin) {
+        await login(formData.email, formData.password)
+      } else {
+        // Determine role from selectedRole state (will be set in role selection)
+        const role = user?.role || 'student'
+        await register(formData.name, formData.email, formData.password, role)
+      }
+      
+      // Only proceed to role selection if no role is set yet
+      if (!user?.role) {
+        setStep('role')
+      } else {
+        // Navigate to dashboard if already has role
+        navigate('/dashboard')
+      }
+    } catch (err) {
+      setValidationError(err.message)
+    }
   }
 
-  const handleRoleSelect = (role) => {
-    alert(`${role === 'teacher' ? 'Teacher' : 'Student'} flow coming soon!`)
+  const handleRoleSelect = async (role) => {
+    try {
+      // Update user's role in the store
+      useAuthStore.getState().updateRole(role)
+      
+      // Navigate to appropriate dashboard
+      if (role === 'teacher') {
+        navigate('/dashboard')
+      } else {
+        navigate('/student')
+      }
+    } catch (error) {
+      setValidationError('Failed to set role. Please try again.')
+    }
   }
 
   const handleForgotPassword = (e) => {
     e.preventDefault()
     if (!forgotEmail) {
-      alert('Please enter your email address')
+      setValidationError('Please enter your email address')
       return
     }
     // Simulate sending reset email
@@ -42,6 +102,14 @@ function AuthPage() {
     setStep('auth')
     setForgotSent(false)
     setForgotEmail('')
+    setValidationError('')
+  }
+
+  const switchMode = () => {
+    setIsLogin(!isLogin)
+    setFormData({ ...formData, confirmPassword: '' })
+    clearError()
+    setValidationError('')
   }
 
   return (
@@ -144,6 +212,22 @@ function AuthPage() {
             }}>
               {isLogin ? 'Sign in to continue' : 'Join Spandan today'}
             </p>
+
+            {/* Error Display */}
+            {(error || validationError) && (
+              <div style={{
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                marginBottom: '20px',
+                color: '#dc2626',
+                fontSize: '14px',
+                textAlign: 'center'
+              }}>
+                {error || validationError}
+              </div>
+            )}
 
             <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
               {!isLogin && (
@@ -289,30 +373,35 @@ function AuthPage() {
 
               <button
                 type="submit"
+                disabled={isLoading}
                 style={{
                   width: '100%',
                   padding: '16px',
                   fontSize: '16px',
                   fontWeight: '600',
                   color: 'white',
-                  background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
+                  background: isLoading 
+                    ? '#9ca3af' 
+                    : 'linear-gradient(135deg, #1e40af, #3b82f6)',
                   border: 'none',
                   borderRadius: '12px',
-                  cursor: 'pointer',
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
                   transition: 'all 0.3s',
                   boxShadow: '0 4px 15px rgba(30, 64, 175, 0.3)',
                   marginTop: '8px'
                 }}
                 onMouseOver={(e) => {
-                  e.target.style.transform = 'translateY(-2px)'
-                  e.target.style.boxShadow = '0 6px 20px rgba(30, 64, 175, 0.4)'
+                  if (!isLoading) {
+                    e.target.style.transform = 'translateY(-2px)'
+                    e.target.style.boxShadow = '0 6px 20px rgba(30, 64, 175, 0.4)'
+                  }
                 }}
                 onMouseOut={(e) => {
                   e.target.style.transform = 'translateY(0)'
                   e.target.style.boxShadow = '0 4px 15px rgba(30, 64, 175, 0.3)'
                 }}
               >
-                {isLogin ? 'Sign In' : 'Create Account'}
+                {isLoading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
               </button>
             </form>
 
@@ -320,10 +409,7 @@ function AuthPage() {
               <p style={{ color: '#6b7280', fontSize: '14px' }}>
                 {isLogin ? "Don't have an account? " : 'Already have an account? '}
                 <button
-                  onClick={() => {
-                    setIsLogin(!isLogin)
-                    setFormData({ ...formData, confirmPassword: '' })
-                  }}
+                  onClick={switchMode}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -335,12 +421,6 @@ function AuthPage() {
                 >
                   {isLogin ? 'Sign Up' : 'Sign In'}
                 </button>
-              </p>
-            </div>
-
-            {/* Footer */}
-            <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #e5e7eb', textAlign: 'center' }}>
-              <p style={{ color: '#9ca3af', fontSize: '13px' }}>
               </p>
             </div>
           </div>
@@ -357,7 +437,6 @@ function AuthPage() {
             boxShadow: '0 20px 60px rgba(0, 0, 0, 0.1)',
             animation: 'fadeInUp 0.5s ease-out'
           }}>
-            {/* Back button */}
             <button
               onClick={resetAuth}
               style={{
@@ -375,7 +454,6 @@ function AuthPage() {
               ← Back to Sign In
             </button>
 
-            {/* Icon */}
             <div style={{
               width: '70px',
               height: '70px',
@@ -413,15 +491,6 @@ function AuthPage() {
 
                 <form onSubmit={handleForgotPassword} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                   <div>
-                    <label style={{
-                      display: 'block',
-                      fontSize: '14px',
-                      fontWeight: '500',
-                      color: '#374151',
-                      marginBottom: '8px'
-                    }}>
-                      Email Address
-                    </label>
                     <input
                       type="email"
                       placeholder="Enter your email"
@@ -433,8 +502,7 @@ function AuthPage() {
                         fontSize: '16px',
                         border: '2px solid #e5e7eb',
                         borderRadius: '12px',
-                        outline: 'none',
-                        transition: 'border-color 0.3s'
+                        outline: 'none'
                       }}
                       onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
                       onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
@@ -452,17 +520,7 @@ function AuthPage() {
                       background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
                       border: 'none',
                       borderRadius: '12px',
-                      cursor: 'pointer',
-                      transition: 'all 0.3s',
-                      boxShadow: '0 4px 15px rgba(30, 64, 175, 0.3)'
-                    }}
-                    onMouseOver={(e) => {
-                      e.target.style.transform = 'translateY(-2px)'
-                      e.target.style.boxShadow = '0 6px 20px rgba(30, 64, 175, 0.4)'
-                    }}
-                    onMouseOut={(e) => {
-                      e.target.style.transform = 'translateY(0)'
-                      e.target.style.boxShadow = '0 4px 15px rgba(30, 64, 175, 0.3)'
+                      cursor: 'pointer'
                     }}
                   >
                     Send Reset Link
@@ -520,26 +578,13 @@ function AuthPage() {
                     background: 'transparent',
                     border: '2px solid #1e40af',
                     borderRadius: '12px',
-                    cursor: 'pointer',
-                    transition: 'all 0.3s'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.background = '#eff6ff'
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.background = 'transparent'
+                    cursor: 'pointer'
                   }}
                 >
                   Back to Sign In
                 </button>
               </>
             )}
-
-            {/* Footer */}
-            <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #e5e7eb', textAlign: 'center' }}>
-              <p style={{ color: '#9ca3af', fontSize: '13px' }}>
-              </p>
-            </div>
           </div>
         )}
 
@@ -551,7 +596,6 @@ function AuthPage() {
             width: '100%',
             animation: 'fadeInUp 0.6s ease-out'
           }}>
-            {/* Logo and Title */}
             <div style={{ marginBottom: '40px' }}>
               <div style={{
                 width: '80px',
@@ -612,7 +656,6 @@ function AuthPage() {
                   e.currentTarget.style.boxShadow = '0 20px 60px rgba(0, 0, 0, 0.1)'
                 }}
               >
-                {/* Shimmer effect */}
                 <div style={{
                   position: 'absolute',
                   top: 0,
@@ -625,36 +668,14 @@ function AuthPage() {
                 }} />
                 
                 <div style={{ position: 'relative', textAlign: 'center' }}>
-                  <div style={{
-                    fontSize: '60px',
-                    marginBottom: '20px',
-                    transition: 'transform 0.3s ease'
-                  }}>
-                    👨‍🏫
-                  </div>
-                  <h3 style={{
-                    fontSize: '24px',
-                    fontWeight: '700',
-                    color: '#1f2937',
-                    marginBottom: '10px'
-                  }}>
+                  <div style={{ fontSize: '60px', marginBottom: '20px' }}>👨‍🏫</div>
+                  <h3 style={{ fontSize: '24px', fontWeight: '700', color: '#1f2937', marginBottom: '10px' }}>
                     Teacher
                   </h3>
-                  <p style={{
-                    color: '#6b7280',
-                    marginBottom: '20px',
-                    lineHeight: '1.6'
-                  }}>
+                  <p style={{ color: '#6b7280', marginBottom: '20px', lineHeight: '1.6' }}>
                     Create and manage polls for your classroom
                   </p>
-                  <ul style={{
-                    textAlign: 'left',
-                    color: '#6b7280',
-                    fontSize: '14px',
-                    marginBottom: '25px',
-                    listStyle: 'none',
-                    padding: 0
-                  }}>
+                  <ul style={{ textAlign: 'left', color: '#6b7280', fontSize: '14px', marginBottom: '25px', listStyle: 'none', padding: 0 }}>
                     <li style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ color: '#3b82f6' }}>✓</span> Create assessment spaces
                     </li>
@@ -677,7 +698,6 @@ function AuthPage() {
                     borderRadius: '50px',
                     border: 'none',
                     cursor: 'pointer',
-                    transition: 'all 0.3s ease',
                     boxShadow: '0 4px 15px rgba(59, 130, 246, 0.4)'
                   }}>
                     I'm a Teacher
@@ -708,7 +728,6 @@ function AuthPage() {
                   e.currentTarget.style.boxShadow = '0 20px 60px rgba(0, 0, 0, 0.1)'
                 }}
               >
-                {/* Shimmer effect */}
                 <div style={{
                   position: 'absolute',
                   top: 0,
@@ -721,36 +740,14 @@ function AuthPage() {
                 }} />
                 
                 <div style={{ position: 'relative', textAlign: 'center' }}>
-                  <div style={{
-                    fontSize: '60px',
-                    marginBottom: '20px',
-                    transition: 'transform 0.3s ease'
-                  }}>
-                    👨‍🎓
-                  </div>
-                  <h3 style={{
-                    fontSize: '24px',
-                    fontWeight: '700',
-                    color: '#1f2937',
-                    marginBottom: '10px'
-                  }}>
+                  <div style={{ fontSize: '60px', marginBottom: '20px' }}>👨‍🎓</div>
+                  <h3 style={{ fontSize: '24px', fontWeight: '700', color: '#1f2937', marginBottom: '10px' }}>
                     Student
                   </h3>
-                  <p style={{
-                    color: '#6b7280',
-                    marginBottom: '20px',
-                    lineHeight: '1.6'
-                  }}>
+                  <p style={{ color: '#6b7280', marginBottom: '20px', lineHeight: '1.6' }}>
                     Join polls and track your engagement
                   </p>
-                  <ul style={{
-                    textAlign: 'left',
-                    color: '#6b7280',
-                    fontSize: '14px',
-                    marginBottom: '25px',
-                    listStyle: 'none',
-                    padding: 0
-                  }}>
+                  <ul style={{ textAlign: 'left', color: '#6b7280', fontSize: '14px', marginBottom: '25px', listStyle: 'none', padding: 0 }}>
                     <li style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ color: '#10b981' }}>✓</span> Join poll sessions
                     </li>
@@ -773,7 +770,6 @@ function AuthPage() {
                     borderRadius: '50px',
                     border: 'none',
                     cursor: 'pointer',
-                    transition: 'all 0.3s ease',
                     boxShadow: '0 4px 15px rgba(16, 185, 129, 0.4)'
                   }}>
                     I'm a Student
@@ -782,61 +778,27 @@ function AuthPage() {
               </div>
             </div>
 
-            <p style={{
-              color: '#9ca3af',
-              fontSize: '14px'
-            }}>
+            <p style={{ color: '#9ca3af', fontSize: '14px' }}>
               You can change your role later in account settings
             </p>
           </div>
         )}
       </div>
 
-      {/* Footer */}
-      <div style={{
-        position: 'fixed',
-        bottom: '20px',
-        left: 0,
-        right: 0,
-        textAlign: 'center',
-        color: '#9ca3af',
-        fontSize: '13px'
-      }}>
-        
-      </div>
-
       {/* Animations */}
       <style>{`
         @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(30px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(30px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        
         @keyframes shimmer {
-          0% {
-            transform: translateX(-100%) translateY(-100%) rotate(45deg);
-          }
-          50% {
-            opacity: 1;
-          }
-          100% {
-            transform: translateX(100%) translateY(100%) rotate(45deg);
-          }
+          0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+          50% { opacity: 1; }
+          100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
         }
-        
         @keyframes pulse {
-          0%, 100% {
-            transform: scale(1);
-          }
-          50% {
-            transform: scale(1.1);
-          }
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.1); }
         }
       `}</style>
     </div>
