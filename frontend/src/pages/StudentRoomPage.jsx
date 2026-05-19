@@ -21,6 +21,7 @@ function StudentRoomPage() {
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
+  const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
@@ -174,6 +175,10 @@ function StudentRoomPage() {
       const data = await response.json()
       if (data.success && data.questions) {
         setPastResponses(data.questions)
+        // If student has already answered polls, disable leave button
+        if (data.questions.some(q => q.answered)) {
+          setHasAnsweredPoll(true)
+        }
       }
     } catch (err) {
       console.error('Failed to fetch past responses:', err)
@@ -182,12 +187,6 @@ function StudentRoomPage() {
 
   const handleSubmitAnswer = async () => {
     if (selectedOptions.length === 0 || submitted || !currentQuestion) return
-
-    // Stop timer immediately when submitting
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current)
-      timerIntervalRef.current = null
-    }
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -244,16 +243,13 @@ function StudentRoomPage() {
       selectedOptions,
       responseTime
     })
-
-    // Wait a moment for MongoDB to update, then fetch
-    setTimeout(() => {
-      if (room?._id && user?._id) {
-        console.log('[StudentRoom] Fetching past responses after submit...')
-        fetchPastResponses(room._id, user._id)
-      }
-    }, 500)
     
+    // Set submitted immediately and fetch past responses without delay
     setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    if (room?._id && user?._id) {
+      fetchPastResponses(room._id, user._id)
+    }
   }
 
   const leaveSession = () => {
@@ -386,15 +382,18 @@ function StudentRoomPage() {
             </div>
             <button
               onClick={leaveSession}
+              disabled={hasAnsweredPoll}
+              title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
               style={{
                 padding: '8px 16px',
-                background: 'var(--nav-hover)',
-                color: 'var(--text-primary)',
+                background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
+                color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
                 border: '1px solid var(--border-color)',
                 borderRadius: '8px',
                 fontSize: '13px',
                 fontWeight: '600',
-                cursor: 'pointer'
+                cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
+                opacity: hasAnsweredPoll ? 0.6 : 1
               }}
             >
               Leave
@@ -669,7 +668,7 @@ function StudentRoomPage() {
                         {/* All options - always shown */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
                           {(q.options || []).map((option, optIdx) => {
-                            const isSelected = q.selectedOption === optIdx
+                            const isSelected = q.selectedOptions?.includes(optIdx)
                             const isCorrect = option.isCorrect
                             const letter = String.fromCharCode(65 + optIdx)
                             

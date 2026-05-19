@@ -11,7 +11,7 @@ function StudentDashboard() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
-  const { joinRoomByCode, setAuthToken } = useRoomStore()
+  const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
   
   const [roomCode, setRoomCode] = useState('')
   const [isJoining, setIsJoining] = useState(false)
@@ -26,6 +26,7 @@ function StudentDashboard() {
     if (token) {
       setAuthToken(token)
       fetchStudentStats()
+      fetchActiveRooms()
     }
   }, [token])
 
@@ -161,7 +162,7 @@ function StudentDashboard() {
             }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>📈</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.average}%</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Average</div>
+              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
             </div>
           </div>
 
@@ -171,7 +172,8 @@ function StudentDashboard() {
             borderRadius: '16px',
             padding: '24px',
             boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)'
+            border: '1px solid var(--border-color)',
+            marginBottom: '32px'
           }}>
             <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
               Quick Join
@@ -216,6 +218,64 @@ function StudentDashboard() {
               </button>
             </div>
           </div>
+
+          {/* Active Joined Rooms Section */}
+          {activeRooms.length > 0 && (
+            <>
+              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                🟢 Previously Joined Active Rooms
+              </h2>
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', 
+                gap: '16px',
+                marginBottom: '32px'
+              }}>
+                {activeRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '20px',
+                      background: 'var(--nav-hover)',
+                      borderRadius: '16px',
+                      border: '1px solid var(--border-color)',
+                      minHeight: '140px'
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => navigate(`/student/session/${room.code}`)}
+                      style={{
+                        marginTop: '16px',
+                        padding: '10px 16px',
+                        background: '#3b82f6',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        fontWeight: '500',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      🔄 Rejoin Room →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

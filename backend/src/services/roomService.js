@@ -1,6 +1,7 @@
 import Room from '../models/Room.js'
 import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
+import Response from '../models/Response.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -39,7 +40,7 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
   // Get question counts for each room
   const roomIds = rooms.map(r => r._id)
   const questionCounts = await Question.aggregate([
-    { $match: { roomId: { $in: roomIds } } },
+    { $match: { roomId: { $in: roomIds }, status: 'approved' } },
     { $group: { _id: '$roomId', count: { $sum: 1 } } }
   ])
   
@@ -103,16 +104,29 @@ export const deactivateRoom = async (roomId) => {
 }
 
 export const getRoomsByStudent = async (studentId) => {
-  // Find all rooms the student has attended (via RoomMember)
+  // Get rooms from RoomMember (where student joined)
   const memberships = await RoomMember.find({ studentId }).populate('roomId')
+  const memberRooms = memberships.filter(m => m.roomId).map(m => m.roomId)
   
-  // Extract rooms and filter out any null ones
-  const rooms = memberships
-    .filter(m => m.roomId)
-    .map(m => m.roomId)
-    
-  // Get question counts for each room
-  const roomIds = rooms.map(r => r._id)
+  // Also get rooms from Response (where student answered) - includes rooms student left
+  const responseRooms = await Response.find({ studentId }).populate('roomId')
+  const uniqueResponseRoomIds = [...new Set(responseRooms.map(r => r.roomId._id.toString()))]
+  
+  // Get full room objects for Response rooms that aren't in RoomMember
+  const responseRoomIds = uniqueResponseRoomIds.filter(id => !memberRooms.some(r => r._id.toString() === id))
+  const additionalRooms = responseRoomIds.length > 0 
+    ? await Room.find({ _id: { $in: responseRoomIds } })
+    : []
+  
+  // Combine RoomMember rooms + Response-only rooms
+  const allRooms = [...memberRooms, ...additionalRooms]
+  
+  if (allRooms.length === 0) {
+    return []
+  }
+  
+  const roomIds = allRooms.map(r => r._id)
+  
   const questionCounts = await Question.aggregate([
     { $match: { roomId: { $in: roomIds } } },
     { $group: { _id: '$roomId', count: { $sum: 1 } } }
@@ -121,6 +135,57 @@ export const getRoomsByStudent = async (studentId) => {
   const countMap = new Map(questionCounts.map(q => [q._id.toString(), q.count]))
   
   // Attach questionCount to each room and sort by most recent
+  return allRooms.map(room => ({
+    ...room.toObject(),
+    questionCount: countMap.get(room._id.toString()) || 0
+  })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+}
+
+export const getActiveRoomsByStudent = async (studentId) => {
+  // Find rooms from RoomMember (where student joined) - all rooms student has joined
+  const memberships = await RoomMember.find({ studentId }).populate({
+    path: 'roomId',
+    match: { isActive: true, endedAt: null } // Only active rooms
+  })
+  
+  // Also find rooms from Response (where student answered questions) - for completeness
+  const responses = await Response.find({ studentId }).populate({
+    path: 'roomId',
+    match: { isActive: true, endedAt: null }
+  })
+  
+  // Extract rooms from RoomMember (filtered to active rooms by populate)
+  const memberRooms = memberships
+    .filter(m => m.roomId)
+    .map(m => m.roomId)
+  
+  // Extract rooms from Response (filtered to active rooms by populate)
+  const responseRooms = responses
+    .filter(r => r.roomId)
+    .map(r => r.roomId)
+  
+  // Combine and deduplicate by roomId
+  const roomMap = new Map()
+  memberRooms.forEach(room => roomMap.set(room._id.toString(), room))
+  responseRooms.forEach(room => roomMap.set(room._id.toString(), room))
+  
+  const rooms = Array.from(roomMap.values())
+  
+  // Get question counts for each room (only approved questions)
+  const roomIds = rooms.map(r => r._id)
+  
+  if (roomIds.length === 0) {
+    return []
+  }
+  
+  const questionCounts = await Question.aggregate([
+    { $match: { roomId: { $in: roomIds }, status: 'approved' } },
+    { $group: { _id: '$roomId', count: { $sum: 1 } } }
+  ])
+  
+  const countMap = new Map(questionCounts.map(q => [q._id.toString(), q.count]))
+  
+  // Attach questionCount to each room and sort by most recent (from joinedAt if available)
   return rooms.map(room => ({
     ...room.toObject(),
     questionCount: countMap.get(room._id.toString()) || 0

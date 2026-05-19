@@ -194,20 +194,24 @@ router.get('/stats/student/:studentId', async (req, res) => {
     
     if (currentUser.role === 'teacher') {
       // Verify the student is in one of the teacher's rooms
-      const studentRooms = await Response.distinct('roomId', { studentId })
+      const studentRoomMember = await RoomMember.find({ studentId })
       const teacherRooms = await Room.find({ teacher: currentUser._id })
       const teacherRoomIds = teacherRooms.map(r => r._id.toString())
-      const hasAccess = studentRooms.some(roomId => teacherRoomIds.includes(roomId.toString()))
+      const hasAccess = studentRoomMember.some(m => teacherRoomIds.includes(m.roomId.toString()))
       
       if (!hasAccess) {
         return res.status(403).json({ error: 'Not authorized to view this student\'s stats' })
       }
     }
 
-    // Total rooms student has participated in
-    const uniqueRooms = await Response.distinct('roomId', { studentId })
-    const totalRooms = uniqueRooms.length
-
+    // Total rooms student has joined (from RoomMember) OR answered (from Response)
+    const roomMemberships = await RoomMember.find({ studentId })
+    const roomIdsMember = roomMemberships.map(m => m.roomId)
+    const uniqueRoomIdsFromResponse = await Response.distinct('roomId', { studentId })
+    const allRoomIds = [...new Set([...roomIdsMember.map(id => id.toString()), ...uniqueRoomIdsFromResponse.map(id => id.toString())])]
+    const totalRooms = allRoomIds.length
+    const roomIds = roomMemberships.map(m => m.roomId)
+    
     // Total responses (polls taken)
     const pollsTaken = await Response.countDocuments({ studentId })
 
@@ -217,8 +221,9 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
 
     // Count launched polls: questions with 'approved' status (approved & launched to students)
+    // Use allRoomIds (RoomMember + Response unique) to count ALL rooms student participated in
     const launchedCount = await Question.countDocuments({
-      roomId: { $in: uniqueRooms },
+      roomId: { $in: allRoomIds },
       status: 'approved'
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)

@@ -4,6 +4,7 @@ const API_URL = '/api'
 
 export const useRoomStore = create((set, get) => ({
   rooms: [],
+  activeRooms: [],
   currentRoom: null,
   isLoading: false,
   error: null,
@@ -57,6 +58,31 @@ export const useRoomStore = create((set, get) => ({
       }
 
       set({ rooms: data.rooms || [], isLoading: false })
+    } catch (error) {
+      set({ error: error.message, isLoading: false })
+    }
+  },
+
+  fetchActiveRooms: async () => {
+    const { authToken } = get()
+    if (!authToken) return
+
+    set({ isLoading: true, error: null })
+    try {
+      const response = await fetch(`${API_URL}/rooms/student/active`, {
+        headers: { 
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch active rooms')
+      }
+
+      set({ activeRooms: data.rooms || [], isLoading: false })
     } catch (error) {
       set({ error: error.message, isLoading: false })
     }

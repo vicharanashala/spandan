@@ -1,5 +1,5 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -97,6 +97,16 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
 router.get('/student/room-history', authenticate, authorize('student'), async (req, res) => {
   try {
     const rooms = await getRoomsByStudent(req.user._id)
+    res.json({ rooms })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Get active rooms for student (rooms that can be rejoined)
+router.get('/student/active', authenticate, authorize('student'), async (req, res) => {
+  try {
+    const rooms = await getActiveRoomsByStudent(req.user._id)
     res.json({ rooms })
   } catch (error) {
     res.status(500).json({ error: error.message })

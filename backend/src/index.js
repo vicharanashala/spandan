@@ -58,14 +58,26 @@ app.set('trust proxy', 1)
 // Rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500, // limit each IP to 500 requests per windowMs (increased for real-time classroom use)
+  max: 2000, // limit each IP to 2000 requests per windowMs (increased for real-time classroom use)
   message: { error: 'Too many requests, please try again later' }
 })
 
 const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 100, // limit each IP to 100 auth requests per hour (increased from 10 for live classroom use)
+  max: 300, // limit each IP to 300 auth requests per hour (increased for live classroom use)
   message: { error: 'Too many authentication attempts, please try again later' }
+})
+
+const responseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  message: { error: 'Too many response submissions, please try again later' }
+})
+
+const leaderboardLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
+  message: { error: 'Too many requests, please try again later' }
 })
 
 // Middleware
@@ -75,8 +87,10 @@ app.use(cors({
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
-app.use('/api/', apiLimiter)
-app.use('/api/auth/', authLimiter)
+app.use('/api/', apiLimiter)           // general /api/ routes
+app.use('/api/auth/', authLimiter)     // auth routes
+app.use('/api/responses/', responseLimiter)  // response submission routes
+app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
 
 // Apply timeout middleware before routes
 app.use(requestTimeout)

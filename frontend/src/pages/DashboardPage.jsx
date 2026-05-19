@@ -272,9 +272,9 @@ function DashboardPage() {
             </div>
           </div>
 
-          {/* Rooms List */}
+          {/* Active Rooms List */}
           <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              My Rooms
+              My Active Rooms
             </h2>
             
             {isLoading ? (
@@ -304,7 +304,7 @@ function DashboardPage() {
                         Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
                       </p>
                       <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questions?.length || 0} questions
+                        {room.questionCount || 0} questions
                       </p>
                     </div>
                     <button
