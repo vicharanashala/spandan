@@ -684,6 +684,7 @@ function RoomDetailPage() {
         body: JSON.stringify({
           roomId: room._id,
           type: question.type,
+          topic: question.topic || null,  // TAWM
           question: question.question,
           options: question.options,
           explanation: question.explanation,
@@ -773,6 +774,7 @@ function RoomDetailPage() {
         body: JSON.stringify({
           roomId: room._id,
           type: questionData.type,
+          topic: questionData.topic || null,  // TAWM
           question: questionData.question,
           options: questionData.options,
           timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
