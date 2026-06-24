@@ -244,8 +244,9 @@ ${typeInstructions}
 OUTPUT FORMAT (respond ONLY with valid JSON):
 {
   "questions": [
-    {
+        {
       "type": "MCQ",
+      "topic": "Photosynthesis",
       "question": "The question text here?",
       "options": [
         { "text": "Option A", "isCorrect": true },
@@ -255,8 +256,9 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
       ],
       "explanation": "Brief explanation of the answer"
     },
-    {
+        {
       "type": "TF",
+      "topic": "Newton's 1st Law",
       "question": "The statement here?",
       "options": [
         { "text": "True", "isCorrect": true },
@@ -264,8 +266,9 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
       ],
       "explanation": "Brief explanation"
     },
-    {
+        {
       "type": "MSQ",
+      "topic": "Algebra",
       "question": "The question here?",
       "options": [
         { "text": "Option A", "isCorrect": true },
@@ -304,9 +307,11 @@ function parseQuestions(responseText, expectedTypes) {
     const parsed = JSON.parse(objMatch[0])
     const questions = parsed.questions || []
     
+    // NAYA — TAWM: Extract topic from AI response (with validation)
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
+      topic: (q.topic && typeof q.topic === 'string' && q.topic.trim()) ? q.topic.trim() : null,
       question: q.question || 'Question text missing',
       options: parseOptions(q.options || [], q.type),
       explanation: q.explanation || '',
