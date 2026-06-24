@@ -125,10 +125,13 @@ function computeQuestionMetrics(question, responses, studentTotals, totalPartici
   // Count how many students selected each option
   const optionDistribution = new Array(optionCount).fill(0)
   responses.forEach(r => {
+
     // Use selectedOptions array (works for both MCQ and MSQ)
     const selections = (r.selectedOptions && r.selectedOptions.length > 0)
       ? r.selectedOptions
-      : (r.selectedOption !== undefined ? [r.selectedOption] : [])
+      : (r.selectedOption !== undefined && r.selectedOption !== null
+        ? [r.selectedOption]
+        : [])
 
     selections.forEach(idx => {
       if (idx >= 0 && idx < optionCount) {
