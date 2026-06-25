@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import React, { useEffect, useState } from 'react'
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
@@ -16,11 +16,89 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import { API_URL } from './config.js'
 
 function App() {
   const { isDark } = useThemeStore()
-  const { token, isAuthenticated } = useAuthStore()
+  const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
+  const [samagamaChecked, setSamagamaChecked] = useState(false)
+  const navigate = useNavigate()
+
+  // Check for Samagama session on app load
+  useEffect(() => {
+    if (isAuthenticated || samagamaChecked) return
+
+    const checkSamagamaSession = async () => {
+      try {
+        // Read Samagama token from localStorage
+        const samagamaToken = localStorage.getItem('samagama_auth_token')
+
+        if (!samagamaToken) {
+          // No token in localStorage — show normal auth page
+          setSamagamaChecked(true)
+          return
+        }
+
+        // Call Samagama's auth/me endpoint with Bearer token from localStorage
+        const response = await fetch('https://samagama.in/api/auth/me', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${samagamaToken}`,
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (!response.ok) {
+          // Token invalid/expired — show normal auth page
+          setSamagamaChecked(true)
+          return
+        }
+
+        const data = await response.json()
+        const samagamaUser = data.user
+
+        if (!samagamaUser || !samagamaUser.email) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        // Got valid Samagama user — send to Spandan backend for auto-provisioning
+        const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: samagamaUser.email,
+            name: samagamaUser.name,
+            isAdmin: samagamaUser.isAdmin || false,
+            isSuperAdmin: samagamaUser.isSuperAdmin || false
+          })
+        })
+
+        if (!spandanResponse.ok) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const spandanData = await spandanResponse.json()
+
+        // Set auth state and redirect to correct dashboard
+        setAuth(spandanData.user, spandanData.token)
+
+        if (spandanData.user.role === 'teacher') {
+          navigate('/teacher')
+        } else {
+          navigate('/student')
+        }
+      } catch (error) {
+        console.error('Samagama session check failed:', error)
+      } finally {
+        setSamagamaChecked(true)
+      }
+    }
+
+    checkSamagamaSession()
+  }, [isAuthenticated, samagamaChecked, setAuth, navigate])
 
   // Connect socket when user is authenticated with valid token
   useEffect(() => {
