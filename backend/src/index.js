@@ -15,6 +15,8 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import platformAuthRoutes from './routes/platformAuth.js'
+import { sendPollToTeams } from './services/teamsService.js'
 
 // Import models for reference
 import './models/index.js'
@@ -116,6 +118,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/platform', platformAuthRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -129,6 +132,22 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const activeQuestions = new Map() // roomCode -> { questionId, confusedUsers, doubtEvents, totalParticipants, timerRef }
+
+const flushDoubtEvents = async (roomCode) => {
+  const aq = activeQuestions.get(roomCode)
+  if (!aq || aq.doubtEvents.length === 0) return
+  
+  try {
+    const Question = (await import('./models/Question.js')).default
+    await Question.findByIdAndUpdate(aq.questionId, {
+      $push: { doubtEvents: { $each: aq.doubtEvents } }
+    })
+    aq.doubtEvents = [] // Reset after successful write
+  } catch (error) {
+    console.error('Error flushing doubt events to DB:', error)
+  }
+}
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
@@ -185,11 +204,27 @@ io.on('connection', (socket) => {
         participantCount = memberCount
       }
       
+      
+      const aq = activeQuestions.get(roomCode)
+      if (aq) {
+        aq.totalParticipants = participantCount
+      }
+      
       io.to(roomCode).emit('room:joined', { 
         roomCode, 
         userId,
         participants: participantCount 
       })
+
+      // Sync confusion state for reconnecting users
+      if (user?.role === 'teacher' && aq) {
+        const count = aq.confusedUsers.size
+        const percentage = aq.totalParticipants > 0 ? (count / aq.totalParticipants) * 100 : 0
+        socket.emit('confusion:sync', { count, totalParticipants: aq.totalParticipants, percentage })
+      } else if (user?.role === 'student' && aq && aq.confusedUsers.has(userId)) {
+        socket.emit('confusion:sync', { activeCooldown: true })
+      }
+
     } catch (error) {
       console.error('Error in room:join:', error)
       io.to(roomCode).emit('room:joined', { 
@@ -221,6 +256,11 @@ io.on('connection', (socket) => {
         
         // Recount remaining participants
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        
+        const aq = activeQuestions.get(roomCode)
+        if (aq) {
+          aq.totalParticipants = participantCount
+        }
       }
       
       io.to(roomCode).emit('room:left', { 
@@ -257,7 +297,42 @@ io.on('connection', (socket) => {
   })
 
   // Question events
-  socket.on('question:start', (data) => {
+  socket.on('question:start', async (data) => {
+    // Clear previous question state if any
+    const prevAq = activeQuestions.get(data.roomCode)
+    if (prevAq && prevAq.timerRef) {
+      clearInterval(prevAq.timerRef)
+      await flushDoubtEvents(data.roomCode)
+    }
+
+    const RoomMember = (await import('./models/RoomMember.js')).default
+    const Room = (await import('./models/Room.js')).default
+    
+    let totalParticipants = 0
+    try {
+      const room = await Room.findByCode(data.roomCode)
+      if (room) {
+        totalParticipants = await RoomMember.countDocuments({ roomId: room._id })
+      }
+    } catch (e) {
+      console.error('Error getting participant count on question:start', e)
+    }
+
+    const aq = {
+      questionId: data.questionId,
+      confusedUsers: new Map(),
+      doubtEvents: [],
+      totalParticipants,
+      timerRef: null
+    }
+
+    // Debounced write timer (every 60 seconds)
+    aq.timerRef = setInterval(() => {
+      flushDoubtEvents(data.roomCode)
+    }, 60000)
+
+    activeQuestions.set(data.roomCode, aq)
+
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
@@ -266,10 +341,58 @@ io.on('connection', (socket) => {
     })
   })
 
-  socket.on('question:end', (data) => {
+  socket.on('question:end', async (data) => {
+    const aq = activeQuestions.get(data.roomCode)
+    if (aq && aq.questionId === data.questionId) {
+      if (aq.timerRef) clearInterval(aq.timerRef)
+      await flushDoubtEvents(data.roomCode)
+      activeQuestions.delete(data.roomCode)
+    }
+
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
+    })
+  })
+
+  // Anonymous Confusion Signal
+  socket.on('confusion:signal', (data) => {
+    const { roomCode, questionId, userId } = data
+    const aq = activeQuestions.get(roomCode)
+    
+    if (!aq || aq.questionId !== questionId) {
+      return // Stale or invalid questionId
+    }
+    
+    const now = Date.now()
+    const lastSignal = aq.confusedUsers.get(userId)
+    
+    // 30 second cooldown logic (server-side validation)
+    if (lastSignal && (now - lastSignal) < 30000) {
+      return // Rate limited
+    }
+    
+    aq.confusedUsers.set(userId, now)
+    
+    const count = aq.confusedUsers.size
+    const totalParticipants = aq.totalParticipants
+    const percentage = totalParticipants > 0 ? (count / totalParticipants) * 100 : 0
+    
+    aq.doubtEvents.push({ timestamp: new Date(now), count })
+    
+    io.to(roomCode).emit('confusion:update', { count, totalParticipants, percentage })
+    
+    // Flush to DB if array gets too large before the 60s timer (e.g., 10 events)
+    if (aq.doubtEvents.length >= 10) {
+       flushDoubtEvents(roomCode)
+    }
+  })
+
+  // Sync Meeting URL
+  socket.on('meeting:created', (data) => {
+    io.to(data.roomCode).emit('meeting:updated', {
+      meetingUrl: data.meetingUrl,
+      meetingPlatform: data.meetingPlatform
     })
   })
 
@@ -280,6 +403,14 @@ io.on('connection', (socket) => {
     const question = data.question
     if (roomCode && question) {
       io.to(roomCode).emit('new_question', question)
+      
+      // Push to Teams if configured
+      Room.findOne({ code: roomCode }).then(room => {
+        if (room && room.teamsWebhookUrl) {
+          sendPollToTeams(room.teamsWebhookUrl, room, question)
+        }
+      }).catch(err => console.error('Error fetching room for Teams push:', err))
+      
     } else {
       console.error('new_question event missing roomCode or question:', data)
     }

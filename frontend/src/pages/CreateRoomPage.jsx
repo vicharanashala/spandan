@@ -13,6 +13,7 @@ function CreateRoomPage() {
   const { createRoom, setAuthToken } = useRoomStore()
   
   const [roomName, setRoomName] = useState('')
+  const [teamsWebhookUrl, setTeamsWebhookUrl] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -32,7 +33,7 @@ function CreateRoomPage() {
     setError('')
     
     try {
-      const room = await createRoom(roomName.trim())
+      const room = await createRoom(roomName.trim(), teamsWebhookUrl.trim())
       navigate(`/teacher/room/${room._id}`)
     } catch (err) {
       setError(err.message || 'Failed to create room')
@@ -139,6 +140,39 @@ function CreateRoomPage() {
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
               />
+            </div>
+            
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '500',
+                color: 'var(--text-primary)',
+                marginBottom: '8px'
+              }}>
+                Microsoft Teams Webhook URL (Optional)
+              </label>
+              <input
+                type="text"
+                value={teamsWebhookUrl}
+                onChange={(e) => setTeamsWebhookUrl(e.target.value)}
+                placeholder="https://your-teams-webhook-url..."
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '10px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                  background: 'var(--input-bg)',
+                  color: 'var(--text-primary)'
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+              />
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px' }}>
+                If provided, polls will be automatically pushed to your Teams channel!
+              </p>
             </div>
             
             <div style={{ display: 'flex', gap: '12px' }}>

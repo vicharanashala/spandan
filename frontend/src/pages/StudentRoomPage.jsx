@@ -7,13 +7,15 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import ConnectionStatus from '../components/shared/ConnectionStatus'
+import { useOptimisticSubmit } from '../hooks/useOptimisticSubmit'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, signalConfusion } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   
   const [room, setRoom] = useState(null)
@@ -27,7 +29,10 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [confusionCooldown, setConfusionCooldown] = useState(false)
   const timerIntervalRef = useRef(null)
+
+  const { locked, error: submitError, submit: optimisticSubmit, reset: resetSubmit } = useOptimisticSubmit(socket, isConnected, token)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -49,6 +54,8 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      resetSubmit()
+      setConfusionCooldown(false)
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -104,6 +111,8 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      resetSubmit()
+      setConfusionCooldown(false)
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -129,12 +138,22 @@ function StudentRoomPage() {
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
+    socket.on('confusion:sync', (data) => {
+      if (data.activeCooldown) {
+        setConfusionCooldown(true)
+      }
+    })
+    socket.on('meeting:updated', (data) => {
+      setRoom(prev => prev ? { ...prev, meetingUrl: data.meetingUrl, meetingPlatform: data.meetingPlatform } : null)
+    })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('room:ended')
+      socket.off('confusion:sync')
+      socket.off('meeting:updated')
     }
   }, [socket, navigate, room?._id])
 
@@ -202,71 +221,29 @@ function StudentRoomPage() {
     }
   }
 
-  const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+  const handleSubmitAnswer = () => {
+    if (selectedOptions.length === 0 || locked || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
     const responseTime = tta - timeLeft
     
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
-      selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
-      responseTime
-    })
+    setSubmitted(true)
+    setHasAnsweredPoll(true)
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
-    try {
-      const saveResponse = await fetch(`${API_URL}/responses`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          roomId: room._id,
-          questionId,
-          studentId: user._id,
-          selectedOptions,
-          responseTime
-        })
-      })
-      const saveData = await saveResponse.json()
-      console.log('[StudentRoom] Response saved:', saveData)
-      
-      // Emit points:update for leaderboard broadcast
-      if (saveData.success && saveData.response) {
-        socket.emit('points:update', {
-          roomCode: room.code,
-          questionId,
-          studentId: user._id,
-          points: saveData.response.points,
-          isCorrect: saveData.response.isCorrect
-        })
-      }
-    } catch (err) {
-      console.error('Failed to save response:', err)
-    }
-
-    // Emit via socket
-    socket.emit('response:submit', {
+    optimisticSubmit({
+      roomId: room._id,
       roomCode: room.code,
       questionId,
       studentId: user._id,
       selectedOptions,
-      responseTime
+      responseTime,
+      onSuccess: () => {
+        if (room?._id && user?._id) {
+          fetchPastResponses(room._id, user._id)
+        }
+      }
     })
-    
-    // Set submitted immediately and fetch past responses without delay
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-    if (room?._id && user?._id) {
-      fetchPastResponses(room._id, user._id)
-    }
   }
 
   const leaveSession = () => {
@@ -386,19 +363,30 @@ function StudentRoomPage() {
             alignItems: 'center',
             justifyContent: 'space-between'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{
-                width: '12px',
-                height: '12px',
-                borderRadius: '50%',
-                background: isConnected ? '#10b981' : '#ef4444'
-              }} />
-              <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
-                {isConnected ? 'Connected' : 'Reconnecting...'}
-              </span>
-            </div>
-            <button
-              onClick={leaveSession}
+            <ConnectionStatus />
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {room.meetingUrl && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-primary)', padding: '8px 16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                    {room.meetingPlatform === 'zoom' ? '🎥 Zoom Session' : '🎥 Teams Session'}
+                  </span>
+                  <a href={room.meetingUrl} target="_blank" rel="noopener noreferrer" style={{
+                    padding: '6px 16px',
+                    background: room.meetingPlatform === 'zoom' ? '#2D8CFF' : '#5059C9',
+                    color: 'white',
+                    textDecoration: 'none',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontWeight: '600'
+                  }}>
+                    Join Video Call
+                  </a>
+                </div>
+              )}
+              
+              <button
+                onClick={leaveSession}
               disabled={hasAnsweredPoll}
               title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
               style={{
@@ -415,6 +403,7 @@ function StudentRoomPage() {
             >
               Leave
             </button>
+          </div>
           </div>
 
           {/* Live Question */}
@@ -531,7 +520,28 @@ function StudentRoomPage() {
               </div>
 
               {/* Submit Button */}
-              {submitted ? (
+              {submitError ? (
+                <button
+                  onClick={handleSubmitAnswer}
+                  style={{
+                    width: '100%',
+                    padding: '16px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    color: '#ef4444',
+                    border: '1px solid #ef4444',
+                    borderRadius: '12px',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>↺</span> Tap to retry
+                </button>
+              ) : locked || submitted ? (
                 <div style={{
                   textAlign: 'center',
                   padding: '20px',
@@ -562,6 +572,34 @@ function StudentRoomPage() {
                   Submit Answer
                 </button>
               )}
+              
+              {/* Anonymous Confusion Signal */}
+              <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'center' }}>
+                <button
+                  onClick={() => {
+                    setConfusionCooldown(true)
+                    signalConfusion({ roomCode: room?.code, questionId: currentQuestion?.questionId || currentQuestion?._id, userId: user?._id })
+                  }}
+                  disabled={confusionCooldown}
+                  style={{
+                    padding: '12px 24px',
+                    background: confusionCooldown ? 'rgba(255,255,255,0.1)' : 'rgba(239, 68, 68, 0.15)',
+                    color: confusionCooldown ? 'rgba(255,255,255,0.5)' : '#fca5a5',
+                    border: `1px solid ${confusionCooldown ? 'transparent' : 'rgba(239, 68, 68, 0.3)'}`,
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: confusionCooldown ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {confusionCooldown ? '✓ Teacher Notified' : '🤔 I\'m Confused'}
+                </button>
+              </div>
+
             </div>
           ) : (
             /* Waiting State - Show Passed Questions */

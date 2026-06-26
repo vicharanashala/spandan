@@ -12,6 +12,8 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import ConnectionStatus from '../components/shared/ConnectionStatus'
+import ToastContainer, { toast } from '../components/shared/Toast'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -96,6 +98,8 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [confusionStats, setConfusionStats] = useState({ count: 0, totalParticipants: 0, percentage: 0 })
+  const [isCreatingMeeting, setIsCreatingMeeting] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -158,6 +162,26 @@ function RoomDetailPage() {
     return () => socket.off('response:new', handleNewResponse)
   }, [socket])
 
+  // Listen for confusion events
+  useEffect(() => {
+    if (!socket) return
+    const handleConfusion = (data) => {
+      setConfusionStats({
+        count: data.count || 0,
+        totalParticipants: data.totalParticipants || 0,
+        percentage: data.percentage || 0
+      })
+    }
+    
+    socket.on('confusion:update', handleConfusion)
+    socket.on('confusion:sync', handleConfusion)
+    
+    return () => {
+      socket.off('confusion:update', handleConfusion)
+      socket.off('confusion:sync', handleConfusion)
+    }
+  }, [socket])
+
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
     if (!socket) return
@@ -173,7 +197,7 @@ function RoomDetailPage() {
 
     setActiveQuestion(question)
     setQuestionTimeLeft(timeToAnswer)
-
+    setConfusionStats({ count: 0, totalParticipants: 0, percentage: 0 })
     questionTimerRef.current = setInterval(() => {
       setQuestionTimeLeft(prev => {
         if (prev <= 1) {
@@ -830,6 +854,7 @@ function RoomDetailPage() {
             roomCode: room.code,
             question: data.question
           })
+          toast.success(`Question sent to ${totalParticipants} students`)
         }
       }
     } catch (error) {
@@ -872,6 +897,7 @@ function RoomDetailPage() {
             roomCode: room.code,
             question: data.question
           })
+          toast.success(`Question sent to ${totalParticipants} students`)
         }
       }
     } catch (error) {
@@ -919,6 +945,7 @@ function RoomDetailPage() {
             roomCode: room.code,
             question: data.question
           })
+          toast.success(`Question sent to ${totalParticipants} students`)
           console.log('new_question event emitted successfully')
         } else {
           console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
@@ -931,6 +958,35 @@ function RoomDetailPage() {
     } catch (error) {
       console.error('Failed to create question:', error)
       alert('Failed to create question')
+    }
+  }
+
+  const handleCreateMeeting = async (platform) => {
+    try {
+      setIsCreatingMeeting(true)
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/rooms/${room._id}/meeting/${platform}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      if (!response.ok) {
+        throw new Error('Failed to create meeting')
+      }
+      const updatedRoom = await response.json()
+      setRoom(updatedRoom)
+      if (socket && isConnected) {
+        socket.emit('meeting:created', { 
+          roomCode: room.code, 
+          meetingUrl: updatedRoom.meetingUrl, 
+          meetingPlatform: updatedRoom.meetingPlatform 
+        })
+      }
+    } catch (error) {
+      console.error('Failed to create meeting:', error)
+      alert('Failed to create meeting link. Check backend logs.')
+    } finally {
+      setIsCreatingMeeting(false)
     }
   }
 
@@ -1000,6 +1056,7 @@ function RoomDetailPage() {
               <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <ConnectionStatus />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -1060,6 +1117,58 @@ function RoomDetailPage() {
               </button>
             </div>
 
+            <div style={{ flex: 1, display: 'flex', gap: '8px', paddingLeft: '16px', alignItems: 'center' }}>
+              {room.meetingUrl ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(59, 130, 246, 0.1)', padding: '8px 16px', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                  <span style={{ fontSize: '14px', fontWeight: '600', color: '#3b82f6' }}>
+                    {room.meetingPlatform === 'zoom' ? '🎥 Zoom Meeting Active' : '🎥 Teams Meeting Active'}
+                  </span>
+                  <a href={room.meetingUrl} target="_blank" rel="noopener noreferrer" style={{
+                    padding: '6px 12px',
+                    background: '#3b82f6',
+                    color: 'white',
+                    textDecoration: 'none',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontWeight: '600'
+                  }}>
+                    Join Call
+                  </a>
+                </div>
+              ) : (
+                !isEnded && (
+                  <>
+                    <button onClick={() => handleCreateMeeting('zoom')} disabled={isCreatingMeeting} style={{
+                      padding: '8px 16px',
+                      background: '#2D8CFF',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: isCreatingMeeting ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      opacity: isCreatingMeeting ? 0.7 : 1
+                    }}>
+                      Create Zoom Meeting
+                    </button>
+                    <button onClick={() => handleCreateMeeting('teams')} disabled={isCreatingMeeting} style={{
+                      padding: '8px 16px',
+                      background: '#5059C9',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: isCreatingMeeting ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      opacity: isCreatingMeeting ? 0.7 : 1
+                    }}>
+                      Create Teams Meeting
+                    </button>
+                  </>
+                )
+              )}
+            </div>
+
             <div style={{ flex: 1 }} />
 
             {/* Segment Timer Display */}
@@ -1083,30 +1192,49 @@ function RoomDetailPage() {
 
             {/* Question Timer Display - Shows when a question is active */}
             {activeQuestion && questionTimeLeft > 0 && (
-              <div style={{
-                padding: '8px 16px',
-                background: questionTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.1)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
-              }}>
-                <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
-                </span>
-                <span style={{
-                  fontSize: '20px',
-                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
-                  fontWeight: '700',
-                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{
+                  padding: '8px 16px',
+                  background: questionTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.1)',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
                 }}>
-                  {questionTimeLeft}s
-                </span>
-                {questionTimeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    TIME!
+                  <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
+                    ⏱️ Answer
                   </span>
+                  <span style={{ 
+                    fontSize: '20px', 
+                    color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', 
+                    fontWeight: '700',
+                    animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+                  }}>
+                    {questionTimeLeft}s
+                  </span>
+                  {questionTimeLeft <= 5 && (
+                    <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
+                      TIME!
+                    </span>
+                  )}
+                </div>
+
+                {/* Confusion Indicator */}
+                {confusionStats.count > 0 && (
+                  <div style={{
+                    padding: '8px 16px',
+                    background: (confusionStats.percentage > 20 && confusionStats.count >= Math.max(2, confusionStats.totalParticipants * 0.2)) ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.1)',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    border: `2px solid ${(confusionStats.percentage > 20 && confusionStats.count >= Math.max(2, confusionStats.totalParticipants * 0.2)) ? '#ef4444' : '#f59e0b'}`
+                  }}>
+                    <span style={{ fontSize: '14px', color: (confusionStats.percentage > 20 && confusionStats.count >= Math.max(2, confusionStats.totalParticipants * 0.2)) ? '#ef4444' : '#f59e0b', fontWeight: '600' }}>
+                      🤔 Confused: {confusionStats.count} {confusionStats.totalParticipants > 0 ? `(${Math.round(confusionStats.percentage)}%)` : ''}
+                    </span>
+                  </div>
                 )}
               </div>
             )}
@@ -1729,6 +1857,7 @@ function RoomDetailPage() {
           50% { transform: scale(1.1); }
         }
       `}</style>
+      <ToastContainer />
     </div>
   )
 }

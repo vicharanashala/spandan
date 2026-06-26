@@ -1,5 +1,16 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { 
+  createRoom, 
+  getRoomById, 
+  getRoomByCode, 
+  getRoomsByTeacher, 
+  getRoomsByStudent, 
+  getActiveRoomsByStudent, 
+  updateRoom, 
+  deleteRoom 
+} from '../services/roomService.js'
+import { generateZoomMeeting, generateTeamsMeeting } from '../services/meetingService.js'
+import Room from '../models/Room.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -9,8 +20,8 @@ const router = express.Router()
 // Create new room
 router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema), async (req, res) => {
   try {
-    const { name, settings } = req.validatedBody
-    const room = await createRoom(name, req.user._id, settings)
+    const { name, teamsWebhookUrl, settings } = req.validatedBody
+    const room = await createRoom(name, req.user._id, teamsWebhookUrl, settings)
 
     res.status(201).json({
       message: 'Room created successfully',
@@ -164,6 +175,39 @@ router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
+  }
+})
+
+// Generate Meeting Link
+router.post('/:id/meeting/:platform', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const room = await getRoomById(req.params.id)
+    if (room.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only the room owner can create meetings' })
+    }
+
+    const { platform } = req.params
+    let meetingUrl = null
+
+    if (platform === 'zoom') {
+      meetingUrl = await generateZoomMeeting(room.title)
+    } else if (platform === 'teams') {
+      meetingUrl = await generateTeamsMeeting(room.title)
+    } else {
+      return res.status(400).json({ error: 'Invalid platform' })
+    }
+
+    // Save to DB
+    const updatedRoom = await Room.findByIdAndUpdate(
+      req.params.id,
+      { meetingUrl, meetingPlatform: platform },
+      { new: true }
+    )
+
+    res.json(updatedRoom)
+  } catch (error) {
+    console.error('Failed to generate meeting:', error)
+    res.status(500).json({ error: error.message || 'Failed to generate meeting' })
   }
 })
 
