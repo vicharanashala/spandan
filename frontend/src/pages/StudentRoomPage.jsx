@@ -32,7 +32,7 @@ function StudentRoomPage() {
   const [confusionCooldown, setConfusionCooldown] = useState(false)
   const timerIntervalRef = useRef(null)
 
-  const { locked, error, submit: optimisticSubmit, reset: resetSubmit } = useOptimisticSubmit(socket, isConnected, token)
+  const { locked, error: submitError, submit: optimisticSubmit, reset: resetSubmit } = useOptimisticSubmit(socket, isConnected, token)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -520,7 +520,7 @@ function StudentRoomPage() {
               </div>
 
               {/* Submit Button */}
-              {error ? (
+              {submitError ? (
                 <button
                   onClick={handleSubmitAnswer}
                   style={{
