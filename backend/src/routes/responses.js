@@ -556,4 +556,172 @@ router.get('/leaderboard/:roomId', async (req, res) => {
   }
 })
 
+// TAWM: Topic-wise analytics endpoints
+
+router.get('/analytics/topic/:roomId', async (req, res) => {
+  try {
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const mongoose = (await import('mongoose')).default
+    const Room = (await import('../models/Room.js')).default
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    const roomObjectId = new mongoose.Types.ObjectId(roomId)
+
+    const room = await Room.findById(roomObjectId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    let matchQuery = { roomId: roomObjectId }
+    if (currentUser.role === 'student') {
+      const approvedQuestions = await Question.find({
+        roomId: roomObjectId,
+        status: 'approved'
+      }).select('_id')
+      matchQuery.questionId = { $in: approvedQuestions.map(q => q._id) }
+    }
+
+    const topicStats = await Response.aggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: 'questions',
+          localField: 'questionId',
+          foreignField: '_id',
+          as: 'question'
+        }
+      },
+      { $unwind: '$question' },
+      {
+        $group: {
+          _id: { $ifNull: ['$question.topic', 'Untagged'] },
+          uniqueQuestions: { $addToSet: '$questionId' },
+          responseCount: { $sum: 1 },
+          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+          totalPoints: { $sum: '$points' },
+          avgResponseTime: { $avg: '$responseTime' }
+        }
+      },
+      {
+        $project: {
+          topic: '$_id',
+          questionCount: { $size: '$uniqueQuestions' },
+          responseCount: 1,
+          correctCount: 1,
+          correctRate: {
+            $cond: [
+              { $gt: ['$responseCount', 0] },
+              { $round: [{ $multiply: [{ $divide: ['$correctCount', '$responseCount'] }, 100] }, 1] },
+              0
+            ]
+          },
+          totalPoints: 1,
+          avgResponseTime: { $round: ['$avgResponseTime', 1] },
+          status: {
+            $switch: {
+              branches: [
+                { case: { $gte: [{ $divide: ['$correctCount', '$responseCount'] }, 0.7] }, then: 'strong' },
+                { case: { $gte: [{ $divide: ['$correctCount', '$responseCount'] }, 0.4] }, then: 'improving' }
+              ],
+              default: 'weak'
+            }
+          },
+          _id: 0
+        }
+      },
+      { $sort: { correctRate: -1 } }
+    ])
+
+    res.json({
+      success: true,
+      roomId,
+      topics: topicStats
+    })
+  } catch (error) {
+    console.error('Error fetching topic analytics:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch analytics' })
+  }
+})
+
+router.get('/analytics/student/:studentId/topic', async (req, res) => {
+  try {
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const mongoose = (await import('mongoose')).default
+    const { studentId } = req.params
+    const currentUser = req.user
+
+    if (currentUser.role === 'student' && currentUser._id.toString() !== studentId) {
+      return res.status(403).json({ error: 'Not authorized to view this data' })
+    }
+
+    let studentObjectId
+    try {
+      studentObjectId = new mongoose.Types.ObjectId(studentId)
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid student ID' })
+    }
+
+    const weaknessMap = await Response.aggregate([
+      { $match: { studentId: studentObjectId } },
+      {
+        $lookup: {
+          from: 'questions',
+          localField: 'questionId',
+          foreignField: '_id',
+          as: 'question'
+        }
+      },
+      { $unwind: '$question' },
+      { $match: { 'question.status': 'approved' } },
+      {
+        $group: {
+          _id: { $ifNull: ['$question.topic', 'Untagged'] },
+          totalQuestions: { $sum: 1 },
+          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+          totalPoints: { $sum: '$points' }
+        }
+      },
+      {
+        $project: {
+          topic: '$_id',
+          totalQuestions: 1,
+          correctCount: 1,
+          correctRate: {
+            $cond: [
+              { $gt: ['$totalQuestions', 0] },
+              { $round: [{ $multiply: [{ $divide: ['$correctCount', '$totalQuestions'] }, 100] }, 1] },
+              0
+            ]
+          },
+          totalPoints: 1,
+          status: {
+            $switch: {
+              branches: [
+                { case: { $gte: [{ $divide: ['$correctCount', '$totalQuestions'] }, 0.7] }, then: 'strong' },
+                { case: { $gte: [{ $divide: ['$correctCount', '$totalQuestions'] }, 0.4] }, then: 'improving' }
+              ],
+              default: 'weak'
+            }
+          },
+          _id: 0
+        }
+      },
+      { $sort: { correctRate: 1 } }
+    ])
+
+    res.json({
+      success: true,
+      studentId,
+      weaknesses: weaknessMap
+    })
+  } catch (error) {
+    console.error('Error fetching student weakness map:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch weakness map' })
+  }
+})
+
+
 export default router

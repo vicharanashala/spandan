@@ -22,6 +22,7 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+    const [weaknesses, setWeaknesses] = useState([])  // TAWM
 
   useEffect(() => {
     if (token) {
@@ -44,6 +45,15 @@ function StudentDashboard() {
           pollsMissed: data.stats.pollsMissed || 0,
           average: data.stats.average || 0
         })
+      }
+
+      // TAWM: Fetch personal weakness map
+      const weakRes = await fetch(`${API_URL}/responses/analytics/student/${user._id}/topic`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const weakData = await weakRes.json()
+      if (weakData.success) {
+        setWeaknesses(weakData.weaknesses || [])
       }
     } catch (err) {
       console.error('Failed to fetch student stats:', err)
@@ -166,8 +176,46 @@ function StudentDashboard() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
             </div>
           </div>
+          
+        {/* TAWM: Your Topic Performance */}
+        {weaknesses.length > 0 && (
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            padding: '24px',
+            boxShadow: 'var(--card-shadow)',
+            border: '1px solid var(--border-color)',
+            marginBottom: '32px'
+          }}>
+            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              📚 Your Topic Performance
+            </h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '12px' }}>
+              {weaknesses.map((w) => (
+                <div key={w.topic} style={{
+                  padding: '14px 16px',
+                  borderRadius: '12px',
+                  background: w.status === 'weak' ? '#fee2e2' : w.status === 'improving' ? '#fef3c7' : '#d1fae5',
+                  border: `2px solid ${w.status === 'weak' ? '#ef4444' : w.status === 'improving' ? '#f59e0b' : '#10b981'}`
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '14px', fontWeight: '600', color: '#1f2937' }}>
+                      {w.topic === 'Untagged' ? '📋 Untagged' : w.topic}
+                    </span>
+                    <span style={{ fontSize: '13px', fontWeight: '700', color: '#1f2937' }}>
+                      {w.correctRate}%
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#6b7280' }}>
+                    {w.correctCount}/{w.totalQuestions} correct • {w.status === 'weak' ? '🔴' : w.status === 'improving' ? '🟡' : '🟢'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-          {/* Quick Join Section */}
+        {/* Quick Join */}
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
