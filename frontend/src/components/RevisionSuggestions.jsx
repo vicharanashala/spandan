@@ -3,10 +3,6 @@ import { API_URL } from '../config.js'
 
 /**
  * RevisionSuggestions — Teacher-facing component shown on the results page.
- *
- * Props:
- *   roomId  — the room's MongoDB _id
- *   token   — JWT auth token
  */
 function RevisionSuggestions({ roomId, token }) {
   const [data, setData] = useState(null)
@@ -23,8 +19,10 @@ function RevisionSuggestions({ roomId, token }) {
         const res = await fetch(`${API_URL}/revision-suggestions/${roomId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
-        if (!res.ok) throw new Error('Failed to fetch suggestions')
         const json = await res.json()
+        if (!res.ok) {
+          throw new Error(json.error || 'Failed to fetch suggestions')
+        }
         setData(json)
       } catch (err) {
         console.error('RevisionSuggestions fetch error:', err)
@@ -37,7 +35,6 @@ function RevisionSuggestions({ roomId, token }) {
     fetchSuggestions()
   }, [roomId, token])
 
-  // ── Loading skeleton ────────────────────────────────────────────────
   if (isLoading) {
     return (
       <div style={{ marginBottom: '24px' }}>
@@ -73,23 +70,46 @@ function RevisionSuggestions({ roomId, token }) {
     )
   }
 
-  if (error || !data) return null
+  if (error) {
+    return (
+      <div style={{ marginBottom: '24px' }}>
+        <div style={{
+          background: '#fef2f2',
+          borderRadius: '14px',
+          padding: '16px 20px',
+          border: '1px solid #fecaca',
+          color: '#991b1b',
+          fontSize: '14px'
+        }}>
+          Could not load revision suggestions: {error}
+        </div>
+      </div>
+    )
+  }
 
-  const { reviseInClass, provideNotes, hardestQuestion, recommendation } = data
+  if (!data) return null
 
-  // Nothing actionable — show a celebratory state
+  const {
+    reviseInClass,
+    provideNotes,
+    hardestQuestion,
+    mostWrongTopic,
+    recommendation,
+    threshold
+  } = data
+
   const noIssues = reviseInClass.length === 0 && provideNotes.length === 0
 
-  // ── Helper: wrong-percentage badge colour ───────────────────────────
   const badgeColor = (pct) => {
     if (pct >= 70) return { bg: '#fee2e2', text: '#dc2626' }
     if (pct >= 40) return { bg: '#fef3c7', text: '#d97706' }
     return { bg: '#d1fae5', text: '#059669' }
   }
 
-  // ── Render a single question row ────────────────────────────────────
   const QuestionRow = ({ item, isHardest }) => {
     const badge = badgeColor(item.wrongPercentage)
+    const displayLabel = item.topic && item.topic !== item.question ? item.topic : null
+
     return (
       <div style={{
         display: 'flex',
@@ -100,9 +120,7 @@ function RevisionSuggestions({ roomId, token }) {
         background: 'var(--bg-primary)',
         borderRadius: '10px',
         border: '1px solid var(--border-color)',
-        transition: 'box-shadow 0.2s',
       }}>
-        {/* Left: question text + badges */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
             {isHardest && (
@@ -116,7 +134,7 @@ function RevisionSuggestions({ roomId, token }) {
                 textTransform: 'uppercase',
                 letterSpacing: '0.5px'
               }}>
-                🔥 Hardest
+                Hardest
               </span>
             )}
             <span style={{
@@ -130,6 +148,11 @@ function RevisionSuggestions({ roomId, token }) {
               {item.type}
             </span>
           </div>
+          {displayLabel && (
+            <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+              {displayLabel}
+            </div>
+          )}
           <p style={{
             margin: 0,
             fontSize: '14px',
@@ -145,7 +168,6 @@ function RevisionSuggestions({ roomId, token }) {
           </p>
         </div>
 
-        {/* Right: stats */}
         <div style={{ textAlign: 'center', minWidth: '90px', flexShrink: 0 }}>
           <div style={{
             display: 'inline-block',
@@ -168,7 +190,6 @@ function RevisionSuggestions({ roomId, token }) {
 
   return (
     <div style={{ marginBottom: '24px' }} id="revision-suggestions">
-      {/* ── Section title ─────────────────────────────────────────── */}
       <h2 style={{
         margin: '0 0 16px',
         fontSize: '18px',
@@ -178,10 +199,10 @@ function RevisionSuggestions({ roomId, token }) {
         alignItems: 'center',
         gap: '8px'
       }}>
-        📋 Revision Suggestions
+        Revision Suggestions
       </h2>
 
-      {/* ── Recommendation banner ─────────────────────────────────── */}
+      {/* Recommendation banner */}
       <div style={{
         background: noIssues
           ? 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)'
@@ -197,7 +218,7 @@ function RevisionSuggestions({ roomId, token }) {
         <span style={{ fontSize: '28px', lineHeight: 1 }}>
           {noIssues ? '🎉' : '💡'}
         </span>
-        <div>
+        <div style={{ flex: 1 }}>
           <div style={{
             fontSize: '14px',
             fontWeight: '700',
@@ -214,10 +235,57 @@ function RevisionSuggestions({ roomId, token }) {
           }}>
             {recommendation}
           </p>
+          {!noIssues && (
+            <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              Classification threshold: {threshold}% wrong or above → revise in class
+            </p>
+          )}
         </div>
       </div>
 
-      {/* ── No issues — stop here ─────────────────────────────────── */}
+      {/* Quick insights */}
+      {!noIssues && (hardestQuestion || mostWrongTopic) && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gap: '12px',
+          marginBottom: '16px'
+        }}>
+          {hardestQuestion && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '12px',
+              padding: '14px 16px',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--card-shadow)'
+            }}>
+              <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                Hardest Question
+              </div>
+              <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                {hardestQuestion.wrongPercentage}% wrong
+              </div>
+            </div>
+          )}
+          {mostWrongTopic && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '12px',
+              padding: '14px 16px',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--card-shadow)'
+            }}>
+              <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                Most Wrong Topic
+              </div>
+              <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                {mostWrongTopic.topic} ({mostWrongTopic.totalWrong} mistakes)
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {noIssues && (
         <div style={{
           textAlign: 'center',
@@ -234,7 +302,7 @@ function RevisionSuggestions({ roomId, token }) {
         </div>
       )}
 
-      {/* ── Revise in Class card ──────────────────────────────────── */}
+      {/* Revise in Class */}
       {reviseInClass.length > 0 && (
         <div style={{
           background: 'var(--bg-card)',
@@ -274,7 +342,7 @@ function RevisionSuggestions({ roomId, token }) {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {reviseInClass.map((item, idx) => (
+            {reviseInClass.map((item) => (
               <QuestionRow
                 key={item.questionId}
                 item={item}
@@ -285,7 +353,7 @@ function RevisionSuggestions({ roomId, token }) {
         </div>
       )}
 
-      {/* ── Provide Notes card ────────────────────────────────────── */}
+      {/* Provide Notes */}
       {provideNotes.length > 0 && (
         <div style={{
           background: 'var(--bg-card)',
@@ -324,7 +392,7 @@ function RevisionSuggestions({ roomId, token }) {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {provideNotes.map((item, idx) => (
+            {provideNotes.map((item) => (
               <QuestionRow
                 key={item.questionId}
                 item={item}
