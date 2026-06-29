@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
+import RevisionSuggestions from '../components/RevisionSuggestions'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
@@ -278,6 +279,11 @@ function RoomResultsPage() {
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Correct Answers</div>
             </div>
           </div>
+
+          {/* Revision Suggestions — Teacher only */}
+          {user?.role === 'teacher' && (
+            <RevisionSuggestions roomId={roomId} token={token} />
+          )}
 
           {/* Questions Analysis */}
           <div style={{
