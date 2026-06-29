@@ -15,6 +15,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import revisionSuggestionsRoutes from './routes/revisionSuggestions.js'
 
 // Import models for reference
 import './models/index.js'
@@ -45,7 +46,10 @@ const requestTimeout = (req, res, next) => {
 
 const app = express()
 const httpServer = createServer(app)
+const SOCKET_PATH = (BASE_PATH ? BASE_PATH.replace(/\/+$/, '') : '') + '/socket.io'
+
 const io = new Server(httpServer, {
+  path: SOCKET_PATH,
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
@@ -116,6 +120,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/revision-suggestions', revisionSuggestionsRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {

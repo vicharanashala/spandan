@@ -11,7 +11,9 @@ jobs:
     name: Backend Tests
     runs-on: ubuntu-latest
     
-    working-directory: backend
+    defaults:
+      run:
+        working-directory: backend
     
     steps:
       - name: Checkout code
@@ -45,7 +47,9 @@ jobs:
     name: Frontend Tests
     runs-on: ubuntu-latest
     
-    working-directory: frontend
+    defaults:
+      run:
+        working-directory: frontend
     
     steps:
       - name: Checkout code

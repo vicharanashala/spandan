@@ -15,6 +15,10 @@ const questionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  topic: {
+    type: String,
+    default: ''
+  },
   options: [{
     text: { type: String, required: true },
     isCorrect: { type: Boolean, default: false }
