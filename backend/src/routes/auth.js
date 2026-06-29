@@ -5,6 +5,7 @@ import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
 import { validate, registerSchema, loginSchema } from '../middleware/validation.js'
 import { authenticate } from '../middleware/auth.js'
+import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
 
 const router = express.Router()
 
@@ -173,6 +174,47 @@ router.put('/password', authenticate, async (req, res) => {
     res.json({ message: 'Password updated successfully' })
   } catch (error) {
     res.status(400).json({ error: error.message })
+  }
+})
+
+// ==========================================
+// SAMAGAMA SEAMLESS SSO
+// User visits https://samagama.in/spandan/ while logged into Samagama.
+// Frontend calls Samagama API, then sends user data here for auto-provisioning.
+// ==========================================
+
+router.post('/samagama-auto-login', async (req, res) => {
+  try {
+    const { email, name, isAdmin, isSuperAdmin } = req.body
+
+    if (!email || !name) {
+      return res.status(400).json({ error: 'Missing required user data from Samagama' })
+    }
+
+    // Build Samagama user object from the data frontend sent
+    const samagamaUser = {
+      email,
+      name,
+      isAdmin: isAdmin || false,
+      isSuperAdmin: isSuperAdmin || false
+    }
+
+    // Find or create user in Spandan
+    const user = await findOrCreateSamagamaUser(samagamaUser)
+
+    // Generate Spandan JWT
+    const token = generateToken(user._id)
+
+    console.log(`Samagama auto-login: ${email} (${user.role})`)
+
+    res.json({
+      message: 'Auto-login successful',
+      user: user.toJSON(),
+      token
+    })
+  } catch (error) {
+    console.error('Samagama auto-login error:', error.message)
+    res.status(500).json({ error: error.message || 'Auto-login failed' })
   }
 })
 
