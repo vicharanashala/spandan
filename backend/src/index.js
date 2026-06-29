@@ -316,29 +316,21 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' })
 })
 
-// MongoDB connection — tries configured URI, then local fallback
+// MongoDB connection
 const connectDB = async () => {
-  const primaryUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-  const fallbackUri = 'mongodb://127.0.0.1:27017/spandan'
-  const uris = [...new Set([primaryUri, fallbackUri])]
-
-  for (const uri of uris) {
-    try {
-      await mongoose.connect(uri, {
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000
-      })
-      const label = uri.includes('@') ? 'remote cluster' : uri
-      console.log(`MongoDB connected successfully (${label})`)
-      return true
-    } catch (error) {
-      console.error(`MongoDB connection failed (${uri}):`, error.message)
-    }
+  try {
+    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
+    
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000
+    })
+    
+    console.log('MongoDB connected successfully')
+  } catch (error) {
+    console.error('MongoDB connection error:', error.message)
+    console.log('Server will continue without database connection')
   }
-
-  console.error('Could not connect to MongoDB. Ensure the MongoDB service is running locally.')
-  console.log('Server will continue without database — API calls will fail until MongoDB is available.')
-  return false
 }
 
 const PORT = process.env.PORT || 3001
