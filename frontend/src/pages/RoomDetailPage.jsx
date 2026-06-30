@@ -92,7 +92,8 @@ function RoomDetailPage() {
     difficulty: 'medium',
     questionProvider: 'minimax',
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    anonymousMode: false
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
@@ -828,7 +829,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            anonymousMode: roomSettings.anonymousMode
           })
         }
       }
@@ -870,7 +872,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            anonymousMode: roomSettings.anonymousMode
           })
         }
       }
@@ -917,7 +920,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            anonymousMode: roomSettings.anonymousMode
           })
           console.log('new_question event emitted successfully')
         } else {
