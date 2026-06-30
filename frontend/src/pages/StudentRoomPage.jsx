@@ -8,6 +8,8 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
+import { playQuestionSound, playSubmitSound, playCorrectSound, playTimerWarningSound } from '../services/soundService'
+import { useKeyboardShortcuts, KEYBOARD_SHORTCUTS } from '../hooks/useKeyboardShortcuts'
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
@@ -28,6 +30,10 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
+  const [soundEnabled, setSoundEnabled] = useState(true)
+  const [showLeaderboard, setShowLeaderboard] = useState(true)
+  const [markedForReview, setMarkedForReview] = useState(new Set())
+  const [anonymousMode, setAnonymousMode] = useState(false)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -46,13 +52,20 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+      const question = data.question || data
+      setAnonymousMode(data.anonymousMode || false)
+      
+      setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
       
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
+      if (question && question.timeToAnswer) {
+        setTimeLeft(question.timeToAnswer)
+      }
+      
+      if (soundEnabled) {
+        playQuestionSound()
       }
       
       // Clear any existing timer
@@ -72,6 +85,9 @@ function StudentRoomPage() {
             }
             setCurrentQuestion(null)
             return 0
+          }
+          if (prev <= 5 && soundEnabled) {
+            playTimerWarningSound()
           }
           return prev - 1
         })
@@ -93,12 +109,19 @@ function StudentRoomPage() {
       setCurrentQuestion(null)
     }
 
-    const handleNewQuestion = (question) => {
+    const handleNewQuestion = (data) => {
+      const question = data.question || data
+      setAnonymousMode(data.anonymousMode || false)
+      
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
+      }
+      
+      if (soundEnabled) {
+        playQuestionSound()
       }
       
       setCurrentQuestion(question)
@@ -117,6 +140,9 @@ function StudentRoomPage() {
             }
             setCurrentQuestion(null)
             return 0
+          }
+          if (prev <= 5 && soundEnabled) {
+            playTimerWarningSound()
           }
           return prev - 1
         })
@@ -264,6 +290,9 @@ function StudentRoomPage() {
     // Set submitted immediately and fetch past responses without delay
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    if (soundEnabled) {
+      playSubmitSound()
+    }
     if (room?._id && user?._id) {
       fetchPastResponses(room._id, user._id)
     }
@@ -275,6 +304,30 @@ function StudentRoomPage() {
     }
     navigate('/student')
   }
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onSubmit: () => {
+      if (currentQuestion && selectedOptions.length > 0 && !submitted) {
+        handleSubmitAnswer()
+      }
+    },
+    onSelectOption: (index) => {
+      if (!currentQuestion || submitted) return
+      const isMSQ = currentQuestion.type === 'MSQ'
+      if (isMSQ) {
+        setSelectedOptions(prev => 
+          prev.includes(index) 
+            ? prev.filter(i => i !== index)
+            : [...prev, index]
+        )
+      } else {
+        setSelectedOptions([index])
+      }
+    },
+    onToggleSound: () => setSoundEnabled(prev => !prev),
+    onToggleLeaderboard: () => setShowLeaderboard(prev => !prev),
+  }, !!currentQuestion || !submitted)
 
   if (isLoading) {
     return (
@@ -366,6 +419,20 @@ function StudentRoomPage() {
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
             </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <button
+                onClick={() => setSoundEnabled(prev => !prev)}
+                title={soundEnabled ? 'Mute sounds' : 'Enable sounds'}
+                style={{
+                  padding: '8px 12px',
+                  background: soundEnabled ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '16px'
+                }}
+              >
+                {soundEnabled ? '🔊' : '🔇'}
+              </button>
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -375,57 +442,87 @@ function StudentRoomPage() {
         {/* Content */}
         <div style={{ flex: 1, padding: '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {/* Connection Status */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: '16px',
-            padding: '16px 24px',
-            boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)',
-            marginBottom: '24px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{
-                width: '12px',
-                height: '12px',
-                borderRadius: '50%',
-                background: isConnected ? '#10b981' : '#ef4444'
-              }} />
-              <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
-                {isConnected ? 'Connected' : 'Reconnecting...'}
-              </span>
-            </div>
-            <button
-              onClick={leaveSession}
-              disabled={hasAnsweredPoll}
-              title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
-              style={{
-                padding: '8px 16px',
-                background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
-                color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
+<div style={{
+                background: 'var(--bg-card)',
+                borderRadius: '16px',
+                padding: '16px 24px',
+                boxShadow: 'var(--card-shadow)',
                 border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: '600',
-                cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
-                opacity: hasAnsweredPoll ? 0.6 : 1
-              }}
-            >
-              Leave
-            </button>
-          </div>
+                marginBottom: '24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{
+                    width: '12px',
+                    height: '12px',
+                    borderRadius: '50%',
+                    background: isConnected ? '#10b981' : '#ef4444'
+                  }} />
+                  <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
+                    {isConnected ? 'Connected' : 'Reconnecting...'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    onClick={() => setShowLeaderboard(prev => !prev)}
+                    title={showLeaderboard ? 'Hide leaderboard' : 'Show leaderboard'}
+                    style={{
+                      padding: '8px 16px',
+                      background: showLeaderboard ? '#3b82f6' : 'var(--bg-primary)',
+                      color: showLeaderboard ? 'white' : 'var(--text-primary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {showLeaderboard ? '🏆 Hide Board' : '🏆 Show Board'}
+                  </button>
+                  <button
+                    onClick={leaveSession}
+                    disabled={hasAnsweredPoll}
+                    title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
+                    style={{
+                      padding: '8px 16px',
+                      background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
+                      color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
+                      opacity: hasAnsweredPoll ? 0.6 : 1
+                    }}
+                  >
+                    Leave
+                  </button>
+                </div>
+              </div>
 
           {/* Live Question */}
           {currentQuestion ? (
-            <div style={{
-              background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-              borderRadius: '16px',
-              padding: '32px',
-              color: 'white',
-              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
-            }}>
+<div style={{
+                background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+                borderRadius: '16px',
+                padding: '32px',
+                color: 'white',
+                boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
+              }}>
+              {/* Keyboard shortcuts hint */}
+              <div style={{ 
+                textAlign: 'center', 
+                marginBottom: '16px',
+                fontSize: '12px',
+                opacity: 0.8
+              }}>
+                <span style={{ marginRight: '16px' }}>⌨️ Keys: <kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>1-4</kbd> Select</span>
+                <span style={{ marginRight: '16px' }}><kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>Space</kbd> Toggle</span>
+                <span><kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>Enter</kbd> Submit</span>
+              </div>
+
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -600,9 +697,34 @@ function StudentRoomPage() {
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
                 <div style={{ flex: '1 1 calc(70% - 8px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
-                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
-                  </h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
+                      📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
+                    </h3>
+                    {markedForReview.size > 0 && (
+                      <button
+                        onClick={() => {
+                          const marked = pastResponses.filter((_, i) => markedForReview.has(i))
+                          alert(`Marked for review (${marked.length}):\n${marked.map(q => q.question).join('\n')}`)
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          background: '#fef3c7',
+                          color: '#d97706',
+                          border: '1px solid #fbbf24',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        📌 Review ({markedForReview.size})
+                      </button>
+                    )}
+                  </div>
                 {pastResponses.length === 0 ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
                     No questions answered yet. Questions you answer will appear here.
@@ -614,11 +736,42 @@ function StudentRoomPage() {
                         padding: '20px',
                         background: 'var(--bg-primary)',
                         borderRadius: '12px',
-                        border: '1px solid var(--border-color)',
-                        opacity: q.answered ? 1 : 0.8
+                        border: markedForReview.has(index) ? '2px solid #f59e0b' : '1px solid var(--border-color)',
+                        opacity: q.answered ? 1 : 0.8,
+                        position: 'relative'
                       }}>
+                        {/* Mark for review button */}
+                        <button
+                          onClick={() => {
+                            setMarkedForReview(prev => {
+                              const newSet = new Set(prev)
+                              if (newSet.has(index)) {
+                                newSet.delete(index)
+                              } else {
+                                newSet.add(index)
+                              }
+                              return newSet
+                            })
+                          }}
+                          title={markedForReview.has(index) ? 'Remove from review' : 'Mark for review'}
+                          style={{
+                            position: 'absolute',
+                            top: '12px',
+                            right: '12px',
+                            padding: '4px 8px',
+                            background: markedForReview.has(index) ? '#f59e0b' : 'transparent',
+                            border: `1px solid ${markedForReview.has(index) ? '#f59e0b' : 'var(--border-color)'}`,
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            color: markedForReview.has(index) ? 'white' : 'var(--text-secondary)'
+                          }}
+                        >
+                          {markedForReview.has(index) ? '✓ Marked' : '📌 Review'}
+                        </button>
+
                         {/* Header with status badges */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', paddingRight: '60px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <span style={{
                               padding: '2px 10px',
@@ -758,12 +911,14 @@ function StudentRoomPage() {
                 )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
-                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    🏆 Leaderboard
+                {showLeaderboard && (
+                  <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+<h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
+                    🏆 Leaderboard {anonymousMode && <span style={{ fontSize: '12px', color: '#d97706' }}>(Anonymous)</span>}
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
-                </div>
+                    <Leaderboard roomId={room?._id} token={token} socket={socket} anonymousMode={anonymousMode} />
+                  </div>
+                )}
               </div>
             </div>
           )}

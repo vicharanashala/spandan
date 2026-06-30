@@ -400,6 +400,50 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </div>
         </div>
 
+        {/* Anonymous Polling */}
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            cursor: 'pointer'
+          }}>
+            <div 
+              onClick={() => setLocalSettings(prev => ({ ...prev, anonymousMode: !prev.anonymousMode }))}
+              style={{
+                width: '48px',
+                height: '26px',
+                borderRadius: '13px',
+                background: localSettings.anonymousMode ? '#10b981' : 'var(--border-color)',
+                position: 'relative',
+                transition: 'background 0.2s'
+              }}
+            >
+              <div style={{
+                width: '22px',
+                height: '22px',
+                borderRadius: '50%',
+                background: 'white',
+                position: 'absolute',
+                top: '2px',
+                left: localSettings.anonymousMode ? '24px' : '2px',
+                transition: 'left 0.2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+              }} />
+            </div>
+            <span style={{
+              fontSize: '14px',
+              fontWeight: '500',
+              color: 'var(--text-primary)'
+            }}>
+              Anonymous Polling
+            </span>
+          </label>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            When enabled, student names are hidden in the leaderboard
+          </p>
+        </div>
+
         {/* Save Button */}
         <button
           onClick={handleSave}

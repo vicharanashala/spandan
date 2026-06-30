@@ -1,13 +1,20 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket }) => {
+const Leaderboard = ({ roomId, token, socket, anonymousMode = false }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  const getDisplayName = (entry) => {
+    if (anonymousMode || isTeacher) {
+      return `Student ${entry.rank}`
+    }
+    return entry.studentName
+  }
 
   const fetchLeaderboard = async () => {
     try {
@@ -219,7 +226,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
             textOverflow: 'ellipsis',
             maxWidth: '100%'
           }}>
-            {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            {getDisplayName(entry)}{isCurrentUser ? ' (You)' : ''}
           </div>
           <div style={{
             fontSize: '11px',
