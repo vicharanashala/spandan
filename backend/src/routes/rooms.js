@@ -3,6 +3,7 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import { freezeLeaderboard } from '../services/leaderboardService.js'
 
 const router = express.Router()
 
@@ -84,7 +85,12 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
     
     // Check if room has ended
     if (room.endedAt) {
-      return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
+      await RoomMember.findOneAndUpdate(
+        { roomId: room._id, studentId: req.user._id },
+        { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
+        { upsert: true, new: true }
+      )
+      return res.json({ room, isEnded: true })
     }
     
     // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
@@ -137,8 +143,9 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
     
-    // If room is being ended, emit socket event to notify all participants
+    // If room is being ended, emit socket event to notify all participants and freeze leaderboard
     if (req.body.isActive === false && updatedRoom.endedAt) {
+      await freezeLeaderboard(room._id)
       const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
     }
