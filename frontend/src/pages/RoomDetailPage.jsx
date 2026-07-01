@@ -95,7 +95,9 @@ function RoomDetailPage() {
     points: 100
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
-  const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [answerCounts, setAnswerCounts] = useState({})
+  // TAWM-Alternative: Live Pulse state
+  const [pulseData, setPulseData] = useState({ like: 0, confused: 0, lost: 0, lastUpdate: null }) // questionId -> count
 
   useEffect(() => {
     if (token) {
@@ -156,6 +158,16 @@ function RoomDetailPage() {
     }
     socket.on('response:new', handleNewResponse)
     return () => socket.off('response:new', handleNewResponse)
+  }, [socket])
+
+  // TAWM-Alternative: Listen for live pulse updates
+  useEffect(() => {
+    if (!socket) return
+    const handlePulseUpdate = (data) => {
+      setPulseData(data)
+    }
+    socket.on('pulse:update', handlePulseUpdate)
+    return () => socket.off('pulse:update', handlePulseUpdate)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -830,6 +842,8 @@ function RoomDetailPage() {
             roomCode: room.code,
             question: data.question
           })
+        // TAWM-Alternative: Reset pulse when new question starts
+        socket.emit('pulse:reset', { roomCode: room.code })
         }
       }
     } catch (error) {
@@ -1062,7 +1076,40 @@ function RoomDetailPage() {
 
             <div style={{ flex: 1 }} />
 
-            {/* Segment Timer Display */}
+            
+      {/* TAWM-Alternative: Live Pulse Display */}
+      {pulseData.lastUpdate && (
+        <div style={{
+          padding: '10px 16px',
+          background: 'linear-gradient(135deg, rgba(16,185,129,0.1), rgba(245,158,11,0.1))',
+          borderRadius: '12px',
+          border: '1px solid rgba(16,185,129,0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          marginBottom: '16px'
+        }}>
+          <span style={{ fontSize: '14px', color: '#3b82f6', fontWeight: '700' }}>📡 Live Pulse</span>
+          <span style={{ fontSize: '16px', color: '#10b981', fontWeight: '700' }}>👍 {pulseData.like}</span>
+          <span style={{ fontSize: '16px', color: '#f59e0b', fontWeight: '700' }}>🤔 {pulseData.confused}</span>
+          <span style={{ fontSize: '16px', color: '#ef4444', fontWeight: '700' }}>😕 {pulseData.lost}</span>
+          {(pulseData.confused + pulseData.lost) > pulseData.like && pulseData.like + pulseData.confused + pulseData.lost > 0 && (
+            <span style={{
+              marginLeft: 'auto',
+              padding: '4px 12px',
+              background: '#dc2626',
+              color: 'white',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: '600'
+            }}>
+              ⚠️ Confusion rising!
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Segment Timer Display */}
             {isRecording && (
               <div style={{
                 padding: '8px 16px',
