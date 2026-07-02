@@ -92,7 +92,13 @@ function RoomDetailPage() {
     difficulty: 'medium',
     questionProvider: 'minimax',
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    teamMode: {
+      enabled: false,
+      teamCount: 2,
+      teamSize: 4,
+      randomizeTeams: true
+    }
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
@@ -998,6 +1004,11 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
+              {roomSettings.teamMode?.enabled && (
+                <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '13px' }}>
+                  Team mode: {roomSettings.teamMode.teamCount} teams x {roomSettings.teamMode.teamSize} students
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1061,6 +1072,19 @@ function RoomDetailPage() {
             </div>
 
             <div style={{ flex: 1 }} />
+            {roomSettings.teamMode?.enabled && (
+              <div style={{
+                padding: '8px 14px',
+                background: 'rgba(16, 185, 129, 0.12)',
+                color: '#059669',
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: '700',
+                border: '1px solid rgba(16, 185, 129, 0.35)'
+              }}>
+                Teams: {roomSettings.teamMode.teamCount} x {roomSettings.teamMode.teamSize}
+              </div>
+            )}
 
             {/* Segment Timer Display */}
             {isRecording && (
@@ -1346,6 +1370,12 @@ function RoomDetailPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
                     <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Mode:</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>
+                      {roomSettings.teamMode?.enabled ? `${roomSettings.teamMode.teamCount} teams` : 'Individual'}
+                    </span>
                   </div>
                 </div>
               </div>

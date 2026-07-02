@@ -6,6 +6,7 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import TeamRoomOptions from '../components/TeamRoomOptions'
 
 function CreateRoomPage() {
   const navigate = useNavigate()
@@ -13,6 +14,12 @@ function CreateRoomPage() {
   const { createRoom, setAuthToken } = useRoomStore()
   
   const [roomName, setRoomName] = useState('')
+  const [teamMode, setTeamMode] = useState({
+    enabled: false,
+    teamCount: 2,
+    teamSize: 4,
+    randomizeTeams: true
+  })
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -32,7 +39,7 @@ function CreateRoomPage() {
     setError('')
     
     try {
-      const room = await createRoom(roomName.trim())
+      const room = await createRoom(roomName.trim(), { teamMode })
       navigate(`/teacher/room/${room._id}`)
     } catch (err) {
       setError(err.message || 'Failed to create room')
@@ -140,6 +147,8 @@ function CreateRoomPage() {
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
               />
             </div>
+            
+            <TeamRoomOptions value={teamMode} onChange={setTeamMode} />
             
             <div style={{ display: 'flex', gap: '12px' }}>
               <button

@@ -28,6 +28,7 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
+  const currentTeam = room?.currentUserTeam
 
   useEffect(() => {
     if (!token || !socket) return
@@ -364,6 +365,11 @@ function StudentRoomPage() {
             <div>
               <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
+              {room.settings?.teamMode?.enabled && (
+                <p style={{ margin: '4px 0 0', opacity: 0.95, fontSize: '14px', fontWeight: '600' }}>
+                  {currentTeam?.teamName || 'Team assignment pending'}
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -396,6 +402,18 @@ function StudentRoomPage() {
               <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
                 {isConnected ? 'Connected' : 'Reconnecting...'}
               </span>
+              {room.settings?.teamMode?.enabled && (
+                <span style={{
+                  padding: '4px 10px',
+                  background: '#d1fae5',
+                  color: '#047857',
+                  borderRadius: '999px',
+                  fontSize: '12px',
+                  fontWeight: '700'
+                }}>
+                  {currentTeam?.teamName || 'Team mode'}
+                </span>
+              )}
             </div>
             <button
               onClick={leaveSession}

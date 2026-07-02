@@ -6,6 +6,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
+  const [mode, setMode] = useState('individual')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -22,6 +23,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
         setUserRank(data.userRank)
         setTotalParticipants(data.totalParticipants)
         setIsTeacher(data.isTeacher)
+        setMode(data.mode || 'individual')
       } else {
         setError('Failed to load leaderboard')
       }
@@ -106,7 +108,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
           }}>
             •••
           </div>
-          <div key={entry.studentId} style={{
+          <div key={entry.studentId || entry.teamId} style={{
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
@@ -146,14 +148,14 @@ const Leaderboard = ({ roomId, token, socket }) => {
                 textOverflow: 'ellipsis',
                 maxWidth: '100%'
               }}>
-                {entry.studentName} (You)
+                {(entry.teamName || entry.studentName)} (You)
               </div>
               <div style={{
                 fontSize: '11px',
                 color: 'var(--text-secondary)',
                 marginTop: '2px'
               }}>
-                {entry.correctCount}/{entry.totalAnswered} correct
+                {entry.correctCount}/{entry.totalAnswered} correct{mode === 'team' && entry.memberCount !== undefined ? ` • ${entry.memberCount} members` : ''}
               </div>
             </div>
             <div style={{
@@ -175,7 +177,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
     }
     
     return (
-      <div key={entry.studentId} style={{
+      <div key={entry.studentId || entry.teamId} style={{
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
@@ -219,14 +221,14 @@ const Leaderboard = ({ roomId, token, socket }) => {
             textOverflow: 'ellipsis',
             maxWidth: '100%'
           }}>
-            {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            {entry.teamName || entry.studentName}{isCurrentUser ? ' (You)' : ''}
           </div>
           <div style={{
             fontSize: '11px',
             color: 'var(--text-secondary)',
             marginTop: '2px'
           }}>
-            {entry.correctCount}/{entry.totalAnswered} correct
+            {entry.correctCount}/{entry.totalAnswered} correct{mode === 'team' && entry.memberCount !== undefined ? ` • ${entry.memberCount} members` : ''}
           </div>
         </div>
 
@@ -268,7 +270,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
           color: 'var(--text-secondary)',
           fontSize: '11px'
         }}>
-          {totalParticipants} students in session
+          {totalParticipants} {mode === 'team' ? 'teams' : 'students'} in session
         </div>
       )}
     </div>

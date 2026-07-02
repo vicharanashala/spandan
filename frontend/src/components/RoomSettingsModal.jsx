@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { getAIProviders } from '../services/questionService'
+import TeamRoomOptions from './TeamRoomOptions'
 
 const DIFFICULTY_LEVELS = ['easy', 'medium', 'hard']
 const SEGMENT_TIMES = [1, 2, 3, 5, 10, 15, 20, 30]
@@ -398,6 +399,13 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               points (1-500)
             </span>
           </div>
+        </div>
+
+        <div style={{ marginBottom: '24px' }}>
+          <TeamRoomOptions
+            value={localSettings.teamMode}
+            onChange={(teamMode) => setLocalSettings(prev => ({ ...prev, teamMode }))}
+          />
         </div>
 
         {/* Save Button */}

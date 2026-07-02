@@ -94,6 +94,11 @@ function ManageRoomPage() {
                     <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
                       {room.questionCount || 0} questions
                     </p>
+                    {room.settings?.teamMode?.enabled && (
+                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#059669', fontWeight: '600' }}>
+                        Team mode: {room.settings.teamMode.teamCount} teams x {room.settings.teamMode.teamSize}
+                      </p>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
                     <button

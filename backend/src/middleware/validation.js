@@ -26,7 +26,13 @@ export const createRoomSchema = z.object({
   settings: z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),
-    requireCorrectAnswer: z.boolean().optional()
+    requireCorrectAnswer: z.boolean().optional(),
+    teamMode: z.object({
+      enabled: z.boolean().optional(),
+      teamCount: z.number().int().min(1).max(50).optional(),
+      teamSize: z.number().int().min(1).max(200).optional(),
+      randomizeTeams: z.boolean().optional()
+    }).optional()
   }).optional()
 })
 
@@ -45,6 +51,12 @@ export const roomSettingsSchema = z.object({
     MCQ: z.number().min(0).max(100).optional(),
     TF: z.number().min(0).max(100).optional(),
     MSQ: z.number().min(0).max(100).optional()
+  }).optional(),
+  teamMode: z.object({
+    enabled: z.boolean().optional(),
+    teamCount: z.number().int().min(1).max(50).optional(),
+    teamSize: z.number().int().min(1).max(200).optional(),
+    randomizeTeams: z.boolean().optional()
   }).optional()
 })
 

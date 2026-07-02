@@ -5,6 +5,122 @@ const router = express.Router()
 // Apply authentication to all routes
 router.use(authenticate)
 
+const answerKey = (selectedOptions = []) => JSON.stringify([...selectedOptions].sort((a, b) => a - b))
+
+const isAnswerCorrect = (question, selectedOptions = []) => {
+  if (question.type === 'MSQ') {
+    const correctIndices = question.options
+      .map((opt, idx) => opt.isCorrect ? idx : -1)
+      .filter(idx => idx !== -1)
+    const selectedSet = new Set(selectedOptions)
+    const correctSet = new Set(correctIndices)
+    return correctIndices.every(idx => selectedSet.has(idx)) && selectedOptions.every(idx => correctSet.has(idx))
+  }
+
+  return Boolean(question.options[selectedOptions[0]]?.isCorrect)
+}
+
+const calculateQuestionPoints = (question, isCorrect, responseTime = 0) => {
+  if (!isCorrect) return 0
+  const maxPoints = question.points || 100
+  const tta = question.timeToAnswer || 30
+  const timeRemaining = Math.max(0, tta - responseTime)
+  const timeDecayFactor = Math.max(0.1, timeRemaining / tta)
+  return Math.round(maxPoints * timeDecayFactor)
+}
+
+const buildTeamLeaderboard = async ({ roomId, room, Response, Question, RoomMember, mongoose }) => {
+  const toObjectId = (id) => {
+    if (!id) return null
+    if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
+    return new mongoose.Types.ObjectId(id)
+  }
+
+  const [members, questions, responses] = await Promise.all([
+    RoomMember.find({ roomId }).lean(),
+    Question.find({ roomId: toObjectId(roomId), status: 'approved' }).lean(),
+    Response.find({ roomId: toObjectId(roomId) }).lean()
+  ])
+
+  const teamCount = room.settings?.teamMode?.teamCount || 0
+  const teams = new Map()
+  for (let teamId = 1; teamId <= teamCount; teamId += 1) {
+    teams.set(teamId, {
+      rank: 0,
+      teamId,
+      teamName: `Team ${teamId}`,
+      totalPoints: 0,
+      correctCount: 0,
+      totalAnswered: 0,
+      memberCount: 0
+    })
+  }
+
+  members.forEach(member => {
+    if (!member.teamId) return
+    if (!teams.has(member.teamId)) {
+      teams.set(member.teamId, {
+        rank: 0,
+        teamId: member.teamId,
+        teamName: member.teamName || `Team ${member.teamId}`,
+        totalPoints: 0,
+        correctCount: 0,
+        totalAnswered: 0,
+        memberCount: 0
+      })
+    }
+    const team = teams.get(member.teamId)
+    team.teamName = member.teamName || team.teamName
+    team.memberCount += 1
+  })
+
+  const responsesByQuestionAndTeam = new Map()
+  responses.forEach(response => {
+    if (!response.teamId) return
+    const key = `${response.questionId.toString()}:${response.teamId}`
+    if (!responsesByQuestionAndTeam.has(key)) {
+      responsesByQuestionAndTeam.set(key, [])
+    }
+    responsesByQuestionAndTeam.get(key).push(response)
+  })
+
+  questions.forEach(question => {
+    teams.forEach(team => {
+      const teamResponses = responsesByQuestionAndTeam.get(`${question._id.toString()}:${team.teamId}`) || []
+      if (teamResponses.length === 0) return
+
+      const votes = new Map()
+      teamResponses.forEach(response => {
+        const selectedOptions = response.selectedOptions?.length ? response.selectedOptions : [response.selectedOption]
+        const key = answerKey(selectedOptions)
+        if (!votes.has(key)) {
+          votes.set(key, { selectedOptions, count: 0, responseTimeTotal: 0 })
+        }
+        const vote = votes.get(key)
+        vote.count += 1
+        vote.responseTimeTotal += response.responseTime || 0
+      })
+
+      const sortedVotes = [...votes.values()].sort((a, b) => b.count - a.count)
+      const topVote = sortedVotes[0]
+      const tied = sortedVotes.length > 1 && sortedVotes[1].count === topVote.count
+      const hasMajority = topVote.count > teamResponses.length / 2
+      team.totalAnswered += 1
+
+      if (tied || !hasMajority) return
+
+      const correct = isAnswerCorrect(question, topVote.selectedOptions)
+      if (correct) team.correctCount += 1
+      const avgResponseTime = topVote.responseTimeTotal / topVote.count
+      team.totalPoints += calculateQuestionPoints(question, correct, avgResponseTime)
+    })
+  })
+
+  return [...teams.values()]
+    .sort((a, b) => b.totalPoints - a.totalPoints || b.correctCount - a.correctCount || a.teamId - b.teamId)
+    .map((team, index) => ({ ...team, rank: index + 1 }))
+}
+
 // POST /api/responses - Save a student's answer
 // Authorization: student only, and studentId must match authenticated user
 router.post('/', authorize('student'), async (req, res) => {
@@ -32,42 +148,13 @@ router.post('/', authorize('student'), async (req, res) => {
       return res.status(404).json({ error: 'Question not found' })
     }
 
-    // Check if answer is correct based on question type
-    let isCorrect = false
-    
-    if (question.type === 'MSQ') {
-      // MSQ: ALL correct options must be selected AND NO incorrect options selected
-      const correctIndices = question.options
-        .map((opt, idx) => opt.isCorrect ? idx : -1)
-        .filter(idx => idx !== -1)
-      
-      const selectedSet = new Set(selectedOptions)
-      const correctSet = new Set(correctIndices)
-      
-      // Check all correct are selected AND no incorrect selected
-      const allCorrectSelected = correctIndices.every(idx => selectedSet.has(idx))
-      const noIncorrectSelected = selectedOptions.every(idx => correctSet.has(idx))
-      
-      isCorrect = allCorrectSelected && noIncorrectSelected
-    } else {
-      // MCQ/TF: Single correct answer
-      const selectedOptionData = question.options[selectedOptions[0]]
-      isCorrect = selectedOptionData?.isCorrect || false
-    }
+    const isCorrect = isAnswerCorrect(question, selectedOptions)
     
     // Time-decay points calculation
     // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)
-    const maxPoints = question.points || 100
-    const tta = question.timeToAnswer || 30
     const respTime = responseTime || 0
-    let points = 0
-    
-    if (isCorrect) {
-      const timeRemaining = Math.max(0, tta - respTime)
-      const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
-      points = Math.round(maxPoints * timeDecayFactor)
-    }
+    const points = calculateQuestionPoints(question, isCorrect, respTime)
     // Incorrect answers get 0 points
 
     const response = new Response({
@@ -78,7 +165,9 @@ router.post('/', authorize('student'), async (req, res) => {
       selectedOptions, // Store all selections for MSQ
       isCorrect,
       responseTime: respTime,
-      points
+      points,
+      teamId: isMember.teamId || null,
+      teamName: isMember.teamName || null
     })
 
     // Check if already responded to prevent duplicates
@@ -91,7 +180,9 @@ router.post('/', authorize('student'), async (req, res) => {
           selectedOption: existingResponse.selectedOption,
           selectedOptions: existingResponse.selectedOptions,
           isCorrect: existingResponse.isCorrect,
-          points: existingResponse.points
+          points: existingResponse.points,
+          teamId: existingResponse.teamId,
+          teamName: existingResponse.teamName
         }
       })
     }
@@ -496,6 +587,37 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     }
 
     // Aggregate points per student
+    if (room.settings?.teamMode?.enabled) {
+      const leaderboard = await buildTeamLeaderboard({ roomId, room, Response, Question: (await import('../models/Question.js')).default, RoomMember, mongoose })
+      const currentMembership = isStudentMember
+      const userTeam = currentMembership?.teamId
+        ? leaderboard.find(entry => entry.teamId === currentMembership.teamId)
+        : null
+
+      let visibleLeaderboard = leaderboard
+      let userRank = null
+
+      if (!isTeacher) {
+        userRank = userTeam?.rank || null
+        visibleLeaderboard = leaderboard.slice(0, 10)
+        if (userTeam && userTeam.rank > 10 && !visibleLeaderboard.some(entry => entry.teamId === userTeam.teamId)) {
+          visibleLeaderboard.push({ ...userTeam, isCurrentUser: true })
+          visibleLeaderboard.sort((a, b) => a.rank - b.rank)
+        } else if (userTeam) {
+          visibleLeaderboard = visibleLeaderboard.map(entry => entry.teamId === userTeam.teamId ? { ...entry, isCurrentUser: true } : entry)
+        }
+      }
+
+      return res.json({
+        success: true,
+        leaderboard: visibleLeaderboard,
+        isTeacher,
+        userRank,
+        totalParticipants: leaderboard.length,
+        mode: 'team'
+      })
+    }
+
     const leaderboardData = await Response.aggregate([
       { $match: { roomId: toObjectId(roomId) } },
       { $group: {
@@ -548,7 +670,8 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       leaderboard: visibleLeaderboard, 
       isTeacher,
       userRank,
-      totalParticipants: leaderboard.length
+      totalParticipants: leaderboard.length,
+      mode: 'individual'
     })
   } catch (error) {
     console.error('Error fetching leaderboard:', error)

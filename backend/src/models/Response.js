@@ -36,6 +36,15 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  teamId: {
+    type: Number,
+    default: null
+  },
+  teamName: {
+    type: String,
+    default: null,
+    trim: true
+  },
   createdAt: {
     type: Date,
     default: Date.now

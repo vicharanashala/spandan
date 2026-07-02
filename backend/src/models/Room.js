@@ -43,6 +43,12 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
+    },
+    teamMode: {
+      enabled: { type: Boolean, default: false },
+      teamCount: { type: Number, default: 2, min: 1, max: 50 },
+      teamSize: { type: Number, default: 4, min: 1, max: 200 },
+      randomizeTeams: { type: Boolean, default: true }
     }
   }
 }, {

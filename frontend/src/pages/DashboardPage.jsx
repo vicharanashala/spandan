@@ -7,6 +7,7 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import TeamRoomOptions from '../components/TeamRoomOptions'
 
 function DashboardPage() {
   const navigate = useNavigate()
@@ -15,6 +16,12 @@ function DashboardPage() {
   const { isConnected } = useSocketStore()
   
   const [roomName, setRoomName] = useState('')
+  const [teamMode, setTeamMode] = useState({
+    enabled: false,
+    teamCount: 2,
+    teamSize: 4,
+    randomizeTeams: true
+  })
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
   const [stats, setStats] = useState({
@@ -85,8 +92,9 @@ function DashboardPage() {
     if (!roomName.trim()) return
     setIsCreating(true)
     try {
-      await createRoom(roomName.trim())
+      await createRoom(roomName.trim(), { teamMode })
       setRoomName('')
+      setTeamMode({ enabled: false, teamCount: 2, teamSize: 4, randomizeTeams: true })
     } catch (err) {
       console.error('Failed to create room:', err)
     } finally {
@@ -271,6 +279,7 @@ function DashboardPage() {
                 {isCreating ? 'Creating...' : 'Create Room'}
               </button>
             </div>
+            <TeamRoomOptions value={teamMode} onChange={setTeamMode} compact />
           </div>
 
           {/* Active Rooms List */}
@@ -307,6 +316,11 @@ function DashboardPage() {
                       <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
                         {room.questionCount || 0} questions
                       </p>
+                      {room.settings?.teamMode?.enabled && (
+                        <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#059669', fontWeight: '600' }}>
+                          Team mode: {room.settings.teamMode.teamCount} teams x {room.settings.teamMode.teamSize}
+                        </p>
+                      )}
                     </div>
                     <button
                       onClick={() => navigate(`/teacher/room/${room._id}`)}

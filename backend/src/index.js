@@ -171,12 +171,8 @@ io.on('connection', (socket) => {
       if (user && room) {
         // Only students get added to RoomMember (not teachers)
         if (user.role === 'student') {
-          // Upsert: add student to room members if not already there
-          await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: user._id },
-            { roomId: room._id, studentId: user._id, joinedAt: new Date() },
-            { upsert: true, new: true }
-          )
+          const { assignStudentToTeam } = await import('./services/roomService.js')
+          await assignStudentToTeam(room, user._id)
           console.log(`Student ${userId} added to room members for room ${roomCode}`)
         }
         

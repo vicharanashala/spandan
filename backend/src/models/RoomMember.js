@@ -14,6 +14,15 @@ const roomMemberSchema = new mongoose.Schema({
   joinedAt: {
     type: Date,
     default: Date.now
+  },
+  teamId: {
+    type: Number,
+    default: null
+  },
+  teamName: {
+    type: String,
+    default: null,
+    trim: true
   }
 })
 
@@ -22,6 +31,7 @@ roomMemberSchema.index({ roomId: 1, studentId: 1 }, { unique: true })
 
 // Index for counting participants per room
 roomMemberSchema.index({ roomId: 1 })
+roomMemberSchema.index({ roomId: 1, teamId: 1 })
 
 const RoomMember = mongoose.model('RoomMember', roomMemberSchema)
 

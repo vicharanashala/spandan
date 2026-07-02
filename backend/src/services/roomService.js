@@ -4,10 +4,11 @@ import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
+  const normalizedSettings = normalizeRoomSettings(settings)
   const room = new Room({
     name,
     teacher: teacherId,
-    settings
+    settings: normalizedSettings
   })
 
   await room.save()
@@ -54,9 +55,13 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
 }
 
 export const updateRoom = async (roomId, updates) => {
+  const normalizedUpdates = updates.settings
+    ? { ...updates, settings: normalizeRoomSettings(updates.settings) }
+    : updates
+
   const room = await Room.findByIdAndUpdate(
     roomId,
-    { $set: updates },
+    { $set: normalizedUpdates },
     { new: true, runValidators: true }
   )
   
@@ -190,4 +195,72 @@ export const getActiveRoomsByStudent = async (studentId) => {
     ...room.toObject(),
     questionCount: countMap.get(room._id.toString()) || 0
   })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+}
+
+export const normalizeRoomSettings = (settings = {}) => {
+  const normalized = { ...settings }
+  const incomingTeamMode = settings.teamMode || {}
+
+  normalized.teamMode = {
+    enabled: Boolean(incomingTeamMode.enabled),
+    teamCount: Math.min(50, Math.max(1, Number(incomingTeamMode.teamCount) || 2)),
+    teamSize: Math.min(200, Math.max(1, Number(incomingTeamMode.teamSize) || 4)),
+    randomizeTeams: incomingTeamMode.randomizeTeams !== false
+  }
+
+  return normalized
+}
+
+export const assignStudentToTeam = async (room, studentId) => {
+  const teamMode = room?.settings?.teamMode
+  const existingMember = await RoomMember.findOne({ roomId: room._id, studentId })
+
+  if (!teamMode?.enabled) {
+    if (existingMember && existingMember.teamId !== null) {
+      existingMember.teamId = null
+      existingMember.teamName = null
+      await existingMember.save()
+    }
+    return existingMember || RoomMember.create({ roomId: room._id, studentId, joinedAt: new Date() })
+  }
+
+  if (existingMember?.teamId) {
+    return existingMember
+  }
+
+  const teamCount = Math.max(1, teamMode.teamCount || 2)
+  const teamSize = Math.max(1, teamMode.teamSize || 4)
+  const members = await RoomMember.find({ roomId: room._id }).lean()
+  const counts = new Map()
+  for (let teamId = 1; teamId <= teamCount; teamId += 1) {
+    counts.set(teamId, 0)
+  }
+  members.forEach(member => {
+    if (member.teamId) {
+      counts.set(member.teamId, (counts.get(member.teamId) || 0) + 1)
+    }
+  })
+
+  const availableTeams = [...counts.entries()]
+    .filter(([, count]) => count < teamSize)
+    .map(([teamId, count]) => ({ teamId, count }))
+
+  const candidates = availableTeams.length > 0
+    ? availableTeams
+    : [...counts.entries()].map(([teamId, count]) => ({ teamId, count }))
+
+  const minCount = Math.min(...candidates.map(team => team.count))
+  const leastFilledTeams = candidates.filter(team => team.count === minCount)
+  const selectedTeam = teamMode.randomizeTeams
+    ? leastFilledTeams[Math.floor(Math.random() * leastFilledTeams.length)]
+    : leastFilledTeams.sort((a, b) => a.teamId - b.teamId)[0]
+
+  const teamId = selectedTeam.teamId
+  const teamName = `Team ${teamId}`
+
+  return RoomMember.findOneAndUpdate(
+    { roomId: room._id, studentId },
+    { roomId: room._id, studentId, joinedAt: new Date(), teamId, teamName },
+    { upsert: true, new: true }
+  )
 }

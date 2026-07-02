@@ -1,5 +1,5 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom, assignStudentToTeam } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -87,14 +87,14 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
     
-    // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
-    await RoomMember.findOneAndUpdate(
-      { roomId: room._id, studentId: req.user._id },
-      { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
-      { upsert: true, new: true }
-    )
+    const membership = await assignStudentToTeam(room, req.user._id)
+    const roomPayload = room.toObject ? room.toObject() : room
+    roomPayload.currentUserTeam = membership?.teamId ? {
+      teamId: membership.teamId,
+      teamName: membership.teamName
+    } : null
     
-    res.json({ room })
+    res.json({ room: roomPayload })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
