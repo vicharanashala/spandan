@@ -9,10 +9,13 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings)
   const [providers, setProviders] = useState([])
   const [loadingProviders, setLoadingProviders] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
     if (isOpen) {
       setLocalSettings(settings)
+      setSaveError('')
       loadProviders()
     }
   }, [isOpen, settings])
@@ -30,9 +33,17 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
     setLoadingProviders(false)
   }
 
-  const handleSave = () => {
-    onSave(localSettings)
-    onClose()
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveError('')
+    try {
+      await onSave(localSettings)
+      onClose()
+    } catch (error) {
+      setSaveError(error.message || 'Failed to save settings')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   if (!isOpen) return null
@@ -408,22 +419,37 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           />
         </div>
 
+        {saveError && (
+          <div style={{
+            marginBottom: '12px',
+            padding: '10px 12px',
+            borderRadius: '8px',
+            background: '#fef2f2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+            fontSize: '13px'
+          }}>
+            {saveError}
+          </div>
+        )}
+
         {/* Save Button */}
         <button
           onClick={handleSave}
+          disabled={isSaving}
           style={{
             width: '100%',
             padding: '12px',
             borderRadius: '10px',
             border: 'none',
-            background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+            background: isSaving ? '#9ca3af' : 'linear-gradient(135deg, #3b82f6, #2563eb)',
             color: 'white',
             fontSize: '14px',
             fontWeight: '600',
-            cursor: 'pointer'
+            cursor: isSaving ? 'not-allowed' : 'pointer'
           }}
         >
-          Save Settings
+          {isSaving ? 'Saving...' : 'Save Settings'}
         </button>
       </div>
     </div>

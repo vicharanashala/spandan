@@ -136,10 +136,18 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     }
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
+    const io = req.app.get('io')
+
+    if (req.body.settings) {
+      io.to(room.code).emit('room:settings_updated', {
+        roomId: updatedRoom._id,
+        settings: updatedRoom.settings,
+        room: updatedRoom
+      })
+    }
     
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
-      const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
     }
     

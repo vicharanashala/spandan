@@ -150,6 +150,22 @@ function RoomDetailPage() {
     }
   }, [socket])
 
+  useEffect(() => {
+    if (!socket) return
+
+    const handleSettingsUpdated = (data) => {
+      if (!data?.roomId || String(data.roomId) !== roomId) return
+      setRoom(prev => prev ? { ...prev, settings: data.settings } : prev)
+      setRoomSettings(prev => ({
+        ...prev,
+        ...data.settings
+      }))
+    }
+
+    socket.on('room:settings_updated', handleSettingsUpdated)
+    return () => socket.off('room:settings_updated', handleSettingsUpdated)
+  }, [socket, roomId])
+
   // Listen for response:new events to update answer counts
   useEffect(() => {
     if (!socket) return
@@ -1220,21 +1236,17 @@ function RoomDetailPage() {
                 onClose={() => setShowSettings(false)}
                 settings={roomSettings}
                 onSave={async (newSettings) => {
-                  setRoomSettings(newSettings)
-                  // Persist settings to backend
-                  try {
-                    await fetch(`${API_URL}/rooms/${room._id}`, {
-                      method: 'PUT',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                      },
-                      body: JSON.stringify({ settings: newSettings })
-                    })
-                  } catch (err) {
-                    console.error('Failed to save room settings:', err)
+                  const updatedRoom = await updateRoom(room._id, { settings: newSettings })
+                  setRoom(updatedRoom)
+                  if (updatedRoom.settings) {
+                    setRoomSettings(prev => ({
+                      ...prev,
+                      ...updatedRoom.settings
+                    }))
+                  } else {
+                    setRoomSettings(newSettings)
                   }
-                  setShowSettings(false)
+                  setError('')
                 }}
               />
             </div>

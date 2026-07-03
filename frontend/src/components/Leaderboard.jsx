@@ -41,11 +41,21 @@ const Leaderboard = ({ roomId, token, socket }) => {
 
     // Listen for points:updated events
     if (socket) {
-      socket.on('points:updated', () => {
+      const handlePointsUpdated = () => {
         console.log('[Leaderboard] Points updated, refreshing...')
         fetchLeaderboard()
-      })
-      return () => socket.off('points:updated')
+      }
+      const handleSettingsUpdated = () => {
+        console.log('[Leaderboard] Room settings updated, refreshing...')
+        fetchLeaderboard()
+      }
+
+      socket.on('points:updated', handlePointsUpdated)
+      socket.on('room:settings_updated', handleSettingsUpdated)
+      return () => {
+        socket.off('points:updated', handlePointsUpdated)
+        socket.off('room:settings_updated', handleSettingsUpdated)
+      }
     }
   }, [roomId, socket])
 

@@ -124,9 +124,18 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    const handleSettingsUpdated = (data) => {
+      if (!data?.roomId || String(data.roomId) !== String(room?._id)) return
+      setRoom(prev => prev ? {
+        ...prev,
+        settings: data.settings || data.room?.settings || prev.settings
+      } : prev)
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('room:settings_updated', handleSettingsUpdated)
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
@@ -135,6 +144,7 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('room:settings_updated', handleSettingsUpdated)
       socket.off('room:ended')
     }
   }, [socket, navigate, room?._id])
