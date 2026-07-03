@@ -1,0 +1,97 @@
+server:
+  port: 8088
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: recording-service
+
+  datasource:
+    url: ${RECORDING_DB_URL:jdbc:postgresql://localhost:5432/recording_db}
+    username: ${RECORDING_DB_USER:postgres}
+    password: ${RECORDING_DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 3
+      connection-timeout: 5000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.type.mapping: >-
+          stream-started-event:com.spandan.recording.infrastructure.kafka.dto.StreamStartedEvent,
+          stream-stopped-event:com.spandan.recording.infrastructure.kafka.dto.StreamStoppedEvent,
+          stream-interrupted-event:com.spandan.recording.infrastructure.kafka.dto.StreamInterruptedEvent,
+          stream-recovered-event:com.spandan.recording.infrastructure.kafka.dto.StreamRecoveredEvent,
+          stream-failed-event:com.spandan.recording.infrastructure.kafka.dto.StreamFailedEvent
+
+kafka:
+  topics:
+    audio-stream-events: audio-stream-events
+
+grpc:
+  client:
+    transcription-service:
+      host: ${TRANSCRIPTION_SERVICE_HOST:localhost}
+      port: ${TRANSCRIPTION_SERVICE_GRPC_PORT:9091}
+
+recording:
+  chunk:
+    duration-ms: 500
+    max-buffer-seconds: 25
+    max-buffer-chunks: 50
+  heartbeat:
+    interval-ms: 2000
+    timeout-ms: 6000
+  provider:
+    primary: ${RECORDING_PROVIDER_PRIMARY:deepgram}
+    fallback: ${RECORDING_PROVIDER_FALLBACK:}
+    send-timeout-ms: 8000
+    connection-timeout-ms: 10000
+  stream:
+    max-duration-minutes: 480
+    idle-timeout-seconds: 30
+
+auth:
+  jwt:
+    secret: ${JWT_SECRET:default-dev-secret-change-in-production}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+logging:
+  level:
+    com.spandan.recording: INFO
+    org.springframework.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

@@ -1,0 +1,41 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16:///question_generation_db
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  flyway:
+    enabled: false
+  kafka:
+    bootstrap-servers: ${embedded.kafka.brokerList:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+    listener:
+      concurrency: 1
+  data:
+    redis:
+      host: ${embedded.redis.host:localhost}
+      port: ${embedded.redis.port:6379}
+  main:
+    allow-bean-definition-overriding: true
+
+auth:
+  service:
+    url: http://localhost:8081
+
+transcription:
+  service:
+    url: http://localhost:8085
+
+question-generation:
+  provider:
+    primary: test-provider
+    fallback:
+  max-attempts: 1
+  generation-timeout-minutes: 2
+  lock-ttl-seconds: 10
+  lock-renewal-interval-seconds: 5
+  expiry-sweep-interval-ms: 60000
+  expiry-hours: 50

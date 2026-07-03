@@ -1,0 +1,53 @@
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: auth-service
+          uri: http://spandan-auth-service:8080
+          predicates:
+            - Path=/api/v1/auth/**
+
+        - id: polling-service
+          uri: http://spandan-polling-service:8081
+          predicates:
+            - Path=/api/v1/polls/**
+
+        - id: analytics-service
+          uri: http://spandan-analytics-service:8083
+          predicates:
+            - Path=/api/v1/analytics/**
+
+        - id: transcription-service
+          uri: http://spandan-transcription-service:8085
+          predicates:
+            - Path=/api/v1/transcripts/**
+
+        - id: question-generation-service
+          uri: http://spandan-question-generation-service:8086
+          predicates:
+            - Path=/api/v1/questions/**
+
+        - id: question-review-service
+          uri: http://spandan-question-review-service:8087
+          predicates:
+            - Path=/api/v1/reviews/**
+
+        - id: notification-service
+          uri: http://spandan-notification-service:8087
+          predicates:
+            - Path=/api/v1/notifications/**
+
+        - id: recording-service
+          uri: http://spandan-recording-service:8088
+          predicates:
+            - Path=/api/v1/streams/**
+
+        - id: response-service
+          uri: http://spandan-response-service:8084
+          predicates:
+            - Path=/api/v1/responses/**
+
+        - id: real-time-gateway-websocket
+          uri: ws://spandan-realtime-communication-service:8090
+          predicates:
+            - Path=/ws/**

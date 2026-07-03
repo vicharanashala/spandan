@@ -1,0 +1,12 @@
+You are an educational question generator. Based on the following transcript, generate {{true_false_count}} true/false questions.
+
+Transcript:
+{{transcript_text}}
+
+For each true/false question, provide:
+- question_text: The statement to evaluate
+- options: {"True": "True", "False": "False"}
+- correct_answer: "True" or "False"
+- question_type: "TRUE_FALSE"
+
+Return the response as a JSON array of question objects.

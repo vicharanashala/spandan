@@ -1,0 +1,226 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: spandan-api-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  cloud:
+    gateway:
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            key-resolver: "#{@principalNameKeyResolver}"
+            redis-rate-limiter:
+              replenishRate: 100
+              burstCapacity: 200
+
+      routes:
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://spandan-auth-service:8080}
+          predicates:
+            - Path=/api/v1/auth/**
+          filters:
+            - RemoveRequestHeader=Cookie
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        - id: polling-service
+          uri: ${POLLING_SERVICE_URL:http://spandan-polling-service:8081}
+          predicates:
+            - Path=/api/v1/polls/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: pollingServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 30000
+            connect-timeout: 2000
+
+        - id: analytics-service
+          uri: ${ANALYTICS_SERVICE_URL:http://spandan-analytics-service:8083}
+          predicates:
+            - Path=/api/v1/analytics/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: analyticsServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+            - name: Retry
+              args:
+                retries: 1
+                statuses: BAD_GATEWAY, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 500ms
+                  factor: 2
+          metadata:
+            response-timeout: 60000
+            connect-timeout: 2000
+
+        - id: transcription-service
+          uri: ${TRANSCRIPTION_SERVICE_URL:http://spandan-transcription-service:8085}
+          predicates:
+            - Path=/api/v1/transcripts/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: transcriptionServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+            - name: Retry
+              args:
+                retries: 1
+                statuses: BAD_GATEWAY, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 500ms
+                  factor: 2
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        - id: question-generation-service
+          uri: ${QGS_SERVICE_URL:http://spandan-question-generation-service:8086}
+          predicates:
+            - Path=/api/v1/questions/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: questionGenerationServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 30000
+            connect-timeout: 2000
+
+        - id: question-review-service
+          uri: ${QRS_SERVICE_URL:http://spandan-question-review-service:8087}
+          predicates:
+            - Path=/api/v1/reviews/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: questionReviewServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        - id: notification-service
+          uri: ${NS_SERVICE_URL:http://spandan-notification-service:8087}
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - name: Retry
+              args:
+                retries: 1
+                statuses: BAD_GATEWAY, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 500ms
+                  factor: 2
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        - id: recording-service
+          uri: ${RS_SERVICE_URL:http://spandan-recording-service:8088}
+          predicates:
+            - Path=/api/v1/streams/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: recordingServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 30000
+            connect-timeout: 2000
+
+        - id: response-service
+          uri: ${RESPONSE_SERVICE_URL:http://spandan-response-service:8084}
+          predicates:
+            - Path=/api/v1/responses/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: responseServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        - id: real-time-gateway-websocket
+          uri: ${RT_GATEWAY_WS_URL:http://spandan-realtime-communication-service:8090}
+          predicates:
+            - Path=/ws/**
+          metadata:
+            connect-timeout: 5000
+            response-timeout: 300000
+
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origins: ${GATEWAY_CORS_ORIGINS:*}
+            allowed-methods:
+              - GET
+              - POST
+              - PATCH
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowed-headers:
+              - Authorization
+              - Content-Type
+              - X-Correlation-Id
+              - X-Idempotency-Key
+            exposed-headers:
+              - X-Request-Id
+              - X-Rate-Limit-Remaining
+            allow-credentials: true
+            max-age: 3600
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000
+      connect-timeout: 2000
+
+  jackson:
+    default-property-inclusion: non_null
+
+jwt:
+  secret: ${JWT_SECRET:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      prometheus:
+        enabled: true
+
+logging:
+  level:
+    com.spandan.gateway: ${LOG_LEVEL:INFO}
+    org.springframework.cloud.gateway: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+
