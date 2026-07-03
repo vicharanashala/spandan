@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
+import useSidebarStore from './stores/sidebarStore'
 import ProtectedRoute from './components/ProtectedRoute'
 import AuthPage from './pages/AuthPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
@@ -17,40 +18,18 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 
-function App() {
-  const { isDark } = useThemeStore()
-  const { token, isAuthenticated } = useAuthStore()
-  const { connect, disconnect } = useSocketStore()
+function AnimatedRoutes() {
+  const location = useLocation()
+  const { isCollapsed } = useSidebarStore()
 
-  // Connect socket when user is authenticated with valid token
+  // Sync sidebar width CSS variable
   useEffect(() => {
-    if (token && isAuthenticated) {
-      console.log('App: connecting socket with token')
-      connect(token)
-    } else {
-      console.log('App: disconnecting socket')
-      disconnect()
-    }
-  }, [token, isAuthenticated, connect, disconnect])
-
-  // Cleanup socket on unmount
-  useEffect(() => {
-    return () => {
-      disconnect()
-    }
-  }, [disconnect])
-
-  useEffect(() => {
-    if (isDark) {
-      document.documentElement.setAttribute('data-theme', 'dark')
-    } else {
-      document.documentElement.removeAttribute('data-theme')
-    }
-  }, [isDark])
+    document.documentElement.style.setProperty('--sidebar-width', isCollapsed ? '60px' : '240px')
+  }, [isCollapsed])
 
   return (
-    <BrowserRouter basename="/spandan">
-      <Routes>
+    <div className="page-transition" key={location.pathname}>
+      <Routes location={location}>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/teacher" element={
@@ -119,6 +98,42 @@ function App() {
           </ProtectedRoute>
         } />
       </Routes>
+    </div>
+  )
+}
+
+function App() {
+  const { isDark } = useThemeStore()
+  const { token, isAuthenticated } = useAuthStore()
+  const { connect, disconnect } = useSocketStore()
+
+  useEffect(() => {
+    if (token && isAuthenticated) {
+      console.log('App: connecting socket with token')
+      connect(token)
+    } else {
+      console.log('App: disconnecting socket')
+      disconnect()
+    }
+  }, [token, isAuthenticated, connect, disconnect])
+
+  useEffect(() => {
+    return () => {
+      disconnect()
+    }
+  }, [disconnect])
+
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.setAttribute('data-theme', 'dark')
+    } else {
+      document.documentElement.removeAttribute('data-theme')
+    }
+  }, [isDark])
+
+  return (
+    <BrowserRouter basename={import.meta.env.VITE_BASE_PATH || "/"}>
+      <AnimatedRoutes />
     </BrowserRouter>
   )
 }

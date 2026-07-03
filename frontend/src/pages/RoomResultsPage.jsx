@@ -24,12 +24,24 @@ function RoomResultsPage() {
     participationRate: 0
   })
 
-  useEffect(() => {
-    if (token) {
-      setAuthToken(token)
-      fetchRoomData()
-    }
-  }, [token, roomId])
+  const [bookmarked, setBookmarked] = useState(new Set())
+  const [showReviewTab, setShowReviewTab] = useState(false)
+  const [expandedQuestions, setExpandedQuestions] = useState({})
+
+  const toggleBookmark = (qId) => {
+    setBookmarked(prev => {
+      const next = new Set(prev)
+      next.has(qId) ? next.delete(qId) : next.add(qId)
+      return next
+    })
+  }
+
+  const toggleExpand = (qId) => {
+    setExpandedQuestions(prev => ({
+      ...prev,
+      [qId]: !prev[qId]
+    }))
+  }
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -146,6 +158,13 @@ function RoomResultsPage() {
     }
   }
 
+  useEffect(() => {
+    if (token) {
+      setAuthToken(token)
+      fetchRoomData()
+    }
+  }, [token, roomId])
+
   if (isLoading) {
     return (
       <div style={{
@@ -155,7 +174,7 @@ function RoomResultsPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -182,7 +201,7 @@ function RoomResultsPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
@@ -287,9 +306,24 @@ function RoomResultsPage() {
             boxShadow: 'var(--card-shadow)',
             border: '1px solid var(--border-color)'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              Question-wise Analysis
-            </h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', flex: 1 }}>
+                Question-wise Analysis
+              </h2>
+              {user?.role === 'student' && bookmarked.size > 0 && (
+                <button
+                  onClick={() => setShowReviewTab(v => !v)}
+                  style={{
+                    padding: '6px 14px', background: showReviewTab ? '#f59e0b' : 'transparent',
+                    border: '1px solid #f59e0b', borderRadius: '8px',
+                    color: showReviewTab ? 'white' : '#f59e0b', fontSize: '12px',
+                    fontWeight: '600', cursor: 'pointer'
+                  }}
+                >
+                  📌 Review Later ({bookmarked.size})
+                </button>
+              )}
+            </div>
             
             {questions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
@@ -297,169 +331,174 @@ function RoomResultsPage() {
                 <p>No questions were asked in this room.</p>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {questions.map((q, index) => {
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {(showReviewTab ? questions.filter(q => bookmarked.has(q._id)) : questions).map((q, index) => {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
-                  
-                  // Teacher: show class percentage. Student: show their result
-                  const correctRate = isTeacher && qStats.totalResponses > 0 
-                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100) 
+                  const totalResp = qStats.totalResponses || 0
+                  const correctRate = isTeacher && totalResp > 0
+                    ? Math.round((qStats.correctCount / totalResp) * 100)
                     : q.answered ? (q.isCorrect ? 100 : 0) : null
-                  
+                  const attemptedPct = isTeacher && stats.totalStudents > 0
+                    ? Math.round((totalResp / stats.totalStudents) * 100)
+                    : null
+                  const isStruggle = isTeacher && correctRate !== null && correctRate < 70
+                  const isExpanded = !!expandedQuestions[q._id]
+
                   return (
                     <div key={q._id} style={{
-                      padding: '20px',
                       background: 'var(--bg-primary)',
-                      borderRadius: '12px',
-                      border: '1px solid var(--border-color)'
+                      borderRadius: '10px',
+                      border: `1px solid ${isStruggle ? '#fca5a5' : 'var(--border-color)'}`,
+                      overflow: 'hidden'
                     }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                            <span style={{
-                              width: '28px',
-                              height: '28px',
-                              borderRadius: '50%',
-                              background: '#3b82f6',
-                              color: 'white',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '12px',
-                              fontWeight: '700'
-                            }}>
-                              {index + 1}
-                            </span>
-                            <span style={{
-                              padding: '2px 8px',
-                              background: '#eff6ff',
-                              color: '#3b82f6',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              fontWeight: '600'
-                            }}>
-                              {q.type}
-                            </span>
-                            <span style={{
-                              padding: '2px 8px',
-                              background: '#fef3c7',
-                              color: '#d97706',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              fontWeight: '600'
-                            }}>
-                              {q.maxPoints || q.points} pts
-                            </span>
-                            {q.answered && (
+                      {/* Compact header - always visible */}
+                      <div
+                        onClick={() => toggleExpand(q._id)}
+                        style={{
+                          padding: '12px 16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{
+                          width: '24px', height: '24px', borderRadius: '50%',
+                          background: '#3b82f6', color: 'white',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: '11px', fontWeight: '700', flexShrink: 0
+                        }}>{index + 1}</span>
+
+                        <span style={{
+                          padding: '2px 6px', background: '#eff6ff', color: '#3b82f6',
+                          borderRadius: '4px', fontSize: '10px', fontWeight: '600', flexShrink: 0
+                        }}>{q.type}</span>
+
+                        <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', flex: 1, lineHeight: '1.4' }}>
+                          {q.question}
+                        </span>
+
+                        {/* Right side stats */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                          {isTeacher ? (
+                            <>
+                              {attemptedPct !== null && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                  {attemptedPct}% attempted
+                                </span>
+                              )}
                               <span style={{
-                                padding: '2px 8px',
-                                borderRadius: '6px',
-                                fontSize: '11px',
-                                fontWeight: '600',
-                                background: q.isCorrect ? '#d1fae5' : '#fee2e2',
-                                color: q.isCorrect ? '#059669' : '#dc2626'
+                                padding: '4px 10px', borderRadius: '6px', fontSize: '13px', fontWeight: '700',
+                                background: correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2',
+                                color: correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626'
                               }}>
-                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                                {correctRate !== null ? `${correctRate}%` : '—'}
                               </span>
-                            )}
-                          </div>
-                          <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 12px' }}>
-                            {q.question}
-                          </p>
-                          
-                          {/* Options - show differently for teacher vs student */}
-                          <div style={{ display: 'grid', gap: '8px' }}>
+                              {isStruggle && <span style={{ fontSize: '14px' }} title="Class struggled here">⚠️</span>}
+                            </>
+                          ) : (
+                            <>
+                              {q.answered && (
+                                <span style={{
+                                  padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
+                                  background: q.isCorrect ? '#d1fae5' : '#fee2e2',
+                                  color: q.isCorrect ? '#059669' : '#dc2626'
+                                }}>
+                                  {q.isCorrect ? '✓' : '✗'} {q.pointsEarned || 0}pts
+                                </span>
+                              )}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleBookmark(q._id) }}
+                                style={{
+                                  background: 'none', border: 'none', cursor: 'pointer',
+                                  fontSize: '16px', opacity: bookmarked.has(q._id) ? 1 : 0.4
+                                }}
+                                title="Save for Review Later"
+                              >📌</button>
+                            </>
+                          )}
+                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{isExpanded ? '▲' : '▼'}</span>
+                        </div>
+                      </div>
+
+                      {/* Expanded options */}
+                      {isExpanded && (
+                        <div style={{ padding: '0 16px 14px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
-                              
-                              // For student: highlight their selection. For teacher: highlight correct answer
-                              const showAsSelected = isTeacher ? isCorrect : isSelected
-                              const highlightStyle = showAsSelected 
-                                ? (isTeacher ? '#d1fae5' : (isSelected ? (isCorrect ? '#d1fae5' : '#fee2e2') : '#d1fae5'))
-                                : 'var(--bg-card)'
-                              const borderStyle = showAsSelected 
-                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid #3b82f6' : '2px solid #059669'))
-                                : '1px solid var(--border-color)'
-                              
+                              const optCount = qStats.answerCounts?.[optIdx] || 0
+                              const optPct = totalResp > 0 ? Math.round((optCount / totalResp) * 100) : 0
+
+                              let bg = 'var(--bg-card)', border = '1px solid var(--border-color)'
+                              if (isTeacher) {
+                                if (isCorrect) { bg = '#d1fae5'; border = '1px solid #059669' }
+                              } else {
+                                if (isSelected && isCorrect) { bg = '#d1fae5'; border = '1px solid #059669' }
+                                else if (isSelected && !isCorrect) { bg = '#fee2e2'; border = '1px solid #dc2626' }
+                                else if (!isSelected && isCorrect) { bg = '#eff6ff'; border = '1px solid #3b82f6' }
+                              }
+
                               return (
-                                <div key={optIdx} style={{
-                                  padding: '10px 14px',
-                                  background: highlightStyle,
-                                  borderRadius: '8px',
-                                  border: borderStyle,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '12px'
-                                }}>
-                                  <span style={{
-                                    width: '24px',
-                                    height: '24px',
-                                    borderRadius: '50%',
-                                    background: isCorrect ? '#059669' : 'var(--border-color)',
-                                    color: 'white',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    fontSize: '11px',
-                                    fontWeight: '700'
+                                <div key={optIdx}>
+                                  <div style={{
+                                    padding: '8px 12px', background: bg, borderRadius: '8px',
+                                    border, display: 'flex', alignItems: 'center', gap: '10px'
                                   }}>
-                                    {String.fromCharCode(65 + optIdx)}
-                                  </span>
-                                  <span style={{ 
-                                    fontSize: '14px', 
-                                    color: 'var(--text-primary)',
-                                    fontWeight: isCorrect ? '600' : '400'
-                                  }}>
-                                    {opt.text}
-                                  </span>
-                                  {isTeacher && isCorrect && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px' }}>✓</span>
+                                    <span style={{
+                                      width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
+                                      background: isCorrect ? '#059669' : 'var(--border-color)',
+                                      color: 'white', display: 'flex', alignItems: 'center',
+                                      justifyContent: 'center', fontSize: '10px', fontWeight: '700'
+                                    }}>{String.fromCharCode(65 + optIdx)}</span>
+                                    <span style={{ fontSize: '13px', color: isCorrect ? '#065f46' : 'var(--text-primary)', flex: 1, fontWeight: isCorrect ? '600' : '400' }}>
+                                      {opt.text}
+                                    </span>
+                                    {!isTeacher && isSelected && (
+                                      <span style={{ fontSize: '11px', color: isCorrect ? '#059669' : '#dc2626', fontWeight: '600' }}>
+                                        {isCorrect ? '✓ Your answer' : '✗ Your answer'}
+                                      </span>
+                                    )}
+                                    {!isTeacher && !isSelected && isCorrect && (
+                                      <span style={{ fontSize: '11px', color: '#3b82f6', fontWeight: '600' }}>Correct</span>
+                                    )}
+                                    {isTeacher && (
+                                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '500', whiteSpace: 'nowrap' }}>
+                                        {optPct}% ({optCount})
+                                      </span>
+                                    )}
+                                  </div>
+                                  {/* % bar under each option - teacher only */}
+                                  {isTeacher && totalResp > 0 && (
+                                    <div style={{ height: '3px', background: 'var(--border-color)', borderRadius: '2px', margin: '2px 0 4px', overflow: 'hidden' }}>
+                                      <div style={{
+                                        height: '100%', width: `${optPct}%`,
+                                        background: isCorrect ? '#059669' : '#94a3b8',
+                                        transition: 'width 0.4s ease'
+                                      }} />
+                                    </div>
                                   )}
-                                  {!isTeacher && isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#3b82f6', fontSize: '14px' }}>Your answer</span>
-                                  )}
-                                  {!isTeacher && isCorrect && !isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px' }}>Correct answer</span>
+                                  {/* Explanation under correct answer - student only */}
+                                  {!isTeacher && isCorrect && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
                                   )}
                                 </div>
                               )
                             })}
                           </div>
                         </div>
-                        
-                        {/* Question Stats */}
-                        <div style={{
-                          minWidth: '120px',
-                          textAlign: 'center',
-                          padding: '16px',
-                          background: isTeacher 
-                            ? (correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2')
-                            : (q.answered ? (q.isCorrect ? '#d1fae5' : '#fee2e2') : '#fef3c7'),
-                          borderRadius: '12px'
-                        }}>
-                          {isTeacher ? (
-                            <>
-                              <div style={{ fontSize: '32px', fontWeight: '700', color: correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626' }}>
-                                {correctRate !== null ? `${correctRate}%` : '0%'}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                                {qStats.totalResponses || 0} responses
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <div style={{ fontSize: '32px', fontWeight: '700', color: q.answered ? (q.isCorrect ? '#059669' : '#dc2626') : '#d97706' }}>
-                                {q.pointsEarned || 0}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                                / {q.maxPoints || 100} pts
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
+                      )}
                     </div>
                   )
                 })}
@@ -472,4 +511,4 @@ function RoomResultsPage() {
   )
 }
 
-export default RoomResultsPage
+export default RoomResultsPage;

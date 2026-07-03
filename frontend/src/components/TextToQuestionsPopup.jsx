@@ -24,14 +24,12 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
         </span>
       )
     }
-    const mix = roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 }
+    const mix = roomSettings.questionDistribution || { MCQ: 50, TF: 50 }
     return (
       <>
-        <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ}%</span>
+        <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ || 50}%</span>
         <span style={{ color: '#6b7280' }}> | </span>
-        <span style={{ color: '#10b981', fontWeight: '600' }}>TF: {mix.TF}%</span>
-        <span style={{ color: '#6b7280' }}> | </span>
-        <span style={{ color: '#8b5cf6', fontWeight: '600' }}>MSQ: {mix.MSQ}%</span>
+        <span style={{ color: '#10b981', fontWeight: '600' }}>TF: {mix.TF || 50}%</span>
       </>
     )
   }
@@ -175,7 +173,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
                 transition: 'all 0.2s ease'
               }}
             >
-              📋 Mixed (MCQ + TF + MSQ)
+              📋 Mixed (MCQ + TF)
             </button>
           </div>
         </div>

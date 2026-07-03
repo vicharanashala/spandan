@@ -136,7 +136,7 @@ function DashboardPage() {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: '240px'
+       marginLeft: 'var(--sidebar-width)'
       }}>
         {/* Header - Blue gradient bar */}
         <header style={{
@@ -165,7 +165,7 @@ function DashboardPage() {
         </header>
 
         {/* Dashboard content */}
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div className="card-hover" style={{ flex: 1, padding: '32px' }}>
           {/* Stats Cards */}
           <div style={{
             display: 'grid',
@@ -173,7 +173,7 @@ function DashboardPage() {
             gap: '20px',
             marginBottom: '32px'
           }}>
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -185,7 +185,7 @@ function DashboardPage() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -197,7 +197,7 @@ function DashboardPage() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Active Rooms</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -209,7 +209,7 @@ function DashboardPage() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Polls</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -285,7 +285,7 @@ function DashboardPage() {
             ) : rooms && rooms.filter(r => !r.endedAt).length > 0 ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
                 {rooms.filter(r => !r.endedAt).map((room) => (
-                  <div
+                  <div className="stats-card-hover"
                     key={room._id}
                     style={{
                       display: 'flex',

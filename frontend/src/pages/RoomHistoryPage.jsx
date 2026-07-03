@@ -35,7 +35,7 @@ function RoomHistoryPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
@@ -55,7 +55,7 @@ function RoomHistoryPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div className="card-hover" style={{ flex: 1, padding: '32px' }}>
           <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
             Ended Rooms
           </h2>
@@ -67,7 +67,7 @@ function RoomHistoryPage() {
           ) : endedRooms.length > 0 ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
               {endedRooms.map((room) => (
-                <div
+                <div className="stats-card-hover"
                   key={room._id}
                   style={{
                     display: 'flex',

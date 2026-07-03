@@ -194,7 +194,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </p>
         </div>
 
-        {/* Difficulty Level */}
+        {/* Difficulty Distribution */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{
             display: 'block',
@@ -203,32 +203,48 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             fontWeight: '500',
             color: 'var(--text-primary)'
           }}>
-            Difficulty Level
+            Difficulty Distribution
           </label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {DIFFICULTY_LEVELS.map(level => (
-              <button
-                key={level}
-                onClick={() => setLocalSettings(prev => ({ ...prev, difficulty: level }))}
-                style={{
-                  flex: 1,
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  border: localSettings.difficulty === level 
-                    ? '2px solid #3b82f6' 
-                    : '1px solid var(--border-color)',
-                  background: localSettings.difficulty === level ? '#dbeafe' : 'transparent',
-                  color: localSettings.difficulty === level ? '#1e40af' : 'var(--text-primary)',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  fontWeight: localSettings.difficulty === level ? '600' : '400',
-                  textTransform: 'capitalize'
-                }}
-              >
-                {level}
-              </button>
-            ))}
-          </div>
+          {(() => {
+            const medium = localSettings.difficultyMix?.medium ?? 70
+            const hard = 100 - medium
+            return (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Medium {medium}%</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Hard {hard}%</span>
+                </div>
+                <div style={{
+                  width: '100%',
+                  height: '10px',
+                  borderRadius: '6px',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  marginBottom: '8px'
+                }}>
+                  <div style={{ width: `${medium}%`, background: '#3b82f6' }} />
+                  <div style={{ width: `${hard}%`, background: '#f59e0b' }} />
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={medium}
+                  onChange={(e) => {
+                    const newMedium = parseInt(e.target.value)
+                    setLocalSettings(prev => ({
+                      ...prev,
+                      difficultyMix: { medium: newMedium, hard: 100 - newMedium }
+                    }))
+                  }}
+                  style={{ width: '100%', cursor: 'pointer' }}
+                />
+              </>
+            )
+          })()}
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Mix of medium vs hard questions when auto-generating (always totals 100%)
+          </p>
         </div>
 
         {/* Question Generator Model */}
@@ -268,7 +284,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </select>
         </div>
 
-        {/* Question Type Distribution */}
+        {/* Question Type Distribution - Auto-generation mix (locked V1) */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{
             display: 'block',
@@ -279,40 +295,21 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           }}>
             Question Type Distribution
           </label>
-          <div style={{ display: 'flex', gap: '16px' }}>
-            {['MCQ', 'TF', 'MSQ'].map(type => (
-              <div key={type} style={{ flex: 1 }}>
-                <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {type}
-                </p>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={localSettings.questionDistribution?.[type] || 
-                    (type === 'MCQ' ? 50 : type === 'TF' ? 30 : 20)}
-                  onChange={(e) => setLocalSettings(prev => ({
-                    ...prev,
-                    questionDistribution: {
-                      ...prev.questionDistribution,
-                      [type]: parseInt(e.target.value) || 0
-                    }
-                  }))}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-color)',
-                    background: 'var(--bg-primary)',
-                    color: 'var(--text-primary)',
-                    fontSize: '14px'
-                  }}
-                />
-              </div>
-            ))}
+          <div style={{
+            padding: '12px 14px',
+            borderRadius: '8px',
+            border: '1px solid var(--border-color)',
+            background: 'var(--bg-primary)',
+            display: 'flex',
+            gap: '16px',
+            fontSize: '13px',
+            color: 'var(--text-primary)'
+          }}>
+            <span>✅ True / False <strong>×3</strong></span>
+            <span>✅ Multiple Choice <strong>×1</strong></span>
           </div>
           <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Percentages for question types when generating 4+ questions
+            Auto-generation always produces the best 3 True/False + 1 Multiple Choice question per segment for you to review.
           </p>
         </div>
 

@@ -12,6 +12,10 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import QuestionQueuePanel from '../components/QuestionQueuePanel'
+import PollReadyPopup from '../components/PollReadyPopup'
+import * as questionQueueService from '../services/questionQueueService'
+import * as transcriptWindowService from '../services/transcriptWindowService'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -22,7 +26,7 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
-  
+
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isRoomJoined, setIsRoomJoined] = useState(false)
@@ -33,11 +37,12 @@ function RoomDetailPage() {
   const transcriptRef = useRef(null)
 
   // Real-time transcription state
+  const isRecordingRef = useRef(false)
   const [isRecording, setIsRecording] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [modelStatus, setModelStatus] = useState('Ready')
-  
+
   // MediaRecorder refs for server-side Whisper transcription
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
@@ -86,6 +91,24 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [aiQueueState, setAiQueueState] = useState(questionQueueService.getState())
+  const [showQueueApproval, setShowQueueApproval] = useState(false)
+  const [confusionCount, setConfusionCount] = useState(0)
+  const [totalStudents, setTotalStudents] = useState(0)
+  const [isAutoSegmentReview, setIsAutoSegmentReview] = useState(false)
+
+  // Explicit ref for recognition to avoid runtime break
+  const recognitionRef = useRef(null)
+
+  useEffect(() => {
+    return questionQueueService.subscribe(setAiQueueState)
+  }, [])
+
+  useEffect(() => {
+    const anyOpen = showQueueApproval || showQuestionPopup || showTextQuestionPopup
+    document.body.style.overflow = anyOpen ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [showQueueApproval, showQuestionPopup, showTextQuestionPopup])
 
   useEffect(() => {
     if (token) {
@@ -93,12 +116,14 @@ function RoomDetailPage() {
       loadRoom()
       checkServerTranscription()
     }
-    
+
     return () => {
       if (room?.code) {
         leaveRoom(room.code, user?._id)
       }
       stopRecording()
+      questionQueueService.clear()
+      transcriptWindowService.reset()
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
@@ -114,20 +139,20 @@ function RoomDetailPage() {
   // Listen for room:joined event
   useEffect(() => {
     if (!socket) return
-    
+
     const handleRoomJoined = (data) => {
       console.log('Teacher joined room successfully')
       setIsRoomJoined(true)
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
-    
+
     const handleRoomLeft = (data) => {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
-    
+
     socket.on('room:joined', handleRoomJoined)
     socket.on('room:left', handleRoomLeft)
-    
+
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
@@ -145,55 +170,74 @@ function RoomDetailPage() {
       }))
     }
     socket.on('response:new', handleNewResponse)
+    socket.on('confusion:signal', () => setConfusionCount(c => c + 1))
+    socket.on('student:joined', () => setTotalStudents(c => c + 1))
+    socket.on('student:left', () => setTotalStudents(c => Math.max(0, c - 1)))
     return () => socket.off('response:new', handleNewResponse)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
     if (!socket) return
-    
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
-    
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
-    }
-    
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-    
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
 
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
-    
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      if (data && data.question) {
+        startQuestionTimer(data.question)
+      }
+    }
+
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
-    
+
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
 
-  // Auto-scroll transcription
+  // Fixed background scroll locking check
+  useEffect(() => {
+    const el = document.getElementById('room-page-root')
+    if (el) {
+      el.style.overflowY = activeQuestion ? 'hidden' : 'auto'
+    }
+  }, [activeQuestion])
+
+
+  // Auto-scroll transcription with a layout-repaint safety guard
   useEffect(() => {
     if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
+      requestAnimationFrame(() => {
+        if (transcriptRef.current) {
+          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
+        }
+      })
     }
   }, [transcript])
 
@@ -241,21 +285,21 @@ function RoomDetailPage() {
 
   const startSegmentTimer = (startFromSeconds = null) => {
     console.log('[TIMER] startSegmentTimer called, segmentTime:', roomSettings.segmentTime, 'startFrom:', startFromSeconds)
-    
+
     // Clear any existing timer
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
       segmentTimerRef.current = null
     }
-    
+
     if (roomSettings.segmentTime <= 0) {
       console.log('[TIMER] segmentTime is 0, not starting timer')
       return
     }
-    
+
     const totalSeconds = startFromSeconds !== null ? startFromSeconds : (roomSettings.segmentTime * 60)
     console.log('[TIMER] Starting timer for', totalSeconds, 'seconds')
-    
+
     let secondsLeft = totalSeconds
     setSegmentTimeLeft(secondsLeft)
     setIsSegmentPaused(false)
@@ -271,7 +315,7 @@ function RoomDetailPage() {
         console.log('[TIMER] Clearing interval')
         clearInterval(segmentTimerRef.current)
         segmentTimerRef.current = null
-        
+
         console.log('[TIMER] Calling handleSegmentComplete')
         try {
           handleSegmentComplete()
@@ -302,31 +346,31 @@ function RoomDetailPage() {
   // On segment timer hit zero - auto-save and auto-generate questions
   const handleSegmentComplete = async () => {
     console.log('[SEGMENT] Timer hit zero - handling segment completion')
-    
+
     // PAUSE: stop recording and timer
     if (recognitionRef.current) {
-      try { recognitionRef.current.stop() } catch (e) {}
+      try { recognitionRef.current.stop() } catch (e) { }
     }
     setIsRecording(false)
     setIsTranscribing(false)
-    
+
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
       segmentTimerRef.current = null
     }
-    
+
     // Mark as pending review
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
-    
+
     // Capture transcript
     const textToUse = segmentTranscript.trim() || transcript.trim()
-    
+
     if (!textToUse || textToUse.length < 50) {
       console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
       // Show warning toast - use window.alert for now since no toast library imported
       window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
-      
+
       // Resume for next segment
       setIsPendingReview(false)
       setGenerateQEnabled(true)
@@ -335,20 +379,28 @@ function RoomDetailPage() {
       finalTranscriptRef.current = ''
       return
     }
-    
+
     // Save transcript to database
     saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
       .then(() => console.log('[SEGMENT] Transcript saved to DB'))
       .catch(err => console.error('[SEGMENT] Failed to save transcript:', err))
-    
+
+    // Skip generation if nothing meaningfully new has been said since the
+    // last successful generation (prevents repeat questions at 12min/24min etc.)
+    const newSinceLastGen = transcriptWindowService.getNewTranscript(transcript)
+    if (newSinceLastGen.length < 30) {
+      console.log('[SEGMENT] No new transcript since last generation, skipping AI call')
+      resumeForNextSegment()
+      return
+    }
+
     // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       const questions = await generateQuestionsFromText(textToUse, currentSegment)
       if (questions && questions.length > 0) {
-        setPendingQuestions(questions)
-        setShowQuestionPopup(true)
-        setIsPopupOpen(true)
+        questionQueueService.setQuestions(questions)
+        transcriptWindowService.markProcessed(transcript)
       }
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
@@ -357,16 +409,19 @@ function RoomDetailPage() {
         console.log('[SEGMENT] Retrying question generation...')
         const questions = await generateQuestionsFromText(textToUse, currentSegment)
         if (questions && questions.length > 0) {
-          setPendingQuestions(questions)
-          setShowQuestionPopup(true)
-          setIsPopupOpen(true)
+          questionQueueService.setQuestions(questions)
+          transcriptWindowService.markProcessed(transcript)
         }
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
         window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
-        setGenerateQEnabled(true) // Enable fail-safe manual button
       }
     }
+
+    // Resume recording for the next segment immediately — review of the
+    // generated batch now happens asynchronously via the queue panel/popup
+    // instead of blocking here.
+    resumeForNextSegment()
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
@@ -387,26 +442,26 @@ function RoomDetailPage() {
           }
         })
       })
-      .then(response => response.json())
-      .then(data => {
-        setIsGeneratingQuestions(false)
-        
-        if (data.success && data.questions && data.questions.length > 0) {
-          const markedQuestions = data.questions.map(q => ({
-            ...q,
-            timeToAnswer: roomSettings.timeToAnswer,
-            points: roomSettings.points,
-            segmentIndex: segmentIndex
-          }))
-          resolve(markedQuestions) // Return questions for popup handling
-        } else {
-          reject(new Error(data.error || 'No questions generated'))
-        }
-      })
-      .catch(error => {
-        setIsGeneratingQuestions(false)
-        reject(error)
-      })
+        .then(response => response.json())
+        .then(data => {
+          setIsGeneratingQuestions(false)
+
+          if (data.success && data.questions && data.questions.length > 0) {
+            const markedQuestions = data.questions.map(q => ({
+              ...q,
+              timeToAnswer: roomSettings.timeToAnswer,
+              points: roomSettings.points,
+              segmentIndex: segmentIndex
+            }))
+            resolve(markedQuestions) // Return questions for popup handling
+          } else {
+            reject(new Error(data.error || 'No questions generated'))
+          }
+        })
+        .catch(error => {
+          setIsGeneratingQuestions(false)
+          reject(error)
+        })
     })
   }
 
@@ -415,12 +470,10 @@ function RoomDetailPage() {
     setShowTextToQuestions(false) // Close the text popup
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
-    
+
     try {
-      const typeMix = mode === 'TF'
-        ? { MCQ: 0, TF: 100, MSQ: 0 }
-        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
-      
+      const generationMode = mode === 'TF' ? 'tf' : 'mixed'
+
       const response = await fetch(`${API_URL}/questions/generate`, {
         method: 'POST',
         headers: {
@@ -430,18 +483,15 @@ function RoomDetailPage() {
         body: JSON.stringify({
           transcript: text,
           config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: typeMix
+            mode: generationMode
           }
         })
       })
-      
+
       const data = await response.json()
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
-      
+
       if (data.success && data.questions && data.questions.length > 0) {
         const markedQuestions = data.questions.map(q => ({
           ...q,
@@ -513,9 +563,9 @@ function RoomDetailPage() {
 
   const handleEndRoom = async () => {
     if (room.endedAt) return
-    
+
     try {
-      const updated = await updateRoom(room._id, { 
+      const updated = await updateRoom(room._id, {
         isActive: false,
         endedAt: new Date()
       })
@@ -534,25 +584,52 @@ function RoomDetailPage() {
 
   // Send accumulated audio for transcription
   const sendForTranscription = useCallback(async () => {
+    if (!mediaRecorderRef.current || !streamRef.current) return
     if (audioChunksRef.current.length === 0) return
-    
-    const webmBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-    audioChunksRef.current = [] // Clear after capturing
-    
-    try {
-      // Convert WebM to WAV (16kHz mono) for Whisper
-      const wavBlob = await convertWebMToWav(webmBlob)
-      const result = await transcribeAudio(wavBlob)
-      if (result.text && result.text.trim()) {
-        const text = result.text.trim()
-        finalTranscriptRef.current += text + ' '
-        accumulatedTranscriptRef.current += text + ' '
-        setTranscript(finalTranscriptRef.current)
-        setSegmentTranscript(prev => prev + ' ' + text)
+
+    await new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current
+
+      recorder.onstop = async () => {
+        const chunks = [...audioChunksRef.current]
+        audioChunksRef.current = []
+
+        if (streamRef.current && isRecordingRef.current) {
+          // Restart immediately so recording never pauses
+          if (streamRef.current) {
+            const next = new MediaRecorder(streamRef.current, { mimeType: 'audio/webm' })
+            next.ondataavailable = (e) => {
+              if (e.data.size > 0) audioChunksRef.current.push(e.data)
+            }
+            next.onerror = (e) => console.error('MediaRecorder error:', e)
+            next.start(1000)
+            mediaRecorderRef.current = next
+          }
+        }
+
+
+        // Now transcribe the complete blob (has EBML header)
+        if (chunks.length > 0) {
+          try {
+            const webmBlob = new Blob(chunks, { type: 'audio/webm' })
+            const wavBlob = await convertWebMToWav(webmBlob)
+            const result = await transcribeAudio(wavBlob)
+            if (result.text?.trim()) {
+              const text = result.text.trim()
+              finalTranscriptRef.current += text + ' '
+              accumulatedTranscriptRef.current += text + ' '
+              setTranscript(finalTranscriptRef.current)
+              setSegmentTranscript(prev => prev + ' ' + text)
+            }
+          } catch (error) {
+            console.error('Transcription error:', error)
+          }
+        }
+        resolve()
       }
-    } catch (error) {
-      console.error('Transcription error:', error)
-    }
+
+      recorder.stop()
+    })
   }, [room?._id])
 
   const startRecording = async () => {
@@ -560,41 +637,42 @@ function RoomDetailPage() {
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-      
+
       // Initialize MediaRecorder
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
       mediaRecorderRef.current = mediaRecorder
       audioChunksRef.current = []
-      
+
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
         }
       }
-      
+
       mediaRecorder.onerror = (error) => {
         console.error('MediaRecorder error:', error)
         setModelStatus('Recording error')
       }
-      
+
       // Start recording
       mediaRecorder.start(1000) // Collect data every second
-      
+      isRecordingRef.current = true
+
       // Initialize segment
       finalTranscriptRef.current = transcript
       accumulatedTranscriptRef.current = ''
       setCurrentSegment(1)
       setSegmentTranscript('')
-      
+
       setIsRecording(true)
       setIsTranscribing(true)
       setModelStatus('Listening...')
-      
+
       // Start periodic transcription (every 5 seconds)
       transcriptionIntervalRef.current = setInterval(() => {
         sendForTranscription()
       }, 5000)
-      
+
     } catch (error) {
       console.error('Error starting recording:', error)
       setModelStatus('Microphone access denied')
@@ -602,36 +680,34 @@ function RoomDetailPage() {
   }
 
   const stopRecording = () => {
-    // Stop periodic transcription
-    if (transcriptionIntervalRef.current) {
-      clearInterval(transcriptionIntervalRef.current)
-      transcriptionIntervalRef.current = null
-    }
-    
-    // Send any remaining audio
-    if (audioChunksRef.current.length > 0) {
-      sendForTranscription()
-    }
-    
-    // Stop MediaRecorder
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-    
-    // Stop all tracks
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
-    
-    if (segmentTimerRef.current) {
-      clearInterval(segmentTimerRef.current)
-    }
-    
-    setIsRecording(false)
-    setIsTranscribing(false)
-    setModelStatus('Ready')
+  isRecordingRef.current = false  // ← must be FIRST
+
+  if (transcriptionIntervalRef.current) {
+    clearInterval(transcriptionIntervalRef.current)
+    transcriptionIntervalRef.current = null
   }
+
+  if (audioChunksRef.current.length > 0) {
+    sendForTranscription()
+  }
+
+  if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    mediaRecorderRef.current.stop()
+  }
+
+  if (streamRef.current) {
+    streamRef.current.getTracks().forEach(track => track.stop())
+    streamRef.current = null
+  }
+
+  if (segmentTimerRef.current) {
+    clearInterval(segmentTimerRef.current)
+  }
+
+  setIsRecording(false)
+  setIsTranscribing(false)
+  setModelStatus('Ready')
+}
 
   const toggleRecording = () => {
     if (isRecording) {
@@ -645,6 +721,7 @@ function RoomDetailPage() {
     setTranscript('')
     finalTranscriptRef.current = ''
     setSegmentTranscript('')
+    transcriptWindowService.reset()
   }
 
   const handleManualGenerateQuestions = async () => {
@@ -653,23 +730,30 @@ function RoomDetailPage() {
       alert('No transcript available to generate questions from.')
       return
     }
-    
+
     setIsGeneratingQuestions(true)
     setGenerateQEnabled(false)
-    
+
+    const newSinceLastGen = transcriptWindowService.getNewTranscript(transcript)
+    if (newSinceLastGen.length < 30) {
+      alert('No new transcript since the last generation. Keep talking, then try again.')
+      setGenerateQEnabled(true)
+      setIsGeneratingQuestions(false)
+      return
+    }
+
     try {
       const questions = await generateQuestionsFromText(textToUse, currentSegment + 1)
       if (questions && questions.length > 0) {
-        setPendingQuestions(questions)
-        setShowQuestionPopup(true)
-        setIsPopupOpen(true)
+        questionQueueService.setQuestions(questions)
+        transcriptWindowService.markProcessed(transcript)
         setCurrentSegment(prev => prev + 1)
       }
     } catch (error) {
       console.error('Manual question generation failed:', error)
       alert('Failed to generate questions: ' + error.message)
-      setGenerateQEnabled(true)
     }
+    setGenerateQEnabled(true)
     setIsGeneratingQuestions(false)
   }
 
@@ -697,7 +781,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-        
+
         // Emit to students via socket
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -713,6 +797,65 @@ function RoomDetailPage() {
 
   const handleRejectQuestion = (question) => {
     console.log('Question rejected:', question.question)
+  }
+
+  // Save + emit a question picked from the AI queue (QuestionQueuePanel / PollReadyPopup)
+  const handleLaunchQueuedQuestion = async (question) => {
+    try {
+      const response = await fetch(`${API_URL}/questions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId: room._id,
+          type: question.type,
+          question: question.question,
+          options: question.options,
+          explanation: question.explanation,
+          segmentIndex: question.segmentIndex,
+          timeToAnswer: question.timeToAnswer || roomSettings.timeToAnswer || 30,
+          points: question.points || roomSettings.points || 100,
+          status: 'approved'
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setGeneratedQuestions(prev => [data.question, ...prev])
+
+        if (socket && isConnected) {
+          socket.emit('new_question', {
+            roomCode: room.code,
+            question: data.question
+          })
+        }
+      }
+    } catch (error) {
+      console.error('Failed to launch queued question:', error)
+    }
+  }
+
+  // Reset segment state and resume recording — runs right after a generation
+  // batch is pushed to the queue, so recording never stays paused waiting
+  // for review (review now happens async via the queue panel/popup).
+  const resumeForNextSegment = () => {
+    setSegmentTranscript('')
+    finalTranscriptRef.current = ''
+    setIsPendingReview(false)
+    setGenerateQEnabled(true)
+    setSegmentTimeLeft(roomSettings.segmentTime * 60)
+    setIsRecording(true)
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.start()
+        setIsTranscribing(true)
+        setModelStatus('Listening...')
+      } catch (error) {
+        console.error('Error resuming transcription:', error)
+      }
+    }
   }
 
   // Handle approve from TextQuestionApprovalPopup (text-based questions)
@@ -740,7 +883,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-        
+
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
@@ -784,7 +927,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-        
+
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
         console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
@@ -818,7 +961,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1,marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -840,7 +983,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', padding: '32px' }}>
           <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
             <h2 style={{ color: 'var(--text-primary)' }}>{error || 'Room not found'}</h2>
             <button onClick={() => navigate('/teacher')} style={{
@@ -865,8 +1008,8 @@ function RoomDetailPage() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
-      
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden', height: '100vh' }}>
         {/* Header */}
         <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -881,7 +1024,7 @@ function RoomDetailPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div className="card-hover" id="room-page-root" style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden', overflowY: 'auto' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
               {error}
@@ -898,7 +1041,7 @@ function RoomDetailPage() {
             padding: '12px 16px',
             marginBottom: '20px'
           }}>
-            <button onClick={() => navigate('/teacher')} style={{
+            <button onClick={() => navigate('/teacher')} className="btn-hover" style={{
               padding: '8px 12px',
               background: 'var(--nav-hover)',
               border: 'none',
@@ -921,7 +1064,7 @@ function RoomDetailPage() {
               <span style={{ fontSize: '28px', fontWeight: '700', color: '#1e40af', letterSpacing: '4px' }}>
                 {room.code}
               </span>
-              <button onClick={copyRoomCode} disabled={isEnded} style={{
+              <button onClick={copyRoomCode} disabled={isEnded} className="btn-hover" style={{
                 padding: '4px 12px',
                 background: isEnded ? '#9ca3af' : (copied ? '#10b981' : '#3b82f6'),
                 color: 'white',
@@ -969,9 +1112,9 @@ function RoomDetailPage() {
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
                   ⏱️ Answer
                 </span>
-                <span style={{ 
-                  fontSize: '20px', 
-                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', 
+                <span style={{
+                  fontSize: '20px',
+                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
                   fontWeight: '700',
                   animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
                 }}>
@@ -1002,8 +1145,9 @@ function RoomDetailPage() {
 
             {/* Paste & Generate Button */}
             {!isEnded && (
-              <button 
-                onClick={() => setShowTextToQuestions(true)} 
+              <button
+                onClick={() => setShowTextToQuestions(true)}
+                className="btn-hover"
                 style={{
                   padding: '8px 16px',
                   background: '#10b981',
@@ -1024,8 +1168,9 @@ function RoomDetailPage() {
 
             {/* Create Question Button */}
             {!isEnded && (
-              <button 
-                onClick={() => setShowCreateQuestion(true)} 
+              <button
+                onClick={() => setShowCreateQuestion(true)}
+                className="btn-hover"
                 style={{
                   padding: '8px 16px',
                   background: '#3b82f6',
@@ -1046,8 +1191,9 @@ function RoomDetailPage() {
 
             {/* Settings Dropdown */}
             <div style={{ position: 'relative' }} ref={settingsRef}>
-              <button 
-                onClick={() => setShowSettings(true)} 
+              <button
+                onClick={() => setShowSettings(true)}
+                className="btn-hover"
                 style={{
                   padding: '8px 16px',
                   background: 'var(--nav-hover)',
@@ -1091,7 +1237,7 @@ function RoomDetailPage() {
 
             {/* End Room Button */}
             {!isEnded && (
-              <button onClick={handleEndRoom} style={{
+              <button onClick={handleEndRoom} className="btn-hover" style={{
                 padding: '8px 16px',
                 background: '#ef4444',
                 color: 'white',
@@ -1107,12 +1253,14 @@ function RoomDetailPage() {
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', alignItems: 'flex-start' }}>
             {/* Microphone Card - 30% */}
-            <div style={{
+            <div className="card-hover" style={{
               flex: '1 1 calc(30% - 10px)',
               minWidth: '280px',
               maxWidth: '100%',
+              height: '420px', 
+              overflow: 'auto',
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '20px',
@@ -1120,22 +1268,25 @@ function RoomDetailPage() {
               flexDirection: 'column',
               alignItems: 'center',
               gap: '12px',
-              boxSizing: 'border-box',
-              overflow: 'hidden'
+              boxSizing: 'border-box'
             }}>
               {/* Mic Button */}
               <button
                 onClick={toggleRecording}
                 disabled={isEnded}
+                className={isRecording ? 'mic-btn mic-btn-recording' : 'mic-btn'}
                 style={{
                   width: '80px',
                   height: '80px',
+                  marginTop: '4px',
+                  marginBottom: '8px',
+                  flexShrink: 0,
                   borderRadius: '50%',
-                  background: isEnded 
-                    ? 'linear-gradient(135deg, #6b7280, #9ca3af)' 
-                    : (isRecording 
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)' 
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
+                  background: isEnded
+                    ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
+                    : (isRecording
+                      ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                      : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
                   cursor: isEnded ? 'not-allowed' : 'pointer',
@@ -1143,22 +1294,22 @@ function RoomDetailPage() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   fontSize: '32px',
-                  boxShadow: isRecording 
-                    ? '0 0 30px rgba(239, 68, 68, 0.5)' 
+                  boxShadow: isRecording
+                    ? '0 0 0 rgba(239, 68, 68, 0.5)'
                     : '0 8px 25px rgba(16, 185, 129, 0.4)',
                   transform: isRecording ? 'scale(1.05)' : 'scale(1)',
-                  transition: 'all 0.3s ease'
+                  transition: 'transform 0.3s ease, background 0.3s ease'
                 }}
               >
                 {isRecording ? (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
                 ) : (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
                   </svg>
                 )}
               </button>
@@ -1168,9 +1319,11 @@ function RoomDetailPage() {
                 <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
                   {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
                 </p>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {modelStatus}
-                </p>
+                {modelStatus !== 'Listening...' && (
+                  <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    {modelStatus}
+                  </p>
+                )}
               </div>
 
               {/* Live indicator */}
@@ -1223,13 +1376,39 @@ function RoomDetailPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Confusion Indicator */}
+              {confusionCount > 0 && (() => {
+                const pct = totalStudents > 0 ? Math.round((confusionCount / totalStudents) * 100) : 0
+                const level = pct >= 40 ? 'HIGH' : pct >= 20 ? 'MEDIUM' : 'LOW'
+                const color = pct >= 40 ? '#dc2626' : pct >= 20 ? '#f59e0b' : '#10b981'
+                return (
+                  <div style={{
+                    width: '100%', padding: '10px 12px', borderRadius: '10px',
+                    background: `${color}18`, border: `1px solid ${color}`,
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color, fontWeight: '700' }}>😕 CLASS CONFUSION: {level}</div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                        {confusionCount} of {totalStudents || '?'} students
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setConfusionCount(0)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '10px', color: 'var(--text-secondary)' }}
+                    >Clear</button>
+                  </div>
+                )
+              })()}
             </div>
 
             {/* Transcription Card - 70% */}
-            <div style={{
+            <div className="card-hover" style={{
               flex: '1 1 calc(70% - 10px)',
               minWidth: '300px',
               maxWidth: '100%',
+              maxHeight: '420px', // Changed from height: '420px' to allow dynamic expansion
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '20px',
@@ -1243,7 +1422,8 @@ function RoomDetailPage() {
                 alignItems: 'center',
                 marginBottom: '12px',
                 paddingBottom: '12px',
-                borderBottom: '1px solid var(--border-color)'
+                borderBottom: '1px solid var(--border-color)',
+                flexShrink: 0
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span style={{ fontSize: '18px' }}>🎙️</span>
@@ -1258,7 +1438,7 @@ function RoomDetailPage() {
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {transcript && (
-                    <button onClick={clearTranscript} style={{
+                    <button onClick={clearTranscript} className="btn-hover" style={{
                       padding: '4px 12px',
                       background: 'transparent',
                       border: '1px solid var(--border-color)',
@@ -1273,6 +1453,7 @@ function RoomDetailPage() {
                   <button
                     onClick={handleManualGenerateQuestions}
                     disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
+                    className="btn-hover"
                     style={{
                       padding: '4px 12px',
                       background: '#3b82f6',
@@ -1293,6 +1474,7 @@ function RoomDetailPage() {
                 </div>
               </div>
 
+              {/* Fixed scrolling layer */}
               <div ref={transcriptRef} style={{
                 flex: 1,
                 fontSize: '15px',
@@ -1300,7 +1482,8 @@ function RoomDetailPage() {
                 color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                overflowY: 'auto'
+                overflowY: 'auto',
+                overscrollBehavior: 'contain'
               }}>
                 {transcript ? transcript : (
                   <span style={{ fontStyle: 'italic' }}>
@@ -1314,149 +1497,155 @@ function RoomDetailPage() {
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
-            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
-              <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                Session Questions
-              </span>
-              {generatedQuestions.length > 0 && (
-                <span style={{
-                  padding: '2px 10px',
-                  background: '#d1fae5',
-                  color: '#059669',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  fontWeight: '600'
-                }}>
-                  {generatedQuestions.length}
+            <div className="card-hover" style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>📝</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Session Questions
                 </span>
-              )}
-            </div>
-
-            {generatedQuestions.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {generatedQuestions.map((q, index) => (
-                  <div key={q._id || index} style={{
-                    padding: '14px 16px',
-                    background: 'var(--bg-primary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '12px'
+                {generatedQuestions.length > 0 && (
+                  <span style={{
+                    padding: '2px 10px',
+                    background: '#d1fae5',
+                    color: '#059669',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
                   }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
+                    {generatedQuestions.length}
+                  </span>
+                )}
+              </div>
+
+              {aiQueueState.queue.length > 0 && (
+                <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>🔔</span> {aiQueueState.queue.length} AI question{aiQueueState.queue.length > 1 ? 's' : ''} ready — see popup to review
+                </p>
+              )}
+
+              {generatedQuestions.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {generatedQuestions.map((q, index) => (
+                    <div key={q._id || index} style={{
+                      padding: '14px 16px',
+                      background: 'var(--bg-primary)',
+                      borderRadius: '10px',
+                      border: '1px solid var(--border-color)',
                       display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
+                      alignItems: 'flex-start',
+                      gap: '12px'
                     }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
+                      <span style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: '#3b82f6',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        flexShrink: 0
+                      }}>
+                        {index + 1}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                            color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                          }}>
+                            {q.type}
+                          </span>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: '#fef3c7',
+                            color: '#92400e'
+                          }}>
+                            {q.points || 100} pts
+                          </span>
+                        </div>
+                        <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                          {q.question}
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {(q.options || []).map((opt, optIdx) => {
+                            const letter = String.fromCharCode(65 + optIdx)
+                            return (
+                              <div key={optIdx} style={{
+                                padding: '8px 12px',
+                                background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                borderRadius: '6px',
                                 display: 'flex',
                                 alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
+                                gap: '8px',
+                                fontSize: '13px',
+                                color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
                               }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
+                                <span style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '50%',
+                                  background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                  color: 'white',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '11px',
+                                  fontWeight: '700',
+                                  flexShrink: 0
+                                }}>
+                                  {letter}
+                                </span>
+                                <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                  {opt.text}
+                                </span>
+                                {opt.isCorrect && (
+                                  <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                          color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                        }}>
+                          {answerCounts[q._id] || 0}/{totalParticipants}
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
-                      }}>
-                        {answerCounts[q._id] || 0}/{totalParticipants}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                textAlign: 'center',
-                padding: '32px',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}>
-                No questions generated yet. Start recording to auto-generate questions.
-              </div>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '32px',
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px'
+                }}>
+                  No questions generated yet. Start recording to auto-generate questions.
+                </div>
+              )}
             </div>
             {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div className="card-hover" style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span style={{ fontSize: '20px' }}>🏆</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -1480,18 +1669,18 @@ function RoomDetailPage() {
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
             setPendingQuestions([])
-            
+
             // Clear segment transcript for fresh start
             setSegmentTranscript('')
             finalTranscriptRef.current = ''
-            
+
             // Reset pending review flag
             setIsPendingReview(false)
             setGenerateQEnabled(true)
-            
+
             // Reset segment timer
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
-            
+
             // Resume recording for next segment
             setIsRecording(true)
             if (recognitionRef.current) {
@@ -1503,7 +1692,7 @@ function RoomDetailPage() {
                 console.error('Error resuming transcription:', error)
               }
             }
-            
+
             // Timer will auto-start via the useEffect since isPendingReview is now false
           }}
           onClose={() => {
@@ -1526,6 +1715,26 @@ function RoomDetailPage() {
                 console.error('Error resuming transcription:', error)
               }
             }
+          }}
+        />
+      )}
+
+      {/* AI Question Queue Toast */}
+      <PollReadyPopup onLaunch={() => setShowQueueApproval(true)} />
+
+      {/* Queue-based Approval Modal (same UX as image 4) */}
+      {showQueueApproval && aiQueueState.queue.length > 0 && (
+        <QuestionApprovalPopup
+          questions={aiQueueState.queue}
+          onApprove={(q) => {
+            handleLaunchQueuedQuestion(q)
+            questionQueueService.dismiss(q._id || q.id)
+          }}
+          onReject={(q) => questionQueueService.dismiss(q._id || q.id)}
+          onClose={() => setShowQueueApproval(false)}
+          onComplete={() => {
+            setShowQueueApproval(false)
+            questionQueueService.clear()
           }}
         />
       )}
@@ -1573,21 +1782,21 @@ function RoomDetailPage() {
             boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
             border: '1px solid var(--border-color)'
           }}>
-            <div style={{ 
-              fontSize: '48px', 
+            <div style={{
+              fontSize: '48px',
               marginBottom: '16px',
               animation: 'spin 1s linear infinite'
             }}>⏳</div>
-            <h3 style={{ 
-              margin: '0 0 8px', 
+            <h3 style={{
+              margin: '0 0 8px',
               color: 'var(--text-primary)',
               fontSize: '18px',
               fontWeight: '600'
             }}>Generating Questions...</h3>
-            <p style={{ 
-              margin: 0, 
-              color: 'var(--text-secondary)', 
-              fontSize: '14px' 
+            <p style={{
+              margin: 0,
+              color: 'var(--text-secondary)',
+              fontSize: '14px'
             }}>Please wait while AI creates your questions</p>
           </div>
         </div>
@@ -1617,6 +1826,31 @@ function RoomDetailPage() {
         @keyframes pulse {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.1); }
+        }
+        @keyframes recordRing {
+          0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+          70% { box-shadow: 0 0 0 14px rgba(239, 68, 68, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .mic-btn-recording {
+          animation: recordRing 1.5s ease-out infinite;
+        }
+        .btn-hover {
+          transition: filter 0.15s ease, transform 0.15s ease;
+        }
+        .btn-hover:hover:not(:disabled) {
+          filter: brightness(1.08);
+          transform: translateY(-1px);
+        }
+        .btn-hover:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        .card-hover {
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .card-hover:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
         }
       `}</style>
     </div>

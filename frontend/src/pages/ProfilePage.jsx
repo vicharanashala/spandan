@@ -218,7 +218,7 @@ function ProfilePage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
         <Sidebar user={null} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1,marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <p>Loading...</p>
         </div>
       </div>
@@ -228,7 +228,7 @@ function ProfilePage() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
       <Sidebar user={user} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)' }}>
         <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>

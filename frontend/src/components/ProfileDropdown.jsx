@@ -34,6 +34,7 @@ export default function ProfileDropdown() {
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
+        className="profile-avatar-hover"
         style={{
           width: '36px',
           height: '36px',

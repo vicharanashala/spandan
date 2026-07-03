@@ -81,7 +81,7 @@ function StudentDashboard() {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: '240px'
+       marginLeft: 'var(--sidebar-width)'
       }}>
         {/* Header - Blue gradient bar */}
         <header style={{
@@ -110,7 +110,7 @@ function StudentDashboard() {
         </header>
 
         {/* Dashboard content */}
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div className="card-hover" style={{ flex: 1, padding: '32px' }}>
           {/* Stats Cards */}
           <div style={{
             display: 'grid',
@@ -118,7 +118,7 @@ function StudentDashboard() {
             gap: '20px',
             marginBottom: '32px'
           }}>
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -130,7 +130,7 @@ function StudentDashboard() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -142,7 +142,7 @@ function StudentDashboard() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Taken</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',
@@ -154,7 +154,7 @@ function StudentDashboard() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Missed</div>
             </div>
             
-            <div style={{
+            <div className="stats-card-hover" style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
               padding: '24px',

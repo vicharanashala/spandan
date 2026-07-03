@@ -20,6 +20,27 @@ function StudentRoomPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [currentQuestion, setCurrentQuestion] = useState(null)
+  const [confusionActive, setConfusionActive] = useState(false)
+  const [confusionCooldown, setConfusionCooldown] = useState(0)
+  const [roomEndedBanner, setRoomEndedBanner] = useState(false)
+  const confusionTimerRef = useRef(null)
+  const CONFUSION_COOLDOWN = 60 // seconds
+
+  const handleConfusion = () => {
+    if (confusionActive || confusionCooldown > 0) return
+    setConfusionActive(true)
+    setConfusionCooldown(CONFUSION_COOLDOWN)
+    if (socket) socket.emit('confusion:signal', { roomCode })
+    let t = CONFUSION_COOLDOWN
+    confusionTimerRef.current = setInterval(() => {
+      t -= 1
+      setConfusionCooldown(t)
+      if (t <= 0) {
+        clearInterval(confusionTimerRef.current)
+        setConfusionActive(false)
+      }
+    }, 1000)
+  }
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
@@ -127,7 +148,8 @@ function StudentRoomPage() {
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
     socket.on('room:ended', () => {
-      navigate(`/student/room/${room?._id}/results`)
+      setRoomEndedBanner(true)
+      setTimeout(() => navigate(`/student/room/${room?._id}/results`), 5000)
     })
 
     return () => {
@@ -285,7 +307,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1,marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -312,7 +334,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1,marginLeft: 'var(--sidebar-width)', padding: '32px' }}>
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
@@ -353,7 +375,7 @@ function StudentRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
@@ -414,6 +436,62 @@ function StudentRoomPage() {
               }}
             >
               Leave
+            </button>
+          </div>
+
+          {/* Room Ended Banner */}
+          {roomEndedBanner && (
+            <div style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.75)', zIndex: 3000,
+              display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <div style={{
+                background: 'var(--bg-card)', borderRadius: '20px', padding: '40px',
+                textAlign: 'center', maxWidth: '380px', boxShadow: '0 20px 60px rgba(0,0,0,0.4)'
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '16px' }}>🏁</div>
+                <h2 style={{ margin: '0 0 8px', color: 'var(--text-primary)' }}>Session Ended</h2>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '0 0 16px' }}>
+                  Redirecting to your results... For full session review, visit the <strong>Room History</strong> tab.
+                </p>
+                <button
+                  onClick={() => navigate(`/student/room/${room?._id}/results`)}
+                  style={{
+                    padding: '10px 24px', background: '#3b82f6', color: 'white',
+                    border: 'none', borderRadius: '10px', cursor: 'pointer',
+                    fontWeight: '600', fontSize: '14px'
+                  }}
+                >
+                  View Results Now →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Confusion Button - always visible */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
+            <button
+              onClick={handleConfusion}
+              disabled={confusionActive || confusionCooldown > 0}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '10px 18px', borderRadius: '20px',
+                border: confusionActive ? '2px solid #f59e0b' : '2px solid var(--border-color)',
+                background: confusionActive ? 'rgba(245,158,11,0.12)' : 'var(--bg-card)',
+                color: confusionActive ? '#f59e0b' : 'var(--text-secondary)',
+                cursor: confusionActive || confusionCooldown > 0 ? 'not-allowed' : 'pointer',
+                fontSize: '13px', fontWeight: '600',
+                opacity: confusionCooldown > 0 && !confusionActive ? 0.5 : 1,
+                transition: 'all 0.2s'
+              }}
+            >
+              <span style={{ fontSize: '18px' }}>😕</span>
+              {confusionActive
+                ? `Confused (${confusionCooldown}s)`
+                : confusionCooldown > 0
+                  ? `Wait ${confusionCooldown}s`
+                  : 'I\'m Confused'}
             </button>
           </div>
 

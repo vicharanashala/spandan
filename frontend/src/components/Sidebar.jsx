@@ -1,6 +1,7 @@
 import React from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
+import useSidebarStore from '../stores/sidebarStore'
 
 const menuItems = {
   teacher: [
@@ -19,50 +20,42 @@ const menuItems = {
 export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { isCollapsed, toggle } = useSidebarStore()
   const role = user?.role || 'student'
   const items = menuItems[role] || menuItems.student
+  const sidebarWidth = isCollapsed ? '60px' : '240px'
 
   return (
     <>
-      {/* Mobile overlay */}
-      <div 
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(0,0,0,0.5)',
-          zIndex: 40,
-          display: 'none'
-        }}
-        className="sidebar-overlay"
-      />
-      
-      {/* Sidebar - Always expanded */}
+      {/* Sidebar */}
       <aside style={{
         position: 'fixed',
         left: 0,
         top: 0,
         bottom: 0,
-        width: '240px',
+        width: sidebarWidth,
         background: 'var(--sidebar-bg)',
         boxShadow: 'var(--sidebar-shadow)',
         display: 'flex',
         flexDirection: 'column',
-        zIndex: 50
+        zIndex: 50,
+        transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        overflow: 'hidden'
       }}>
         {/* Logo section */}
         <div style={{
-          padding: '20px',
+          padding: isCollapsed ? '20px 10px' : '20px',
           display: 'flex',
           alignItems: 'center',
           gap: '12px',
-          borderBottom: '1px solid var(--border-color)'
+          borderBottom: '1px solid var(--border-color)',
+          justifyContent: isCollapsed ? 'center' : 'flex-start',
+          transition: 'padding 0.3s ease'
         }}>
           <div style={{
             width: '40px',
             height: '40px',
+            minWidth: '40px',
             background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
             borderRadius: '10px',
             display: 'flex',
@@ -73,14 +66,16 @@ export default function Sidebar({ user }) {
           }}>
             <SpandanIcon />
           </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>Spandan</h2>
-            <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role} Portal</p>
-          </div>
+          {!isCollapsed && (
+            <div style={{ opacity: 1, transition: 'opacity 0.2s ease' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>Spandan</h2>
+              <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role} Portal</p>
+            </div>
+          )}
         </div>
 
         {/* Navigation */}
-        <nav style={{ flex: 1, padding: '16px 12px', overflowY: 'auto' }}>
+        <nav style={{ flex: 1, padding: isCollapsed ? '16px 8px' : '16px 12px', overflowY: 'auto' }}>
           {items.map((item) => {
             const isActive = location.pathname === item.path || 
               (item.id === 'dashboard' && location.pathname === '/teacher') ||
@@ -89,12 +84,14 @@ export default function Sidebar({ user }) {
               <button
                 key={item.id}
                 onClick={() => navigate(item.path)}
+                title={isCollapsed ? item.label : undefined}
                 style={{
                   width: '100%',
                   display: 'flex',
                   alignItems: 'center',
+                  justifyContent: isCollapsed ? 'center' : 'flex-start',
                   gap: '12px',
-                  padding: '12px 16px',
+                  padding: isCollapsed ? '12px 8px' : '12px 16px',
                   marginBottom: '4px',
                   background: isActive ? 'linear-gradient(135deg, #1e40af, #3b82f6)' : 'transparent',
                   border: 'none',
@@ -104,8 +101,10 @@ export default function Sidebar({ user }) {
                   fontSize: '14px',
                   fontWeight: isActive ? '600' : '500',
                   textAlign: 'left',
-                  transition: 'all 0.2s ease'
+                  transition: 'all 0.2s ease',
+                  whiteSpace: 'nowrap'
                 }}
+                className=""
                 onMouseOver={(e) => {
                   if (!isActive) {
                     e.currentTarget.style.background = 'var(--nav-hover)'
@@ -119,51 +118,92 @@ export default function Sidebar({ user }) {
                   }
                 }}
               >
-                <span style={{ fontSize: '18px', width: '24px', textAlign: 'center' }}>{item.icon}</span>
-                <span>{item.label}</span>
+                <span style={{ fontSize: '18px', width: '24px', minWidth: '24px', textAlign: 'center' }}>{item.icon}</span>
+                {!isCollapsed && <span>{item.label}</span>}
               </button>
             )
           })}
         </nav>
 
-        {/* User section */}
+        {/* Toggle Button - Gemini Style */}
         <div style={{
-          padding: '16px',
-          borderTop: '1px solid var(--border-color)'
+          padding: '8px',
+          borderTop: '1px solid var(--border-color)',
+          display: 'flex',
+          justifyContent: 'center'
         }}>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px'
-          }}>
-            <div style={{
-              width: '36px',
-              height: '36px',
-              background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
-              borderRadius: '50%',
+          <button
+            onClick={toggle}
+            title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="sidebar-toggle-hover"
+            style={{
+              width: isCollapsed ? '44px' : '100%',
+              padding: '10px 12px',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '10px',
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: 'white',
-              fontSize: '14px',
-              fontWeight: '600',
-              flexShrink: 0,
-              overflow: 'hidden'
+              gap: '8px',
+              fontSize: '16px',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <span style={{
+              display: 'inline-block',
+              transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              transform: isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)'
             }}>
-              {user?.profileImage ? (
-                <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                user?.name?.charAt(0)?.toUpperCase() || 'U'
-              )}
-            </div>
-            <div style={{ overflow: 'hidden' }}>
-              <p style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user?.name || 'User'}
-              </p>
-              <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role}</p>
+              ◀
+            </span>
+            {!isCollapsed && <span style={{ fontSize: '12px', fontWeight: '500' }}>Collapse</span>}
+          </button>
+        </div>
+
+        {/* User section */}
+        {!isCollapsed && (
+          <div style={{
+            padding: '16px',
+            borderTop: '1px solid var(--border-color)',
+            transition: 'opacity 0.2s ease'
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}>
+              <div className="profile-avatar-hover" style={{
+                width: '36px',
+                height: '36px',
+                background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'white',
+                fontSize: '14px',
+                fontWeight: '600',
+                flexShrink: 0,
+                overflow: 'hidden'
+              }}>
+                {user?.profileImage ? (
+                  <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  user?.name?.charAt(0)?.toUpperCase() || 'U'
+                )}
+              </div>
+              <div style={{ overflow: 'hidden' }}>
+                <p style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user?.name || 'User'}
+                </p>
+                <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role}</p>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </aside>
     </>
   )

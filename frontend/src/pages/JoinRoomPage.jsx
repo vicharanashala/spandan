@@ -61,7 +61,7 @@ function JoinRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',

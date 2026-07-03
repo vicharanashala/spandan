@@ -74,3 +74,106 @@ html {
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: #4b5563;
 }
+
+/* ========== UI ENHANCEMENTS ========== */
+
+/* Sidebar width CSS variable */
+:root {
+  --sidebar-width: 240px;
+}
+
+/* Card hover effect - lift + shadow */
+.card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.card-hover:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12) !important;
+  border-color: rgba(255,255,255,0.18) !important;
+}
+
+/* Panel hover effect */
+.panel-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.panel-hover:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08) !important;
+  border-color: #3b82f6 !important;
+}
+
+/* Button hover lift */
+.btn-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.btn-hover:hover:not(:disabled) {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15) !important;
+  border-color: rgba(255,255,255,0.22) !important;
+}
+.btn-hover:active:not(:disabled) {
+  transform: translateY(0) !important;
+}
+
+/* Profile badge hover */
+.profile-avatar-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.profile-avatar-hover:hover {
+  transform: scale(1.1) !important;
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4) !important;
+}
+
+/* Page transition */
+.page-transition {
+  animation: pageEnter 0.35s ease-out;
+}
+
+@keyframes pageEnter {
+  from {
+    transform: translateY(12px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Sidebar toggle button hover */
+.sidebar-toggle-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.sidebar-toggle-hover:hover {
+  background: rgba(255, 255, 255, 0.2) !important;
+  transform: scale(1.05) !important;
+}
+
+/* Stats card hover */
+.stats-card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.stats-card-hover:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1) !important;
+  border-color: rgba(255,255,255,0.18) !important;
+}
+
+/* Tab hover effect */
+.tab-hover {
+  transition: all 0.25s ease !important;
+}
+.tab-hover:hover:not(.tab-active) {
+  background: var(--nav-hover) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Dark mode card hover adjustments */
+[data-theme="dark"] .card-hover:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
+}
+[data-theme="dark"] .panel-hover:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3) !important;
+  border-color: #60a5fa !important;
+}
+[data-theme="dark"] .stats-card-hover:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35) !important;
+}

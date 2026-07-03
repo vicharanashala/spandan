@@ -51,11 +51,11 @@ function CreateRoomPage() {
       <Sidebar user={user} />
       
       {/* Main Content */}
-      <div style={{
+      <div  style={{
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: '240px'
+        marginLeft: 'var(--sidebar-width)'
       }}>
         {/* Header */}
         <header style={{
@@ -84,8 +84,8 @@ function CreateRoomPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '32px' }}>
-          <div style={{
+        <div className="card-hover" style={{ flex: 1, padding: '32px' }}>
+          <div className="stats-card-hover" style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
             padding: '32px',
