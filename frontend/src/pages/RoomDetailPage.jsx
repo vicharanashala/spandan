@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import BackchannelPanel from '../components/BackchannelPanel'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -1494,6 +1495,16 @@ function RoomDetailPage() {
                 )}
               </div>
             </div>
+          </div>
+
+          <div style={{ marginBottom: '20px' }}>
+            <BackchannelPanel
+              roomId={room?._id}
+              token={token}
+              socket={socket}
+              mode="teacher"
+              disabled={isEnded}
+            />
           </div>
 
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}

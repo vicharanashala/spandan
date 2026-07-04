@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import BackchannelPanel from '../components/BackchannelPanel'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -447,6 +448,7 @@ function StudentRoomPage() {
 
           {/* Live Question */}
           {currentQuestion ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
               borderRadius: '16px',
@@ -591,6 +593,14 @@ function StudentRoomPage() {
                 </button>
               )}
             </div>
+            <BackchannelPanel
+              roomId={room?._id}
+              token={token}
+              socket={socket}
+              mode="student"
+              disabled={!!room?.endedAt}
+            />
+            </div>
           ) : (
             /* Waiting State - Show Passed Questions */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -623,6 +633,14 @@ function StudentRoomPage() {
                   The teacher will start a poll soon. Stay tuned!
                 </p>
               </div>
+
+              <BackchannelPanel
+                roomId={room?._id}
+                token={token}
+                socket={socket}
+                mode="student"
+                disabled={!!room?.endedAt}
+              />
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
