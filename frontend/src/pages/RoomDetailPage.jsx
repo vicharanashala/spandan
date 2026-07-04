@@ -16,6 +16,32 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
 
+const DEFAULT_ROOM_SETTINGS = {
+  segmentTime: 2,
+  questionsPerSegment: 2,
+  difficulty: 'medium',
+  questionProvider: 'minimax',
+  timeToAnswer: 30,
+  points: 100,
+  teamMode: {
+    enabled: false,
+    teamCount: 2,
+    teamSize: 4,
+    randomizeTeams: true
+  }
+}
+
+const mergeRoomSettings = (currentSettings = DEFAULT_ROOM_SETTINGS, nextSettings = {}) => ({
+  ...DEFAULT_ROOM_SETTINGS,
+  ...currentSettings,
+  ...nextSettings,
+  teamMode: {
+    ...DEFAULT_ROOM_SETTINGS.teamMode,
+    ...(currentSettings?.teamMode || {}),
+    ...(nextSettings?.teamMode || {})
+  }
+})
+
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
@@ -86,22 +112,10 @@ function RoomDetailPage() {
   // Pending review state - when timer hits zero and questions auto-generated
   const [isPendingReview, setIsPendingReview] = useState(false)
   const [generateQEnabled, setGenerateQEnabled] = useState(true) // fail-safe button
-  const [roomSettings, setRoomSettings] = useState({
-    segmentTime: 2,
-    questionsPerSegment: 2,
-    difficulty: 'medium',
-    questionProvider: 'minimax',
-    timeToAnswer: 30,
-    points: 100,
-    teamMode: {
-      enabled: false,
-      teamCount: 2,
-      teamSize: 4,
-      randomizeTeams: true
-    }
-  })
+  const [roomSettings, setRoomSettings] = useState(DEFAULT_ROOM_SETTINGS)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [leaderboardRefreshKey, setLeaderboardRefreshKey] = useState(0)
 
   useEffect(() => {
     if (token) {
@@ -155,11 +169,8 @@ function RoomDetailPage() {
 
     const handleSettingsUpdated = (data) => {
       if (!data?.roomId || String(data.roomId) !== roomId) return
-      setRoom(prev => prev ? { ...prev, settings: data.settings } : prev)
-      setRoomSettings(prev => ({
-        ...prev,
-        ...data.settings
-      }))
+      setRoom(prev => prev ? { ...prev, ...(data.room || {}), settings: mergeRoomSettings(prev.settings, data.settings) } : prev)
+      setRoomSettings(prev => mergeRoomSettings(prev, data.settings))
     }
 
     socket.on('room:settings_updated', handleSettingsUpdated)
@@ -507,10 +518,7 @@ function RoomDetailPage() {
       setRoom(roomData)
       // Apply room settings if they exist
       if (roomData.settings) {
-        setRoomSettings(prev => ({
-          ...prev,
-          ...roomData.settings
-        }))
+        setRoomSettings(prev => mergeRoomSettings(prev, roomData.settings))
       }
       // Load questions for this room from database
       loadQuestions(roomId)
@@ -1236,15 +1244,24 @@ function RoomDetailPage() {
                 onClose={() => setShowSettings(false)}
                 settings={roomSettings}
                 onSave={async (newSettings) => {
-                  const updatedRoom = await updateRoom(room._id, { settings: newSettings })
-                  setRoom(updatedRoom)
-                  if (updatedRoom.settings) {
-                    setRoomSettings(prev => ({
-                      ...prev,
-                      ...updatedRoom.settings
-                    }))
-                  } else {
-                    setRoomSettings(newSettings)
+                  const previousSettings = roomSettings
+                  const nextSettings = mergeRoomSettings(roomSettings, newSettings)
+                  setRoomSettings(nextSettings)
+                  setRoom(prev => prev ? { ...prev, settings: nextSettings } : prev)
+
+                  try {
+                    const updatedRoom = await updateRoom(room._id, { settings: nextSettings })
+                    setRoom(updatedRoom)
+                    if (updatedRoom.settings) {
+                      setRoomSettings(prev => mergeRoomSettings(prev, updatedRoom.settings))
+                    } else {
+                      setRoomSettings(nextSettings)
+                    }
+                    setLeaderboardRefreshKey(prev => prev + 1)
+                  } catch (error) {
+                    setRoomSettings(previousSettings)
+                    setRoom(prev => prev ? { ...prev, settings: previousSettings } : prev)
+                    throw error
                   }
                   setError('')
                 }}
@@ -1631,7 +1648,18 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <Leaderboard
+                roomId={room?._id}
+                token={token}
+                socket={socket}
+                refreshKey={[
+                  roomSettings.teamMode?.enabled,
+                  roomSettings.teamMode?.teamCount,
+                  roomSettings.teamMode?.teamSize,
+                  roomSettings.teamMode?.randomizeTeams,
+                  leaderboardRefreshKey
+                ].join(':')}
+              />
             </div>
           </div>
         </div>

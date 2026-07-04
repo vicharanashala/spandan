@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket }) => {
+const Leaderboard = ({ roomId, token, socket, refreshKey }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
@@ -57,7 +57,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
         socket.off('room:settings_updated', handleSettingsUpdated)
       }
     }
-  }, [roomId, socket])
+  }, [roomId, socket, refreshKey])
 
   if (loading) {
     return (
