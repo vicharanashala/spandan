@@ -7,6 +7,8 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
   const [isLoading, setIsLoading] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [warning, setWarning] = useState('')
 
   const openQuestions = useMemo(
     () => questions.filter(question => question.status !== 'resolved'),
@@ -80,9 +82,13 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
 
       setText('')
       setError('')
+      setWarning(data.warning || '')
+      setNotice(data.warning ? '' : (data.message || 'Question submitted.'))
       await fetchQuestions()
     } catch (err) {
       setError(err.message)
+      setNotice('')
+      setWarning('')
     } finally {
       setIsSubmitting(false)
     }
@@ -103,15 +109,16 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
       }
 
       setError('')
+      setWarning('')
       await fetchQuestions()
     } catch (err) {
       setError(err.message)
     }
   }
 
-  const resolveQuestion = async (questionId) => {
+  const reportQuestion = async (questionId) => {
     try {
-      const response = await fetch(`${API_URL}/backchannel/${questionId}/resolve`, {
+      const response = await fetch(`${API_URL}/backchannel/${questionId}/report`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}` }
       })
@@ -122,6 +129,32 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
       }
 
       setError('')
+      setWarning('')
+      setNotice('Question reported for teacher review.')
+      await fetchQuestions()
+    } catch (err) {
+      setError(err.message)
+      setNotice('')
+      setWarning('')
+    }
+  }
+
+  const teacherAction = async (questionId, action) => {
+    const options = action === 'delete'
+      ? { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      : { method: 'PUT', headers: { Authorization: `Bearer ${token}` } }
+
+    try {
+      const response = await fetch(`${API_URL}/backchannel/${questionId}${action === 'delete' ? '' : `/${action}`}`, options)
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to ${action} question`)
+      }
+
+      setError('')
+      setNotice('')
+      setWarning('')
       await fetchQuestions()
     } catch (err) {
       setError(err.message)
@@ -130,12 +163,15 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
 
   const renderQuestion = (question, index) => {
     const isResolved = question.status === 'resolved'
+    const isFlagged = question.moderationStatus === 'flagged'
+    const isBlocked = question.moderationStatus === 'blocked'
+    const isHidden = question.isHidden || isFlagged || isBlocked
 
     return (
       <div key={question._id} style={{
         padding: '14px',
         background: 'var(--bg-primary)',
-        border: `1px solid ${isResolved ? 'var(--border-color)' : '#bfdbfe'}`,
+        border: `1px solid ${isHidden ? '#fbbf24' : (isResolved ? 'var(--border-color)' : '#bfdbfe')}`,
         borderRadius: '10px',
         opacity: isResolved ? 0.72 : 1
       }}>
@@ -168,54 +204,131 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
               <span style={{
                 padding: '3px 8px',
                 borderRadius: '999px',
-                background: isResolved ? '#e5e7eb' : '#dcfce7',
-                color: isResolved ? '#4b5563' : '#166534',
+                background: isBlocked ? '#fee2e2' : (isFlagged ? '#fef3c7' : (isResolved ? '#e5e7eb' : '#dcfce7')),
+                color: isBlocked ? '#b91c1c' : (isFlagged ? '#92400e' : (isResolved ? '#4b5563' : '#166534')),
                 fontSize: '11px',
                 fontWeight: '700'
               }}>
-                {isResolved ? 'Resolved' : 'Open'}
+                {isBlocked ? 'Blocked' : (isFlagged ? 'Flagged' : (isResolved ? 'Resolved' : 'Open'))}
               </span>
               <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
                 {question.upvotes} upvote{question.upvotes === 1 ? '' : 's'}
               </span>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                {question.reports || 0} report{question.reports === 1 ? '' : 's'}
+              </span>
+              {mode === 'teacher' && question.moderationReasons?.length > 0 && (
+                <span style={{ color: '#92400e', fontSize: '12px', fontWeight: '600' }}>
+                  {question.moderationReasons.join(', ')}
+                </span>
+              )}
             </div>
           </div>
           {mode === 'student' && !isResolved && (
-            <button
-              onClick={() => toggleUpvote(question._id)}
-              disabled={disabled}
-              style={{
-                padding: '8px 10px',
-                background: question.hasUpvoted ? '#2563eb' : 'var(--bg-card)',
-                color: question.hasUpvoted ? 'white' : '#2563eb',
-                border: '1px solid #bfdbfe',
-                borderRadius: '8px',
-                cursor: disabled ? 'not-allowed' : 'pointer',
-                fontWeight: '700',
-                fontSize: '12px',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              Upvote
-            </button>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+              <button
+                onClick={() => toggleUpvote(question._id)}
+                disabled={disabled}
+                style={{
+                  padding: '8px 10px',
+                  background: question.hasUpvoted ? '#2563eb' : 'var(--bg-card)',
+                  color: question.hasUpvoted ? 'white' : '#2563eb',
+                  border: '1px solid #bfdbfe',
+                  borderRadius: '8px',
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  fontWeight: '700',
+                  fontSize: '12px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Upvote
+              </button>
+              <button
+                onClick={() => reportQuestion(question._id)}
+                disabled={disabled || question.hasReported}
+                style={{
+                  padding: '8px 10px',
+                  background: question.hasReported ? '#e5e7eb' : '#fff7ed',
+                  color: question.hasReported ? '#6b7280' : '#c2410c',
+                  border: '1px solid #fed7aa',
+                  borderRadius: '8px',
+                  cursor: disabled || question.hasReported ? 'not-allowed' : 'pointer',
+                  fontWeight: '700',
+                  fontSize: '12px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {question.hasReported ? 'Reported' : 'Report'}
+              </button>
+            </div>
           )}
           {mode === 'teacher' && !isResolved && (
-            <button
-              onClick={() => resolveQuestion(question._id)}
-              style={{
-                padding: '8px 10px',
-                background: '#10b981',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: '700',
-                fontSize: '12px',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              Resolved
-            </button>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0 }}>
+              {isHidden && (
+                <button
+                  onClick={() => teacherAction(question._id, 'approve')}
+                  style={{
+                    padding: '8px 10px',
+                    background: '#2563eb',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '700',
+                    fontSize: '12px'
+                  }}
+                >
+                  Approve
+                </button>
+              )}
+              {!isHidden && (
+                <button
+                  onClick={() => teacherAction(question._id, 'resolve')}
+                  style={{
+                    padding: '8px 10px',
+                    background: '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '700',
+                    fontSize: '12px'
+                  }}
+                >
+                  Resolved
+                </button>
+              )}
+              <button
+                onClick={() => teacherAction(question._id, 'flag')}
+                style={{
+                  padding: '8px 10px',
+                  background: '#f59e0b',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontWeight: '700',
+                  fontSize: '12px'
+                }}
+              >
+                Flag
+              </button>
+              <button
+                onClick={() => teacherAction(question._id, 'delete')}
+                style={{
+                  padding: '8px 10px',
+                  background: '#ef4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontWeight: '700',
+                  fontSize: '12px'
+                }}
+              >
+                Delete
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -264,6 +377,7 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
             onChange={(event) => setText(event.target.value)}
             disabled={disabled || isSubmitting}
             maxLength={500}
+            minLength={8}
             placeholder="Ask an anonymous question..."
             style={{
               width: '100%',
@@ -282,18 +396,18 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
           />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', gap: '12px' }}>
             <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-              {text.length}/500
+              {text.length}/500, minimum 8
             </span>
             <button
               onClick={submitQuestion}
-              disabled={disabled || isSubmitting || !text.trim()}
+              disabled={disabled || isSubmitting || text.trim().length < 8}
               style={{
                 padding: '9px 14px',
-                background: disabled || isSubmitting || !text.trim() ? 'var(--border-color)' : '#2563eb',
-                color: disabled || isSubmitting || !text.trim() ? 'var(--text-secondary)' : 'white',
+                background: disabled || isSubmitting || text.trim().length < 8 ? 'var(--border-color)' : '#2563eb',
+                color: disabled || isSubmitting || text.trim().length < 8 ? 'var(--text-secondary)' : 'white',
                 border: 'none',
                 borderRadius: '8px',
-                cursor: disabled || isSubmitting || !text.trim() ? 'not-allowed' : 'pointer',
+                cursor: disabled || isSubmitting || text.trim().length < 8 ? 'not-allowed' : 'pointer',
                 fontSize: '13px',
                 fontWeight: '700'
               }}
@@ -304,8 +418,20 @@ function BackchannelPanel({ roomId, token, socket, mode = 'student', disabled = 
         </div>
       )}
 
+      {notice && (
+        <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '8px', background: '#ecfdf5', color: '#047857', fontSize: '13px' }}>
+          {notice}
+        </div>
+      )}
+
+      {warning && (
+        <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '8px', background: '#fffbeb', color: '#92400e', fontSize: '13px', whiteSpace: 'pre-line' }}>
+          {warning}
+        </div>
+      )}
+
       {error && (
-        <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '8px', background: '#fef2f2', color: '#dc2626', fontSize: '13px' }}>
+        <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '8px', background: '#fef2f2', color: '#dc2626', fontSize: '13px', whiteSpace: 'pre-line' }}>
           {error}
         </div>
       )}
