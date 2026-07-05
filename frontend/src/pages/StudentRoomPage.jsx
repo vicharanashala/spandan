@@ -131,6 +131,7 @@ function StudentRoomPage() {
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
+})
 
 
     // TAWM-Alternative: Listen for live pulse updates
@@ -780,11 +781,7 @@ function StudentRoomPage() {
               </div>
             </div>
           )}
-        </div>
-      </div>
-    </div>
-  )
-}
+
       {/* TAWM-Alternative: Live Pulse Widget (floating) */}
       <div style={{
         position: 'fixed',
@@ -806,17 +803,20 @@ function StudentRoomPage() {
         </p>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
-            onClick={() => socket && room && socket.emit('pulse:submit', { roomCode: room.code, studentId: user._id, pulse: 'like' })}
+            aria-label="I understand"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'like' })}
             style={{ padding: '8px 10px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
             title="I understand"
           >👍</button>
           <button
-            onClick={() => socket && room && socket.emit('pulse:submit', { roomCode: room.code, studentId: user._id, pulse: 'confused' })}
+            aria-label="I'm confused"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'confused' })}
             style={{ padding: '8px 10px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
             title="I'm confused"
           >🤔</button>
           <button
-            onClick={() => socket && room && socket.emit('pulse:submit', { roomCode: room.code, studentId: user._id, pulse: 'lost' })}
+            aria-label="I'm lost"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'lost' })}
             style={{ padding: '8px 10px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
             title="I'm lost"
           >😕</button>
@@ -826,4 +826,10 @@ function StudentRoomPage() {
         </p>
       </div>
 
+
+        </div>
+      </div>
+    </div>
+  )
+}
 export default StudentRoomPage

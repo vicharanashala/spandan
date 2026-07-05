@@ -132,6 +132,8 @@ const connectedUsers = new Map() // socket.id -> userId
 
 // TAWM-Alternative: Live Pulse - In-memory counters (no DB writes)
 const pulseCounters = new Map() // roomCode -> { like, confused, lost, lastUpdate }
+// TAWM-Alternative: rate limit map
+const pulseThrottle = new Map() // `${roomCode}:${studentId}` -> timestamp
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
@@ -243,6 +245,13 @@ io.on('connection', (socket) => {
     try {
       const { roomCode, studentId, pulse } = data
       if (!roomCode || !studentId || !pulse) return
+      // Senior: validate + throttle
+      if (!['like','confused','lost'].includes(pulse)) return
+      const now = Date.now()
+      const throttleKey = `${roomCode}:${studentId}`
+      const last = pulseThrottle.get(throttleKey) || 0
+      if (now - last < 2000) return // 2s rate limit
+      pulseThrottle.set(throttleKey, now)
       
       if (!pulseCounters.has(roomCode)) {
         pulseCounters.set(roomCode, { like: 0, confused: 0, lost: 0, lastUpdate: Date.now() })
