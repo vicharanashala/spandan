@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import RoomAnalytics from '../components/RoomAnalytics'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -96,6 +97,7 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [activeTab, setActiveTab] = useState('live') // 'live' or 'analytics'
 
   useEffect(() => {
     if (token) {
@@ -824,13 +826,7 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to students via socket
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        // (Backend now handles emitting new_question instantly)
       }
     } catch (error) {
       console.error('Failed to save question:', error)
@@ -867,12 +863,7 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        // (Backend now handles emitting new_question instantly)
       }
     } catch (error) {
       console.error('Failed to save text question:', error)
@@ -911,18 +902,7 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to socket for students to receive (include roomCode)
-        console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
-        console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-          console.log('new_question event emitted successfully')
-        } else {
-          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
-        }
+        // (Backend now handles emitting new_question instantly)
       } else {
         const errorData = await response.json()
         console.error('Failed to save question:', errorData)
@@ -1437,161 +1417,192 @@ function RoomDetailPage() {
             </div>
           </div>
 
-          {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
-          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
-            {/* Session Questions - flexible width */}
-            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
-              <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                Session Questions
-              </span>
-              {generatedQuestions.length > 0 && (
-                <span style={{
-                  padding: '2px 10px',
-                  background: '#d1fae5',
-                  color: '#059669',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  fontWeight: '600'
-                }}>
-                  {generatedQuestions.length}
-                </span>
+          {/* Tabs */}
+          <div style={{ display: 'flex', gap: '16px', marginBottom: '24px', borderBottom: '2px solid var(--border-color)', paddingBottom: '12px' }}>
+            <button
+              onClick={() => setActiveTab('live')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: '16px',
+                fontWeight: '600',
+                color: activeTab === 'live' ? '#3b82f6' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                position: 'relative'
+              }}
+            >
+              Live Dashboard
+              {activeTab === 'live' && (
+                <div style={{ position: 'absolute', bottom: '-14px', left: 0, right: 0, height: '3px', background: '#3b82f6', borderRadius: '3px 3px 0 0' }} />
               )}
-            </div>
-
-            {generatedQuestions.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {generatedQuestions.map((q, index) => (
-                  <div key={q._id || index} style={{
-                    padding: '14px 16px',
-                    background: 'var(--bg-primary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '12px'
-                  }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
-                    }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
-                              }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
-                      }}>
-                        {answerCounts[q._id] || 0}/{totalParticipants}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                textAlign: 'center',
-                padding: '32px',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}>
-                No questions generated yet. Start recording to auto-generate questions.
-              </div>
-            )}
-            </div>
-            {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Leaderboard
-                </span>
-              </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
-            </div>
+            </button>
+            <button
+              onClick={() => setActiveTab('analytics')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: '16px',
+                fontWeight: '600',
+                color: activeTab === 'analytics' ? '#3b82f6' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                position: 'relative'
+              }}
+            >
+              Analytics & Reports
+              {activeTab === 'analytics' && (
+                <div style={{ position: 'absolute', bottom: '-14px', left: 0, right: 0, height: '3px', background: '#3b82f6', borderRadius: '3px 3px 0 0' }} />
+              )}
+            </button>
           </div>
+
+          {activeTab === 'analytics' ? (
+            <RoomAnalytics roomId={room._id} token={token} />
+          ) : (
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+              {/* Questions List - flexible width */}
+              <div style={{ flex: '2 1 calc(70% - 10px)', minWidth: '300px', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxSizing: 'border-box' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '20px' }}>❓</span>
+                    <span style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                      Session Questions
+                    </span>
+                  </div>
+                </div>
+
+                {generatedQuestions.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {generatedQuestions.map((q, index) => (
+                      <div key={q._id || index} style={{
+                        padding: '16px',
+                        background: 'var(--bg-secondary)',
+                        borderRadius: '12px',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '12px'
+                      }}>
+                        <span style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '50%',
+                          background: '#3b82f6',
+                          color: 'white',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          flexShrink: 0
+                        }}>
+                          {index + 1}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                              color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                            }}>
+                              {q.type}
+                            </span>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: '#fef3c7',
+                              color: '#92400e'
+                            }}>
+                              {q.points || 100} pts
+                            </span>
+                          </div>
+                          <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                            {q.question}
+                          </p>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {(q.options || []).map((opt, optIdx) => {
+                              const letter = String.fromCharCode(65 + optIdx)
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '8px 12px',
+                                  background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                  border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                  borderRadius: '6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                  fontSize: '13px',
+                                  color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
+                                }}>
+                                  <span style={{
+                                    width: '22px',
+                                    height: '22px',
+                                    borderRadius: '50%',
+                                    background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '11px',
+                                    fontWeight: '700',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
+                                  </span>
+                                  <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                    {opt.text}
+                                  </span>
+                                  {opt.isCorrect && (
+                                    <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                          <span style={{
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                            color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                          }}>
+                            {answerCounts[q._id] || 0}/{totalParticipants}
+                          </span>
+                          <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{
+                    textAlign: 'center',
+                    padding: '32px',
+                    color: 'var(--text-secondary)',
+                    fontSize: '13px'
+                  }}>
+                    No questions generated yet. Start recording to auto-generate questions.
+                  </div>
+                )}
+              </div>
+              {/* Leaderboard - flexible width */}
+              <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '20px' }}>🏆</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Leaderboard
+                  </span>
+                </div>
+                <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

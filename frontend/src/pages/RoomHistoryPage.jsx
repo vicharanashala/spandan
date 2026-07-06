@@ -85,8 +85,14 @@ function RoomHistoryPage() {
                     <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                       Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
                     </p>
+                    <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      Created by: <strong style={{ color: 'var(--text-primary)' }}>{room.teacher?.name || 'Unknown'}</strong>
+                    </p>
+                    <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      Started: {new Date(room.createdAt).toLocaleString()}
+                    </p>
                     <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                      Ended {room.endedAt ? new Date(room.endedAt).toLocaleDateString() : ''}
+                      Ended: {room.endedAt ? new Date(room.endedAt).toLocaleString() : ''}
                     </p>
                   </div>
                   <button

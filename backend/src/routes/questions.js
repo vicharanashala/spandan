@@ -93,6 +93,18 @@ router.post('/', authorize('teacher'), async (req, res) => {
 
     await newQuestion.save()
 
+    // Immediately emit to students in the room for instant dashboard update
+    try {
+      const Room = (await import('../models/Room.js')).default
+      const room = await Room.findById(roomId)
+      if (room && room.code) {
+        req.app.get('io').to(room.code).emit('new_question', newQuestion)
+        console.log(`[Socket] new_question broadcast from API to room ${room.code}`)
+      }
+    } catch (socketErr) {
+      console.error('Error emitting new_question from API:', socketErr)
+    }
+
     res.status(201).json({
       success: true,
       question: newQuestion

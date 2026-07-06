@@ -33,6 +33,7 @@ export const getRoomByCode = async (code) => {
 export const getRoomsByTeacher = async (teacherId, options = {}) => {
   const { skip = 0, limit = 100 } = options
   const rooms = await Room.find({ teacher: teacherId })
+    .populate('teacher', 'name')
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
@@ -105,17 +106,23 @@ export const deactivateRoom = async (roomId) => {
 
 export const getRoomsByStudent = async (studentId) => {
   // Get rooms from RoomMember (where student joined)
-  const memberships = await RoomMember.find({ studentId }).populate('roomId')
+  const memberships = await RoomMember.find({ studentId }).populate({
+    path: 'roomId',
+    populate: { path: 'teacher', select: 'name' }
+  })
   const memberRooms = memberships.filter(m => m.roomId).map(m => m.roomId)
   
   // Also get rooms from Response (where student answered) - includes rooms student left
-  const responseRooms = await Response.find({ studentId }).populate('roomId')
+  const responseRooms = await Response.find({ studentId }).populate({
+    path: 'roomId',
+    populate: { path: 'teacher', select: 'name' }
+  })
   const uniqueResponseRoomIds = [...new Set(responseRooms.map(r => r.roomId._id.toString()))]
   
   // Get full room objects for Response rooms that aren't in RoomMember
   const responseRoomIds = uniqueResponseRoomIds.filter(id => !memberRooms.some(r => r._id.toString() === id))
   const additionalRooms = responseRoomIds.length > 0 
-    ? await Room.find({ _id: { $in: responseRoomIds } })
+    ? await Room.find({ _id: { $in: responseRoomIds } }).populate('teacher', 'name')
     : []
   
   // Combine RoomMember rooms + Response-only rooms
@@ -145,13 +152,15 @@ export const getActiveRoomsByStudent = async (studentId) => {
   // Find rooms from RoomMember (where student joined) - all rooms student has joined
   const memberships = await RoomMember.find({ studentId }).populate({
     path: 'roomId',
-    match: { isActive: true, endedAt: null } // Only active rooms
+    match: { isActive: true, endedAt: null }, // Only active rooms
+    populate: { path: 'teacher', select: 'name' }
   })
   
   // Also find rooms from Response (where student answered questions) - for completeness
   const responses = await Response.find({ studentId }).populate({
     path: 'roomId',
-    match: { isActive: true, endedAt: null }
+    match: { isActive: true, endedAt: null },
+    populate: { path: 'teacher', select: 'name' }
   })
   
   // Extract rooms from RoomMember (filtered to active rooms by populate)

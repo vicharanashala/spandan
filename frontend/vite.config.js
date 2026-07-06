@@ -19,6 +19,11 @@ export default defineConfig({
       '/socket.io': {
         target: 'http://localhost:3001',
         ws: true
+      },
+      '/spandan/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/spandan\/socket\.io/, '/socket.io')
       }
     }
   }

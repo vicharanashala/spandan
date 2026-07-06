@@ -9,13 +9,17 @@ import { API_URL } from '../config.js'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
+  const token = useAuthStore(state => state.token)
+  const user = useAuthStore(state => state.user)
+  const isTeacher = user?.role === 'teacher'
+  
   const navigate = useNavigate()
-  const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
   
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
+  const [students, setStudents] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState({
     totalResponses: 0,
@@ -138,12 +142,66 @@ function RoomResultsPage() {
           totalStudents: uniqueStudents,
           participationRate: Math.min(participationRate, 100)
         })
+
+        // Fetch student analytics
+        const studentRes = await fetch(`${API_URL}/analytics/room/${roomId}/students`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        const studentData = await studentRes.json()
+        if (studentRes.ok) {
+          setStudents(studentData.students || [])
+        }
       }
     } catch (err) {
       console.error('Failed to fetch room results:', err)
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const exportCSV = (type) => {
+    let csvContent = "data:text/csv;charset=utf-8,"
+    
+    if (type === 'questions') {
+      csvContent += "Question,Type,Time To Answer (s),Total Answers,Correct Rate (%)\n"
+      questions.forEach(q => {
+        const qStats = responses[q._id] || {}
+        const correctRate = qStats.totalResponses > 0 
+          ? ((qStats.correctCount || 0) / qStats.totalResponses) * 100 
+          : 0
+        const row = [
+          `"${q.question.replace(/"/g, '""')}"`,
+          q.type,
+          q.timeToAnswer,
+          qStats.totalResponses || 0,
+          correctRate.toFixed(1)
+        ].join(",")
+        csvContent += row + "\n"
+      })
+    } else {
+      csvContent += "Student Name,Email,Questions Answered,Participation Score (%),Correct Answers,Correct Rate (%),Total Points,Avg Response Time (ms)\n"
+      students.forEach(s => {
+        const row = [
+          `"${s.name}"`,
+          `"${s.email}"`,
+          s.questionsAnswered,
+          s.participationScore.toFixed(1),
+          s.correctAnswers,
+          s.correctRate.toFixed(1),
+          s.totalPoints,
+          s.avgResponseTime.toFixed(0)
+        ].join(",")
+        csvContent += row + "\n"
+      })
+    }
+
+    const encodedUri = encodeURI(csvContent)
+    const link = document.createElement("a")
+    link.setAttribute("href", encodedUri)
+    link.setAttribute("download", `${type}_results_${roomId}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   if (isLoading) {
@@ -287,9 +345,35 @@ function RoomResultsPage() {
             boxShadow: 'var(--card-shadow)',
             border: '1px solid var(--border-color)'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              Question-wise Analysis
-            </h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Question-wise Analysis
+              </h2>
+              {isTeacher && (
+                <button
+                  onClick={() => exportCSV('questions')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    background: 'transparent',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  Download CSV
+                </button>
+              )}
+            </div>
             
             {questions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
@@ -463,6 +547,87 @@ function RoomResultsPage() {
                     </div>
                   )
                 })}
+              </div>
+            )}
+
+            {/* Student Performance Table */}
+            {isTeacher && students.length > 0 && (
+              <div style={{
+                background: 'var(--bg-card)',
+                borderRadius: '16px',
+                padding: '24px',
+                boxShadow: 'var(--card-shadow)',
+                border: '1px solid var(--border-color)',
+                marginTop: '32px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    👥 Student Performance
+                  </h2>
+                  {isTeacher && (
+                    <button
+                      onClick={() => exportCSV('students')}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 12px',
+                        background: 'transparent',
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                      </svg>
+                      Download CSV
+                    </button>
+                  )}
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-secondary)', fontWeight: '600', fontSize: '13px' }}>Student</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-secondary)', fontWeight: '600', fontSize: '13px' }}>Questions Answered</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-secondary)', fontWeight: '600', fontSize: '13px' }}>Correct Rate</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-secondary)', fontWeight: '600', fontSize: '13px' }}>Total Points</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {students.map((student) => (
+                        <tr key={student._id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                          <td style={{ padding: '16px', color: 'var(--text-primary)', fontWeight: '500' }}>
+                            {student.name}
+                          </td>
+                          <td style={{ padding: '16px', color: 'var(--text-secondary)' }}>
+                            {student.answeredQuestions} / {questions.length}
+                          </td>
+                          <td style={{ padding: '16px' }}>
+                            <span style={{
+                              padding: '4px 8px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              background: student.correctRate >= 70 ? '#d1fae5' : student.correctRate >= 40 ? '#fef3c7' : '#fee2e2',
+                              color: student.correctRate >= 70 ? '#059669' : student.correctRate >= 40 ? '#d97706' : '#dc2626'
+                            }}>
+                              {student.correctRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td style={{ padding: '16px', color: 'var(--text-primary)', fontWeight: '600' }}>
+                            {student.totalScore}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>

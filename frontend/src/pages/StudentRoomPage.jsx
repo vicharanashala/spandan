@@ -399,18 +399,18 @@ function StudentRoomPage() {
             </div>
             <button
               onClick={leaveSession}
-              disabled={hasAnsweredPoll}
-              title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
+              disabled={!!currentQuestion}
+              title={!!currentQuestion ? 'You cannot leave while a question is active' : 'Leave the session'}
               style={{
                 padding: '8px 16px',
-                background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
-                color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
+                background: !!currentQuestion ? 'var(--border-color)' : '#ef4444',
+                color: !!currentQuestion ? 'var(--text-secondary)' : 'white',
                 border: '1px solid var(--border-color)',
                 borderRadius: '8px',
                 fontSize: '13px',
                 fontWeight: '600',
-                cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
-                opacity: hasAnsweredPoll ? 0.6 : 1
+                cursor: !!currentQuestion ? 'not-allowed' : 'pointer',
+                opacity: !!currentQuestion ? 0.6 : 1
               }}
             >
               Leave
