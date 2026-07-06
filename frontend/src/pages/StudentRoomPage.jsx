@@ -138,6 +138,44 @@ function StudentRoomPage() {
     }
   }, [socket, navigate, room?._id])
 
+  useEffect(() => {
+    // Sync active question on initial load if student joins late
+    if (room?.currentQuestion && typeof room.currentQuestion === 'object' && !currentQuestion) {
+      const q = room.currentQuestion;
+      if (q.isActive) {
+        const startedAt = new Date(q.updatedAt || q.createdAt).getTime();
+        const elapsedSecs = Math.floor((Date.now() - startedAt) / 1000);
+        const remaining = Math.max(0, (q.timeToAnswer || 30) - elapsedSecs);
+        
+        if (remaining > 0) {
+          setCurrentQuestion(q);
+          setSelectedOptions([]);
+          setSubmitted(false);
+          setTimeLeft(remaining);
+          
+          if (timerIntervalRef.current) {
+            clearInterval(timerIntervalRef.current);
+          }
+          
+          timerIntervalRef.current = setInterval(() => {
+            setTimeLeft(prev => {
+              if (prev <= 1) {
+                clearInterval(timerIntervalRef.current);
+                timerIntervalRef.current = null;
+                if (room?._id && user?._id) {
+                  fetchPastResponses(room._id, user._id);
+                }
+                setCurrentQuestion(null);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+      }
+    }
+  }, [room?.currentQuestion, currentQuestion, user?._id]);
+
   const joinSession = async () => {
     setIsLoading(true)
     try {
@@ -403,14 +441,14 @@ function StudentRoomPage() {
               title={!!currentQuestion ? 'You cannot leave while a question is active' : 'Leave the session'}
               style={{
                 padding: '8px 16px',
-                background: !!currentQuestion ? 'var(--border-color)' : '#ef4444',
-                color: !!currentQuestion ? 'var(--text-secondary)' : 'white',
-                border: '1px solid var(--border-color)',
+                background: '#ef4444',
+                color: 'white',
+                border: 'none',
                 borderRadius: '8px',
                 fontSize: '13px',
                 fontWeight: '600',
                 cursor: !!currentQuestion ? 'not-allowed' : 'pointer',
-                opacity: !!currentQuestion ? 0.6 : 1
+                opacity: !!currentQuestion ? 0.5 : 1
               }}
             >
               Leave
