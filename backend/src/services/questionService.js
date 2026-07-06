@@ -358,7 +358,7 @@ function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+export async function generateWithMiniMax(prompt) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
@@ -389,7 +389,7 @@ async function generateWithMiniMax(prompt) {
 }
 
 // OpenAI API call
-async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
+export async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -419,7 +419,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
 }
 
 // Anthropic (Claude) API call
-async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
+export async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -450,7 +450,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+export async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {

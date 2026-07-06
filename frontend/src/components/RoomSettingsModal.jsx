@@ -8,11 +8,24 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings)
   const [providers, setProviders] = useState([])
   const [loadingProviders, setLoadingProviders] = useState(false)
+  const [ollamaDetected, setOllamaDetected] = useState(false)
 
   useEffect(() => {
     if (isOpen) {
       setLocalSettings(settings)
       loadProviders()
+      // Auto-detect local Ollama server
+      fetch('http://localhost:11434', { method: 'GET' })
+        .then(res => {
+          if (res.ok) {
+            setOllamaDetected(true)
+            // Auto-select Ollama if not already set
+            setLocalSettings(prev => ({ ...prev, questionProvider: prev.questionProvider || 'ollama' }))
+          }
+        })
+        .catch(() => {
+          setOllamaDetected(false)
+        })
     }
   }, [isOpen, settings])
 
@@ -243,7 +256,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             Question Generator
           </label>
           <select
-            value={localSettings.questionProvider || 'minimax'}
+            value={localSettings.questionProvider || (ollamaDetected ? 'ollama' : 'minimax')}
             onChange={(e) => setLocalSettings(prev => ({ ...prev, questionProvider: e.target.value }))}
             style={{
               width: '100%',
@@ -259,11 +272,18 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             {loadingProviders ? (
               <option value="">Loading providers...</option>
             ) : (
-              providers.map(p => (
-                <option key={p.id} value={p.id} disabled={!p.enabled}>
-                  {p.icon} {p.name} {!p.enabled && '(No API Key)'}
-                </option>
-              ))
+              <>
+                {ollamaDetected && (
+                  <option value="ollama">
+                    Ollama (Local/No API Key) 🟢 Detected
+                  </option>
+                )}
+                {providers.map(p => (
+                  <option key={p.id} value={p.id} disabled={!p.enabled}>
+                    {p.icon} {p.name} {!p.enabled && '(No API Key)'}
+                  </option>
+                ))}
+              </>
             )}
           </select>
         </div>

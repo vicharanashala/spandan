@@ -6,6 +6,63 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import { Link } from 'react-router-dom'
+
+function MyRevisionSummary({ roomId, token, userId }) {
+  const [weakTopics, setWeakTopics] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(`${API_URL}/revision-suggestions/${roomId}/student/${userId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.weakTopics) {
+          setWeakTopics(data.weakTopics)
+        }
+        setLoading(false)
+      })
+      .catch(err => {
+        console.error('Failed to load weak topics:', err)
+        setLoading(false)
+      })
+  }, [roomId, token, userId])
+
+  if (loading) return null
+  if (weakTopics.length === 0) return null
+
+  return (
+    <div style={{
+      background: 'var(--bg-card)', borderRadius: '16px', padding: '24px',
+      boxShadow: 'var(--card-shadow)', border: '1px solid #fca5a5', marginBottom: '24px'
+    }}>
+      <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '600', color: '#b91c1c' }}>
+        ⚠️ Topics to Review
+      </h2>
+      <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+        Based on your answers, you should spend more time reviewing these topics:
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {weakTopics.map(topic => (
+          <div key={topic.topic} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: 'var(--input-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <div>
+              <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{topic.topic}</div>
+              <div style={{ fontSize: '12px', color: '#ef4444' }}>{topic.wrongCount} mistakes</div>
+            </div>
+            {topic.noteStatus === 'released' ? (
+              <Link to="/student/notes" style={{ fontSize: '12px', color: '#059669', background: '#d1fae5', padding: '6px 12px', borderRadius: '6px', textDecoration: 'none', fontWeight: '600' }}>
+                📘 Read Study Note
+              </Link>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Note pending...</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -279,6 +336,19 @@ function RoomResultsPage() {
             </div>
           </div>
 
+<<<<<<< Updated upstream
+=======
+          {/* Revision Suggestions — Teacher only */}
+          {user?.role === 'teacher' && (
+            <RevisionSuggestions roomId={roomId} token={token} />
+          )}
+
+          {/* Student Revision Summary */}
+          {user?.role === 'student' && (
+            <MyRevisionSummary roomId={roomId} token={token} userId={user._id} />
+          )}
+
+>>>>>>> Stashed changes
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',

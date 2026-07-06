@@ -16,6 +16,13 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+<<<<<<< Updated upstream
+=======
+import TeacherNotesPage from './pages/TeacherNotesPage'
+import StudentNotesPage from './pages/StudentNotesPage'
+import { BASE_PATH } from './config.js'
+import { API_URL } from './config.js'
+>>>>>>> Stashed changes
 
 function App() {
   const { isDark } = useThemeStore()
@@ -88,6 +95,16 @@ function App() {
             <RoomResultsPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/notes" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherNotesPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/room/:roomId/notes" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherNotesPage />
+          </ProtectedRoute>
+        } />
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
@@ -111,6 +128,11 @@ function App() {
         <Route path="/student/room/:roomId/results" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomResultsPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/notes" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <StudentNotesPage />
           </ProtectedRoute>
         } />
         <Route path="/student/session/:roomCode" element={

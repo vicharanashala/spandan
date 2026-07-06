@@ -335,6 +335,7 @@ function RoomDetailPage() {
       finalTranscriptRef.current = ''
       return
     }
+<<<<<<< Updated upstream
     
     // Save transcript to database
     saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
@@ -353,19 +354,71 @@ function RoomDetailPage() {
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
       // Auto-retry once
+=======
+
+    // Save transcript to database before generating questions.
+    try {
+      await saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+      console.log('[SEGMENT] Transcript saved to DB')
+    } catch (err) {
+      console.error('[SEGMENT] Failed to save transcript:', err)
+      window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
+      setGenerateQEnabled(true)
+      return
+    }
+
+    // Auto-generate Notes and Questions in parallel using Promise.allSettled
+    console.log('[SEGMENT] Starting parallel generation for notes and questions...')
+    
+    const generateNotesPromise = fetch(`${API_URL}/notes/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        roomId: room._id,
+        segmentIndex: currentSegment,
+        transcript: textToUse,
+        provider: roomSettings.questionProvider || 'minimax'
+      })
+    })
+
+    const generateQuestionsPromise = (async () => {
+>>>>>>> Stashed changes
       try {
-        console.log('[SEGMENT] Retrying question generation...')
         const questions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (questions && questions.length > 0) {
-          setPendingQuestions(questions)
-          setShowQuestionPopup(true)
-          setIsPopupOpen(true)
-        }
-      } catch (retryError) {
-        console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
-        setGenerateQEnabled(true) // Enable fail-safe manual button
+        if (questions && questions.length > 0) return questions
+      } catch (err) {
+        console.error('[SEGMENT] First question generation attempt failed:', err)
+        console.log('[SEGMENT] Retrying question generation...')
+        const retryQuestions = await generateQuestionsFromText(textToUse, currentSegment)
+        if (retryQuestions && retryQuestions.length > 0) return retryQuestions
       }
+      return null
+    })()
+
+    const [notesResult, questionsResult] = await Promise.allSettled([
+      generateNotesPromise,
+      generateQuestionsPromise
+    ])
+
+    // Handle Notes generation result silently
+    if (notesResult.status === 'rejected') {
+      console.error('[SEGMENT] Silent note generation failed:', notesResult.reason)
+    } else {
+      console.log('[SEGMENT] Auto-generated notes successfully sent to review queue.')
+    }
+
+    // Handle Questions generation result
+    if (questionsResult.status === 'fulfilled' && questionsResult.value) {
+      setPendingQuestions(questionsResult.value)
+      setShowQuestionPopup(true)
+      setIsPopupOpen(true)
+    } else {
+      console.error('[SEGMENT] Question generation failed after retry:', questionsResult.reason)
+      window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+      setGenerateQEnabled(true) // Enable fail-safe manual button
     }
   }
 

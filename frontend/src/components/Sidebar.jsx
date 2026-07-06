@@ -8,11 +8,13 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'notes', label: 'Generate & Review Notes', icon: '📝', path: '/teacher/notes' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
+    { id: 'notes', label: 'Notes & Revision', icon: '📘', path: '/student/notes' },
   ]
 }
 
