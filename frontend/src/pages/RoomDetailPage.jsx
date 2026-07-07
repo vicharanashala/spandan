@@ -16,6 +16,12 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
 
+const decodeHtml = (text) => {
+  if (!text) return ''
+  const doc = new DOMParser().parseFromString(text, 'text/html')
+  return doc.documentElement.textContent
+}
+
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
@@ -189,14 +195,26 @@ function RoomDetailPage() {
 
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    startQuestionTimer(data)
+  }
+
+  const handleQuestionEnded = () => {
+    setActiveQuestion(null)
+    setQuestionTimeLeft(0)
+    if (questionTimerRef.current) {
+      clearInterval(questionTimerRef.current)
+      questionTimerRef.current = null
+    }
   }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
+    socket.on('question:ended', handleQuestionEnded)
 
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      socket.off('question:ended', handleQuestionEnded)
     }
   }, [socket, roomSettings.timeToAnswer])
 
@@ -1511,7 +1529,7 @@ function RoomDetailPage() {
                         </span>
                       </div>
                       <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
+                        {decodeHtml(q.question)}
                       </p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         {(q.options || []).map((opt, optIdx) => {
@@ -1544,7 +1562,7 @@ function RoomDetailPage() {
                                 {letter}
                               </span>
                               <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
+                                {decodeHtml(opt.text)}
                               </span>
                               {opt.isCorrect && (
                                 <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
@@ -1601,6 +1619,7 @@ function RoomDetailPage() {
           questions={pendingQuestions}
           onApprove={handleApproveQuestion}
           onReject={handleRejectQuestion}
+          isQuestionActive={!!activeQuestion}
           onComplete={() => {
             // All questions reviewed - close popup and resume for next segment
             setShowQuestionPopup(false)
@@ -1646,6 +1665,7 @@ function RoomDetailPage() {
           isOpen={showCreateQuestion}
           onClose={() => setShowCreateQuestion(false)}
           onLaunch={handleCreateQuestion}
+          isQuestionActive={!!activeQuestion}
         />
       )}
 
@@ -1709,6 +1729,7 @@ function RoomDetailPage() {
           questions={pendingTextQuestions}
           onApprove={handleTextQuestionApprove}
           onReject={handleTextQuestionReject}
+          isQuestionActive={!!activeQuestion}
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
           isLast={true}

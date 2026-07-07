@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
+function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete, isQuestionActive = false }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
@@ -60,6 +60,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   }
 
   const handleApprove = () => {
+    if (isQuestionActive) return
     const current = pendingQuestions[currentIndex]
     onApprove(current)
     // Start timer when question is launched
@@ -385,6 +386,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
               </button>
               <button
                 onClick={handleApprove}
+                disabled={isQuestionActive}
                 style={{
                   flex: 1,
                   padding: '14px',
@@ -394,14 +396,15 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                   color: 'white',
                   fontSize: '14px',
                   fontWeight: '600',
-                  cursor: 'pointer',
+                  cursor: isQuestionActive ? 'not-allowed' : 'pointer',
+                  opacity: isQuestionActive ? 0.5 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '8px'
                 }}
               >
-                ✓ Approve & Launch
+                {isQuestionActive ? '⏳ Question in progress...' : '✓ Approve & Launch'}
               </button>
             </>
           )}

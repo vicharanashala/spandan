@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react'
-
 function TextQuestionApprovalPopup({ 
   questions, 
   onApprove, 
   onReject, 
   onClose, 
   onNext,
-  isLast 
+  isLast,
+  isQuestionActive = false 
 }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
@@ -73,6 +73,7 @@ function TextQuestionApprovalPopup({
   }
 
   const handleApprove = () => {
+    if (isQuestionActive) return
     const question = pendingQuestions[currentIndex]
     stopTimer()
     onApprove(question)
@@ -113,6 +114,7 @@ function TextQuestionApprovalPopup({
 
   const launchQuestion = () => {
     if (!currentQuestion) return
+    if (isQuestionActive) return
     startTimer(currentIndex)
     onApprove({ ...currentQuestion, autoLaunch: true })
   }
@@ -415,6 +417,7 @@ function TextQuestionApprovalPopup({
             </button>
             <button
               onClick={launchQuestion}
+              disabled={isQuestionActive}
               style={{
                 flex: 1,
                 padding: '14px',
@@ -424,14 +427,15 @@ function TextQuestionApprovalPopup({
                 color: 'white',
                 fontSize: '14px',
                 fontWeight: '600',
-                cursor: 'pointer',
+                cursor: isQuestionActive ? 'not-allowed' : 'pointer',
+                opacity: isQuestionActive ? 0.5 : 1,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px'
               }}
             >
-              ▶ Launch to Class
+              {isQuestionActive ? '⏳ Question in progress...' : '▶ Launch to Class'}
             </button>
           </div>
         )}

@@ -258,6 +258,8 @@ io.on('connection', (socket) => {
 
   // Question events
   socket.on('question:start', (data) => {
+    const room = activeRooms?.get(data.roomCode)
+    if (room?.activeQuestion) return
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,

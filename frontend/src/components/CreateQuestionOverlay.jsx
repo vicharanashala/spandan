@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
+function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ', isQuestionActive = false }) {
   const [questionType, setQuestionType] = useState(defaultType)
   const [question, setQuestion] = useState('')
   const [options, setOptions] = useState([
@@ -485,6 +485,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
         {/* Launch Button */}
         <button
           onClick={handleLaunch}
+          disabled={isLaunched || isQuestionActive}
           style={{
             width: '100%',
             padding: '14px',
@@ -498,10 +499,12 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            cursor: isLaunched || isQuestionActive ? 'not-allowed' : 'pointer',
+            opacity: isLaunched || isQuestionActive ? 0.5 : 1,
             gap: '8px'
           }}
         >
-          🚀 Launch Question
+          {isQuestionActive ? '⏳ Question in progress...' : '🚀 Launch Question'}
         </button>
       </div>
     </div>

@@ -9,6 +9,12 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
 
+const decodeHtml = (text) => {
+  if (!text) return ''
+  const doc = new DOMParser().parseFromString(text, 'text/html')
+  return doc.documentElement.textContent
+}
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
@@ -445,7 +451,7 @@ function StudentRoomPage() {
 
               {/* Question */}
               <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
-                {currentQuestion.question}
+                {decodeHtml(currentQuestion.question)}
               </h2>
 
               {/* Options */}
@@ -455,7 +461,7 @@ function StudentRoomPage() {
                   const isSelected = isMSQ 
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
-                  const optionText = typeof option === 'string' ? option : option.text
+                  const optionText = decodeHtml(typeof option === 'string' ? option : option.text)
                   const optionLabel = String.fromCharCode(65 + index)
                   
                   const handleOptionClick = () => {
@@ -679,7 +685,7 @@ function StudentRoomPage() {
                         
                         {/* Question text */}
                         <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
-                          {q.question || 'Question'}
+                          {decodeHtml(q.question || 'Question')}
                         </p>
                         
                         {/* All options - always shown */}
@@ -734,7 +740,7 @@ function StudentRoomPage() {
                                   {letter}
                                 </span>
                                 <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
+                                  {decodeHtml(option.text || option)}
                                 </span>
                                 {label && (
                                   <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
