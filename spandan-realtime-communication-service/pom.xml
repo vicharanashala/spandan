@@ -16,6 +16,7 @@
     <description>Real-time WebSocket gateway for Spandan classroom engagement</description>
     <properties>
         <java.version>17</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
     </properties>
     <dependencies>
         <dependency>

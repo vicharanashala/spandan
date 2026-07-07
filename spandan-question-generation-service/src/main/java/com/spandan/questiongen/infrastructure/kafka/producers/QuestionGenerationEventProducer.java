@@ -8,6 +8,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
 
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 @Component
@@ -72,6 +73,28 @@ public class QuestionGenerationEventProducer {
         send("QuestionsReadyForReview", event);
     }
 
+    public void questionGeneratedEvent(GeneratedQuestion question, UUID lectureId, UUID sectionId, UUID subsectionId) {
+        var event = new QuestionGeneratedEvent(
+            question.getId(),
+            question.getQuestionText(),
+            question.getQuestionType().name(),
+            question.getOptions(),
+            question.getCorrectAnswer(),
+            lectureId,
+            sectionId,
+            subsectionId,
+            question.getTopicId(),
+            question.getConceptId(),
+            question.getLearningObjective(),
+            question.getDifficulty(),
+            question.getQuestionSequence(),
+            question.getGeneratedAt(),
+            question.getGenerationModel(),
+            question.getGenerationVersion()
+        );
+        send("QuestionGeneratedEvent", event);
+    }
+
     public void temporaryQuestionsExpired(QuestionSet questionSet) {
         var event = new TemporaryQuestionsExpiredEvent(
             questionSet.getId(),
@@ -107,5 +130,13 @@ public class QuestionGenerationEventProducer {
                                                  java.util.UUID sessionId, java.util.UUID teacherId,
                                                  int attemptNumber, java.util.List<QuestionData> questions) {}
     public record TemporaryQuestionsExpiredEvent(java.util.UUID setId, java.util.UUID transcriptId,
-                                                  java.util.UUID sessionId, int attemptNumber) {}
+                                                   java.util.UUID sessionId, int attemptNumber) {}
+    public record QuestionGeneratedEvent(java.util.UUID questionId, String questionText,
+                                          String questionType, String options, String correctAnswer,
+                                          java.util.UUID lectureId, java.util.UUID sectionId,
+                                          java.util.UUID subsectionId, java.util.UUID topicId,
+                                          java.util.UUID conceptId, String learningObjective,
+                                          String difficulty, Integer questionSequence,
+                                          java.time.Instant generatedAt, String generationModel,
+                                          String generationVersion) {}
 }

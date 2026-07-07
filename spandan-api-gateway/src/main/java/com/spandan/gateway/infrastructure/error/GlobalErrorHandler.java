@@ -1,90 +1,81 @@
 package com.spandan.gateway.infrastructure.error;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.spandan.gateway.infrastructure.logging.ServerWebExchangeAttributes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.reactive.error.ErrorWebExceptionHandler;
+import org.springframework.cloud.gateway.support.NotFoundException;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
-
+/**
+ * Last-resort error handler for the gateway. Anything that throws an unhandled exception
+ * inside the gateway chain ends up here and is shaped into the standard
+ * {@link ErrorEnvelope} JSON.
+ *
+ * <p>The handler is intentionally permissive: it does NOT log request bodies (which can
+ * contain credentials) but does log correlation id + path + cause class for forensics.
+ */
 @Component
-@Order(-1)
+@Order(-2)
 public class GlobalErrorHandler implements ErrorWebExceptionHandler {
 
-    private final ObjectMapper objectMapper;
+    private static final Logger log = LoggerFactory.getLogger(GlobalErrorHandler.class);
 
-    public GlobalErrorHandler() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private final ErrorResponseWriter errorWriter;
+
+    public GlobalErrorHandler(ErrorResponseWriter errorWriter) {
+        this.errorWriter = errorWriter;
     }
 
     @Override
     public Mono<Void> handle(ServerWebExchange exchange, Throwable ex) {
-        ServerHttpResponse response = exchange.getResponse();
-        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        String path = exchange.getRequest().getURI().getPath();
+        String correlationId = ServerWebExchangeAttributes.correlationId(exchange);
 
         HttpStatus status;
-        String error;
+        String code;
         String message;
 
-        if (ex instanceof ResponseStatusException rse) {
-            status = HttpStatus.resolve(rse.getStatusCode().value());
-            if (status == null) status = HttpStatus.INTERNAL_SERVER_ERROR;
-            error = switch (status) {
-                case UNAUTHORIZED -> "unauthorized";
-                case FORBIDDEN -> "forbidden";
-                case TOO_MANY_REQUESTS -> "rate_limit_exceeded";
-                case NOT_FOUND -> "not_found";
-                case BAD_REQUEST -> "bad_request";
-                case BAD_GATEWAY -> "bad_gateway";
-                case SERVICE_UNAVAILABLE -> "service_unavailable";
-                case GATEWAY_TIMEOUT -> "gateway_timeout";
-                default -> "internal_error";
-            };
-            message = rse.getReason() != null ? rse.getReason() : status.getReasonPhrase();
+        if (ex instanceof NotFoundException) {
+            status = HttpStatus.NOT_FOUND;
+            code = "route_not_found";
+            message = "No downstream route matched the request";
+        } else if (ex instanceof org.springframework.web.server.ResponseStatusException rse) {
+            status = HttpStatus.valueOf(rse.getStatusCode().value());
+            code = "request_error";
+            message = rse.getReason() == null ? status.getReasonPhrase() : rse.getReason();
         } else {
             status = HttpStatus.INTERNAL_SERVER_ERROR;
-            error = "internal_error";
+            code = "gateway_error";
             message = "An unexpected error occurred";
         }
 
-        String correlationId = exchange.getAttributeOrDefault("correlation_id", "unknown");
-        String path = exchange.getRequest().getURI().getPath();
+        log.error("Unhandled gateway exception correlation_id={} path={} cause={}",
+                correlationId, path, ex.getClass().getName(), ex);
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("error", error);
-        body.put("message", message);
-        body.put("status", status.value());
-        body.put("timestamp", Instant.now().toString());
-        body.put("path", path);
-        body.put("correlation_id", correlationId);
-
-        response.setStatusCode(status);
-
-        byte[] bytes;
-        try {
-            bytes = objectMapper.writeValueAsString(body).getBytes(StandardCharsets.UTF_8);
-        } catch (JsonProcessingException e) {
-            bytes = ("{\"error\":\"internal_error\",\"message\":\"Error serializing response\",\"status\":500}")
-                    .getBytes(StandardCharsets.UTF_8);
-        }
-
-        DataBuffer buffer = response.bufferFactory().wrap(bytes);
-        return response.writeWith(Mono.just(buffer));
+        ErrorEnvelope envelope = ErrorEnvelope.of(code, message, status.value(), path, correlationId);
+        return errorWriter.write(exchange.getResponse(), status, envelope);
     }
 
+    /** Convenience for tests / other filters that need to write a server-side error directly. */
+    public Mono<Void> writeDirect(ServerHttpResponse response, HttpStatus status, ErrorEnvelope envelope) {
+        response.setStatusCode(status);
+        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        byte[] body;
+        try {
+            body = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsBytes(envelope);
+        } catch (Exception ex) {
+            body = "{}".getBytes();
+        }
+        DataBuffer buffer = response.bufferFactory().wrap(body);
+        return response.writeWith(Mono.just(buffer));
+    }
 }

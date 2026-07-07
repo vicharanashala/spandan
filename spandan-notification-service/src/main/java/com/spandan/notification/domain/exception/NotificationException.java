@@ -1,5 +1,7 @@
 package com.spandan.notification.domain.exception;
 
+import java.util.UUID;
+
 public class NotificationException extends RuntimeException {
 
     private final String errorCode;

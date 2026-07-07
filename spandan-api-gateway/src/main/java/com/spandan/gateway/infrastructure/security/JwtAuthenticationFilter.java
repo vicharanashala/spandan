@@ -1,151 +1,118 @@
 package com.spandan.gateway.infrastructure.security;
 
+import com.spandan.gateway.infrastructure.error.ErrorEnvelope;
+import com.spandan.gateway.infrastructure.error.ErrorResponseWriter;
+import com.spandan.gateway.infrastructure.logging.ServerWebExchangeAttributes;
 import io.jsonwebtoken.Claims;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
-import org.springframework.http.HttpHeaders;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-import java.util.List;
-import java.util.Set;
+import java.util.Optional;
 
+/**
+ * Authentication filter. Runs at order 100 — after {@link com.spandan.gateway.infrastructure.logging.CorrelationIdFilter}
+ * (which ensures the correlation id is set) and before {@link RoleAuthorizationFilter}.
+ *
+ * <p>Behavior:
+ * <ol>
+ *   <li>Skip authentication for public endpoints (see {@link PublicEndpointPredicate}).</li>
+ *   <li>Extract {@code Authorization: Bearer <jwt>}.</li>
+ *   <li>Verify signature, expiry, and basic claim shape locally — no network call.</li>
+ *   <li>Resolve the role claim. If the role is missing or unrecognized, treat as authentication
+ *       failure (401). The Gateway is enumerative: unknown role strings are not coerced.</li>
+ *   <li>Persist {@code Claims}, {@code Role}, and user id on the exchange for downstream filters
+ *       ({@link RoleAuthorizationFilter}, {@link HeaderInjectionFilter}, structured logging).</li>
+ *   <li>On failure, short-circuit with a JSON {@link ErrorEnvelope} and HTTP 401.</li>
+ * </ol>
+ */
 @Component
+@Order(100)
 public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
-    private static final String BEARER_PREFIX = "Bearer ";
-
-    private static final Set<String> PUBLIC_PATHS = Set.of(
-            "/api/v1/auth/login",
-            "/api/v1/auth/register",
-            "/health",
-            "/actuator/health",
-            "/actuator/info"
-    );
-
-    private static final Set<String> TEACHER_ONLY_PREFIXES = Set.of(
-            "/api/v1/questions/",
-            "/api/v1/reviews/"
-    );
-
-    private static final Set<String> TEACHER_ADMIN_PREFIXES = Set.of(
-            "/api/v1/streams/",
-            "/api/v1/transcripts/"
-    );
-
-    private static final Set<String> TEACHER_WRITE_PATHS = Set.of(
-            "/api/v1/polls/",
-            "/api/v1/analytics/"
-    );
-
     private final JwtUtil jwtUtil;
+    private final PublicEndpointPredicate publicEndpoints;
+    private final ErrorResponseWriter errorWriter;
 
-    public JwtAuthenticationFilter(JwtUtil jwtUtil) {
+    public JwtAuthenticationFilter(JwtUtil jwtUtil,
+                                   PublicEndpointPredicate publicEndpoints,
+                                   ErrorResponseWriter errorWriter) {
         this.jwtUtil = jwtUtil;
+        this.publicEndpoints = publicEndpoints;
+        this.errorWriter = errorWriter;
     }
 
     @Override
     public int getOrder() {
-        return -100;
+        return 100;
     }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        String path = exchange.getRequest().getURI().getPath();
+        ServerHttpRequest request = exchange.getRequest();
+        HttpMethod method = request.getMethod();
+        String path = request.getURI().getPath();
 
-        if (isPublicPath(path)) {
+        // Public endpoints bypass auth entirely.
+        if (publicEndpoints.isPublic(method, path)) {
             return chain.filter(exchange);
         }
 
-        String authHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-
-        if (authHeader == null || !authHeader.startsWith(BEARER_PREFIX)) {
-            return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing or invalid Authorization header"));
+        String token = extractBearerToken(request);
+        if (token == null) {
+            return unauthorized(exchange, "missing_token", "Authorization header missing or malformed");
         }
 
-        String token = authHeader.substring(BEARER_PREFIX.length());
+        Optional<Claims> parsed = jwtUtil.parse(token);
+        if (parsed.isEmpty()) {
+            return unauthorized(exchange, "invalid_token", "JWT signature invalid, expired, or malformed");
+        }
+        Claims claims = parsed.get();
 
-        Claims claims;
-        try {
-            claims = jwtUtil.validateAndParse(token);
-        } catch (Exception e) {
-            return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid or expired token"));
+        String userId = jwtUtil.userId(claims);
+        if (userId == null || userId.isBlank()) {
+            return unauthorized(exchange, "invalid_token", "Token has no subject (user id) claim");
         }
 
-        String userId = claims.getSubject();
-        String role = claims.get("role", String.class);
-
-        if (userId == null || role == null) {
-            return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token missing required claims"));
+        Role role = jwtUtil.role(claims);
+        if (role == null) {
+            return unauthorized(exchange, "invalid_token",
+                    "Token role claim missing or not in recognized set (ADMIN, TEACHER, STUDENT)");
         }
 
-        if (!isAuthorized(path, exchange.getRequest().getMethod().name(), role)) {
-            return Mono.error(new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Insufficient permissions. Required role: " + getRequiredRole(path)));
-        }
-
-        String method = exchange.getRequest().getMethod().name();
-
-        exchange = exchange.mutate()
-                .request(r -> r.header("X-User-Id", userId)
-                        .header("X-Role", role)
-                        .header("X-Forwarded-Method", method))
-                .build();
+        // Persist on exchange for downstream filters.
+        exchange.getAttributes().put(ServerWebExchangeAttributes.JWT_CLAIMS, claims);
+        exchange.getAttributes().put(ServerWebExchangeAttributes.ROLE, role);
+        exchange.getAttributes().put(ServerWebExchangeAttributes.USER_ID, userId);
 
         return chain.filter(exchange);
     }
 
-    private boolean isPublicPath(String path) {
-        if (PUBLIC_PATHS.contains(path)) {
-            return true;
+    private String extractBearerToken(ServerHttpRequest request) {
+        String header = request.getHeaders().getFirst(GatewayHeaders.AUTHORIZATION);
+        if (header == null) {
+            return null;
         }
-        if (path.startsWith("/actuator/") && !path.equals("/actuator/prometheus")) {
-            return true;
+        header = header.trim();
+        if (!header.regionMatches(true, 0, GatewayHeaders.BEARER_PREFIX, 0,
+                GatewayHeaders.BEARER_PREFIX.length())) {
+            return null;
         }
-        return false;
+        String token = header.substring(GatewayHeaders.BEARER_PREFIX.length()).trim();
+        return token.isEmpty() ? null : token;
     }
 
-    private boolean isAuthorized(String path, String method, String role) {
-        if ("ADMIN".equals(role)) {
-            return true;
-        }
-
-        for (String prefix : TEACHER_ONLY_PREFIXES) {
-            if (path.startsWith(prefix)) {
-                return "TEACHER".equals(role);
-            }
-        }
-
-        for (String prefix : TEACHER_ADMIN_PREFIXES) {
-            if (path.startsWith(prefix)) {
-                return "TEACHER".equals(role);
-            }
-        }
-
-        for (String prefix : TEACHER_WRITE_PATHS) {
-            if (path.startsWith(prefix) && !"GET".equalsIgnoreCase(method)) {
-                return "TEACHER".equals(role);
-            }
-        }
-
-        return "TEACHER".equals(role) || "STUDENT".equals(role);
+    private Mono<Void> unauthorized(ServerWebExchange exchange, String code, String message) {
+        String path = exchange.getRequest().getURI().getPath();
+        String correlationId = ServerWebExchangeAttributes.correlationId(exchange);
+        ErrorEnvelope envelope = ErrorEnvelope.of(code, message, 401, path, correlationId);
+        return errorWriter.write(exchange.getResponse(), HttpStatus.UNAUTHORIZED, envelope);
     }
-
-    private String getRequiredRole(String path) {
-        for (String prefix : TEACHER_ONLY_PREFIXES) {
-            if (path.startsWith(prefix)) return "TEACHER";
-        }
-        for (String prefix : TEACHER_ADMIN_PREFIXES) {
-            if (path.startsWith(prefix)) return "TEACHER or ADMIN";
-        }
-        for (String prefix : TEACHER_WRITE_PATHS) {
-            if (path.startsWith(prefix)) return "TEACHER for write";
-        }
-        return "TEACHER or STUDENT";
-    }
-
 }

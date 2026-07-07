@@ -77,6 +77,16 @@ public class PollingController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/quizzes/{quizId}/questions/{questionId}/skip")
+    public ResponseEntity<Void> skipQuestion(
+            @PathVariable UUID quizId,
+            @PathVariable UUID questionId,
+            Authentication authentication) {
+        UUID teacherId = UUID.fromString(authentication.getPrincipal().toString());
+        quizService.skipQuestion(quizId, questionId, teacherId);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/quizzes/{quizId}/questions/{questionId}/cancel")
     public ResponseEntity<Void> cancelQuestion(
             @PathVariable UUID quizId,

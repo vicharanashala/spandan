@@ -16,5 +16,6 @@ public interface QuestionGenerationProvider {
                             boolean success, String errorMessage) {}
 
     record GeneratedQuestionData(String questionType, String questionText,
-                                 Map<String, String> options, String correctAnswer) {}
+                                 Map<String, String> options, String correctAnswer,
+                                 String difficulty) {}
 }

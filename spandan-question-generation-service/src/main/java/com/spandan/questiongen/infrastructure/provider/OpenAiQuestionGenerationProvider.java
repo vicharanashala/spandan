@@ -84,12 +84,13 @@ public class OpenAiQuestionGenerationProvider implements QuestionGenerationProvi
                     String type = q.path("question_type").asText().toUpperCase().replace("-", "_");
                     String text = q.path("question_text").asText();
                     String answer = q.path("correct_answer").asText();
+                    String difficulty = q.has("difficulty") ? q.path("difficulty").asText().toUpperCase() : "MEDIUM";
                     Map<String, String> options = new LinkedHashMap<>();
                     JsonNode optsNode = q.path("options");
                     if (optsNode.isObject()) {
                         optsNode.fieldNames().forEachRemaining(k -> options.put(k, optsNode.get(k).asText()));
                     }
-                    questions.add(new GeneratedQuestionData(type, text, options, answer));
+                    questions.add(new GeneratedQuestionData(type, text, options, answer, difficulty));
                 }
             }
         } catch (JsonProcessingException e) {

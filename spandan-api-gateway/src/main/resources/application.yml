@@ -19,6 +19,10 @@ spring:
               burstCapacity: 200
 
       routes:
+        # -------------------------------------------------------------------------------------
+        # Auth Service (public bootstrap endpoints are filtered by JwtAuthenticationFilter;
+        # all other /api/v1/auth/** calls require an authenticated principal).
+        # -------------------------------------------------------------------------------------
         - id: auth-service
           uri: ${AUTH_SERVICE_URL:http://spandan-auth-service:8080}
           predicates:
@@ -29,6 +33,9 @@ spring:
             response-timeout: 10000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Polling Service – STUDENT or TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: polling-service
           uri: ${POLLING_SERVICE_URL:http://spandan-polling-service:8081}
           predicates:
@@ -42,6 +49,9 @@ spring:
             response-timeout: 30000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Analytics Service – TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: analytics-service
           uri: ${ANALYTICS_SERVICE_URL:http://spandan-analytics-service:8083}
           predicates:
@@ -64,6 +74,9 @@ spring:
             response-timeout: 60000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Transcription Service – TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: transcription-service
           uri: ${TRANSCRIPTION_SERVICE_URL:http://spandan-transcription-service:8085}
           predicates:
@@ -86,6 +99,9 @@ spring:
             response-timeout: 10000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Question Generation Service – STUDENT or TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: question-generation-service
           uri: ${QGS_SERVICE_URL:http://spandan-question-generation-service:8086}
           predicates:
@@ -99,6 +115,9 @@ spring:
             response-timeout: 30000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Question Review Service – TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: question-review-service
           uri: ${QRS_SERVICE_URL:http://spandan-question-review-service:8087}
           predicates:
@@ -112,10 +131,14 @@ spring:
             response-timeout: 10000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Notification Service – any authenticated user
+        # -------------------------------------------------------------------------------------
         - id: notification-service
           uri: ${NS_SERVICE_URL:http://spandan-notification-service:8087}
           predicates:
             - Path=/api/v1/notifications/**
+            - Path=/api/v1/notification-preferences/**
           filters:
             - name: Retry
               args:
@@ -130,10 +153,14 @@ spring:
             response-timeout: 10000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Recording Service – TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: recording-service
           uri: ${RS_SERVICE_URL:http://spandan-recording-service:8088}
           predicates:
             - Path=/api/v1/streams/**
+            - Path=/api/v1/recordings/**
           filters:
             - name: CircuitBreaker
               args:
@@ -143,6 +170,9 @@ spring:
             response-timeout: 30000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Response Service – STUDENT or TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: response-service
           uri: ${RESPONSE_SERVICE_URL:http://spandan-response-service:8084}
           predicates:
@@ -156,6 +186,60 @@ spring:
             response-timeout: 10000
             connect-timeout: 2000
 
+        # -------------------------------------------------------------------------------------
+        # Reporting Service – TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
+        - id: reporting-service
+          uri: ${REPORTING_SERVICE_URL:http://spandan-reporting-service:8091}
+          predicates:
+            - Path=/api/v1/reports/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: reportingServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 30000
+            connect-timeout: 2000
+
+        # -------------------------------------------------------------------------------------
+        # Admin Service – ADMIN only (addendum context-admin-role.md)
+        # This route is intentionally NOT public. JwtAuthenticationFilter + RoleAuthorizationFilter
+        # ensure that only an X-Role: ADMIN token can reach it.
+        # -------------------------------------------------------------------------------------
+        - id: admin-service
+          uri: ${ADMIN_SERVICE_URL:http://spandan-admin-service:8092}
+          predicates:
+            - Path=/api/v1/admin/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: adminServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        # -------------------------------------------------------------------------------------
+        # User Management Service – ADMIN for write operations; /me is overridden by
+        # RoleAuthorizationFilter which treats /api/v1/users/me as any-authenticated.
+        # -------------------------------------------------------------------------------------
+        - id: users-service
+          uri: ${USERS_SERVICE_URL:http://spandan-users-service:8093}
+          predicates:
+            - Path=/api/v1/users/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: usersServiceCB
+                fallbackUri: forward:/fallback/service_unavailable
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
+
+        # -------------------------------------------------------------------------------------
+        # Realtime Communication – STUDENT or TEACHER or ADMIN
+        # -------------------------------------------------------------------------------------
         - id: real-time-gateway-websocket
           uri: ${RT_GATEWAY_WS_URL:http://spandan-realtime-communication-service:8090}
           predicates:
@@ -183,6 +267,8 @@ spring:
             exposed-headers:
               - X-Request-Id
               - X-Rate-Limit-Remaining
+              - X-Correlation-Id
+              - X-Role
             allow-credentials: true
             max-age: 3600
 
@@ -222,5 +308,3 @@ logging:
     org.springframework.cloud.gateway: WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
-
-

@@ -39,24 +39,29 @@ class StateTransitionGuardTest {
 
     @Test
     void questionValidTransitions() {
-        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.SCHEDULED, QuestionStatus.PUBLISHED));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.SCHEDULED, QuestionStatus.POLL_OPEN));
         assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.SCHEDULED, QuestionStatus.CANCELLED));
-        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.PUBLISHED, QuestionStatus.RUNNING));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.POLL_OPEN, QuestionStatus.RUNNING));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.POLL_OPEN, QuestionStatus.TIMER_EXPIRED));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.POLL_OPEN, QuestionStatus.POLL_CLOSED));
         assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.RUNNING, QuestionStatus.TIMER_EXPIRED));
-        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.TIMER_EXPIRED, QuestionStatus.CLOSED));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.TIMER_EXPIRED, QuestionStatus.POLL_CLOSED));
+        assertDoesNotThrow(() -> guard.guardQuestionTransition(QuestionStatus.PUBLISHED, QuestionStatus.POLL_CLOSED));
     }
 
     @Test
     void questionInvalidTransitions() {
         assertThrows(IllegalStateException.class,
-                () -> guard.guardQuestionTransition(QuestionStatus.CLOSED, QuestionStatus.RUNNING));
+                () -> guard.guardQuestionTransition(QuestionStatus.POLL_CLOSED, QuestionStatus.RUNNING));
         assertThrows(IllegalStateException.class,
                 () -> guard.guardQuestionTransition(QuestionStatus.CANCELLED, QuestionStatus.SCHEDULED));
         assertThrows(IllegalStateException.class,
-                () -> guard.guardQuestionTransition(QuestionStatus.SCHEDULED, QuestionStatus.CLOSED));
+                () -> guard.guardQuestionTransition(QuestionStatus.SCHEDULED, QuestionStatus.POLL_CLOSED));
         assertThrows(IllegalStateException.class,
-                () -> guard.guardQuestionTransition(QuestionStatus.RUNNING, QuestionStatus.CLOSED));
+                () -> guard.guardQuestionTransition(QuestionStatus.RUNNING, QuestionStatus.POLL_CLOSED));
         assertThrows(IllegalStateException.class,
                 () -> guard.guardQuestionTransition(QuestionStatus.TIMER_EXPIRED, QuestionStatus.RUNNING));
+        assertThrows(IllegalStateException.class,
+                () -> guard.guardQuestionTransition(QuestionStatus.CLOSED, QuestionStatus.RUNNING));
     }
 }

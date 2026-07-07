@@ -37,6 +37,7 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
         spring.json.add.type.headers: false
+        enable.idempotence: true
     listener:
       ack-mode: manual
       concurrency: 2
@@ -58,3 +59,5 @@ auth:
 response:
   service:
     url: ${RESPONSE_SERVICE_URL:http://localhost:8084}
+  events:
+    topic: ${RESPONSE_EVENTS_TOPIC:response-events}

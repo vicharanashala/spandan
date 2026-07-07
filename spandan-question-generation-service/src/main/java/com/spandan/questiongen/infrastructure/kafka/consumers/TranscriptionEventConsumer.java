@@ -32,7 +32,7 @@ public class TranscriptionEventConsumer {
                 var sessionId = extractSessionId(value);
                 var teacherId = extractTeacherId(value);
                 if (transcriptId != null && sessionId != null && teacherId != null) {
-                    orchestrator.requestGeneration(transcriptId, sessionId, teacherId);
+                    orchestrator.requestGeneration(transcriptId, sessionId, teacherId, null, null, null);
                 }
             }
 

@@ -31,11 +31,38 @@ public class QuizQuestionEntity {
     @Column(name = "timer_duration_seconds", nullable = false)
     private int timerDurationSeconds;
 
-    @Column(name = "published_at")
-    private Instant publishedAt;
+    @Column(name = "lecture_id")
+    private UUID lectureId;
 
-    @Column(name = "closed_at")
-    private Instant closedAt;
+    @Column(name = "section_id")
+    private UUID sectionId;
+
+    @Column(name = "subsection_id")
+    private UUID subsectionId;
+
+    @Column(name = "topic_id")
+    private UUID topicId;
+
+    @Column(name = "concept_id")
+    private UUID conceptId;
+
+    @Column(name = "learning_objective_id")
+    private UUID learningObjectiveId;
+
+    @Column(name = "difficulty", length = 20)
+    private String difficulty;
+
+    @Column(name = "question_type", length = 30)
+    private String questionType;
+
+    @Column(name = "correct_answer", length = 500)
+    private String correctAnswer;
+
+    @Column(name = "poll_opened_at")
+    private Instant pollOpenedAt;
+
+    @Column(name = "poll_closed_at")
+    private Instant pollClosedAt;
 
     @Column(name = "cancelled_at")
     private Instant cancelledAt;
@@ -50,7 +77,10 @@ public class QuizQuestionEntity {
 
     public QuizQuestionEntity(UUID id, UUID quizId, UUID questionRefId, int sequencePosition,
                               QuestionStatus questionStatus, int timerDurationSeconds,
-                              Instant publishedAt, Instant closedAt, Instant cancelledAt,
+                              UUID lectureId, UUID sectionId, UUID subsectionId,
+                              UUID topicId, UUID conceptId, UUID learningObjectiveId,
+                              String difficulty, String questionType, String correctAnswer,
+                              Instant pollOpenedAt, Instant pollClosedAt, Instant cancelledAt,
                               Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.quizId = quizId;
@@ -58,8 +88,17 @@ public class QuizQuestionEntity {
         this.sequencePosition = sequencePosition;
         this.questionStatus = questionStatus;
         this.timerDurationSeconds = timerDurationSeconds;
-        this.publishedAt = publishedAt;
-        this.closedAt = closedAt;
+        this.lectureId = lectureId;
+        this.sectionId = sectionId;
+        this.subsectionId = subsectionId;
+        this.topicId = topicId;
+        this.conceptId = conceptId;
+        this.learningObjectiveId = learningObjectiveId;
+        this.difficulty = difficulty;
+        this.questionType = questionType;
+        this.correctAnswer = correctAnswer;
+        this.pollOpenedAt = pollOpenedAt;
+        this.pollClosedAt = pollClosedAt;
         this.cancelledAt = cancelledAt;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -69,8 +108,11 @@ public class QuizQuestionEntity {
         return new QuizQuestionEntity(
                 question.getId(), question.getQuizId(), question.getQuestionRefId(),
                 question.getSequencePosition(), question.getQuestionStatus(),
-                question.getTimerDurationSeconds(), question.getPublishedAt(),
-                question.getClosedAt(), question.getCancelledAt(),
+                question.getTimerDurationSeconds(),
+                question.getLectureId(), question.getSectionId(), question.getSubsectionId(),
+                question.getTopicId(), question.getConceptId(), question.getLearningObjectiveId(),
+                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer(),
+                question.getPollOpenedAt(), question.getPollClosedAt(), question.getCancelledAt(),
                 question.getCreatedAt(), question.getUpdatedAt()
         );
     }
@@ -78,7 +120,11 @@ public class QuizQuestionEntity {
     public QuizQuestion toDomain() {
         return new QuizQuestion(
                 id, quizId, questionRefId, sequencePosition, questionStatus,
-                timerDurationSeconds, publishedAt, closedAt, cancelledAt,
+                timerDurationSeconds,
+                lectureId, sectionId, subsectionId,
+                topicId, conceptId, learningObjectiveId,
+                difficulty, questionType, correctAnswer,
+                pollOpenedAt, pollClosedAt, cancelledAt,
                 createdAt, updatedAt
         );
     }
@@ -94,8 +140,17 @@ public class QuizQuestionEntity {
     public int getSequencePosition() { return sequencePosition; }
     public QuestionStatus getQuestionStatus() { return questionStatus; }
     public int getTimerDurationSeconds() { return timerDurationSeconds; }
-    public Instant getPublishedAt() { return publishedAt; }
-    public Instant getClosedAt() { return closedAt; }
+    public UUID getLectureId() { return lectureId; }
+    public UUID getSectionId() { return sectionId; }
+    public UUID getSubsectionId() { return subsectionId; }
+    public UUID getTopicId() { return topicId; }
+    public UUID getConceptId() { return conceptId; }
+    public UUID getLearningObjectiveId() { return learningObjectiveId; }
+    public String getDifficulty() { return difficulty; }
+    public String getQuestionType() { return questionType; }
+    public String getCorrectAnswer() { return correctAnswer; }
+    public Instant getPollOpenedAt() { return pollOpenedAt; }
+    public Instant getPollClosedAt() { return pollClosedAt; }
     public Instant getCancelledAt() { return cancelledAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

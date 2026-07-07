@@ -39,7 +39,7 @@ public class TimerExpirySweeper {
             QuizQuestion question = questionRepository.findById(timer.getQuizQuestionId())
                     .orElse(null);
 
-            if (question == null || !question.isRunning()) {
+            if (question == null || (!question.isRunning() && !question.isPollOpen())) {
                 continue;
             }
 

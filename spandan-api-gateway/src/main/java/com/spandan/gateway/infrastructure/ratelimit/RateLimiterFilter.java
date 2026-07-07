@@ -1,95 +1,73 @@
 package com.spandan.gateway.infrastructure.ratelimit;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.spandan.gateway.infrastructure.error.ErrorEnvelope;
+import com.spandan.gateway.infrastructure.error.ErrorResponseWriter;
+import com.spandan.gateway.infrastructure.logging.ServerWebExchangeAttributes;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+/**
+ * Local fallback rate-limit GlobalFilter.
+ *
+ * <p>The primary rate-limiting is performed by Spring Cloud Gateway's built-in
+ * {@code RequestRateLimiter} (Redis-backed), configured in {@code application.yml}.
+ * This filter is the LOCAL second-line defense — when Redis is unhealthy, this filter
+ * continues to enforce a per-principal cap so the gateway cannot be used as a DOS amplifier.
+ *
+ * <p>Runs after authentication (order 300) so the principal key can be derived from the
+ * resolved user id.
+ */
 @Component
+@Order(300)
 public class RateLimiterFilter implements GlobalFilter, Ordered {
 
-    private static final Logger log = LoggerFactory.getLogger(RateLimiterFilter.class);
-
-    private static final int USER_LIMIT = 100;
-    private static final int IP_LIMIT = 1000;
-    private static final long WINDOW_SECONDS = 60;
-
-    private final RedisRateLimiter redisRateLimiter;
     private final LocalRateLimiter localRateLimiter;
+    private final ErrorResponseWriter errorWriter;
 
-    private volatile boolean redisAvailable = true;
-
-    public RateLimiterFilter(RedisRateLimiter redisRateLimiter, LocalRateLimiter localRateLimiter) {
-        this.redisRateLimiter = redisRateLimiter;
+    public RateLimiterFilter(LocalRateLimiter localRateLimiter, ErrorResponseWriter errorWriter) {
         this.localRateLimiter = localRateLimiter;
+        this.errorWriter = errorWriter;
     }
 
     @Override
     public int getOrder() {
-        return -50;
+        return 300;
     }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        String userId = exchange.getRequest().getHeaders().getFirst("X-User-Id");
-        String clientIp = exchange.getRequest().getRemoteAddress() != null
-                ? exchange.getRequest().getRemoteAddress().getAddress().getHostAddress()
-                : "unknown";
+        ServerHttpRequest request = exchange.getRequest();
+        String userId = ServerWebExchangeAttributes.userId(exchange);
+        String principalKey = userId == null || "-".equals(userId) ? ipKey(request) : "user:" + userId;
 
-        String userKey = "rate_limit:user:" + (userId != null ? userId : "anonymous");
-        String ipKey = "rate_limit:ip:" + clientIp;
-
-        if (redisAvailable) {
-            return rateLimiterFilter(exchange, chain, userKey, ipKey);
-        }
-
-        return localLimiterFilter(exchange, chain, userKey, ipKey);
-    }
-
-    private Mono<Void> rateLimiterFilter(ServerWebExchange exchange, GatewayFilterChain chain,
-                                          String userKey, String ipKey) {
-        return redisRateLimiter.tryAcquire(ipKey, IP_LIMIT, WINDOW_SECONDS)
-                .flatMap(ipAllowed -> {
-                    if (!ipAllowed) {
-                        return Mono.error(new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                                "Too many requests from your IP. Please retry later."));
-                    }
-                    return redisRateLimiter.tryAcquire(userKey, USER_LIMIT, WINDOW_SECONDS);
-                })
-                .flatMap(userAllowed -> {
-                    if (!userAllowed) {
-                        return Mono.error(new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                                "Too many requests. Please retry later."));
-                    }
-                    return chain.filter(exchange);
-                })
-                .onErrorResume(e -> {
-                    if (e instanceof ResponseStatusException) {
-                        return Mono.error(e);
-                    }
-                    log.warn("Redis rate limiter error, falling back to local: {}", e.getMessage());
-                    redisAvailable = false;
-                    return localLimiterFilter(exchange, chain, userKey, ipKey);
-                });
-    }
-
-    private Mono<Void> localLimiterFilter(ServerWebExchange exchange, GatewayFilterChain chain,
-                                           String userKey, String ipKey) {
-        if (!localRateLimiter.tryAcquire(ipKey, IP_LIMIT * 2, WINDOW_SECONDS)) {
-            return Mono.error(new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                    "Too many requests from your IP. Please retry later."));
-        }
-        if (!localRateLimiter.tryAcquire(userKey, USER_LIMIT * 2, WINDOW_SECONDS)) {
-            return Mono.error(new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                    "Too many requests. Please retry later."));
+        if (!localRateLimiter.tryAcquire(principalKey)) {
+            exchange.getAttributes().put(ServerWebExchangeAttributes.RATE_LIMITED, Boolean.TRUE);
+            String path = request.getURI().getPath();
+            String correlationId = ServerWebExchangeAttributes.correlationId(exchange);
+            ErrorEnvelope envelope = ErrorEnvelope
+                    .of("rate_limited", "Too many requests; retry after a short backoff", 429, path, correlationId)
+                    .withRetryAfter(1);
+            return errorWriter.write(exchange.getResponse(), HttpStatus.TOO_MANY_REQUESTS, envelope);
         }
         return chain.filter(exchange);
     }
 
+    private String ipKey(ServerHttpRequest request) {
+        String forwarded = request.getHeaders().getFirst("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            int comma = forwarded.indexOf(',');
+            return "ip:" + (comma > 0 ? forwarded.substring(0, comma).trim() : forwarded.trim());
+        }
+        if (request.getRemoteAddress() != null && request.getRemoteAddress().getAddress() != null) {
+            return "ip:" + request.getRemoteAddress().getAddress().getHostAddress();
+        }
+        return "ip:unknown";
+    }
 }

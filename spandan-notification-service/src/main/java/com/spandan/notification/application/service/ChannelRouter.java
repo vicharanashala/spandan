@@ -2,7 +2,6 @@ package com.spandan.notification.application.service;
 
 import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.entity.UserNotificationPreference;
-import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.TargetType;
 import com.spandan.notification.domain.port.ChannelDeliveryResult;
 import com.spandan.notification.domain.port.NotificationChannel;

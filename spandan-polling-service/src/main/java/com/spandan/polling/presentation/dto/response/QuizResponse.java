@@ -8,5 +8,8 @@ public record QuizResponse(
         String quizStatus,
         int currentQuestionNumber,
         int totalQuestions,
+        UUID lectureId,
+        UUID sectionId,
+        UUID subsectionId,
         Instant createdAt
 ) {}

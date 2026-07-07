@@ -44,7 +44,9 @@ class NotificationOrchestratorTest {
         teacherId = UUID.randomUUID();
         sessionId = UUID.randomUUID();
         when(channelRouter.deliver(any(), any())).thenReturn(ChannelDeliveryResult.success());
-        when(channelRouter.deliverAsync(any(), any(), any(), any())).thenAnswer(i -> null);
+        when(channelRouter.deliverAsync(any(), any(), any(), any())).thenAnswer(i -> {
+            return null;
+        });
     }
 
     @Test

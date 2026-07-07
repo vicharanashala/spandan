@@ -66,7 +66,8 @@ public class QuizService {
         validateNoDuplicatePositions(request.questions());
         validateTimerBounds(request.questions());
 
-        Quiz quiz = Quiz.create(teacherId, request.questions().size());
+        Quiz quiz = Quiz.create(teacherId, request.questions().size(),
+                request.lectureId(), request.sectionId(), request.subsectionId());
         quiz.markScheduled();
         quiz = quizRepository.save(quiz);
 
@@ -74,7 +75,10 @@ public class QuizService {
         List<QuizQuestion> questions = request.questions().stream()
                 .map(slot -> QuizQuestion.create(
                         quizId, slot.questionRefId(),
-                        slot.sequencePosition(), slot.timerDurationSeconds()))
+                        slot.sequencePosition(), slot.timerDurationSeconds(),
+                        request.lectureId(), request.sectionId(), request.subsectionId(),
+                        slot.topicId(), slot.conceptId(), slot.learningObjectiveId(),
+                        slot.difficulty(), slot.questionType(), slot.correctAnswer()))
                 .toList();
 
         questionRepository.saveAll(questions);
@@ -106,7 +110,9 @@ public class QuizService {
 
         eventPublisher.publish(new PollingEvent(
                 UUID.randomUUID(), "QuizStartingEvent", quizId, null, null, null,
-                Instant.now(), null, quiz.getTotalQuestions()
+                Instant.now(), null, quiz.getTotalQuestions(), quiz.getTeacherId(),
+                quiz.getLectureId(), quiz.getSectionId(), null,
+                null, null, null, null, null, null
         ));
 
         quizSequencer.publishQuestion(quizId, questions.get(0));
@@ -186,7 +192,9 @@ public class QuizService {
 
         eventPublisher.publish(new PollingEvent(
                 UUID.randomUUID(), "QuizCompleted", quizId, null, null, null,
-                Instant.now(), null, quiz.getTotalQuestions()
+                Instant.now(), null, quiz.getTotalQuestions(), quiz.getTeacherId(),
+                quiz.getLectureId(), quiz.getSectionId(), null,
+                null, null, null, null, null, null
         ));
 
         return QuizMapper.toResponse(quiz);
@@ -217,10 +225,35 @@ public class QuizService {
 
         eventPublisher.publish(new PollingEvent(
                 UUID.randomUUID(), "QuizCancelled", quizId, lastQuestionId, null, null,
-                Instant.now(), null, null
+                Instant.now(), null, null, quiz.getTeacherId(),
+                quiz.getLectureId(), quiz.getSectionId(), null,
+                null, null, null, null, null, null
         ));
 
         return QuizMapper.toResponse(quiz);
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    public void skipQuestion(UUID quizId, UUID questionId, UUID teacherId) {
+        Quiz quiz = quizRepository.findByIdWithLock(quizId)
+                .orElseThrow(() -> new QuizNotFoundException(quizId));
+
+        verifyOwnership(quiz, teacherId);
+
+        QuizQuestion currentQuestion = questionRepository.findByIdWithLock(questionId)
+                .orElseThrow(() -> new QuestionNotFoundException(questionId));
+
+        if (!currentQuestion.isRunning() && !currentQuestion.isPollOpen()
+                && currentQuestion.getQuestionStatus() != QuestionStatus.PUBLISHED
+                && currentQuestion.getQuestionStatus() != QuestionStatus.TIMER_EXPIRED) {
+            throw new IllegalStateTransitionException(
+                    "Can only skip a question in POLL_OPEN, RUNNING, or TIMER_EXPIRED state, current: "
+                            + currentQuestion.getQuestionStatus());
+        }
+
+        quizSequencer.advanceToNextQuestion(quizId, questionId);
+
+        log.info("Teacher {} skipped question {} in quiz {}", teacherId, questionId, quizId);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
@@ -281,15 +314,18 @@ public class QuizService {
     }
 
     private void forceCloseQuestion(QuizQuestion question) {
-        if (question.isRunning() || question.getQuestionStatus() == QuestionStatus.PUBLISHED) {
+        if (question.isRunning() || question.isPollOpen()
+                || question.getQuestionStatus() == QuestionStatus.PUBLISHED) {
             QuizTimer timer = timerRepository.findByQuizQuestionId(question.getId())
                     .orElse(null);
             if (timer != null && timer.getTimerStatus() == com.spandan.polling.domain.enums.TimerStatus.RUNNING) {
                 timer.expire();
                 timerRepository.save(timer);
             }
-            question.expireTimer();
-            question.close();
+            if (question.isRunning() || question.isPollOpen()) {
+                question.expireTimer();
+            }
+            question.closePoll();
             questionRepository.save(question);
         }
     }

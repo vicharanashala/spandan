@@ -27,6 +27,15 @@ public class QuizEntity {
     @Column(name = "total_questions", nullable = false)
     private int totalQuestions;
 
+    @Column(name = "lecture_id")
+    private UUID lectureId;
+
+    @Column(name = "section_id")
+    private UUID sectionId;
+
+    @Column(name = "subsection_id")
+    private UUID subsectionId;
+
     @Column(name = "started_at")
     private Instant startedAt;
 
@@ -42,13 +51,17 @@ public class QuizEntity {
     public QuizEntity() {}
 
     public QuizEntity(UUID id, UUID teacherId, QuizStatus quizStatus, int currentQuestionNumber,
-                      int totalQuestions, Instant startedAt, Instant endedAt,
+                      int totalQuestions, UUID lectureId, UUID sectionId, UUID subsectionId,
+                      Instant startedAt, Instant endedAt,
                       Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.teacherId = teacherId;
         this.quizStatus = quizStatus;
         this.currentQuestionNumber = currentQuestionNumber;
         this.totalQuestions = totalQuestions;
+        this.lectureId = lectureId;
+        this.sectionId = sectionId;
+        this.subsectionId = subsectionId;
         this.startedAt = startedAt;
         this.endedAt = endedAt;
         this.createdAt = createdAt;
@@ -59,6 +72,7 @@ public class QuizEntity {
         return new QuizEntity(
                 quiz.getId(), quiz.getTeacherId(), quiz.getQuizStatus(),
                 quiz.getCurrentQuestionNumber(), quiz.getTotalQuestions(),
+                quiz.getLectureId(), quiz.getSectionId(), quiz.getSubsectionId(),
                 quiz.getStartedAt(), quiz.getEndedAt(),
                 quiz.getCreatedAt(), quiz.getUpdatedAt()
         );
@@ -67,6 +81,7 @@ public class QuizEntity {
     public Quiz toDomain() {
         return new Quiz(
                 id, teacherId, quizStatus, currentQuestionNumber, totalQuestions,
+                lectureId, sectionId, subsectionId,
                 startedAt, endedAt, createdAt, updatedAt
         );
     }
@@ -81,6 +96,9 @@ public class QuizEntity {
     public QuizStatus getQuizStatus() { return quizStatus; }
     public int getCurrentQuestionNumber() { return currentQuestionNumber; }
     public int getTotalQuestions() { return totalQuestions; }
+    public UUID getLectureId() { return lectureId; }
+    public UUID getSectionId() { return sectionId; }
+    public UUID getSubsectionId() { return subsectionId; }
     public Instant getStartedAt() { return startedAt; }
     public Instant getEndedAt() { return endedAt; }
     public Instant getCreatedAt() { return createdAt; }

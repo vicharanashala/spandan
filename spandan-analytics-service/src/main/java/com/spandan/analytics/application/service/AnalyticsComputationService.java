@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -25,53 +26,62 @@ public class AnalyticsComputationService {
     private final QuestionAnalyticsJpaRepository questionRepo;
     private final StudentPerformanceJpaRepository studentRepo;
     private final LeaderboardEntryJpaRepository leaderboardRepo;
+    private final LearningObjectiveMasteryRepository loRepo;
+    private final EngagementMetricsRepository engagementRepo;
 
     public AnalyticsComputationService(SessionAnalyticsJpaRepository sessionRepo,
                                        QuestionAnalyticsJpaRepository questionRepo,
                                        StudentPerformanceJpaRepository studentRepo,
-                                       LeaderboardEntryJpaRepository leaderboardRepo) {
+                                       LeaderboardEntryJpaRepository leaderboardRepo,
+                                       LearningObjectiveMasteryRepository loRepo,
+                                       EngagementMetricsRepository engagementRepo) {
         this.sessionRepo = sessionRepo;
         this.questionRepo = questionRepo;
         this.studentRepo = studentRepo;
         this.leaderboardRepo = leaderboardRepo;
+        this.loRepo = loRepo;
+        this.engagementRepo = engagementRepo;
     }
 
     @Transactional
-    public void computeAnalytics(UUID quizId, List<Map<String, Object>> responses) {
-        Map<UUID, List<Map<String, Object>>> byQuestion = responses.stream()
-                .collect(Collectors.groupingBy(r -> UUID.fromString((String) r.get("questionId"))));
+    public void computeAnalytics(UUID sessionId, List<Map<String, Object>> interactions) {
+        Map<UUID, List<Map<String, Object>>> byQuestion = interactions.stream()
+                .filter(i -> "ANSWERED".equals(i.get("eventType")) || "TIMED_OUT".equals(i.get("eventType")))
+                .collect(Collectors.groupingBy(
+                        i -> UUID.fromString((String) i.get("questionId"))));
 
         List<QuestionAnalytics> questionAnalyticsList = new ArrayList<>();
         int totalCorrect = 0;
         int totalResponses = 0;
-        double totalResponseTime = 0;
+        double totalResponseTimeMs = 0;
         int responseTimeCount = 0;
 
         for (Map.Entry<UUID, List<Map<String, Object>>> entry : byQuestion.entrySet()) {
             UUID questionId = entry.getKey();
-            List<Map<String, Object>> questionResponses = entry.getValue();
+            List<Map<String, Object>> questionInteractions = entry.getValue();
 
             int correct = 0;
             int incorrect = 0;
             int skipped = 0;
-            double sumResponseTime = 0;
+            double sumResponseTimeMs = 0;
             int rtCount = 0;
-            Set<String> answeringStudents = new HashSet<>();
 
-            for (Map<String, Object> r : questionResponses) {
-                String status = (String) r.get("submissionStatus");
-                if (!"ACCEPTED".equals(status)) {
+            for (Map<String, Object> interaction : questionInteractions) {
+                boolean isTimeout = Boolean.TRUE.equals(interaction.get("timeout"));
+                boolean isAnswered = Boolean.TRUE.equals(interaction.get("answered"));
+
+                if (isTimeout || !isAnswered) {
                     skipped++;
                     continue;
                 }
-                answeringStudents.add((String) r.get("studentId"));
-                boolean isCorrect = Boolean.TRUE.equals(r.get("isCorrect"));
+
+                boolean isCorrect = Boolean.TRUE.equals(interaction.get("isCorrect"));
                 if (isCorrect) correct++;
                 else incorrect++;
 
-                Object rt = r.get("responseTimestamp");
-                if (rt != null) {
-                    sumResponseTime += parseResponseTime(r);
+                Long rtMs = getResponseTimeMs(interaction);
+                if (rtMs != null) {
+                    sumResponseTimeMs += rtMs;
                     rtCount++;
                 }
             }
@@ -79,63 +89,70 @@ public class AnalyticsComputationService {
             int received = correct + incorrect;
             totalCorrect += correct;
             totalResponses += received;
+
             BigDecimal accuracy = received > 0
                     ? BigDecimal.valueOf(correct).divide(BigDecimal.valueOf(received), 4, RoundingMode.HALF_UP)
                         .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
-            BigDecimal avgRt = rtCount > 0
-                    ? BigDecimal.valueOf(sumResponseTime / rtCount).setScale(2, RoundingMode.HALF_UP)
+            BigDecimal avgRtSeconds = rtCount > 0
+                    ? BigDecimal.valueOf(sumResponseTimeMs / rtCount / 1000.0).setScale(2, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
-            int totalForQuestion = questionResponses.size();
+            int totalForQuestion = questionInteractions.size();
             BigDecimal skipRate = totalForQuestion > 0
                     ? BigDecimal.valueOf(skipped).divide(BigDecimal.valueOf(totalForQuestion), 4, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
+
             double rawDifficulty = W1 * (1 - accuracy.doubleValue() / 100.0)
-                    + W2 * Math.min(avgRt.doubleValue() / 60.0, 1.0)
+                    + W2 * Math.min(avgRtSeconds.doubleValue() / 60.0, 1.0)
                     + W3 * skipRate.doubleValue();
             BigDecimal difficulty = BigDecimal.valueOf(rawDifficulty * 100)
                     .setScale(2, RoundingMode.HALF_UP);
 
             if (rtCount > 0) {
-                totalResponseTime += sumResponseTime;
+                totalResponseTimeMs += sumResponseTimeMs;
                 responseTimeCount += rtCount;
             }
 
             questionAnalyticsList.add(new QuestionAnalytics(
-                    quizId, questionId, received, correct, incorrect, skipped,
-                    accuracy, avgRt, difficulty));
+                    sessionId, questionId, received, correct, incorrect, skipped,
+                    accuracy, avgRtSeconds, difficulty));
         }
 
-        questionRepo.deleteAll(questionRepo.findByQuizIdOrderByQuestionId(quizId));
+        questionRepo.deleteAll(questionRepo.findByQuizIdOrderByQuestionId(sessionId));
         questionRepo.saveAll(questionAnalyticsList);
 
-        Map<UUID, List<Map<String, Object>>> byStudent = responses.stream()
-                .collect(Collectors.groupingBy(r -> UUID.fromString((String) r.get("studentId"))));
+        Map<UUID, List<Map<String, Object>>> byStudent = interactions.stream()
+                .filter(i -> "ANSWERED".equals(i.get("eventType")) || "TIMED_OUT".equals(i.get("eventType")))
+                .collect(Collectors.groupingBy(
+                        i -> UUID.fromString((String) i.get("studentId"))));
 
         List<StudentPerformance> performances = new ArrayList<>();
         for (Map.Entry<UUID, List<Map<String, Object>>> entry : byStudent.entrySet()) {
             UUID studentId = entry.getKey();
-            List<Map<String, Object>> studentResponses = entry.getValue();
+            List<Map<String, Object>> studentInteractions = entry.getValue();
 
             int correct = 0;
             int incorrect = 0;
             int skipped = 0;
-            double sumRt = 0;
+            double sumRtMs = 0;
             int rtCount = 0;
 
-            for (Map<String, Object> r : studentResponses) {
-                String status = (String) r.get("submissionStatus");
-                if (!"ACCEPTED".equals(status)) {
+            for (Map<String, Object> interaction : studentInteractions) {
+                boolean isTimeout = Boolean.TRUE.equals(interaction.get("timeout"));
+                boolean isAnswered = Boolean.TRUE.equals(interaction.get("answered"));
+
+                if (isTimeout || !isAnswered) {
                     skipped++;
                     continue;
                 }
-                boolean isCorrect = Boolean.TRUE.equals(r.get("isCorrect"));
+
+                boolean isCorrect = Boolean.TRUE.equals(interaction.get("isCorrect"));
                 if (isCorrect) correct++;
                 else incorrect++;
 
-                Object rt = r.get("responseTimestamp");
-                if (rt != null) {
-                    sumRt += parseResponseTime(r);
+                Long rtMs = getResponseTimeMs(interaction);
+                if (rtMs != null) {
+                    sumRtMs += rtMs;
                     rtCount++;
                 }
             }
@@ -145,17 +162,17 @@ public class AnalyticsComputationService {
                     ? BigDecimal.valueOf(correct).divide(BigDecimal.valueOf(answered), 4, RoundingMode.HALF_UP)
                         .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
-            BigDecimal avgRt = rtCount > 0
-                    ? BigDecimal.valueOf(sumRt / rtCount).setScale(2, RoundingMode.HALF_UP)
+            BigDecimal avgRtSeconds = rtCount > 0
+                    ? BigDecimal.valueOf(sumRtMs / rtCount / 1000.0).setScale(2, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
             BigDecimal totalScore = BigDecimal.valueOf(correct);
 
             performances.add(new StudentPerformance(
-                    quizId, studentId, answered, correct, incorrect, skipped,
-                    accuracy, totalScore, avgRt));
+                    sessionId, studentId, answered, correct, incorrect, skipped,
+                    accuracy, totalScore, avgRtSeconds));
         }
 
-        studentRepo.deleteAll(studentRepo.findByQuizId(quizId));
+        studentRepo.deleteAll(studentRepo.findByQuizId(sessionId));
         studentRepo.saveAll(performances);
 
         int totalStudents = performances.size();
@@ -172,23 +189,27 @@ public class AnalyticsComputationService {
                     .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
         BigDecimal classAvgRt = responseTimeCount > 0
-                ? BigDecimal.valueOf(totalResponseTime / responseTimeCount).setScale(2, RoundingMode.HALF_UP)
+                ? BigDecimal.valueOf(totalResponseTimeMs / responseTimeCount / 1000.0).setScale(2, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
 
-        sessionRepo.findByQuizId(quizId).ifPresentOrElse(
+        sessionRepo.findByQuizId(sessionId).ifPresentOrElse(
                 existing -> {},
                 () -> sessionRepo.save(new SessionAnalytics(
-                        quizId, totalQuestions, totalStudents, classAccuracy,
+                        sessionId, totalQuestions, totalStudents, classAccuracy,
                         participationRate, classAvgRt)));
 
-        generateLeaderboard(quizId, performances);
+        generateLeaderboard(sessionId, performances);
 
-        log.info("Analytics computed for quiz {}: {} questions, {} students", quizId, totalQuestions, totalStudents);
+        computeLearningObjectiveMastery(sessionId, interactions);
+
+        computeEngagementMetrics(sessionId, interactions);
+
+        log.info("Analytics computed for session {}: {} questions, {} students", sessionId, totalQuestions, totalStudents);
     }
 
     @Transactional
-    public void generateLeaderboard(UUID quizId, List<StudentPerformance> performances) {
-        leaderboardRepo.deleteByQuizId(quizId);
+    public void generateLeaderboard(UUID sessionId, List<StudentPerformance> performances) {
+        leaderboardRepo.deleteByQuizId(sessionId);
 
         List<StudentPerformance> sorted = performances.stream()
                 .sorted(Comparator
@@ -213,26 +234,153 @@ public class AnalyticsComputationService {
                 currentRank = currentRank + skippedRanks;
                 skippedRanks = 0;
             }
-
             entries.add(new LeaderboardEntry(
-                    quizId, sp.getStudentId(), currentRank,
+                    sessionId, sp.getStudentId(), currentRank,
                     sp.getTotalScore(), sp.getAccuracyPct()));
             previous = sp;
         }
-
         leaderboardRepo.saveAll(entries);
-        log.info("Leaderboard generated for quiz {}: {} entries", quizId, entries.size());
+        log.info("Leaderboard generated for session {}: {} entries", sessionId, entries.size());
     }
 
-    private double parseResponseTime(Map<String, Object> response) {
-        try {
-            Object ts = response.get("responseTimestamp");
-            if (ts instanceof String s) {
-                return 0;
+    private void computeLearningObjectiveMastery(UUID sessionId, List<Map<String, Object>> interactions) {
+        List<LearningObjectiveMastery> masteries = new ArrayList<>();
+
+        Map<String, List<Map<String, Object>>> byObjective = interactions.stream()
+                .filter(i -> i.get("learningObjective") != null)
+                .filter(i -> "ANSWERED".equals(i.get("eventType")) || "TIMED_OUT".equals(i.get("eventType")))
+                .collect(Collectors.groupingBy(
+                        i -> (String) i.get("learningObjective")));
+
+        for (Map.Entry<String, List<Map<String, Object>>> entry : byObjective.entrySet()) {
+            String learningObjective = entry.getKey();
+            List<Map<String, Object>> objInteractions = entry.getValue();
+
+            Map<UUID, List<Map<String, Object>>> byStudent = objInteractions.stream()
+                    .collect(Collectors.groupingBy(
+                            i -> UUID.fromString((String) i.get("studentId"))));
+
+            for (Map.Entry<UUID, List<Map<String, Object>>> studentEntry : byStudent.entrySet()) {
+                UUID studentId = studentEntry.getKey();
+                List<Map<String, Object>> studentInteractions = studentEntry.getValue();
+
+                int attempted = 0;
+                int correct = 0;
+                for (Map<String, Object> interaction : studentInteractions) {
+                    boolean isTimeout = Boolean.TRUE.equals(interaction.get("timeout"));
+                    boolean isAnswered = Boolean.TRUE.equals(interaction.get("answered"));
+                    if (isTimeout || !isAnswered) continue;
+                    attempted++;
+                    if (Boolean.TRUE.equals(interaction.get("isCorrect"))) correct++;
+                }
+
+                BigDecimal masteryPct = attempted > 0
+                        ? BigDecimal.valueOf(correct).divide(BigDecimal.valueOf(attempted), 4, RoundingMode.HALF_UP)
+                            .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+
+                masteries.add(new LearningObjectiveMastery(
+                        sessionId, studentId, learningObjective, attempted, correct, masteryPct));
             }
-        } catch (Exception e) {
-            return 0;
         }
-        return 0;
+
+        List<LearningObjectiveMastery> existing = loRepo.findBySessionId(sessionId);
+        if (!existing.isEmpty()) loRepo.deleteAll(existing);
+        if (!masteries.isEmpty()) loRepo.saveAll(masteries);
+
+        log.info("Learning objective mastery computed for session {}: {} entries", sessionId, masteries.size());
+    }
+
+    private void computeEngagementMetrics(UUID sessionId, List<Map<String, Object>> interactions) {
+        List<EngagementMetrics> metricsList = new ArrayList<>();
+
+        Map<UUID, List<Map<String, Object>>> byStudent = interactions.stream()
+                .collect(Collectors.groupingBy(
+                        i -> UUID.fromString((String) i.get("studentId"))));
+
+        for (Map.Entry<UUID, List<Map<String, Object>>> entry : byStudent.entrySet()) {
+            UUID studentId = entry.getKey();
+            List<Map<String, Object>> studentInteractions = entry.getValue();
+
+            int totalDisplayed = (int) studentInteractions.stream()
+                    .filter(i -> "DISPLAYED".equals(i.get("eventType")))
+                    .count();
+            int totalAnswered = (int) studentInteractions.stream()
+                    .filter(i -> Boolean.TRUE.equals(i.get("answered")))
+                    .count();
+            int totalTimeout = (int) studentInteractions.stream()
+                    .filter(i -> Boolean.TRUE.equals(i.get("timeout")))
+                    .count();
+
+            BigDecimal participationRate = totalDisplayed > 0
+                    ? BigDecimal.valueOf(totalAnswered).divide(BigDecimal.valueOf(totalDisplayed), 4, RoundingMode.HALF_UP)
+                        .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
+            BigDecimal timeoutRate = totalDisplayed > 0
+                    ? BigDecimal.valueOf(totalTimeout).divide(BigDecimal.valueOf(totalDisplayed), 4, RoundingMode.HALF_UP)
+                        .multiply(HUNDRED).setScale(2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
+            String responseTimeTrend = computeResponseTimeTrend(studentInteractions);
+
+            String engagementLevel;
+            if (participationRate.compareTo(BigDecimal.valueOf(80)) >= 0
+                    && timeoutRate.compareTo(BigDecimal.valueOf(10)) < 0
+                    && !"DECLINING".equals(responseTimeTrend)) {
+                engagementLevel = "HIGH";
+            } else if (participationRate.compareTo(BigDecimal.valueOf(50)) >= 0
+                    && timeoutRate.compareTo(BigDecimal.valueOf(25)) < 0) {
+                engagementLevel = "MEDIUM";
+            } else {
+                engagementLevel = "LOW";
+            }
+
+            metricsList.add(new EngagementMetrics(
+                    sessionId, studentId, responseTimeTrend, timeoutRate,
+                    participationRate, engagementLevel, totalAnswered, totalDisplayed));
+        }
+
+        List<EngagementMetrics> existing = engagementRepo.findBySessionId(sessionId);
+        if (!existing.isEmpty()) engagementRepo.deleteAll(existing);
+        if (!metricsList.isEmpty()) engagementRepo.saveAll(metricsList);
+
+        long highCount = metricsList.stream().filter(m -> "HIGH".equals(m.getEngagementLevel())).count();
+        log.info("Engagement metrics computed for session {}: {} students ({} HIGH)",
+                sessionId, metricsList.size(), highCount);
+    }
+
+    private String computeResponseTimeTrend(List<Map<String, Object>> studentInteractions) {
+        List<Map<String, Object>> answered = studentInteractions.stream()
+                .filter(i -> Boolean.TRUE.equals(i.get("answered")) && getResponseTimeMs(i) != null)
+                .sorted(Comparator.comparing(i -> {
+                    Object ts = i.get("eventTimestamp");
+                    if (ts instanceof String s) return s;
+                    return "";
+                }))
+                .collect(Collectors.toList());
+
+        if (answered.size() < 4) return "STABLE";
+
+        int half = answered.size() / 2;
+        double earlyAvg = answered.subList(0, half).stream()
+                .mapToDouble(i -> getResponseTimeMs(i))
+                .average().orElse(0);
+        double lateAvg = answered.subList(half, answered.size()).stream()
+                .mapToDouble(i -> getResponseTimeMs(i))
+                .average().orElse(0);
+
+        if (lateAvg < earlyAvg * 0.8) return "IMPROVING";
+        if (lateAvg > earlyAvg * 1.2) return "DECLINING";
+        return "STABLE";
+    }
+
+    private Long getResponseTimeMs(Map<String, Object> interaction) {
+        Object rt = interaction.get("responseTimeMs");
+        if (rt instanceof Number n) return n.longValue();
+        if (rt instanceof String s) {
+            try { return Long.parseLong(s); } catch (NumberFormatException e) { return null; }
+        }
+        return null;
     }
 }

@@ -14,6 +14,7 @@ import com.spandan.questiongen.infrastructure.provider.ProviderRegistry;
 import com.spandan.questiongen.infrastructure.redis.LockRenewalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,13 +37,17 @@ public class QuestionGenerationOrchestrator {
     private final ProviderRegistry providerRegistry;
     private final QuestionGenerationEventProducer eventProducer;
     private final TranscriptServiceClient transcriptServiceClient;
+    private final String generationModel;
+    private final String generationVersion;
 
     public QuestionGenerationOrchestrator(QuestionSetRepository questionSetRepository,
                                           GeneratedQuestionRepository generatedQuestionRepository,
                                           LockManager lockManager, LockRenewalService lockRenewalService,
                                           ProviderRegistry providerRegistry,
                                           QuestionGenerationEventProducer eventProducer,
-                                          TranscriptServiceClient transcriptServiceClient) {
+                                          TranscriptServiceClient transcriptServiceClient,
+                                          @Value("${question-generation.generation-model:gpt-4}") String generationModel,
+                                          @Value("${question-generation.generation-version:mcq_prompt_v1}") String generationVersion) {
         this.questionSetRepository = questionSetRepository;
         this.generatedQuestionRepository = generatedQuestionRepository;
         this.lockManager = lockManager;
@@ -50,10 +55,13 @@ public class QuestionGenerationOrchestrator {
         this.providerRegistry = providerRegistry;
         this.eventProducer = eventProducer;
         this.transcriptServiceClient = transcriptServiceClient;
+        this.generationModel = generationModel;
+        this.generationVersion = generationVersion;
     }
 
     @Async
-    public void requestGeneration(UUID transcriptId, UUID sessionId, UUID teacherId) {
+    public void requestGeneration(UUID transcriptId, UUID sessionId, UUID teacherId,
+                                   UUID lectureId, UUID sectionId, UUID subsectionId) {
         String podId = UUID.randomUUID().toString();
         boolean locked = lockManager.acquireLock(transcriptId, podId);
         if (!locked) {
@@ -72,6 +80,7 @@ public class QuestionGenerationOrchestrator {
             questionSet.setSessionId(sessionId);
             questionSet.setTranscriptId(transcriptId);
             questionSet.setTeacherId(teacherId);
+            questionSet.setLectureId(lectureId);
             questionSet.setAttemptNumber(attemptNumber);
             questionSet.setGenerationStatus(GenerationStatus.GENERATING);
             questionSet.setExpiryAt(Instant.now().plusSeconds(50 * 3600));
@@ -85,7 +94,7 @@ public class QuestionGenerationOrchestrator {
                 throw GenerationException.badRequest("Transcript text is empty for " + transcriptId);
             }
 
-            String promptTemplate = loadPromptTemplate(provider.name());
+            String promptTemplate = generationVersion;
             questionSet.setPromptVersion(promptTemplate);
 
             var request = new QuestionGenerationProvider.GenerationRequest(
@@ -97,9 +106,10 @@ public class QuestionGenerationOrchestrator {
             if (!result.success() || result.questions().isEmpty()) {
                 var fallback = providerRegistry.getFallback();
                 if (fallback.isPresent()) {
-                    log.warn("Primary provider {} failed, falling back to {}", provider.name(), fallback.get().name());
-                    questionSet.setAiProvider(fallback.get().name());
-                    result = fallback.get().generate(request);
+                    var fallbackProvider = fallback.get();
+                    log.warn("Primary provider {} failed, falling back to {}", provider.name(), fallbackProvider.name());
+                    questionSet.setAiProvider(fallbackProvider.name());
+                    result = fallbackProvider.generate(request);
                 }
             }
 
@@ -111,12 +121,24 @@ public class QuestionGenerationOrchestrator {
                 return;
             }
 
+            Instant now = Instant.now();
+            int sequence = 0;
+
             for (var qData : result.questions()) {
+                sequence++;
                 var question = new GeneratedQuestion();
                 question.setQuestionSet(questionSet);
                 question.setQuestionType(QuestionType.valueOf(qData.questionType()));
                 question.setQuestionText(qData.questionText());
                 question.setCorrectAnswer(qData.correctAnswer());
+                question.setLectureId(lectureId);
+                question.setSectionId(sectionId);
+                question.setSubsectionId(subsectionId);
+                question.setDifficulty(qData.difficulty() != null ? qData.difficulty() : "MEDIUM");
+                question.setQuestionSequence(sequence);
+                question.setGeneratedAt(now);
+                question.setGenerationModel(generationModel);
+                question.setGenerationVersion(generationVersion);
                 try {
                     var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
                     question.setOptions(mapper.writeValueAsString(qData.options()));
@@ -133,6 +155,9 @@ public class QuestionGenerationOrchestrator {
                 eventProducer.questionsGenerated(questionSet);
                 eventProducer.questionsStored(questionSet);
                 eventProducer.questionsReadyForReview(questionSet);
+                for (var question : questionSet.getQuestions()) {
+                    eventProducer.questionGeneratedEvent(question, lectureId, sectionId, subsectionId);
+                }
             });
 
         } catch (Exception e) {
@@ -177,11 +202,8 @@ public class QuestionGenerationOrchestrator {
             && existing.getGenerationStatus() != GenerationStatus.GENERATED) {
             throw GenerationException.conflict("Can only regenerate FAILED or GENERATED sets");
         }
-        requestGeneration(existing.getTranscriptId(), existing.getSessionId(), existing.getTeacherId());
-    }
-
-    private String loadPromptTemplate(String providerName) {
-        return "mcq_prompt_v1";
+        requestGeneration(existing.getTranscriptId(), existing.getSessionId(), existing.getTeacherId(),
+            existing.getLectureId(), null, null);
     }
 
     private void fireAfterCommit(Runnable action) {

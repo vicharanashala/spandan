@@ -25,6 +25,9 @@ public class QuestionSet {
     @Column(name = "teacher_id", nullable = false)
     private UUID teacherId;
 
+    @Column(name = "lecture_id")
+    private UUID lectureId;
+
     @Column(name = "attempt_number", nullable = false)
     private int attemptNumber;
 
@@ -63,6 +66,8 @@ public class QuestionSet {
     public void setTranscriptId(UUID transcriptId) { this.transcriptId = transcriptId; }
     public UUID getTeacherId() { return teacherId; }
     public void setTeacherId(UUID teacherId) { this.teacherId = teacherId; }
+    public UUID getLectureId() { return lectureId; }
+    public void setLectureId(UUID lectureId) { this.lectureId = lectureId; }
     public int getAttemptNumber() { return attemptNumber; }
     public void setAttemptNumber(int attemptNumber) { this.attemptNumber = attemptNumber; }
     public String getAiProvider() { return aiProvider; }

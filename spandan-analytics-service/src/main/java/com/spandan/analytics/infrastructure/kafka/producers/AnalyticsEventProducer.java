@@ -60,4 +60,42 @@ public class AnalyticsEventProducer {
         );
         kafkaTemplate.send("analytics-events", quizId.toString(), event);
     }
+
+    public void publishAnalyticsGeneratedEvent(String sessionId, String analyticsType,
+                                                Map<String, Object> analyticsData,
+                                                Map<String, Object> summary) {
+        Map<String, Object> event = Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "sessionId", sessionId,
+                "analyticsType", analyticsType,
+                "generatedAt", Instant.now().toString(),
+                "summary", summary,
+                "analyticsData", analyticsData
+        );
+        kafkaTemplate.send("analytics-output-events", sessionId, event);
+        log.info("Published AnalyticsGeneratedEvent for sessionId={} type={}", sessionId, analyticsType);
+    }
+
+    public void publishSessionAnalyticsCompleted(String sessionId) {
+        Map<String, Object> event = Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "sessionId", sessionId,
+                "completedAt", Instant.now().toString()
+        );
+        kafkaTemplate.send("session-analytics-events", sessionId, event);
+        log.info("Published SessionAnalyticsCompletedEvent for sessionId={}", sessionId);
+    }
+
+    public void publishEngagementDetected(String sessionId, String studentId, String engagementLevel) {
+        Map<String, Object> event = Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "type", "EngagementDetected",
+                "sessionId", sessionId,
+                "studentId", studentId,
+                "engagementLevel", engagementLevel,
+                "detectedAt", Instant.now().toString()
+        );
+        kafkaTemplate.send("analytics-events", sessionId, event);
+        log.info("Published EngagementDetected for studentId={} level={}", studentId, engagementLevel);
+    }
 }

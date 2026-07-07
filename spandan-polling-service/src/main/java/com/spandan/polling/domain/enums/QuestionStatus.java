@@ -6,5 +6,7 @@ public enum QuestionStatus {
     RUNNING,
     TIMER_EXPIRED,
     CLOSED,
-    CANCELLED
+    CANCELLED,
+    POLL_OPEN,
+    POLL_CLOSED
 }

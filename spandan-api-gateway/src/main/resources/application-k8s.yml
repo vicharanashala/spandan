@@ -36,16 +36,33 @@ spring:
           uri: http://spandan-notification-service:8087
           predicates:
             - Path=/api/v1/notifications/**
+            - Path=/api/v1/notification-preferences/**
 
         - id: recording-service
           uri: http://spandan-recording-service:8088
           predicates:
             - Path=/api/v1/streams/**
+            - Path=/api/v1/recordings/**
 
         - id: response-service
           uri: http://spandan-response-service:8084
           predicates:
             - Path=/api/v1/responses/**
+
+        - id: reporting-service
+          uri: http://spandan-reporting-service:8091
+          predicates:
+            - Path=/api/v1/reports/**
+
+        - id: admin-service
+          uri: http://spandan-admin-service:8092
+          predicates:
+            - Path=/api/v1/admin/**
+
+        - id: users-service
+          uri: http://spandan-users-service:8093
+          predicates:
+            - Path=/api/v1/users/**
 
         - id: real-time-gateway-websocket
           uri: ws://spandan-realtime-communication-service:8090

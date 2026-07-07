@@ -16,6 +16,9 @@ public class QuizMapper {
                 quiz.getQuizStatus().name(),
                 quiz.getCurrentQuestionNumber(),
                 quiz.getTotalQuestions(),
+                quiz.getLectureId(),
+                quiz.getSectionId(),
+                quiz.getSubsectionId(),
                 quiz.getCreatedAt()
         );
     }
@@ -26,7 +29,16 @@ public class QuizMapper {
                         q.getId(),
                         q.getSequencePosition(),
                         q.getQuestionStatus().name(),
-                        q.getTimerDurationSeconds()
+                        q.getTimerDurationSeconds(),
+                        q.getLectureId(),
+                        q.getSectionId(),
+                        q.getSubsectionId(),
+                        q.getTopicId(),
+                        q.getConceptId(),
+                        q.getLearningObjectiveId(),
+                        q.getDifficulty(),
+                        q.getQuestionType(),
+                        q.getCorrectAnswer()
                 )).toList();
 
         return new QuizDetailResponse(
@@ -35,6 +47,9 @@ public class QuizMapper {
                 quiz.getQuizStatus().name(),
                 quiz.getCurrentQuestionNumber(),
                 quiz.getTotalQuestions(),
+                quiz.getLectureId(),
+                quiz.getSectionId(),
+                quiz.getSubsectionId(),
                 quiz.getStartedAt(),
                 quiz.getEndedAt(),
                 questionSummaries,

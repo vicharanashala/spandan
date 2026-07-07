@@ -13,8 +13,8 @@ public class ProviderConfig {
     @Bean
     public RestTemplate restTemplate() {
         return new RestTemplateBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .readTimeout(Duration.ofSeconds(120))
+            .setConnectTimeout(Duration.ofSeconds(10))
+            .setReadTimeout(Duration.ofSeconds(120))
             .build();
     }
 }

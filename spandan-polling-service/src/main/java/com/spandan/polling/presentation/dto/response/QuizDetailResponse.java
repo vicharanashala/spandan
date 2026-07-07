@@ -10,6 +10,9 @@ public record QuizDetailResponse(
         String quizStatus,
         int currentQuestionNumber,
         int totalQuestions,
+        UUID lectureId,
+        UUID sectionId,
+        UUID subsectionId,
         Instant startedAt,
         Instant endedAt,
         List<QuestionSummary> questions,
@@ -19,6 +22,15 @@ public record QuizDetailResponse(
             UUID id,
             int sequencePosition,
             String questionStatus,
-            int timerDurationSeconds
+            int timerDurationSeconds,
+            UUID lectureId,
+            UUID sectionId,
+            UUID subsectionId,
+            UUID topicId,
+            UUID conceptId,
+            UUID learningObjectiveId,
+            String difficulty,
+            String questionType,
+            String correctAnswer
     ) {}
 }

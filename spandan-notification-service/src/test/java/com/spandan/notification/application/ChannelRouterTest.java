@@ -6,7 +6,6 @@ import com.spandan.notification.domain.entity.UserNotificationPreference;
 import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.NotificationType;
 import com.spandan.notification.domain.port.ChannelDeliveryResult;
-import com.spandan.notification.domain.port.NotificationChannel;
 import com.spandan.notification.infrastructure.kafka.producers.NotificationEventProducer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,9 +23,9 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class ChannelRouterTest {
 
-    @Mock private NotificationChannel inAppChannel;
-    @Mock private NotificationChannel pushChannel;
-    @Mock private NotificationChannel webSocketChannel;
+    @Mock private com.spandan.notification.domain.port.NotificationChannel inAppChannel;
+    @Mock private com.spandan.notification.domain.port.NotificationChannel pushChannel;
+    @Mock private com.spandan.notification.domain.port.NotificationChannel webSocketChannel;
     @Mock private NotificationEventProducer eventProducer;
 
     private ChannelRouter router;

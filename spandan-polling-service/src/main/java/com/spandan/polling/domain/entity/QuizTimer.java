@@ -76,7 +76,7 @@ public class QuizTimer {
     public long computeElapsedFromStart() {
         if (timerStartedAt == null) return durationSeconds;
         long elapsed = java.time.Duration.between(timerStartedAt, Instant.now()).getSeconds();
-        return Math.max(0, durationSeconds - elapsed);
+        return Math.max(0L, durationSeconds - elapsed);
     }
 
     public UUID getId() { return id; }

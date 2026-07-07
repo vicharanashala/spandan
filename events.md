@@ -10,6 +10,7 @@ This file defines every event flowing between Spandan microservices. Each entry 
 | `QuestionsGenerationRequested` | `{ lectureId, teacherId }` | QGS (internal trigger) |
 | `QuestionsGenerated` | `{ lectureId, teacherId, questionIds[], generatedAt }` | **Notification Service**, Polling Service |
 | `QuestionGenerationFailed` | `{ lectureId, teacherId, reason, failedAt }` | **Notification Service** |
+| `QuestionGeneratedEvent` | `{ questionId, lectureId, sectionId, subsectionId, topicId, conceptId, learningObjective, difficulty, questionType, correctAnswer, questionSequence }` | Polling Service, Response Service |
 
 ## Topic: `question-review-events`
 **Producer**: Question Review Service (QRS)
@@ -26,28 +27,39 @@ This file defines every event flowing between Spandan microservices. Each entry 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
 | `QuizStartingEvent` | `{ quizId, lectureId, teacherId, scheduledStart, startsInMs }` | **Notification Service** |
-| `PollStarted` | `{ quizId, lectureId, teacherId, pollType, startedAt }` | Analytics Service, Notification Service |
+| `PollStarted` | `{ quizId, lectureId, teacherId, pollType, startedAt }` | Analytics Service, Notification Service, Response Service |
 | `QuizCompleted` | `{ quizId, lectureId, teacherId, endedAt }` | Analytics Service, Notification Service |
 | `AnswerSubmitted` | `{ quizId, questionId, studentId, answer, submittedAt }` | Analytics Service |
-| `PollClosed` | `{ quizId, lectureId, teacherId, closedAt }` | Polling Service (internal) |
+| `PollOpenedEvent` | `{ sessionId, lectureId, questionId, pollStartTime, pollDuration }` | Realtime Communication Service, Response Service |
+| `PollClosedEvent` | `{ sessionId, lectureId, questionId, pollEndTime }` | Realtime Communication Service, Response Service |
+
+## Topic: `interaction-events`
+**Producer**: Realtime Communication Service (RTC)
+
+| Event | Payload | Consumers |
+|-------|---------|-----------|
+| `QuestionDisplayedEvent` | `{ sessionId, lectureId, studentId, questionId, questionDisplayedAt }` | Response Service |
+| `QuestionAnsweredEvent` | `{ sessionId, lectureId, studentId, questionId, selectedAnswer, questionDisplayedAt, questionAnsweredAt, responseTimeMilliseconds }` | Response Service |
+| `QuestionTimedOutEvent` | `{ sessionId, lectureId, studentId, questionId, questionDisplayedAt, timeoutAt, timeoutDurationMilliseconds }` | Response Service |
 
 ## Topic: `analytics-events`
 **Producer**: Analytics Service (AS)
 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
-| `TeacherAnalyticsReady` | `{ lectureId, teacherId, analyticsType, readyAt }` | **Notification Service**, Gateway |
-| `StudentAnalyticsReady` | `{ lectureId, studentId, analyticsType, readyAt }` | **Notification Service**, Gateway |
-| `LeaderboardGenerated` | `{ lectureId, teacherId, leaderboardType, generatedAt }` | **Notification Service**, Gateway |
+| `TeacherAnalyticsReady` | `{ lectureId, teacherId, analyticsType, readyAt }` | **Notification Service**, Reporting Service |
+| `StudentAnalyticsReady` | `{ lectureId, studentId, analyticsType, readyAt }` | **Notification Service**, Reporting Service |
+| `LeaderboardGeneratedEvent` | `{ lectureId, teacherId, leaderboardType, generatedAt }` | Notification Service, Reporting Service |
 | `EngagementDetected` | `{ lectureId, studentId, engagementLevel, detectedAt }` | Notification Service |
-| `AnalyticsCompleted` | `{ lectureId, teacherId, analyticsType, completedAt }` | Gateway (mapped from old contract — pre-existing naming mismatch) |
+| `AnalyticsGeneratedEvent` | `{ sessionId, lectureId, analyticsType, generatedAt, summary }` | Reporting Service |
+| `SessionAnalyticsCompletedEvent` | `{ sessionId, lectureId, completedAt }` | Reporting Service, Notification Service |
 
 ## Topic: `transcription-events`
 **Producer**: Transcription Service (TS)
 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
-| `TranscriptGenerated` | `{ transcriptId, sessionId, totalSegments, totalDurationMs, generatedAt }` | Analytics Service, Polling Service |
+| `TranscriptGenerated` | `{ transcriptId, sessionId, totalSegments, totalDurationMs, generatedAt }` | Question Generation Service, Analytics Service, Polling Service |
 | `TranscriptGenerationFailed` | `{ sessionId, failureReason, failedAt }` | **Notification Service** |
 | `TranscriptDeleted` | `{ transcriptId, sessionId, reason, deletedAt }` | Audit/compliance |
 
@@ -62,14 +74,14 @@ This file defines every event flowing between Spandan microservices. Each entry 
 | `StreamRecovered` | `{ sessionId, teacherId, recoveredAt }` | `StreamRecoveredEvent` | — |
 | `StreamingFailed` | `{ sessionId, teacherId, reason, failedAt }` | `StreamFailedEvent` | — |
 
-Note: No services consume RS events in v1. Reserved for Gateway (teacher dashboard live status) and Analytics (engagement correlation) in future releases.
+Note: No services consume RS events in v1. Reserved for teacher dashboard live status and engagement correlation in future releases.
 
 ## Topic: `notification-events`
 **Producer**: Notification Service (NS)
 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
-| `NotificationCreated` | `{ notificationId, userId, notificationType, title, body, targetType, targetId, createdAt }` | Gateway (WebSocket STOMP fan-out) |
+| `NotificationCreated` | `{ notificationId, userId, notificationType, title, body, targetType, targetId, createdAt }` | Realtime Communication Service (WebSocket STOMP fan-out) |
 
 ## Topic: `user-events`
 **Producer**: Auth Service, User Service (US — planned)
@@ -112,6 +124,6 @@ Note: No services consume RS events in v1. Reserved for Gateway (teacher dashboa
 | `StudentResponseReceived` | `{ eventId, userId, quizId, questionId, timestamp }` | Analytics Service |
 
 ## Summary Statistics
-- Total topics: 10
-- Total events: 44
-- Total services: 10
+- Total topics: 12
+- Total events: 56
+- Total services: 11

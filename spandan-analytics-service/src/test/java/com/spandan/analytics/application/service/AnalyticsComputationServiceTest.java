@@ -24,6 +24,8 @@ class AnalyticsComputationServiceTest {
     @Mock private QuestionAnalyticsJpaRepository questionRepo;
     @Mock private StudentPerformanceJpaRepository studentRepo;
     @Mock private LeaderboardEntryJpaRepository leaderboardRepo;
+    @Mock private LearningObjectiveMasteryRepository loRepo;
+    @Mock private EngagementMetricsRepository engagementRepo;
     @Captor private ArgumentCaptor<List<LeaderboardEntry>> leaderboardCaptor;
 
     private AnalyticsComputationService service;
@@ -31,7 +33,8 @@ class AnalyticsComputationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AnalyticsComputationService(sessionRepo, questionRepo, studentRepo, leaderboardRepo);
+        service = new AnalyticsComputationService(sessionRepo, questionRepo, studentRepo,
+                leaderboardRepo, loRepo, engagementRepo);
         quizId = UUID.randomUUID();
     }
 

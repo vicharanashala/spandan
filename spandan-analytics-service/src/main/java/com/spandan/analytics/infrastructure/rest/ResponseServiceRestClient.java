@@ -28,8 +28,8 @@ public class ResponseServiceRestClient {
         this.responseServiceUrl = responseServiceUrl;
     }
 
-    public List<Map<String, Object>> fetchSessionResponses(UUID quizId) {
-        String url = responseServiceUrl + "/api/v1/responses/session/" + quizId.toString();
+    public List<Map<String, Object>> fetchSessionResponses(UUID sessionId) {
+        String url = responseServiceUrl + "/api/v1/interactions/session/" + sessionId.toString() + "/analytics/raw";
         try {
             ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                     url,
@@ -38,14 +38,14 @@ public class ResponseServiceRestClient {
                     new ParameterizedTypeReference<>() {}
             );
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                log.info("Fetched {} responses for quizId={}", response.getBody().size(), quizId);
+                log.info("Fetched {} interactions for sessionId={}", response.getBody().size(), sessionId);
                 return response.getBody();
             }
             throw AnalyticsException.serviceUnavailable("Response service returned " + response.getStatusCode());
         } catch (AnalyticsException e) {
             throw e;
         } catch (Exception e) {
-            throw AnalyticsException.serviceUnavailable("Failed to fetch responses: " + e.getMessage());
+            throw AnalyticsException.serviceUnavailable("Failed to fetch interactions: " + e.getMessage());
         }
     }
 }

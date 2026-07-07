@@ -12,19 +12,26 @@ public class Quiz {
     private QuizStatus quizStatus;
     private int currentQuestionNumber;
     private final int totalQuestions;
+    private final UUID lectureId;
+    private final UUID sectionId;
+    private final UUID subsectionId;
     private Instant startedAt;
     private Instant endedAt;
     private final Instant createdAt;
     private Instant updatedAt;
 
     public Quiz(UUID id, UUID teacherId, QuizStatus quizStatus, int currentQuestionNumber,
-                int totalQuestions, Instant startedAt, Instant endedAt,
+                int totalQuestions, UUID lectureId, UUID sectionId, UUID subsectionId,
+                Instant startedAt, Instant endedAt,
                 Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.teacherId = teacherId;
         this.quizStatus = quizStatus;
         this.currentQuestionNumber = currentQuestionNumber;
         this.totalQuestions = totalQuestions;
+        this.lectureId = lectureId;
+        this.sectionId = sectionId;
+        this.subsectionId = subsectionId;
         this.startedAt = startedAt;
         this.endedAt = endedAt;
         this.createdAt = createdAt;
@@ -32,10 +39,16 @@ public class Quiz {
     }
 
     public static Quiz create(UUID teacherId, int totalQuestions) {
+        return create(teacherId, totalQuestions, null, null, null);
+    }
+
+    public static Quiz create(UUID teacherId, int totalQuestions,
+                               UUID lectureId, UUID sectionId, UUID subsectionId) {
         Instant now = Instant.now();
         return new Quiz(
                 UUID.randomUUID(), teacherId, QuizStatus.DRAFT,
-                0, totalQuestions, null, null, now, now
+                0, totalQuestions, lectureId, sectionId, subsectionId,
+                null, null, now, now
         );
     }
 
@@ -131,6 +144,9 @@ public class Quiz {
     public QuizStatus getQuizStatus() { return quizStatus; }
     public int getCurrentQuestionNumber() { return currentQuestionNumber; }
     public int getTotalQuestions() { return totalQuestions; }
+    public UUID getLectureId() { return lectureId; }
+    public UUID getSectionId() { return sectionId; }
+    public UUID getSubsectionId() { return subsectionId; }
     public Instant getStartedAt() { return startedAt; }
     public Instant getEndedAt() { return endedAt; }
     public Instant getCreatedAt() { return createdAt; }

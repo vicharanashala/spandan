@@ -1,74 +1,70 @@
 package com.spandan.gateway.infrastructure.ratelimit;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Fallback rate limiter when Redis is unreachable. Implements a simple sliding-window
+ * counter per principal.
+ *
+ * <p>This is intentionally simple — the production path uses {@link RedisRateLimiter};
+ * local limiting is here so the gateway doesn't become a gateway to DOS when Redis is down.
+ *
+ * <p>Note: with a single-pod Redis outage, this preserves the per-instance quota only.
+ * Cross-pod accuracy is not guaranteed in this fallback path. This is acceptable behavior —
+ * the alternative (failing closed) would mean one bad Redis node takes down all 12 pods.
+ */
 @Component
 public class LocalRateLimiter {
 
-    private static final Logger log = LoggerFactory.getLogger(LocalRateLimiter.class);
+    private final long permitsPerSecond;
+    private final long burst;
 
-    private final ConcurrentMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
+    public LocalRateLimiter(
+            @Value("${ratelimit.local.replenish-per-second:20}") long permitsPerSecond,
+            @Value("${ratelimit.local.burst:50}") long burst) {
+        this.permitsPerSecond = permitsPerSecond;
+        this.burst = burst;
+    }
 
-    public boolean tryAcquire(String key, int limit, long windowSeconds) {
-        long now = System.currentTimeMillis() / 1000;
-        long windowKey = now / windowSeconds;
+    private final ConcurrentHashMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
 
-        String compositeKey = key + ":" + windowKey;
+    /**
+     * Returns true if the call is permitted for the given principal.
+     */
+    public boolean tryAcquire(String principalKey) {
+        WindowCounter counter = counters.computeIfAbsent(principalKey, k -> new WindowCounter());
+        return counter.tryConsume(permitsPerSecond, burst);
+    }
 
-        WindowCounter counter = counters.compute(compositeKey, (k, existing) -> {
-            if (existing == null) {
-                return new WindowCounter(1);
+    /** Counter is reset every second; tokens replenish at the configured rate. */
+    static final class WindowCounter {
+        private final AtomicLong tokens;
+        private volatile long windowEndNanos;
+
+        WindowCounter() {
+            this.tokens = new AtomicLong(0);
+            this.windowEndNanos = System.nanoTime();
+        }
+
+        synchronized boolean tryConsume(long permitsPerSecond, long burst) {
+            long now = System.nanoTime();
+            if (now >= windowEndNanos) {
+                long elapsedWindows = (now - windowEndNanos) / 1_000_000_000L + 1;
+                windowEndNanos += elapsedWindows * 1_000_000_000L;
+                long refill = elapsedWindows * permitsPerSecond;
+                long next = Math.min(burst, tokens.get() + refill);
+                tokens.set(next);
             }
-            if (existing.count.get() >= limit) {
-                return existing;
+            long current = tokens.get();
+            if (current <= 0) {
+                return false;
             }
-            existing.count.incrementAndGet();
-            return existing;
-        });
-
-        if (counter.count.get() > limit) {
-            counters.computeIfPresent(compositeKey, (k, c) -> {
-                if (c.count.get() > limit) {
-                    c.count.decrementAndGet();
-                }
-                return c;
-            });
-            return false;
-        }
-
-        cleanup(now, windowSeconds);
-        return true;
-    }
-
-    private void cleanup(long nowSeconds, long windowSeconds) {
-        if (counters.size() > 10000) {
-            long cutoff = nowSeconds - windowSeconds * 2;
-            counters.entrySet().removeIf(e -> {
-                String[] parts = e.getKey().split(":");
-                if (parts.length < 2) return true;
-                try {
-                    long keyWindow = Long.parseLong(parts[parts.length - 1]);
-                    return keyWindow < cutoff / windowSeconds;
-                } catch (NumberFormatException ex) {
-                    return true;
-                }
-            });
-            log.debug("Rate limiter cleanup: {} entries remaining", counters.size());
+            tokens.decrementAndGet();
+            return true;
         }
     }
-
-    private static class WindowCounter {
-        final AtomicInteger count;
-
-        WindowCounter(int initial) {
-            this.count = new AtomicInteger(initial);
-        }
-    }
-
 }

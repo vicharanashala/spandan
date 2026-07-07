@@ -65,6 +65,8 @@ question-generation:
     fallback: ${QG_AI_PROVIDER_FALLBACK:}
   max-attempts: ${QG_MAX_ATTEMPTS:3}
   generation-timeout-minutes: ${QG_GENERATION_TIMEOUT_MINUTES:10}
+  generation-model: ${QG_GENERATION_MODEL:gpt-4}
+  generation-version: ${QG_GENERATION_VERSION:mcq_prompt_v1}
   lock-ttl-seconds: 300
   lock-renewal-interval-seconds: 60
   expiry-sweep-interval-ms: 900000

@@ -49,7 +49,8 @@ class QuestionGenerationOrchestratorTest {
         when(testProvider.name()).thenReturn("test-provider");
         orchestrator = new QuestionGenerationOrchestrator(
             questionSetRepository, generatedQuestionRepository, lockManager, lockRenewalService,
-            providerRegistry, eventProducer, transcriptServiceClient
+            providerRegistry, eventProducer, transcriptServiceClient,
+            "gpt-4", "mcq_prompt_v1"
         );
     }
 
@@ -58,6 +59,7 @@ class QuestionGenerationOrchestratorTest {
         UUID transcriptId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
         UUID teacherId = UUID.randomUUID();
+        UUID lectureId = UUID.randomUUID();
 
         when(lockManager.acquireLock(transcriptId, anyString())).thenReturn(true);
         when(questionSetRepository.findTopByTranscriptIdOrderByAttemptNumberDesc(transcriptId))
@@ -68,14 +70,14 @@ class QuestionGenerationOrchestratorTest {
             new QuestionGenerationProvider.GenerationResult(
                 List.of(
                     new QuestionGenerationProvider.GeneratedQuestionData("MCQ", "What is 2+2?",
-                        java.util.Map.of("A", "3", "B", "4", "C", "5", "D", "6"), "B"),
+                        java.util.Map.of("A", "3", "B", "4", "C", "5", "D", "6"), "B", "EASY"),
                     new QuestionGenerationProvider.GeneratedQuestionData("TRUE_FALSE", "Earth is flat",
-                        java.util.Map.of("True", "True", "False", "False"), "False")
+                        java.util.Map.of("True", "True", "False", "False"), "False", "MEDIUM")
                 ), 100, true, null
             )
         );
 
-        orchestrator.requestGeneration(transcriptId, sessionId, teacherId);
+        orchestrator.requestGeneration(transcriptId, sessionId, teacherId, lectureId, null, null);
 
         verify(lockManager).acquireLock(eq(transcriptId), anyString());
         verify(lockRenewalService).startRenewal(eq(transcriptId), anyString());
@@ -85,6 +87,7 @@ class QuestionGenerationOrchestratorTest {
         verify(eventProducer).questionsGenerated(any());
         verify(eventProducer).questionsStored(any());
         verify(eventProducer).questionsReadyForReview(any());
+        verify(eventProducer, times(2)).questionGeneratedEvent(any(), any(), any(), any());
         verify(lockRenewalService).stopRenewal(transcriptId);
         verify(lockManager).releaseLock(transcriptId);
     }
@@ -94,7 +97,7 @@ class QuestionGenerationOrchestratorTest {
         UUID transcriptId = UUID.randomUUID();
         when(lockManager.acquireLock(transcriptId, anyString())).thenReturn(false);
 
-        orchestrator.requestGeneration(transcriptId, UUID.randomUUID(), UUID.randomUUID());
+        orchestrator.requestGeneration(transcriptId, UUID.randomUUID(), UUID.randomUUID(), null, null, null);
 
         verify(questionSetRepository, never()).save(any());
     }
@@ -111,7 +114,7 @@ class QuestionGenerationOrchestratorTest {
             new QuestionGenerationProvider.GenerationResult(List.of(), 50, false, "API error")
         );
 
-        orchestrator.requestGeneration(transcriptId, UUID.randomUUID(), UUID.randomUUID());
+        orchestrator.requestGeneration(transcriptId, UUID.randomUUID(), UUID.randomUUID(), null, null, null);
 
         verify(eventProducer).questionGenerationFailed(any(), eq("API error"));
     }

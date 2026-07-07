@@ -22,6 +22,11 @@ public class MessageRoutingService {
         crossPodPublisher.publish("quiz:" + quizId, destination + "|" + payload.toString());
     }
 
+    public void broadcastToQuestion(String questionId, Object payload) {
+        String destination = "/topic/question/" + questionId;
+        messagingTemplate.convertAndSend(destination, payload);
+    }
+
     public void broadcastToTeacher(String quizId, Object payload) {
         String destination = "/topic/quiz/" + quizId + "/teacher";
         messagingTemplate.convertAndSend(destination, payload);

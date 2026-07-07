@@ -49,14 +49,34 @@ public class QuizSequencer {
         QuizQuestion currentQuestion = questionRepository.findByIdWithLock(currentQuestionId)
                 .orElseThrow(() -> new com.spandan.polling.domain.exception.QuestionNotFoundException(currentQuestionId));
 
-        transitionGuard.guardQuestionTransition(currentQuestion.getQuestionStatus(), QuestionStatus.CLOSED);
-        currentQuestion.close();
-        questionRepository.save(currentQuestion);
+        QuestionStatus currentStatus = currentQuestion.getQuestionStatus();
+        if (currentStatus == QuestionStatus.RUNNING
+                || currentStatus == QuestionStatus.POLL_OPEN) {
+            QuizTimer timer = timerRepository.findByQuizQuestionId(currentQuestionId)
+                    .orElse(null);
+            if (timer != null && timer.getTimerStatus() == TimerStatus.RUNNING) {
+                timer.expire();
+                timerRepository.save(timer);
+            }
+            transitionGuard.guardQuestionTransition(currentStatus, QuestionStatus.TIMER_EXPIRED);
+            currentQuestion.expireTimer();
+            currentStatus = QuestionStatus.TIMER_EXPIRED;
+            questionRepository.save(currentQuestion);
+        }
 
+        if (currentStatus != QuestionStatus.POLL_CLOSED && currentStatus != QuestionStatus.CLOSED) {
+            transitionGuard.guardQuestionTransition(currentStatus, QuestionStatus.POLL_CLOSED);
+            currentQuestion.closePoll();
+            questionRepository.save(currentQuestion);
+        }
+
+        Instant now = Instant.now();
         eventPublisher.publish(new PollingEvent(
-                UUID.randomUUID(), "PollEnded", quizId, currentQuestion.getId(),
+                UUID.randomUUID(), "PollClosedEvent", quizId, currentQuestion.getId(),
                 currentQuestion.getQuestionRefId(), currentQuestion.getSequencePosition(),
-                Instant.now(), null, null
+                now, null, null, null,
+                quiz.getLectureId(), quiz.getSectionId(), null,
+                null, null, null, null, null, null
         ));
 
         if (quiz.isLastQuestion()) {
@@ -66,7 +86,9 @@ public class QuizSequencer {
 
             eventPublisher.publish(new PollingEvent(
                     UUID.randomUUID(), "QuizCompleted", quizId, null, null, null,
-                    Instant.now(), null, quiz.getTotalQuestions()
+                    now, null, quiz.getTotalQuestions(), quiz.getTeacherId(),
+                    quiz.getLectureId(), quiz.getSectionId(), null,
+                    null, null, null, null, null, null
             ));
             return;
         }
@@ -83,14 +105,18 @@ public class QuizSequencer {
 
     @Transactional
     public void publishQuestion(UUID quizId, QuizQuestion question) {
-        transitionGuard.guardQuestionTransition(question.getQuestionStatus(), QuestionStatus.PUBLISHED);
-        question.publish();
+        transitionGuard.guardQuestionTransition(question.getQuestionStatus(), QuestionStatus.POLL_OPEN);
+        question.openPoll();
         questionRepository.save(question);
 
+        Instant now = Instant.now();
         eventPublisher.publish(new PollingEvent(
-                UUID.randomUUID(), "PollStarted", quizId, question.getId(),
+                UUID.randomUUID(), "PollOpenedEvent", quizId, question.getId(),
                 question.getQuestionRefId(), question.getSequencePosition(),
-                Instant.now(), question.getTimerDurationSeconds(), null
+                now, question.getTimerDurationSeconds(), null, null,
+                question.getLectureId(), question.getSectionId(), question.getSubsectionId(),
+                question.getTopicId(), question.getConceptId(), question.getLearningObjectiveId(),
+                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer()
         ));
 
         QuizTimer timer = QuizTimer.create(question.getId(), question.getTimerDurationSeconds());
@@ -104,10 +130,13 @@ public class QuizSequencer {
         eventPublisher.publish(new PollingEvent(
                 UUID.randomUUID(), "TimerStarted", quizId, question.getId(),
                 question.getQuestionRefId(), question.getSequencePosition(),
-                Instant.now(), question.getTimerDurationSeconds(), null
+                now, question.getTimerDurationSeconds(), null, null,
+                question.getLectureId(), question.getSectionId(), question.getSubsectionId(),
+                question.getTopicId(), question.getConceptId(), question.getLearningObjectiveId(),
+                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer()
         ));
 
-        log.info("Published question {} at position {} for quiz {}",
+        log.info("Poll opened for question {} at position {} in quiz {}",
                 question.getId(), question.getSequencePosition(), quizId);
     }
 
@@ -129,7 +158,8 @@ public class QuizSequencer {
         eventPublisher.publish(new PollingEvent(
                 UUID.randomUUID(), "TimerExpired", quizId, question.getId(),
                 question.getQuestionRefId(), sequencePosition,
-                Instant.now(), null, null
+                Instant.now(), null, null, null, null, null, null,
+                null, null, null, null, null, null
         ));
 
         log.info("Timer expired for question {} at position {} in quiz {}",

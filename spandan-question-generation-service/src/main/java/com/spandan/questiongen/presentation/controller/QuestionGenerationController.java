@@ -29,7 +29,8 @@ public class QuestionGenerationController {
     public ResponseEntity<Void> generate(@Valid @RequestBody GenerateRequest request,
                                          Authentication auth) {
         UUID teacherId = UUID.fromString(auth.getName());
-        orchestrator.requestGeneration(request.getTranscriptId(), request.getSessionId(), teacherId);
+        orchestrator.requestGeneration(request.getTranscriptId(), request.getSessionId(), teacherId,
+            request.getLectureId(), request.getSectionId(), request.getSubsectionId());
         return ResponseEntity.accepted().build();
     }
 

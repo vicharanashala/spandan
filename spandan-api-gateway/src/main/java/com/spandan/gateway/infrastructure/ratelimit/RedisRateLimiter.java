@@ -2,59 +2,48 @@ package com.spandan.gateway.infrastructure.ratelimit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
-import java.util.List;
 
+/**
+ * Wrapper around the Spring Cloud Gateway built-in {@code RedisRateLimiter} filter that
+ * also exposes a Redis-health ping used by {@link com.spandan.gateway.infrastructure.health.GatewayHealthIndicator}.
+ *
+ * <p>The actual rate-limiting is performed by Spring Cloud Gateway's {@code RequestRateLimiter}
+ * GatewayFilter, which is wired by the {@code default-filters} entry in {@code application.yml}.
+ * This bean exists to:
+ * <ul>
+ *   <li>Provide a {@code ping()} method for the health indicator.</li>
+ *   <li>Surface Redis reachability to other components that may want to fall back to
+ *       {@link LocalRateLimiter}.</li>
+ * </ul>
+ */
 @Component
 public class RedisRateLimiter {
 
     private static final Logger log = LoggerFactory.getLogger(RedisRateLimiter.class);
 
-    private static final String LUA_SCRIPT = """
-            local key = KEYS[1]
-            local limit = tonumber(ARGV[1])
-            local window = tonumber(ARGV[2])
-            local now = tonumber(ARGV[3])
-            local window_start = now - (now % window)
-            local window_key = key .. ':' .. window_start
-            local current = redis.call('GET', window_key)
-            if current and tonumber(current) >= limit then
-                return 0
-            end
-            redis.call('INCR', window_key)
-            redis.call('EXPIRE', window_key, window * 2)
-            return 1
-            """;
+    private final ReactiveRedisConnectionFactory connectionFactory;
 
-    private final ReactiveStringRedisTemplate redis;
-    private final RedisScript<Long> script;
-
-    public RedisRateLimiter(ReactiveStringRedisTemplate redis) {
-        this.redis = redis;
-        this.script = RedisScript.of(LUA_SCRIPT, Long.class);
+    public RedisRateLimiter(ReactiveRedisConnectionFactory connectionFactory) {
+        this.connectionFactory = connectionFactory;
     }
 
-    public Mono<Boolean> tryAcquire(String key, int limit, long windowSeconds) {
-        long now = System.currentTimeMillis() / 1000;
-        List<String> keys = List.of(key);
-
-        return redis.execute(script, keys, String.valueOf(limit), String.valueOf(windowSeconds), String.valueOf(now))
-                .map(result -> result != null && result == 1)
-                .onErrorResume(e -> {
-                    log.warn("Redis rate limiter failed, allowing request: {}", e.getMessage());
-                    return Mono.just(true);
+    /**
+     * Issue a PING against the configured Redis. Returns true if Redis responded with PONG
+     * within 500ms, false otherwise.
+     */
+    public Mono<Boolean> ping() {
+        return connectionFactory.getReactiveConnection()
+                .ping()
+                .map("PONG"::equalsIgnoreCase)
+                .timeout(Duration.ofMillis(500))
+                .onErrorResume(ex -> {
+                    log.warn("Redis ping failed: {}", ex.getMessage());
+                    return Mono.just(false);
                 });
     }
-
-    public Mono<Boolean> ping() {
-        return redis.getConnectionFactory().getReactiveConnection().ping()
-                .hasElement()
-                .onErrorReturn(false);
-    }
-
 }
