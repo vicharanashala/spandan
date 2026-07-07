@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
 import useSocketStore from '../stores/socketStore'
@@ -58,11 +59,10 @@ function AuthPage() {
     }))
   }
 
+  // Force logout when visiting the auth page to ensure portal always opens to login
   useEffect(() => {
-    if (isAuthenticated && token) {
-      navigate(user?.role === 'teacher' ? '/teacher' : '/student')
-    }
-  }, [isAuthenticated, token, navigate, user])
+    logout()
+  }, [logout])
 
   const validateForm = () => {
     if (!isLogin && formData.password !== formData.confirmPassword) {
@@ -161,15 +161,20 @@ function AuthPage() {
       transition: 'background 0.5s ease'
     }}>
       {/* Left side - Branding */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: '60px',
-        position: 'relative'
-      }}>
+      <motion.div 
+        initial={{ x: -50, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        transition={{ duration: 0.8, ease: "easeOut" }}
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: '60px',
+          position: 'relative'
+        }}
+      >
         {/* Big watermark text */}
         <div style={{
           position: 'absolute',
@@ -299,7 +304,7 @@ function AuthPage() {
             </div>
           ))}
         </div>
-      </div>
+      </motion.div>
 
       {/* Right side - Auth Form */}
       <div style={{
@@ -310,17 +315,21 @@ function AuthPage() {
         padding: '40px',
         position: 'relative'
       }}>
-        <div style={{
-          background: cardBg,
-          backdropFilter: 'blur(20px)',
-          borderRadius: '24px',
-          padding: '48px',
-          width: '100%',
-          maxWidth: '440px',
-          boxShadow: '0 25px 80px rgba(0,0,0,0.25)',
-          border: `1px solid ${cardBorder}`,
-          animation: 'fadeInUp 0.5s ease-out'
-        }}>
+        <motion.div 
+          initial={{ y: 30, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
+          style={{
+            background: cardBg,
+            backdropFilter: 'blur(20px)',
+            borderRadius: '24px',
+            padding: '48px',
+            width: '100%',
+            maxWidth: '440px',
+            boxShadow: '0 25px 80px rgba(0,0,0,0.25)',
+            border: `1px solid ${cardBorder}`
+          }}
+        >
           {/* Logo and Title */}
           <div style={{ textAlign: 'center', marginBottom: '32px' }}>
             <div style={{
@@ -717,15 +726,9 @@ function AuthPage() {
               </div>
             </form>
           )}
-        </div>
+        </motion.div>
       </div>
 
-      <style>{`
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   )
 }

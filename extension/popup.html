@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Spandan Exam Controls</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      width: 320px;
+      padding: 16px;
+      margin: 0;
+      background: #f9fafb;
+      color: #111827;
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 18px;
+      color: #4f46e5;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section {
+      background: white;
+      border: 1px solid #e5e7eb;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    .section-title {
+      font-weight: bold;
+      font-size: 14px;
+      margin-bottom: 8px;
+      display: block;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-bottom: 8px;
+      transition: background-color 0.2s;
+    }
+    .btn-primary {
+      background: #4f46e5;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #4338ca;
+    }
+    .btn-danger {
+      background: #ef4444;
+      color: white;
+    }
+    .btn-danger:hover {
+      background: #dc2626;
+    }
+    .status {
+      font-size: 12px;
+      color: #6b7280;
+      text-align: center;
+      margin-top: 4px;
+    }
+    /* Toggle switch */
+    .toggle-container {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+    .switch input { 
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #ccc;
+      transition: .3s;
+      border-radius: 24px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: #ef4444;
+    }
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+  </style>
+</head>
+<body>
+  <h2>Spandan Controls</h2>
+  
+  <div class="section">
+    <span class="section-title">Teacher Controls</span>
+    <button id="startRecBtn" class="btn-primary">Start Session Recording</button>
+    <button id="stopRecBtn" class="btn-danger" style="display:none;">Stop Recording</button>
+    <div id="recStatus" class="status">Not recording</div>
+  </div>
+
+  <div class="section">
+    <span class="section-title">Student Restrictions</span>
+    <div class="toggle-container">
+      <span style="font-size: 13px; font-weight: 500;">Enforce Network Lockdown</span>
+      <label class="switch">
+        <input type="checkbox" id="lockdownToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="lockdownStatus" class="status" style="text-align:left; margin-top:8px;">
+      Blocks all domains except Localhost/Spandan.
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

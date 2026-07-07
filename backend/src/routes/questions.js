@@ -31,9 +31,17 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const { 
       numQuestions = 2, 
       difficulty = 'medium',
-      provider = 'minimax',
+      provider: rawProvider = 'google',
       questionTypeMix = null
     } = config || {}
+
+    // Normalize legacy or unknown providers → google (handles stale DB values like 'minimax')
+    const VALID_PROVIDERS = new Set(Object.keys(AI_PROVIDERS))
+    const provider = VALID_PROVIDERS.has(rawProvider) ? rawProvider : 'google'
+
+    if (rawProvider !== provider) {
+      console.warn(`Unknown provider "${rawProvider}" requested — falling back to "google"`)
+    }
 
     if (!transcript || transcript.trim().length === 0) {
       return res.status(400).json({

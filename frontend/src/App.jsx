@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
+import { BASE_PATH } from './config'
 import ProtectedRoute from './components/ProtectedRoute'
 import AuthPage from './pages/AuthPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
@@ -16,18 +17,20 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import DemoPollPage from './pages/DemoPollPage'
 
 function App() {
   const { isDark } = useThemeStore()
   const { token, isAuthenticated } = useAuthStore()
-  const { connect, disconnect } = useSocketStore()
+  const { connect, disconnect, socket } = useSocketStore()
 
   // Connect socket when user is authenticated with valid token
   useEffect(() => {
     if (token && isAuthenticated) {
       console.log('App: connecting socket with token')
       connect(token)
-    } else {
+    } else if (socket) {
+      // Only disconnect if a socket was previously connected
       console.log('App: disconnecting socket')
       disconnect()
     }
@@ -49,9 +52,16 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter
+      basename={BASE_PATH || '/'}
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true,
+      }}
+    >
       <Routes>
         <Route path="/" element={<AuthPage />} />
+        <Route path="/demo-poll" element={<DemoPollPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/teacher" element={
           <ProtectedRoute allowedRoles={['teacher']}>

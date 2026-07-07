@@ -1,286 +1,123 @@
-import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import useAuthStore from '../stores/authStore'
-import useSocketStore from '../stores/socketStore'
-import useRoomStore from '../stores/roomStore'
-import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
-import { API_URL } from '../config.js'
+import React, { useState, useEffect } from 'react';
+import { Target, Zap, Award, TrendingUp } from 'lucide-react';
+import { motion } from 'framer-motion';
+import useAuthStore from '../stores/authStore';
+import { API_URL } from '../config';
 
-function StudentDashboard() {
-  const navigate = useNavigate()
-  const { user, token } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
-  const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
-  
-  const [roomCode, setRoomCode] = useState('')
-  const [isJoining, setIsJoining] = useState(false)
-  const [stats, setStats] = useState({
-    totalRooms: 0,
-    pollsTaken: 0,
-    pollsMissed: 0,
-    average: 0
-  })
+const StudentDashboard = () => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchStudentData = async () => {
+    try {
+      const { token } = useAuthStore.getState();
+      const res = await fetch(`${API_URL}/dashboard/student`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Backend down');
+
+      const realData = await res.json();
+      setData(realData);
+    } catch (e) {
+      console.error(e);
+      // Fallback to empty real data so the page doesn't crash entirely if no data exists yet
+      setData({ studentStats: { lifetimeScore: 0, questionsAnswered: 0, correctCount: 0, weeklyRollup: [] } });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (token) {
-      setAuthToken(token)
-      fetchStudentStats()
-      fetchActiveRooms()
-    }
-  }, [token])
+    fetchStudentData();
+  }, []);
 
-  const fetchStudentStats = async () => {
-    try {
-      const res = await fetch(`${API_URL}/responses/stats/student/${user._id}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      if (data.stats) {
-        setStats({
-          totalRooms: data.stats.totalRooms || 0,
-          pollsTaken: data.stats.pollsTaken || 0,
-          pollsMissed: data.stats.pollsMissed || 0,
-          average: data.stats.average || 0
-        })
-      }
-    } catch (err) {
-      console.error('Failed to fetch student stats:', err)
-    }
-  }
+  if (loading) return <div className="p-8 text-center font-medium">Loading Student Dashboard...</div>;
+  if (!data) return <div className="p-8 text-center text-red-500">Failed to load data</div>;
 
-  const handleJoinRoom = async () => {
-    if (!roomCode.trim()) return
-    setIsJoining(true)
-    try {
-      // First validate the room exists via API
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      // Then join via socket
-      joinRoom(room.code, user._id)
-      // Then navigate to session
-      navigate(`/student/session/${room.code}`)
-    } catch (err) {
-      console.error('Failed to join room:', err)
-    } finally {
-      setIsJoining(false)
-    }
-  }
+  const { studentStats } = data;
+  const overallAccuracy = ((studentStats.correctCount / studentStats.questionsAnswered) * 100) || 0;
 
   return (
-    <div style={{
-      display: 'flex',
-      minHeight: '100vh',
-      background: 'var(--bg-primary)',
-      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
-    }}>
-      <Sidebar user={user} />
-      
-      {/* Main Content */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        marginLeft: '240px'
-      }}>
-        {/* Header - Blue gradient bar */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: '24px 32px'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center'
-          }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>
-                Welcome, {user?.name || 'Student'}!
-              </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Join rooms and participate in polls
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6 }}
+      className="p-8 max-w-6xl mx-auto space-y-10 min-h-screen"
+    >
+      <header>
+        <h1 className="text-4xl font-bold text-gray-900 tracking-tight">My Performance</h1>
+        <p className="text-gray-500 mt-2 font-medium text-lg">Lifetime analytics and weekly trends</p>
+      </header>
 
-        {/* Dashboard content */}
-        <div style={{ flex: 1, padding: '32px' }}>
-          {/* Stats Cards */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '20px',
-            marginBottom: '32px'
-          }}>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalRooms}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>✅</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsTaken}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Taken</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>❌</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsMissed}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Missed</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📈</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.average}%</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
-            </div>
-          </div>
-
-          {/* Quick Join Section */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: '16px',
-            padding: '24px',
-            boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)',
-            marginBottom: '32px'
-          }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              Quick Join
-            </h2>
-            
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <input
-                type="text"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="Enter room code..."
-                maxLength={8}
-                style={{
-                  flex: 1,
-                  padding: '12px 16px',
-                  border: '2px solid var(--border-color)',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                  outline: 'none',
-                  background: 'var(--input-bg)',
-                  color: 'var(--text-primary)',
-                  letterSpacing: '2px',
-                  fontWeight: '600'
-                }}
-              />
-              
-              <button
-                onClick={handleJoinRoom}
-                disabled={isJoining || !roomCode.trim()}
-                style={{
-                  padding: '12px 24px',
-                  background: (isJoining || !roomCode.trim()) ? '#9ca3af' : '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {isJoining ? 'Joining...' : 'Join Room'}
-              </button>
-            </div>
-          </div>
-
-          {/* Active Joined Rooms Section */}
-          {activeRooms.length > 0 && (
-            <>
-              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                🟢 Previously Joined Active Rooms
-              </h2>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', 
-                gap: '16px',
-                marginBottom: '32px'
-              }}>
-                {activeRooms.map((room) => (
-                  <div
-                    key={room._id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: '16px',
-                      border: '1px solid var(--border-color)',
-                      minHeight: '140px'
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/student/session/${room.code}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: '#3b82f6',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '13px',
-                        fontWeight: '500',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      🔄 Rejoin Room →
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+      {/* Lifetime Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <StatCard icon={<Award size={32} />} label="Lifetime Score" value={studentStats.lifetimeScore.toLocaleString()} />
+        <StatCard icon={<Target size={32} />} label="Total Answered" value={studentStats.questionsAnswered} />
+        <StatCard icon={<Zap size={32} />} label="Overall Accuracy" value={`${overallAccuracy.toFixed(1)}%`} />
       </div>
-    </div>
-  )
-}
 
-export default StudentDashboard
+      {/* Weekly Rollup Trend */}
+      <motion.section 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ delay: 0.2, duration: 0.5 }}
+        className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden mt-12"
+      >
+        <div className="p-6 border-b border-gray-100 bg-gray-50/50">
+          <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800">
+            <TrendingUp className="text-indigo-600" /> Weekly Rollup
+          </h2>
+        </div>
+        
+        <table className="w-full text-left">
+          <thead className="bg-white border-b border-gray-100">
+            <tr>
+              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Week Of</th>
+              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Questions</th>
+              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Accuracy</th>
+              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Avg TTA (Time to Answer)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {studentStats.weeklyRollup.map((week, i) => (
+              <tr key={i} className="hover:bg-indigo-50/30 transition-colors">
+                <td className="p-6 font-bold text-gray-800">
+                  {new Date(week.weekStartDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                </td>
+                <td className="p-6 text-gray-600 font-medium">{week.questionsAnswered}</td>
+                <td className="p-6">
+                  <div className="flex items-center gap-4">
+                    <span className="font-bold text-gray-700 w-12 text-right">{week.accuracyPercentage}%</span>
+                    <div className="flex-1 h-2.5 bg-gray-100 rounded-full max-w-[120px] overflow-hidden">
+                      <div 
+                        className={`h-full rounded-full transition-all duration-1000 ${week.accuracyPercentage >= 80 ? 'bg-green-500' : week.accuracyPercentage > 50 ? 'bg-indigo-500' : 'bg-amber-500'}`}
+                        style={{ width: `${week.accuracyPercentage}%` }}
+                      />
+                    </div>
+                  </div>
+                </td>
+                <td className="p-6 text-gray-600 font-medium">{(week.averageTTAMs / 1000).toFixed(1)} sec</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </motion.section>
+    </motion.div>
+  );
+};
+
+const StatCard = ({ icon, label, value }) => (
+  <motion.div 
+    whileHover={{ y: -5, boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1)" }}
+    className="bg-white border border-gray-200 rounded-2xl p-8 flex flex-col gap-2 shadow-sm relative overflow-hidden group"
+  >
+    <div className="absolute -right-6 -top-6 text-indigo-50 opacity-40 transform scale-150 group-hover:scale-110 transition-transform duration-500">
+      {icon}
+    </div>
+    <div className="text-indigo-600 z-10">{icon}</div>
+    <p className="text-sm font-bold uppercase tracking-wider text-gray-500 z-10 mt-4">{label}</p>
+    <p className="text-5xl font-black text-gray-900 z-10 tracking-tight">{value}</p>
+  </motion.div>
+);
+
+export default StudentDashboard;

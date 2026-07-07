@@ -15,6 +15,8 @@ import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
+import { LiveTranscriptPanel } from '../components/transcript'
+import useTranscriptStore from '../stores/transcriptStore'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -37,6 +39,9 @@ function RoomDetailPage() {
   const [transcript, setTranscript] = useState('')
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [modelStatus, setModelStatus] = useState('Ready')
+
+  // New transcript store â€” keeps the enriched panel in sync with legacy state
+  const { segments: transcriptSegments } = useTranscriptStore()
   
   // MediaRecorder refs for server-side Whisper transcription
   const mediaRecorderRef = useRef(null)
@@ -80,7 +85,7 @@ function RoomDetailPage() {
     segmentTime: 2,
     questionsPerSegment: 2,
     difficulty: 'medium',
-    questionProvider: 'minimax',
+    questionProvider: 'google',
     timeToAnswer: 30,
     points: 100
   })
@@ -190,12 +195,25 @@ function RoomDetailPage() {
     }
   }, [socket, roomSettings.timeToAnswer])
 
-  // Auto-scroll transcription
+  // Auto-scroll transcription (legacy textarea)
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
     }
   }, [transcript])
+
+  // Sync new transcript store â†’ legacy transcript string for question generation
+  useEffect(() => {
+    if (transcriptSegments.length === 0) return
+    const fullText = transcriptSegments
+      .map((seg) => {
+        const time = new Date(seg.timestamp).toLocaleTimeString()
+        return `[${time}] ${seg.speaker}: ${seg.text}`
+      })
+      .join('\n\n')
+    setTranscript(fullText)
+    finalTranscriptRef.current = fullText
+  }, [transcriptSegments])
 
   // Start segment timer when recording
   useEffect(() => {
@@ -383,7 +401,7 @@ function RoomDetailPage() {
           config: {
             numQuestions: roomSettings.questionsPerSegment,
             difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
+            provider: roomSettings.questionProvider || 'google'
           }
         })
       })
@@ -432,7 +450,7 @@ function RoomDetailPage() {
           config: {
             numQuestions: roomSettings.questionsPerSegment,
             difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
+            provider: roomSettings.questionProvider || 'google',
             questionTypeMix: typeMix
           }
         })
@@ -906,7 +924,7 @@ function RoomDetailPage() {
               cursor: 'pointer',
               fontSize: '18px'
             }}>
-              ←
+              ⬅️ 
             </button>
 
             <div style={{
@@ -967,7 +985,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  ⏳ Answer
                 </span>
                 <span style={{ 
                   fontSize: '20px', 
@@ -995,7 +1013,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  ⏳ Time's Up!
                 </span>
               </div>
             )}
@@ -1018,7 +1036,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1040,7 +1058,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ✏️ Create Q
               </button>
             )}
 
@@ -1199,7 +1217,7 @@ function RoomDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'google'}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
@@ -1225,62 +1243,30 @@ function RoomDetailPage() {
               </div>
             </div>
 
-            {/* Transcription Card - 70% */}
+            {/* Live Transcript Panel - 70% */}
             <div style={{
               flex: '1 1 calc(70% - 10px)',
               minWidth: '300px',
               maxWidth: '100%',
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px',
               display: 'flex',
               flexDirection: 'column',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              position: 'relative',
             }}>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '12px',
-                paddingBottom: '12px',
-                borderBottom: '1px solid var(--border-color)'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '18px' }}>🎙️</span>
-                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                    Real-time Transcription
-                  </span>
-                  {isTranscribing && (
-                    <div style={{ padding: '2px 8px', background: '#fef2f2', borderRadius: '10px', fontSize: '10px', color: '#ef4444', fontWeight: '600' }}>
-                      LIVE
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {transcript && (
-                    <button onClick={clearTranscript} style={{
-                      padding: '4px 12px',
-                      background: 'transparent',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      color: 'var(--text-secondary)',
-                      cursor: 'pointer'
-                    }}>
-                      ✕ Clear
-                    </button>
-                  )}
+              {/* Generate Q button sits above the panel for backward compat */}
+              {!isEnded && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
                   <button
                     onClick={handleManualGenerateQuestions}
                     disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
                     style={{
-                      padding: '4px 12px',
+                      padding: '6px 14px',
                       background: '#3b82f6',
                       color: 'white',
                       border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: '500',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
                       cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
                       opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
                       display: 'flex',
@@ -1291,23 +1277,13 @@ function RoomDetailPage() {
                     {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
                   </button>
                 </div>
-              </div>
-
-              <div ref={transcriptRef} style={{
-                flex: 1,
-                fontSize: '15px',
-                lineHeight: '1.8',
-                color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                overflowY: 'auto'
-              }}>
-                {transcript ? transcript : (
-                  <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
-                  </span>
-                )}
-              </div>
+              )}
+              <LiveTranscriptPanel
+                roomId={room._id}
+                lang="en-US"
+                defaultOpen={true}
+                style={{ flex: 1 }}
+              />
             </div>
           </div>
 
