@@ -49,6 +49,9 @@ public class Notification {
     @Column(name = "quiz_id")
     private UUID quizId;
 
+    @Column(name = "lecture_id")
+    private UUID lectureId;
+
     @Column(name = "delivered_at")
     private Instant deliveredAt;
 
@@ -133,6 +136,7 @@ public class Notification {
     public UUID getSourceEventId() { return sourceEventId; }
     public UUID getSessionId() { return sessionId; }
     public UUID getQuizId() { return quizId; }
+    public UUID getLectureId() { return lectureId; }
     public Instant getDeliveredAt() { return deliveredAt; }
     public Instant getReadAt() { return readAt; }
     public int getRetryCount() { return retryCount; }
@@ -143,5 +147,6 @@ public class Notification {
 
     public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
     public void setQuizId(UUID quizId) { this.quizId = quizId; }
+    public void setLectureId(UUID lectureId) { this.lectureId = lectureId; }
     public void setErrorAndFailed(String errorMessage) { this.errorMessage = errorMessage; this.status = NotificationStatus.FAILED; this.updatedAt = Instant.now(); }
 }

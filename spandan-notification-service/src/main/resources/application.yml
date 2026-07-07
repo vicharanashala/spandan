@@ -52,6 +52,10 @@ kafka:
     analytics-events: analytics-events
     transcription-events: transcription-events
     notification-events: notification-events
+    user-events: user-events
+    lecture-events: lecture-events
+    grading-events: grading-events
+    session-analytics-events: session-analytics-events
 
 auth:
   jwt:

@@ -28,23 +28,24 @@ public class PollingEventConsumer {
                    containerFactory = "kafkaListenerContainerFactory")
     public void consume(EventEnvelope event) {
         try {
-            if (!"QuizStartingEvent".equals(event.getEventType())) {
-                log.debug("Ignored event type: {}", event.getEventType());
-                return;
-            }
-
             JsonNode payload = event.getPayload();
+            String eventId = event.getEventId().toString();
             UUID sessionId = UUID.fromString(payload.get("sessionId").asText());
             UUID quizId = UUID.fromString(payload.get("quizId").asText());
-            int questionCount = payload.get("questionCount").asInt();
 
-            List<UUID> studentIds = new ArrayList<>();
-            for (JsonNode node : payload.get("studentIds")) {
-                studentIds.add(UUID.fromString(node.asText()));
+            switch (event.getEventType()) {
+                case "QuizStartingEvent" -> {
+                    int questionCount = payload.get("questionCount").asInt();
+                    List<UUID> studentIds = new ArrayList<>();
+                    for (JsonNode node : payload.get("studentIds")) {
+                        studentIds.add(UUID.fromString(node.asText()));
+                    }
+                    orchestrator.onQuizStarting(eventId, sessionId, quizId, questionCount, studentIds);
+                }
+                case "QuizCompleted" ->
+                    orchestrator.onQuizCompleted(eventId, sessionId, quizId);
+                default -> log.debug("Ignored event type: {}", event.getEventType());
             }
-
-            orchestrator.onQuizStarting(event.getEventId().toString(), sessionId, quizId,
-                    questionCount, studentIds);
         } catch (Exception e) {
             log.error("Failed to process polling event: {}", e.getMessage(), e);
             throw e;
