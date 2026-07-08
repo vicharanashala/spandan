@@ -3,7 +3,10 @@ dotenv.config()
 import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
+import User from '../models/User.js'
+import GlobalConfig from '../models/GlobalConfig.js'
 import { config, AI_PROVIDERS } from '../config.js'
+import { decryptString } from '../utils/crypto.js'
 
 // Re-export for convenience
 export { AI_PROVIDERS }
@@ -286,6 +289,52 @@ IMPORTANT:
 - Questions should be based ONLY on the transcription content`
 }
 
+function getEnvApiKey(provider) {
+  const envKeys = {
+    minimax: config.minimaxApiKey,
+    openai: config.openaiApiKey,
+    anthropic: config.anthropicApiKey,
+    google: config.googleApiKey
+  }
+
+  return envKeys[provider] || ''
+}
+
+async function resolveAiApiKey(provider, userId) {
+  if (userId) {
+    const user = await User.findById(userId).select('+encryptedAiKeys').lean()
+    const encryptedPersonalKey = user?.encryptedAiKeys?.[provider]
+    if (encryptedPersonalKey) {
+      return {
+        apiKey: decryptString(encryptedPersonalKey),
+        source: 'personal'
+      }
+    }
+  }
+
+  const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
+  const encryptedGlobalKey = globalConfig?.encryptedAiKeys?.[provider]
+  if (encryptedGlobalKey) {
+    return {
+      apiKey: decryptString(encryptedGlobalKey),
+      source: 'global'
+    }
+  }
+
+  const envApiKey = getEnvApiKey(provider)
+  if (envApiKey) {
+    return {
+      apiKey: envApiKey,
+      source: 'env'
+    }
+  }
+
+  return {
+    apiKey: '',
+    source: 'none'
+  }
+}
+
 // Parse questions from AI response
 function parseQuestions(responseText, expectedTypes) {
   try {
@@ -358,12 +407,12 @@ function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+async function generateWithMiniMax(prompt, apiKey) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.minimaxApiKey}`
+      'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
       model: 'MiniMax-M2.7',
@@ -389,12 +438,12 @@ async function generateWithMiniMax(prompt) {
 }
 
 // OpenAI API call
-async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
+async function generateWithOpenAI(prompt, apiKey, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.openaiApiKey}`
+      'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
       model,
@@ -419,12 +468,12 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
 }
 
 // Anthropic (Claude) API call
-async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
+async function generateWithAnthropic(prompt, apiKey, model = 'claude-sonnet-4-20250514') {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.anthropicApiKey,
+      'x-api-key': apiKey,
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
@@ -450,8 +499,8 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
+async function generateWithGoogle(prompt, apiKey, model = 'gemini-2.0-flash') {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -484,7 +533,7 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null, userId = null } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -498,24 +547,30 @@ export async function generateQuestions(transcript, cfg) {
 
   console.log(`Generating ${numQuestions} questions with ${provider}...`)
 
+  const { apiKey, source } = await resolveAiApiKey(provider, userId)
+  if (!apiKey) {
+    return {
+      fallbackRequired: true,
+      suggestedPrompt: prompt
+    }
+  }
+
+  console.log(`Using ${source} AI configuration for ${provider}`)
+
   let responseText
 
   switch (provider) {
     case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
+      responseText = await generateWithMiniMax(prompt, apiKey)
       break
     case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
+      responseText = await generateWithOpenAI(prompt, apiKey)
       break
     case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
+      responseText = await generateWithAnthropic(prompt, apiKey)
       break
     case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
+      responseText = await generateWithGoogle(prompt, apiKey)
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)
@@ -524,5 +579,8 @@ export async function generateQuestions(transcript, cfg) {
   const questions = parseQuestions(responseText, questionTypes)
   console.log(`Generated ${questions.length} questions successfully`)
 
-  return questions
+  return {
+    success: true,
+    questions
+  }
 }

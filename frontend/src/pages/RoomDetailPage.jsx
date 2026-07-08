@@ -78,6 +78,9 @@ function RoomDetailPage() {
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
+  const [fallbackPrompt, setFallbackPrompt] = useState('')
+  const [fallbackJson, setFallbackJson] = useState('')
+  const [fallbackError, setFallbackError] = useState('')
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
   // Segment pause/resume state
@@ -431,6 +434,9 @@ function RoomDetailPage() {
     setShowTextToQuestions(false) // Close the text popup
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
+    setFallbackPrompt('')
+    setFallbackJson('')
+    setFallbackError('')
 
     try {
       const typeMix = mode === 'TF'
@@ -456,6 +462,12 @@ function RoomDetailPage() {
 
       const data = await response.json()
       setIsGeneratingFromText(false)
+
+      if (data.fallbackRequired) {
+        setFallbackPrompt(data.suggestedPrompt || '')
+        return
+      }
+
       setShowGeneratingPopup(false) // Close generating popup
 
       if (data.success && data.questions && data.questions.length > 0) {
@@ -475,6 +487,58 @@ function RoomDetailPage() {
       setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
       window.alert('Failed to generate questions. Please try again.')
+    }
+  }
+
+  const parseManualQuestions = (rawText) => {
+    const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
+    const candidate = fencedMatch ? fencedMatch[1] : rawText
+    const objectMatch = candidate.match(/\{[\s\S]*\}/)
+    if (!objectMatch) {
+      throw new Error('Paste valid JSON with a questions array')
+    }
+
+    const parsed = JSON.parse(objectMatch[0])
+    const questions = Array.isArray(parsed.questions) ? parsed.questions : []
+    if (questions.length === 0) {
+      throw new Error('JSON must include at least one question')
+    }
+
+    return questions.map((question, index) => ({
+      id: question.id || `manual_${Date.now()}_${index}`,
+      type: question.type || 'MCQ',
+      question: question.question || 'Question text missing',
+      options: Array.isArray(question.options) ? question.options.map(option => ({
+        text: option.text || option.option || 'Option',
+        isCorrect: !!(option.isCorrect || option.correct)
+      })) : [],
+      explanation: question.explanation || '',
+      timeToAnswer: roomSettings.timeToAnswer,
+      points: roomSettings.points,
+      segmentIndex: currentSegment
+    }))
+  }
+
+  const handleFallbackSubmit = () => {
+    setFallbackError('')
+    try {
+      const manualQuestions = parseManualQuestions(fallbackJson)
+      setPendingTextQuestions(manualQuestions)
+      setShowGeneratingPopup(false)
+      setFallbackPrompt('')
+      setFallbackJson('')
+      setShowTextQuestionPopup(true)
+    } catch (err) {
+      setFallbackError(err.message || 'Unable to parse pasted JSON')
+    }
+  }
+
+  const handleCopyFallbackPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(fallbackPrompt)
+      setFallbackError('')
+    } catch (err) {
+      setFallbackError('Copy failed. Select the prompt text and copy it manually.')
     }
   }
 
@@ -1678,11 +1742,171 @@ function RoomDetailPage() {
             background: 'var(--bg-card)',
             borderRadius: '20px',
             padding: '32px',
-            textAlign: 'center',
-            minWidth: '280px',
+            textAlign: fallbackPrompt ? 'left' : 'center',
+            width: fallbackPrompt ? '720px' : '280px',
+            maxWidth: '92vw',
+            maxHeight: '88vh',
+            overflow: 'auto',
             boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
             border: '1px solid var(--border-color)'
           }}>
+            {fallbackPrompt ? (
+              <>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  gap: '16px',
+                  marginBottom: '16px'
+                }}>
+                  <div>
+                    <h3 style={{
+                      margin: '0 0 6px',
+                      color: 'var(--text-primary)',
+                      fontSize: '18px',
+                      fontWeight: '600'
+                    }}>Clipboard Export</h3>
+                    <p style={{
+                      margin: 0,
+                      color: 'var(--text-secondary)',
+                      fontSize: '13px'
+                    }}>No AI key is configured. Copy this prompt into an AI tool, then paste the JSON response below.</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowGeneratingPopup(false)
+                      setFallbackPrompt('')
+                      setFallbackJson('')
+                      setFallbackError('')
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      fontSize: '18px'
+                    }}
+                  >
+                    x
+                  </button>
+                </div>
+
+                {fallbackError && (
+                  <div style={{
+                    background: '#fef2f2',
+                    border: '1px solid #fecaca',
+                    borderRadius: '8px',
+                    color: '#b91c1c',
+                    padding: '10px 12px',
+                    fontSize: '13px',
+                    marginBottom: '12px'
+                  }}>
+                    {fallbackError}
+                  </div>
+                )}
+
+                <textarea
+                  value={fallbackPrompt}
+                  readOnly
+                  rows={10}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    lineHeight: '1.5',
+                    resize: 'vertical',
+                    fontFamily: 'monospace',
+                    marginBottom: '12px'
+                  }}
+                />
+
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  <button
+                    onClick={handleCopyFallbackPrompt}
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: '#2563eb',
+                      color: 'white',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Copy Prompt
+                  </button>
+                  <button
+                    onClick={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')}
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Open ChatGPT
+                  </button>
+                </div>
+
+                <label style={{
+                  display: 'block',
+                  color: 'var(--text-primary)',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  marginBottom: '8px'
+                }}>
+                  Paste generated JSON
+                </label>
+                <textarea
+                  value={fallbackJson}
+                  onChange={(event) => setFallbackJson(event.target.value)}
+                  placeholder='{"questions":[...]}'
+                  rows={7}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--input-bg)',
+                    color: 'var(--text-primary)',
+                    fontSize: '13px',
+                    lineHeight: '1.5',
+                    resize: 'vertical',
+                    fontFamily: 'monospace',
+                    marginBottom: '14px'
+                  }}
+                />
+                <button
+                  onClick={handleFallbackSubmit}
+                  disabled={!fallbackJson.trim()}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: fallbackJson.trim() ? '#059669' : '#9ca3af',
+                    color: 'white',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: fallbackJson.trim() ? 'pointer' : 'not-allowed'
+                  }}
+                >
+                  Import Questions
+                </button>
+              </>
+            ) : (
+              <>
             <div style={{
               fontSize: '48px',
               marginBottom: '16px',
@@ -1699,6 +1923,8 @@ function RoomDetailPage() {
               color: 'var(--text-secondary)',
               fontSize: '14px'
             }}>Please wait while AI creates your questions</p>
+              </>
+            )}
           </div>
         </div>
       )}

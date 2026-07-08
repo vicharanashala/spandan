@@ -83,4 +83,9 @@ export const questionApi = {
   getResults: (id) => api.get(`/questions/${id}/results`)
 }
 
+export const aiConfigApi = {
+  getStatus: () => api.get('/config/ai'),
+  saveKeys: (keys, scope = 'personal') => api.put('/config/ai', { keys, scope })
+}
+
 export default api

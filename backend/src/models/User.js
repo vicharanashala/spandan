@@ -1,6 +1,19 @@
 import mongoose from 'mongoose'
 import bcrypt from 'bcryptjs'
 
+const encryptedValueSchema = new mongoose.Schema({
+  iv: { type: String, required: true },
+  authTag: { type: String, required: true },
+  ciphertext: { type: String, required: true }
+}, { _id: false })
+
+const encryptedAiKeysSchema = new mongoose.Schema({
+  minimax: { type: encryptedValueSchema, default: null },
+  openai: { type: encryptedValueSchema, default: null },
+  anthropic: { type: encryptedValueSchema, default: null },
+  google: { type: encryptedValueSchema, default: null }
+}, { _id: false })
+
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -90,6 +103,11 @@ const userSchema = new mongoose.Schema({
   lastLogin: {
     type: Date,
     default: null
+  },
+  encryptedAiKeys: {
+    type: encryptedAiKeysSchema,
+    default: () => ({}),
+    select: false
   }
 }, {
   timestamps: true
@@ -117,6 +135,7 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const obj = this.toObject()
   delete obj.password
+  delete obj.encryptedAiKeys
   return obj
 }
 

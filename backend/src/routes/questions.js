@@ -48,14 +48,23 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       numQuestions,
       difficulty,
       provider,
-      questionTypeMix
+      questionTypeMix,
+      userId: req.user._id
     })
 
-    console.log(`Generated ${questions.length} questions successfully`)
+    if (questions?.fallbackRequired) {
+      return res.status(200).json({
+        success: true,
+        fallbackRequired: true,
+        suggestedPrompt: questions.suggestedPrompt
+      })
+    }
+
+    console.log(`Generated ${questions.questions.length} questions successfully`)
 
     res.json({
       success: true,
-      questions
+      questions: questions.questions
     })
   } catch (error) {
     console.error('Question generation error:', error)
