@@ -1,13 +1,12 @@
 package com.spandan.notification.infrastructure.kafka.consumers;
 
-import com.spandan.notification.application.dto.event.EventEnvelope;
 import com.spandan.notification.application.service.NotificationOrchestrator;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -24,24 +23,26 @@ public class GradingEventConsumer {
     @KafkaListener(topics = "${kafka.topics.grading-events}",
                    groupId = "${kafka.consumer.group-id}.grading",
                    containerFactory = "kafkaListenerContainerFactory")
-    public void consume(EventEnvelope event) {
+    public void consume(Map<String, Object> event) {
         try {
-            JsonNode payload = event.getPayload();
-            String eventId = event.getEventId().toString();
-            UUID userId = UUID.fromString(payload.get("userId").asText());
-            UUID sessionId = payload.has("sessionId") && !payload.get("sessionId").isNull()
-                    ? UUID.fromString(payload.get("sessionId").asText()) : null;
-            UUID quizId = payload.has("quizId") && !payload.get("quizId").isNull()
-                    ? UUID.fromString(payload.get("quizId").asText()) : null;
+            String eventType = (String) event.getOrDefault("eventType", event.get("type"));
+            String eventId = event.getOrDefault("eventId", UUID.randomUUID()).toString();
+            UUID adminId = event.containsKey("adminId") && event.get("adminId") != null
+                    ? UUID.fromString(event.get("adminId").toString())
+                    : UUID.fromString(event.get("userId").toString());
+            UUID sessionId = event.containsKey("sessionId") && event.get("sessionId") != null
+                    ? UUID.fromString(event.get("sessionId").toString()) : null;
+            UUID quizId = event.containsKey("quizId") && event.get("quizId") != null
+                    ? UUID.fromString(event.get("quizId").toString()) : null;
 
-            switch (event.getEventType()) {
+            switch (eventType) {
                 case "GradingCompleted" ->
-                    orchestrator.onGradingCompleted(eventId, userId, sessionId, quizId);
+                    orchestrator.onGradingCompleted(eventId, adminId, sessionId, quizId);
                 case "AutoGradingFailed" -> {
-                    String reason = payload.get("failureReason").asText();
-                    orchestrator.onAutoGradingFailed(eventId, userId, sessionId, quizId, reason);
+                    String reason = (String) event.get("failureReason");
+                    orchestrator.onAutoGradingFailed(eventId, adminId, sessionId, quizId, reason);
                 }
-                default -> log.debug("Ignored event type: {}", event.getEventType());
+                default -> log.debug("Ignored event type: {}", eventType);
             }
         } catch (Exception e) {
             log.error("Failed to process grading event: {}", e.getMessage(), e);

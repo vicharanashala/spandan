@@ -1,0 +1,3 @@
+com\spandan\polling\application\service\QuizServiceTest.class
+com\spandan\polling\application\service\StateTransitionGuardTest.class
+com\spandan\polling\integration\QuizLifecycleIntegrationTest.class

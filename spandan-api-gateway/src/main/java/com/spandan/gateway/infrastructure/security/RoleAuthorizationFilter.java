@@ -20,26 +20,31 @@ import java.util.Set;
  * Role-based authorization. Runs after {@link JwtAuthenticationFilter}.
  *
  * <p>For each {@code /api/v1/<service>/**} route, the gateway checks the resolved role
- * against the set of roles allowed for that path. This is the canonical role-membership
- * filter referenced in the context-admin-role addendum.
+ * against the set of roles allowed for that path.
  *
- * <p>Default policy (post-update):
+ * <p>Default policy:
  * <pre>{@code
- * /api/v1/auth/**     → any authenticated user     (the controller handles the rest)
- * /api/v1/admin/**    → ADMIN only
- * /api/v1/questions/** → STUDENT or TEACHER or ADMIN
- * /api/v1/polls/**    → STUDENT or TEACHER or ADMIN
- * /api/v1/responses/** → STUDENT or TEACHER or ADMIN
- * /api/v1/reports/**  → TEACHER or ADMIN
- * /api/v1/analytics/** → TEACHER or ADMIN
- * /api/v1/transcription/** → TEACHER or ADMIN
- * /api/v1/realtime/** → STUDENT or TEACHER or ADMIN
- * /api/v1/recording/** → TEACHER or ADMIN
- * /api/v1/notifications/** → any authenticated user
+ * /api/v1/auth/**                → any authenticated user
+ * /api/v1/admin/**               → ADMIN only
+ * /api/v1/question-generation/** → TEACHER only
+ * /api/v1/reviews/**             → ADMIN only
+ * /api/v1/polling/**             → ADMIN only
+ * /api/v1/interactions/**        → STUDENT or TEACHER or ADMIN
+ * /api/v1/reports/**             → TEACHER or ADMIN
+ * /api/v1/analytics/**           → TEACHER or ADMIN
+ * /api/v1/transcripts/**         → TEACHER or ADMIN
+ * /api/v1/streams/**             → TEACHER or ADMIN
+ * /api/v1/recordings/**          → TEACHER or ADMIN
+ * /api/v1/realtime/**            → any authenticated user
+ * /api/v1/notifications/**       → any authenticated user
  * /api/v1/notification-preferences/** → any authenticated user
- * /api/v1/users/me     → any authenticated user
- * /api/v1/users/**     → ADMIN only (write access; /me overrides)
+ * /api/v1/users/me               → any authenticated user
+ * /api/v1/users/**               → ADMIN only
  * }</pre>
+ *
+ * <p>Fine-grained endpoint-level authorization (e.g., GET /current vs POST /start on
+ * polling) is delegated to downstream services. The gateway enforces coarse role
+ * boundaries at the path-prefix level only.
  *
  * <p>If a request reaches a route that has no rule AND is not a public endpoint, the gateway
  * DENIES the request with 403 forbidden. This is the default-deny posture.
@@ -54,11 +59,13 @@ public class RoleAuthorizationFilter implements GlobalFilter, Ordered {
             Map.entry("/api/v1/users", Set.of(Role.ADMIN)),
             Map.entry("/api/v1/reports", Set.of(Role.TEACHER, Role.ADMIN)),
             Map.entry("/api/v1/analytics", Set.of(Role.TEACHER, Role.ADMIN)),
-            Map.entry("/api/v1/transcription", Set.of(Role.TEACHER, Role.ADMIN)),
-            Map.entry("/api/v1/recording", Set.of(Role.TEACHER, Role.ADMIN)),
-            Map.entry("/api/v1/questions", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
-            Map.entry("/api/v1/polls", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
-            Map.entry("/api/v1/responses", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
+            Map.entry("/api/v1/transcripts", Set.of(Role.TEACHER, Role.ADMIN)),
+            Map.entry("/api/v1/streams", Set.of(Role.TEACHER, Role.ADMIN)),
+            Map.entry("/api/v1/recordings", Set.of(Role.TEACHER, Role.ADMIN)),
+            Map.entry("/api/v1/question-generation", Set.of(Role.TEACHER)),
+            Map.entry("/api/v1/reviews", Set.of(Role.ADMIN)),
+            Map.entry("/api/v1/polling", Set.of(Role.ADMIN)),
+            Map.entry("/api/v1/interactions", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
             Map.entry("/api/v1/realtime", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
             Map.entry("/api/v1/notifications", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),
             Map.entry("/api/v1/notification-preferences", Set.of(Role.STUDENT, Role.TEACHER, Role.ADMIN)),

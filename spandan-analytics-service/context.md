@@ -228,43 +228,43 @@ Publish events:
 ### Existing Endpoints (backward compatible)
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/analytics/quiz/{quizId}/session` | TEACHER | Session-level analytics (legacy) |
-| GET | `/api/v1/analytics/quiz/{quizId}/questions` | TEACHER | Question-wise analytics (legacy) |
+| GET | `/api/v1/analytics/quiz/{quizId}/session` | TEACHER/ADMIN | Session-level analytics (legacy) |
+| GET | `/api/v1/analytics/quiz/{quizId}/questions` | TEACHER/ADMIN | Question-wise analytics (legacy) |
 | GET | `/api/v1/analytics/quiz/{quizId}/students/me` | STUDENT | Own performance (legacy) |
-| GET | `/api/v1/analytics/quiz/{quizId}/students` | TEACHER | All student performance (legacy) |
+| GET | `/api/v1/analytics/quiz/{quizId}/students` | TEACHER/ADMIN | All student performance (legacy) |
 | GET | `/api/v1/analytics/quiz/{quizId}/leaderboard` | ANY | Leaderboard (legacy) |
 
 ### Session-based Endpoints
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/analytics/session/{sessionId}/session` | TEACHER | Session-level analytics |
-| GET | `/api/v1/analytics/session/{sessionId}/questions` | TEACHER | Question-wise analytics |
-| GET | `/api/v1/analytics/session/{sessionId}/students` | TEACHER | All student performance |
+| GET | `/api/v1/analytics/session/{sessionId}/session` | TEACHER/ADMIN | Session-level analytics |
+| GET | `/api/v1/analytics/session/{sessionId}/questions` | TEACHER/ADMIN | Question-wise analytics |
+| GET | `/api/v1/analytics/session/{sessionId}/students` | TEACHER/ADMIN | All student performance |
 | GET | `/api/v1/analytics/session/{sessionId}/students/me` | STUDENT | Own performance |
 | GET | `/api/v1/analytics/session/{sessionId}/leaderboard` | ANY | Leaderboard |
-| GET | `/api/v1/analytics/session/{sessionId}/learning-objectives` | TEACHER | Per-learning-objective mastery |
-| GET | `/api/v1/analytics/session/{sessionId}/engagement` | TEACHER | Engagement metrics |
+| GET | `/api/v1/analytics/session/{sessionId}/learning-objectives` | TEACHER/ADMIN | Per-learning-objective mastery |
+| GET | `/api/v1/analytics/session/{sessionId}/engagement` | TEACHER/ADMIN | Engagement metrics |
 
 ### Feature Store Endpoints
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/analytics/session/{sessionId}/features/students` | TEACHER | Engineered student features |
-| GET | `/api/v1/analytics/session/{sessionId}/features/educational` | TEACHER | Engineered educational features |
-| GET | `/api/v1/analytics/session/{sessionId}/features/session` | TEACHER | Engineered session features |
+| GET | `/api/v1/analytics/session/{sessionId}/features/students` | TEACHER/ADMIN | Engineered student features |
+| GET | `/api/v1/analytics/session/{sessionId}/features/educational` | TEACHER/ADMIN | Engineered educational features |
+| GET | `/api/v1/analytics/session/{sessionId}/features/session` | TEACHER/ADMIN | Engineered session features |
 
 ### Classroom Analytics Endpoints
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/analytics/session/{sessionId}/classroom/accuracy` | TEACHER | Classroom accuracy summary |
-| GET | `/api/v1/analytics/session/{sessionId}/classroom/concepts` | TEACHER | Concept performance overview |
-| GET | `/api/v1/analytics/session/{sessionId}/classroom/learning-trend` | TEACHER | Learning trend across questions |
-| GET | `/api/v1/analytics/session/{sessionId}/classroom/attention-required` | TEACHER | Students needing attention |
+| GET | `/api/v1/analytics/session/{sessionId}/classroom/accuracy` | TEACHER/ADMIN | Classroom accuracy summary |
+| GET | `/api/v1/analytics/session/{sessionId}/classroom/concepts` | TEACHER/ADMIN | Concept performance overview |
+| GET | `/api/v1/analytics/session/{sessionId}/classroom/learning-trend` | TEACHER/ADMIN | Learning trend across questions |
+| GET | `/api/v1/analytics/session/{sessionId}/classroom/attention-required` | TEACHER/ADMIN | Students needing attention |
 
 ### Historical Endpoints
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/analytics/student/{studentId}/history` | TEACHER/STUDENT | Historical performance |
-| GET | `/api/v1/analytics/student/{studentId}/history/concepts` | TEACHER/STUDENT | Historical concept performance |
+| GET | `/api/v1/analytics/student/{studentId}/history` | TEACHER/ADMIN/STUDENT | Historical performance |
+| GET | `/api/v1/analytics/student/{studentId}/history/concepts` | TEACHER/ADMIN/STUDENT | Historical concept performance |
 
 ---
 
@@ -499,6 +499,7 @@ No coupling to: QGS, RTC, Transcription, Recording, Grading.
 - All REST endpoints require valid JWT validated by Auth Service
 - Students can only access their own data (checked via JWT `userId`)
 - Teachers can access data for their sessions
+- **ADMIN** can access cross-class analytics, session analytics, and all student/teacher data across any session
 - No write endpoints — all data arrives via Kafka
 
 ## Versioning Strategy for Analytics Models

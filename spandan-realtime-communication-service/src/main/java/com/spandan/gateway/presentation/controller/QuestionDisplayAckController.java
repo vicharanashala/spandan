@@ -57,7 +57,8 @@ public class QuestionDisplayAckController {
                 poll.getTopicId(),
                 poll.getConceptId(),
                 poll.getQuestionSequence(),
-                Instant.now()
+                Instant.now(),
+                poll.getAdminId()
         );
 
         if (recorded) {

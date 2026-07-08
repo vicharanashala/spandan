@@ -5,6 +5,7 @@ import com.spandan.notification.application.service.RetrySweeper;
 import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.NotificationType;
+import com.spandan.notification.domain.enums.RecipientRole;
 import com.spandan.notification.infrastructure.persistence.NotificationRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +32,7 @@ class RetrySweeperTest {
     @BeforeEach
     void setUp() {
         retrySweeper = new RetrySweeper(notificationRepository, orchestrator);
-        failedNotification = new Notification(UUID.randomUUID(), NotificationType.QUESTIONS_GENERATED,
+        failedNotification = new Notification(UUID.randomUUID(), RecipientRole.TEACHER, NotificationType.QUESTIONS_GENERATED,
                 "title", "message", NotificationChannel.PUSH, "svc", UUID.randomUUID());
         failedNotification.markFailed("FCM error");
     }
@@ -72,7 +73,7 @@ class RetrySweeperTest {
         List<Notification> manyNotifications = java.util.stream.IntStream.range(0, 150)
                 .mapToObj(i -> failedNotification)
                 .map(n -> {
-                    Notification copy = new Notification(UUID.randomUUID(), NotificationType.QUESTIONS_GENERATED,
+                    Notification copy = new Notification(UUID.randomUUID(), RecipientRole.TEACHER, NotificationType.QUESTIONS_GENERATED,
                             "title", "message", NotificationChannel.PUSH, "svc", UUID.randomUUID());
                     copy.markFailed("error");
                     return copy;

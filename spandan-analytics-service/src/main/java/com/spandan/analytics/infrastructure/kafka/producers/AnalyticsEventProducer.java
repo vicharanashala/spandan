@@ -6,6 +6,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -76,12 +77,17 @@ public class AnalyticsEventProducer {
         log.info("Published AnalyticsGeneratedEvent for sessionId={} type={}", sessionId, analyticsType);
     }
 
-    public void publishSessionAnalyticsCompleted(String sessionId) {
-        Map<String, Object> event = Map.of(
-                "eventId", UUID.randomUUID().toString(),
-                "sessionId", sessionId,
-                "completedAt", Instant.now().toString()
-        );
+    public void publishSessionAnalyticsCompleted(String sessionId, String teacherId) {
+        Map<String, Object> event = new HashMap<>();
+        event.put("eventId", UUID.randomUUID().toString());
+        event.put("sessionId", sessionId);
+        event.put("completedAt", Instant.now().toString());
+        if (teacherId != null) {
+            event.put("teacherId", teacherId);
+            event.put("role", "TEACHER");
+        } else {
+            event.put("role", "SYSTEM");
+        }
         kafkaTemplate.send("session-analytics-events", sessionId, event);
         log.info("Published SessionAnalyticsCompletedEvent for sessionId={}", sessionId);
     }

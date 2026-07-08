@@ -41,11 +41,18 @@ public class WebSocketEventListener {
         String podId = UUID.randomUUID().toString();
 
         if (userId != null && role != null) {
-            UserRole userRole = "TEACHER".equals(role) ? UserRole.TEACHER : UserRole.STUDENT;
+            UserRole userRole = switch (role) {
+                case "ADMIN" -> UserRole.ADMIN;
+                case "TEACHER" -> UserRole.TEACHER;
+                default -> UserRole.STUDENT;
+            };
             ConnectionSession session = new ConnectionSession(sessionId, userId, userRole, quizId, podId);
             sessionRepository.save(session);
             if (userRole == UserRole.STUDENT) {
                 eventProducer.studentConnected(userId, quizId, sessionId);
+            } else if (userRole == UserRole.ADMIN) {
+                eventProducer.adminConnected(userId, quizId, sessionId);
+                sessionRepository.addAdminSession(quizId, sessionId);
             } else {
                 eventProducer.teacherConnected(userId, quizId, sessionId);
             }
@@ -68,6 +75,10 @@ public class WebSocketEventListener {
                 sessionRepository.deleteBySessionId(sessionId);
                 if (session.getRole() == UserRole.STUDENT) {
                     eventProducer.studentDisconnected(userId, quizId, sessionId);
+                } else if (session.getRole() == UserRole.ADMIN) {
+                    eventProducer.adminDisconnected(userId, quizId, sessionId);
+                    sessionRepository.removeAdminSession(quizId, sessionId);
+                    log.warn("Admin disconnected mid-quiz: userId={}, quizId={}", userId, quizId);
                 } else {
                     eventProducer.teacherDisconnected(userId, quizId, sessionId);
                 }

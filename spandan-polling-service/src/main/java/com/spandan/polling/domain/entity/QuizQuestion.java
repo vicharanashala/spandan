@@ -167,6 +167,7 @@ public class QuizQuestion {
 
     private boolean canTransitionTo(QuestionStatus target) {
         return switch (target) {
+            case SCHEDULED -> false;
             case PUBLISHED -> questionStatus == QuestionStatus.SCHEDULED;
             case POLL_OPEN -> questionStatus == QuestionStatus.SCHEDULED;
             case RUNNING -> questionStatus == QuestionStatus.PUBLISHED

@@ -133,10 +133,10 @@ All services are stateless and HPA-scaled on CPU + Kafka consumer lag:
    → QGS consumes → generates questions → QuestionGeneratedEvent → question-generation-events → PS, RS2
    → QGS produces QuestionsGenerated → question-generation-events → NS
 
-4. TEACHER creates quiz via PS REST API
+4. ADMIN creates quiz via PS REST API
    → PS stores quiz DRAFT with hierarchy context
 
-5. TEACHER starts quiz via PS REST API
+5. ADMIN starts quiz via PS REST API
    → PS: DRAFT→SCHEDULED → QuizStartingEvent → polling-events → NS
    → PS: SCHEDULED→RUNNING → per-question progression:
        → PollOpenedEvent → polling-events → RTC, RS2
@@ -185,14 +185,14 @@ All services are stateless and HPA-scaled on CPU + Kafka consumer lag:
 |---------|-----------|
 | Service-to-service auth | Internal JWT with `X-Internal-Call: true` header + shared service token per pair |
 | User auth | JWT (HS256, 15min access + 7d refresh) — validated by Auth Service REST |
-| Endpoint authorization | Role-based (`TEACHER`, `STUDENT`) via `@PreAuthorize` |
+| Endpoint authorization | Role-based (`ADMIN`, `TEACHER`, `STUDENT`) via `@PreAuthorize` |
 | Kafka producer auth | SSL client certificates per service |
 | Kafka consumer auth | SSL client certificates + ACL on topic patterns |
 | Event payload integrity | Events are self-contained — no cross-service references that could be tampered |
 | RBAC enforcement | API Gateway validates JWT before routing; each service re-validates for own endpoints |
 | Inter-service DB access | Strictly forbidden — all data sharing via Kafka or REST |
 | Interaction immutability | Response Service does not expose DELETE or UPDATE endpoints for interaction records |
-| Export authorization | Reporting Service verifies `teacherId` on report metadata before serving exports |
+| Export authorization | Reporting Service verifies `teacherId`/`adminId` on report metadata before serving exports |
 | Token blacklist | Redis `SET NX EX` on `jti:{tokenId}` — checked on every request |
 
 ## Deliverable 20: Data Migration Path

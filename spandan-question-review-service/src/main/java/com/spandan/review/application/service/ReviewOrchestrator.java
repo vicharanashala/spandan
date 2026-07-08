@@ -50,9 +50,15 @@ public class ReviewOrchestrator {
         return reviewRepository.findByQuestionSetIdOrderByQuestionOrderAsc(questionSetId);
     }
 
-    public Map<UUID, PendingSetSummary> getPendingSets(UUID teacherId) {
-        var setIds = reviewRepository.findDistinctQuestionSetIdsByTeacherIdAndReviewStatus(
-            teacherId, ReviewStatus.PENDING_REVIEW);
+    public Map<UUID, PendingSetSummary> getPendingSets(UUID userId, String role) {
+        List<UUID> setIds;
+        if ("ADMIN".equals(role)) {
+            setIds = reviewRepository.findDistinctQuestionSetIdsByAdminIdAndReviewStatus(
+                userId, ReviewStatus.PENDING_REVIEW);
+        } else {
+            setIds = reviewRepository.findDistinctQuestionSetIdsByTeacherIdAndReviewStatus(
+                userId, ReviewStatus.PENDING_REVIEW);
+        }
         var result = new LinkedHashMap<UUID, PendingSetSummary>();
         for (var setId : setIds) {
             var reviews = reviewRepository.findByQuestionSetIdAndReviewStatus(setId, ReviewStatus.PENDING_REVIEW);
@@ -63,6 +69,7 @@ public class ReviewOrchestrator {
             var first = reviews.stream().findFirst();
             result.put(setId, new PendingSetSummary(
                 setId, first.map(Review::getSessionId).orElse(null),
+                first.map(Review::getAdminId).orElse(null),
                 first.map(Review::getTeacherId).orElse(null),
                 (int) total, reviews.size(), (int) approved, (int) rejected, (int) orphaned
             ));
@@ -71,9 +78,9 @@ public class ReviewOrchestrator {
     }
 
     @Transactional
-    public Review approve(UUID reviewId, UUID teacherId, int version, String comments) {
+    public Review approve(UUID reviewId, UUID adminId, int version, String comments) {
         var review = getById(reviewId);
-        verifyOwnership(review, teacherId);
+        verifyAdminOwnership(review, adminId);
         stateMachine.guardApprove(review.getReviewStatus());
 
         if (review.getVersion() != version) {
@@ -85,18 +92,18 @@ public class ReviewOrchestrator {
         review.setReviewedAt(Instant.now());
         reviewRepository.save(review);
 
-        audit(reviewId, teacherId, AuditAction.APPROVED, comments != null ? "{\"comments\":\"" + escape(comments) + "\"}" : null);
+        audit(reviewId, adminId, AuditAction.APPROVED, comments != null ? "{\"comments\":\"" + escape(comments) + "\"}" : null);
 
-        eventPublisher.questionApproved(review);
+        eventPublisher.questionApproved(review, adminId);
         checkSetCompletion(review.getQuestionSetId(), review.getSessionId());
 
         return review;
     }
 
     @Transactional
-    public Review reject(UUID reviewId, UUID teacherId, int version, String comments) {
+    public Review reject(UUID reviewId, UUID adminId, int version, String comments) {
         var review = getById(reviewId);
-        verifyOwnership(review, teacherId);
+        verifyAdminOwnership(review, adminId);
         stateMachine.guardReject(review.getReviewStatus());
 
         if (comments == null || comments.isBlank()) {
@@ -111,19 +118,19 @@ public class ReviewOrchestrator {
         review.setReviewedAt(Instant.now());
         reviewRepository.save(review);
 
-        audit(reviewId, teacherId, AuditAction.REJECTED, "{\"comments\":\"" + escape(comments) + "\"}");
+        audit(reviewId, adminId, AuditAction.REJECTED, "{\"comments\":\"" + escape(comments) + "\"}");
 
-        eventPublisher.questionRejected(review, comments);
+        eventPublisher.questionRejected(review, comments, adminId);
         checkSetCompletion(review.getQuestionSetId(), review.getSessionId());
 
         return review;
     }
 
     @Transactional
-    public Review edit(UUID reviewId, UUID teacherId, int version,
+    public Review edit(UUID reviewId, UUID adminId, int version,
                        String questionText, String options, String correctAnswer) {
         var review = getById(reviewId);
-        verifyOwnership(review, teacherId);
+        verifyAdminOwnership(review, adminId);
         stateMachine.guardEdit(review.getReviewStatus());
 
         if (review.getVersion() != version) {
@@ -138,7 +145,7 @@ public class ReviewOrchestrator {
         versionRecord.setQuestionText(questionText);
         versionRecord.setOptions(options);
         versionRecord.setCorrectAnswer(correctAnswer);
-        versionRecord.setEditedByTeacherId(teacherId);
+        versionRecord.setEditedByAdminId(adminId);
         questionVersionRepository.save(versionRecord);
 
         review.setEditedQuestion(questionText);
@@ -146,20 +153,20 @@ public class ReviewOrchestrator {
         review.setEditedCorrectAnswer(correctAnswer);
         reviewRepository.save(review);
 
-        audit(reviewId, teacherId, AuditAction.EDITED,
+        audit(reviewId, adminId, AuditAction.EDITED,
               "{\"versionNumber\":" + nextVersionNumber + "}");
 
-        eventPublisher.questionEdited(review, nextVersionNumber);
+        eventPublisher.questionEdited(review, nextVersionNumber, adminId);
 
         return review;
     }
 
     @Transactional
-    public Review editAndApprove(UUID reviewId, UUID teacherId, int version,
+    public Review editAndApprove(UUID reviewId, UUID adminId, int version,
                                   String questionText, String options,
                                   String correctAnswer, String comments) {
         var review = getById(reviewId);
-        verifyOwnership(review, teacherId);
+        verifyAdminOwnership(review, adminId);
         stateMachine.guardApprove(review.getReviewStatus());
         stateMachine.guardEdit(review.getReviewStatus());
 
@@ -175,7 +182,7 @@ public class ReviewOrchestrator {
         versionRecord.setQuestionText(questionText);
         versionRecord.setOptions(options);
         versionRecord.setCorrectAnswer(correctAnswer);
-        versionRecord.setEditedByTeacherId(teacherId);
+        versionRecord.setEditedByAdminId(adminId);
         questionVersionRepository.save(versionRecord);
 
         review.setEditedQuestion(questionText);
@@ -186,27 +193,27 @@ public class ReviewOrchestrator {
         review.setReviewedAt(Instant.now());
         reviewRepository.save(review);
 
-        audit(reviewId, teacherId, AuditAction.EDITED,
+        audit(reviewId, adminId, AuditAction.EDITED,
               "{\"versionNumber\":" + nextVersionNumber + ",\"autoApproved\":true}");
-        audit(reviewId, teacherId, AuditAction.APPROVED,
+        audit(reviewId, adminId, AuditAction.APPROVED,
               comments != null ? "{\"comments\":\"" + escape(comments) + "\",\"viaEditAndApprove\":true}" : null);
 
-        eventPublisher.questionEdited(review, nextVersionNumber);
-        eventPublisher.questionApproved(review);
+        eventPublisher.questionEdited(review, nextVersionNumber, adminId);
+        eventPublisher.questionApproved(review, adminId);
         checkSetCompletion(review.getQuestionSetId(), review.getSessionId());
 
         return review;
     }
 
     @Transactional
-    public void reorder(UUID questionSetId, UUID teacherId, List<UUID> orderedReviewIds) {
+    public void reorder(UUID questionSetId, UUID adminId, List<UUID> orderedReviewIds) {
         var reviews = reviewRepository.findByQuestionSetIdOrderByQuestionOrderAsc(questionSetId);
         if (reviews.size() != orderedReviewIds.size()) {
             throw ReviewException.badRequest(
                 "List size " + orderedReviewIds.size() + " does not match set size " + reviews.size());
         }
         for (var review : reviews) {
-            verifyOwnership(review, teacherId);
+            verifyAdminOwnership(review, adminId);
             int newOrder = orderedReviewIds.indexOf(review.getId());
             if (newOrder < 0) {
                 throw ReviewException.badRequest("Review " + review.getId() + " not found in ordered list");
@@ -217,29 +224,35 @@ public class ReviewOrchestrator {
 
         var firstReview = reviews.stream().findFirst();
         firstReview.ifPresent(r ->
-            audit(r.getId(), teacherId, AuditAction.REORDERED,
+            audit(r.getId(), adminId, AuditAction.REORDERED,
                   "{\"newOrder\":" + orderedReviewIds + "}"));
 
-        eventPublisher.questionOrderChanged(questionSetId, orderedReviewIds);
+        eventPublisher.questionOrderChanged(questionSetId, orderedReviewIds, adminId);
     }
 
     @Transactional
-    public void saveSet(UUID questionSetId, UUID teacherId) {
+    public void saveSet(UUID questionSetId, UUID adminId) {
         var reviews = reviewRepository.findByQuestionSetIdOrderByQuestionOrderAsc(questionSetId);
         for (var review : reviews) {
-            verifyOwnership(review, teacherId);
+            verifyAdminOwnership(review, adminId);
             review.setSavedFlag(true);
             reviewRepository.save(review);
         }
         if (!reviews.isEmpty()) {
-            audit(reviews.get(0).getId(), teacherId, AuditAction.SAVED, "{\"questionSetId\":\"" + questionSetId + "\"}");
+            audit(reviews.get(0).getId(), adminId, AuditAction.SAVED, "{\"questionSetId\":\"" + questionSetId + "\"}");
         }
-        eventPublisher.questionSaved(questionSetId);
+        eventPublisher.questionSaved(questionSetId, adminId);
     }
 
-    public ReviewHistory getHistory(UUID reviewId, UUID teacherId) {
+    public ReviewHistory getHistory(UUID reviewId, UUID userId, String role) {
         var review = getById(reviewId);
-        verifyOwnership(review, teacherId);
+        if ("ADMIN".equals(role)) {
+            verifyAdminOwnership(review, userId);
+        } else {
+            if (!review.getTeacherId().equals(userId)) {
+                throw ReviewException.forbidden("Review " + review.getId() + " does not belong to teacher " + userId);
+            }
+        }
         var versions = questionVersionRepository.findByReviewIdOrderByVersionNumberAsc(reviewId);
         var auditEntries = auditLogRepository.findByReviewIdOrderByActionTimestampAsc(reviewId);
         return new ReviewHistory(review, versions, auditEntries);
@@ -252,7 +265,7 @@ public class ReviewOrchestrator {
         for (var review : pendingReviews) {
             review.setReviewStatus(ReviewStatus.ORPHANED);
             reviewRepository.save(review);
-            audit(review.getId(), review.getTeacherId(), AuditAction.ORPHANED,
+            audit(review.getId(), review.getAdminId(), AuditAction.ORPHANED,
                   "{\"reason\":\"TemporaryQuestionsExpired\",\"questionSetId\":\"" + questionSetId + "\"}");
         }
         if (!pendingReviews.isEmpty()) {
@@ -278,16 +291,16 @@ public class ReviewOrchestrator {
         }
     }
 
-    private void verifyOwnership(Review review, UUID teacherId) {
-        if (!review.getTeacherId().equals(teacherId)) {
-            throw ReviewException.forbidden("Review " + review.getId() + " does not belong to teacher " + teacherId);
+    private void verifyAdminOwnership(Review review, UUID adminId) {
+        if (!review.getAdminId().equals(adminId)) {
+            throw ReviewException.forbidden("Review " + review.getId() + " does not belong to admin " + adminId);
         }
     }
 
-    private void audit(UUID reviewId, UUID teacherId, AuditAction action, String details) {
+    private void audit(UUID reviewId, UUID adminId, AuditAction action, String details) {
         var logEntry = new ReviewAuditLog();
         logEntry.setReviewId(reviewId);
-        logEntry.setTeacherId(teacherId);
+        logEntry.setAdminId(adminId);
         logEntry.setAction(action);
         logEntry.setDetails(details);
         auditLogRepository.save(logEntry);
@@ -297,7 +310,7 @@ public class ReviewOrchestrator {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    public record PendingSetSummary(UUID questionSetId, UUID sessionId, UUID teacherId,
+    public record PendingSetSummary(UUID questionSetId, UUID sessionId, UUID adminId, UUID teacherId,
                                      int totalQuestions, int pendingCount,
                                      int approvedCount, int rejectedCount, int orphanedCount) {}
 

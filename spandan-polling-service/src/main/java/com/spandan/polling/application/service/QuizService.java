@@ -62,11 +62,16 @@ public class QuizService {
     }
 
     @Transactional
-    public QuizResponse createQuiz(UUID teacherId, CreateQuizRequest request) {
+    public QuizResponse createQuiz(UUID adminId, CreateQuizRequest request) {
         validateNoDuplicatePositions(request.questions());
         validateTimerBounds(request.questions());
 
-        Quiz quiz = Quiz.create(teacherId, request.questions().size(),
+        UUID teacherId = request.teacherId();
+        if (teacherId == null) {
+            throw new IllegalArgumentException("teacherId is required when creating a quiz");
+        }
+
+        Quiz quiz = Quiz.create(teacherId, adminId, request.questions().size(),
                 request.lectureId(), request.sectionId(), request.subsectionId());
         quiz.markScheduled();
         quiz = quizRepository.save(quiz);
@@ -83,16 +88,16 @@ public class QuizService {
 
         questionRepository.saveAll(questions);
 
-        log.info("Created quiz {} with {} questions by teacher {}", quizId, questions.size(), teacherId);
+        log.info("Created quiz {} with {} questions (teacher: {}, admin: {})", quizId, questions.size(), teacherId, adminId);
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public QuizResponse startQuiz(UUID quizId, UUID teacherId) {
+    public QuizResponse startQuiz(UUID quizId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         try {
             transitionGuard.guardQuizTransition(quiz.getQuizStatus(), QuizStatus.RUNNING);
@@ -112,21 +117,22 @@ public class QuizService {
                 UUID.randomUUID(), "QuizStartingEvent", quizId, null, null, null,
                 Instant.now(), null, quiz.getTotalQuestions(), quiz.getTeacherId(),
                 quiz.getLectureId(), quiz.getSectionId(), null,
-                null, null, null, null, null, null
+                null, null, null, null, null, null, quizId,
+                adminId
         ));
 
         quizSequencer.publishQuestion(quizId, questions.get(0));
 
-        log.info("Started quiz {} by teacher {}", quizId, teacherId);
+        log.info("Started quiz {} by admin {} (teacher: {})", quizId, adminId, quiz.getTeacherId());
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public QuizResponse pauseQuiz(UUID quizId, UUID teacherId) {
+    public QuizResponse pauseQuiz(UUID quizId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         try {
             transitionGuard.guardQuizTransition(quiz.getQuizStatus(), QuizStatus.PAUSED);
@@ -142,15 +148,16 @@ public class QuizService {
         quiz.pause();
         quizRepository.save(quiz);
 
+        log.info("Paused quiz {} by admin {}", quizId, adminId);
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public QuizResponse resumeQuiz(UUID quizId, UUID teacherId) {
+    public QuizResponse resumeQuiz(UUID quizId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         try {
             transitionGuard.guardQuizTransition(quiz.getQuizStatus(), QuizStatus.RUNNING);
@@ -166,15 +173,16 @@ public class QuizService {
             timerService.resumeTimer(quizId, currentQuestion.getId());
         }
 
+        log.info("Resumed quiz {} by admin {}", quizId, adminId);
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public QuizResponse endQuiz(UUID quizId, UUID teacherId) {
+    public QuizResponse endQuiz(UUID quizId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         QuizQuestion currentQuestion = findCurrentQuestion(quiz);
         if (currentQuestion != null && !currentQuestion.isTerminal()) {
@@ -194,18 +202,20 @@ public class QuizService {
                 UUID.randomUUID(), "QuizCompleted", quizId, null, null, null,
                 Instant.now(), null, quiz.getTotalQuestions(), quiz.getTeacherId(),
                 quiz.getLectureId(), quiz.getSectionId(), null,
-                null, null, null, null, null, null
+                null, null, null, null, null, null, quizId,
+                adminId
         ));
 
+        log.info("Ended quiz {} by admin {} (teacher: {})", quizId, adminId, quiz.getTeacherId());
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public QuizResponse cancelQuiz(UUID quizId, UUID teacherId) {
+    public QuizResponse cancelQuiz(UUID quizId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         try {
             transitionGuard.guardQuizTransition(quiz.getQuizStatus(), QuizStatus.CANCELLED);
@@ -227,18 +237,20 @@ public class QuizService {
                 UUID.randomUUID(), "QuizCancelled", quizId, lastQuestionId, null, null,
                 Instant.now(), null, null, quiz.getTeacherId(),
                 quiz.getLectureId(), quiz.getSectionId(), null,
-                null, null, null, null, null, null
+                null, null, null, null, null, null, quizId,
+                adminId
         ));
 
+        log.info("Cancelled quiz {} by admin {} (teacher: {})", quizId, adminId, quiz.getTeacherId());
         return QuizMapper.toResponse(quiz);
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public void skipQuestion(UUID quizId, UUID questionId, UUID teacherId) {
+    public void skipQuestion(UUID quizId, UUID questionId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         QuizQuestion currentQuestion = questionRepository.findByIdWithLock(questionId)
                 .orElseThrow(() -> new QuestionNotFoundException(questionId));
@@ -253,15 +265,15 @@ public class QuizService {
 
         quizSequencer.advanceToNextQuestion(quizId, questionId);
 
-        log.info("Teacher {} skipped question {} in quiz {}", teacherId, questionId, quizId);
+        log.info("Admin {} skipped question {} in quiz {} (teacher: {})", adminId, questionId, quizId, quiz.getTeacherId());
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public void cancelQuestion(UUID quizId, UUID questionId, UUID teacherId) {
+    public void cancelQuestion(UUID quizId, UUID questionId, UUID adminId) {
         Quiz quiz = quizRepository.findByIdWithLock(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        verifyAdminOwnership(quiz, adminId);
 
         QuizQuestion question = questionRepository.findByIdWithLock(questionId)
                 .orElseThrow(() -> new QuestionNotFoundException(questionId));
@@ -273,14 +285,22 @@ public class QuizService {
 
         question.cancel();
         questionRepository.save(question);
+
+        log.info("Admin {} cancelled question {} in quiz {} (teacher: {})", adminId, questionId, quizId, quiz.getTeacherId());
     }
 
     @Transactional(readOnly = true)
-    public QuizDetailResponse getQuizDetails(UUID quizId, UUID teacherId) {
+    public QuizDetailResponse getQuizDetails(UUID quizId, UUID userId, String role) {
         Quiz quiz = quizRepository.findById(quizId)
                 .orElseThrow(() -> new QuizNotFoundException(quizId));
 
-        verifyOwnership(quiz, teacherId);
+        if ("ADMIN".equals(role)) {
+            verifyAdminOwnership(quiz, userId);
+        } else {
+            if (!quiz.getTeacherId().equals(userId)) {
+                throw new UnauthorizedQuizAccessException(quizId, userId.toString());
+            }
+        }
 
         List<QuizQuestion> questions = questionRepository.findByQuizIdOrderBySequencePosition(quizId);
         return QuizMapper.toDetailResponse(quiz, questions);
@@ -330,9 +350,9 @@ public class QuizService {
         }
     }
 
-    private void verifyOwnership(Quiz quiz, UUID teacherId) {
-        if (!quiz.getTeacherId().equals(teacherId)) {
-            throw new UnauthorizedQuizAccessException(quiz.getId(), teacherId);
+    private void verifyAdminOwnership(Quiz quiz, UUID adminId) {
+        if (!quiz.getAdminId().equals(adminId)) {
+            throw new UnauthorizedQuizAccessException(quiz.getId(), adminId.toString());
         }
     }
 

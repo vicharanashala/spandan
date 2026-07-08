@@ -356,35 +356,35 @@ CREATE INDEX idx_export_jobs_status ON export_jobs(status);
 
 ### 10. REST APIs
 | Method | Path | Auth | Purpose |
-|---|---|---|---|
+|---|---|---|---|---|
 | GET | `/api/v1/reports/health` | None | Health check |
-| GET | `/api/v1/reports/session/{sessionId}` | TEACHER | Full session report |
-| GET | `/api/v1/reports/session/{sessionId}/questions` | TEACHER | Question-wise report |
-| GET | `/api/v1/reports/session/{sessionId}/students` | TEACHER | All student reports |
-| GET | `/api/v1/reports/session/{sessionId}/students/{studentId}` | BOTH | Single student report |
+| GET | `/api/v1/reports/session/{sessionId}` | TEACHER/ADMIN | Full session report |
+| GET | `/api/v1/reports/session/{sessionId}/questions` | TEACHER/ADMIN | Question-wise report |
+| GET | `/api/v1/reports/session/{sessionId}/students` | TEACHER/ADMIN | All student reports |
+| GET | `/api/v1/reports/session/{sessionId}/students/{studentId}` | BOTH/ADMIN | Single student report |
 | GET | `/api/v1/reports/session/{sessionId}/leaderboard` | ANY | Leaderboard report |
-| GET | `/api/v1/reports/session/{sessionId}/learning-objectives` | TEACHER | LO mastery report |
-| GET | `/api/v1/reports/session/{sessionId}/teacher` | TEACHER | Teacher report |
-| GET | `/api/v1/reports/session/{sessionId}/classroom` | TEACHER | Classroom report |
-| GET | `/api/v1/reports/session/{sessionId}/classroom/sections` | TEACHER | Section performance |
-| GET | `/api/v1/reports/session/{sessionId}/classroom/topics` | TEACHER | Topic performance |
-| GET | `/api/v1/reports/session/{sessionId}/classroom/concepts` | TEACHER | Concept overview |
-| GET | `/api/v1/reports/session/{sessionId}/classroom/attention` | TEACHER | Attention students |
-| GET | `/api/v1/reports/session/{sessionId}/sections/{sectionId}` | TEACHER | Section report |
-| GET | `/api/v1/reports/session/{sessionId}/topics/{topicId}` | TEACHER | Topic report |
-| GET | `/api/v1/reports/session/{sessionId}/concepts/{conceptId}` | TEACHER | Concept report |
-| GET | `/api/v1/reports/session/{sessionId}/status` | TEACHER | Report status |
-| GET | `/api/v1/reports/session/{sessionId}/metadata` | TEACHER | Report metadata |
-| GET | `/api/v1/reports/session/{sessionId}/export` | TEACHER | Export (preserved) |
-| GET | `/api/v1/reports/session/{sessionId}/export/status` | TEACHER | Export status |
-| GET | `/api/v1/reports/lecture/{lectureId}` | TEACHER | Lecture report |
-| GET | `/api/v1/reports/lecture/{lectureId}/sessions` | TEACHER | Lecture sessions |
-| GET | `/api/v1/reports/course/{courseId}` | BOTH | Course report |
-| GET | `/api/v1/reports/course/{courseId}/lectures` | BOTH | Course lectures |
-| GET | `/api/v1/reports/students/{studentId}/history` | BOTH | Historical performance |
-| GET | `/api/v1/reports/students/{studentId}/trends` | BOTH | Cross-session trends |
-| GET | `/api/v1/reports/students/{studentId}/concepts` | BOTH | Long-term concept mastery |
-| GET | `/api/v1/reports/teacher/{teacherId}/recent` | TEACHER | Recent session reports |
+| GET | `/api/v1/reports/session/{sessionId}/learning-objectives` | TEACHER/ADMIN | LO mastery report |
+| GET | `/api/v1/reports/session/{sessionId}/teacher` | TEACHER/ADMIN | Teacher report |
+| GET | `/api/v1/reports/session/{sessionId}/classroom` | TEACHER/ADMIN | Classroom report |
+| GET | `/api/v1/reports/session/{sessionId}/classroom/sections` | TEACHER/ADMIN | Section performance |
+| GET | `/api/v1/reports/session/{sessionId}/classroom/topics` | TEACHER/ADMIN | Topic performance |
+| GET | `/api/v1/reports/session/{sessionId}/classroom/concepts` | TEACHER/ADMIN | Concept overview |
+| GET | `/api/v1/reports/session/{sessionId}/classroom/attention` | TEACHER/ADMIN | Attention students |
+| GET | `/api/v1/reports/session/{sessionId}/sections/{sectionId}` | TEACHER/ADMIN | Section report |
+| GET | `/api/v1/reports/session/{sessionId}/topics/{topicId}` | TEACHER/ADMIN | Topic report |
+| GET | `/api/v1/reports/session/{sessionId}/concepts/{conceptId}` | TEACHER/ADMIN | Concept report |
+| GET | `/api/v1/reports/session/{sessionId}/status` | TEACHER/ADMIN | Report status |
+| GET | `/api/v1/reports/session/{sessionId}/metadata` | TEACHER/ADMIN | Report metadata |
+| GET | `/api/v1/reports/session/{sessionId}/export` | TEACHER/ADMIN | Export (preserved) |
+| GET | `/api/v1/reports/session/{sessionId}/export/status` | TEACHER/ADMIN | Export status |
+| GET | `/api/v1/reports/lecture/{lectureId}` | TEACHER/ADMIN | Lecture report |
+| GET | `/api/v1/reports/lecture/{lectureId}/sessions` | TEACHER/ADMIN | Lecture sessions |
+| GET | `/api/v1/reports/course/{courseId}` | BOTH/ADMIN | Course report |
+| GET | `/api/v1/reports/course/{courseId}/lectures` | BOTH/ADMIN | Course lectures |
+| GET | `/api/v1/reports/students/{studentId}/history` | BOTH/ADMIN | Historical performance |
+| GET | `/api/v1/reports/students/{studentId}/trends` | BOTH/ADMIN | Cross-session trends |
+| GET | `/api/v1/reports/students/{studentId}/concepts` | BOTH/ADMIN | Long-term concept mastery |
+| GET | `/api/v1/reports/teacher/{teacherId}/recent` | TEACHER/ADMIN | Recent session reports |
 
 ### 11-25. Architecture Decisions
 *(See full implementation in code for all design considerations including CAP analysis, consistency model, scalability, caching, security, versioning, migration strategy, testing strategy, and production readiness.)*

@@ -71,7 +71,7 @@ No additional roles are introduced. The existing `Role` enum is **extended**, no
 ## 5. Technical Stack (Unchanged)
 
 - **Language:** Java 17
-- **Framework:** Spring Boot 3.2.x (Spring Web, Security Data JPA)
+- **Framework:** Spring Boot 3.2.x (Spring Web, Security, Data JPA)
 - **Database:** PostgreSQL 16 (`auth_db` via Flyway)
 - **Cache/State:** Redis 7 (token blacklist, rate-limit counters, lock counters)
 - **Messaging:** Kafka 3.6 (auth event publisher only)

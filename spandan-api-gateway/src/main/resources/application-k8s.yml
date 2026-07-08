@@ -3,14 +3,14 @@ spring:
     gateway:
       routes:
         - id: auth-service
-          uri: http://spandan-auth-service:8080
+          uri: http://spandan-auth-service:8081
           predicates:
             - Path=/api/v1/auth/**
 
         - id: polling-service
           uri: http://spandan-polling-service:8081
           predicates:
-            - Path=/api/v1/polls/**
+            - Path=/api/v1/polling/**
 
         - id: analytics-service
           uri: http://spandan-analytics-service:8083
@@ -25,10 +25,10 @@ spring:
         - id: question-generation-service
           uri: http://spandan-question-generation-service:8086
           predicates:
-            - Path=/api/v1/questions/**
+            - Path=/api/v1/question-generation/**
 
         - id: question-review-service
-          uri: http://spandan-question-review-service:8087
+          uri: http://spandan-question-review-service:8086
           predicates:
             - Path=/api/v1/reviews/**
 
@@ -47,10 +47,10 @@ spring:
         - id: response-service
           uri: http://spandan-response-service:8084
           predicates:
-            - Path=/api/v1/responses/**
+            - Path=/api/v1/interactions/**
 
         - id: reporting-service
-          uri: http://spandan-reporting-service:8091
+          uri: http://spandan-reporting-service:8093
           predicates:
             - Path=/api/v1/reports/**
 

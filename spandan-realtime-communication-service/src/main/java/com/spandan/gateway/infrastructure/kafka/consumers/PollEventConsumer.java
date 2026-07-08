@@ -35,21 +35,37 @@ public class PollEventConsumer {
         try {
             Object value = record.value();
             if (value instanceof Map event) {
-                String type = (String) event.get("type");
+                String eventType = (String) event.get("eventType");
+                if (eventType == null) {
+                    eventType = (String) event.get("type");
+                }
                 String quizId = (String) event.get("quizId");
 
-                switch (type) {
-                    case "PollStarted" -> {
-                        routingService.broadcastToQuiz(quizId, event);
-                    }
+                switch (eventType) {
                     case "PollOpenedEvent" -> handlePollOpened(event, quizId);
                     case "PollClosedEvent" -> handlePollClosed(event, quizId);
-                    case "TimerStarted" -> routingService.broadcastToQuiz(quizId, event);
-                    case "TimerExpired" -> routingService.broadcastToQuiz(quizId, event);
-                    case "PollEnded" -> {
+                    case "TimerStarted" -> {
                         routingService.broadcastToQuiz(quizId, event);
+                        routingService.broadcastToAdmin(quizId, event);
                     }
-                    default -> log.warn("Unknown poll event type: {}", type);
+                    case "TimerExpired" -> {
+                        routingService.broadcastToQuiz(quizId, event);
+                        routingService.broadcastToAdmin(quizId, event);
+                    }
+                    case "QuizStartingEvent" -> {
+                        routingService.broadcastToQuiz(quizId, event);
+                        routingService.broadcastToAdmin(quizId, event);
+                    }
+                    case "QuizCompleted" -> {
+                        routingService.broadcastToQuiz(quizId, event);
+                        routingService.broadcastToAdmin(quizId, event);
+                    }
+                    case "QuizCancelled" -> {
+                        removeActivePoll(event, quizId);
+                        routingService.broadcastToQuiz(quizId, event);
+                        routingService.broadcastToAdmin(quizId, event);
+                    }
+                    default -> log.warn("Unknown poll event type: {}", eventType);
                 }
             }
             ack.acknowledge();
@@ -63,13 +79,18 @@ public class PollEventConsumer {
     private void handlePollOpened(Map<String, Object> event, String quizId) {
         String sessionId = stringFrom(event, "sessionId");
         String questionId = stringFrom(event, "questionId");
-        if (sessionId == null || questionId == null) {
-            log.warn("PollOpenedEvent missing sessionId or questionId");
+        if (sessionId == null) {
+            sessionId = quizId;
+        }
+        if (questionId == null) {
+            log.warn("PollOpenedEvent missing questionId");
             return;
         }
 
-        long pollDurationMs = longFrom(event, "pollDurationMs", 60000L);
+        Integer timerDurationSeconds = intFrom(event, "timerDurationSeconds");
+        long pollDurationMs = timerDurationSeconds != null ? timerDurationSeconds * 1000L : 60000L;
         String lectureId = stringFrom(event, "lectureId");
+        String adminId = stringFrom(event, "adminId");
 
         var poll = new ActivePoll();
         poll.setSessionId(sessionId);
@@ -79,8 +100,9 @@ public class PollEventConsumer {
         poll.setSubsectionId(stringFrom(event, "subsectionId"));
         poll.setTopicId(stringFrom(event, "topicId"));
         poll.setConceptId(stringFrom(event, "conceptId"));
-        poll.setQuestionSequence(intFrom(event, "questionSequence"));
+        poll.setQuestionSequence(intFrom(event, "sequencePosition"));
         poll.setPollDurationMs(pollDurationMs);
+        poll.setAdminId(adminId);
         poll.setPollOpenedAt(Instant.now());
         poll.setCreatedAt(Instant.now());
 
@@ -89,8 +111,9 @@ public class PollEventConsumer {
 
         routingService.broadcastToQuestion(questionId, event);
         routingService.broadcastToQuiz(quizId, event);
+        routingService.broadcastToAdmin(quizId, event);
 
-        log.info("Poll opened: sessionId={}, questionId={}, durationMs={}", sessionId, questionId, pollDurationMs);
+        log.info("Poll opened: sessionId={}, questionId={}, durationMs={}, adminId={}", sessionId, questionId, pollDurationMs, adminId);
     }
 
     private void handlePollClosed(Map<String, Object> event, String quizId) {
@@ -101,13 +124,25 @@ public class PollEventConsumer {
             return;
         }
 
-        activePollRepository.deleteBySessionId(sessionId);
-        timeoutSweepService.forceTimeoutsForQuestion(sessionId, stringFrom(event, "lectureId"), questionId);
+        if (sessionId != null) {
+            activePollRepository.deleteBySessionId(sessionId);
+            timeoutSweepService.forceTimeoutsForQuestion(sessionId, stringFrom(event, "lectureId"), questionId);
+        }
 
         routingService.broadcastToQuestion(questionId, event);
         routingService.broadcastToQuiz(quizId, event);
+        routingService.broadcastToAdmin(quizId, event);
 
         log.info("Poll closed: sessionId={}, questionId={}", sessionId, questionId);
+    }
+
+    private void removeActivePoll(Map<String, Object> event, String quizId) {
+        String sessionId = stringFrom(event, "sessionId");
+        if (sessionId != null) {
+            activePollRepository.deleteBySessionId(sessionId);
+        } else {
+            activePollRepository.deleteBySessionId(quizId);
+        }
     }
 
     private String stringFrom(Map<String, Object> map, String key) {

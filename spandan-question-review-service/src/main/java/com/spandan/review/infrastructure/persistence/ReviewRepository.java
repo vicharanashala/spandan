@@ -16,7 +16,7 @@ public interface ReviewRepository extends JpaRepository<Review, UUID> {
 
     List<Review> findByQuestionSetIdOrderByQuestionOrderAsc(UUID questionSetId);
 
-    List<Review> findByTeacherIdAndReviewStatusOrderByCreatedAtDesc(UUID teacherId, ReviewStatus status);
+    List<Review> findByAdminIdAndReviewStatusOrderByCreatedAtDesc(UUID adminId, ReviewStatus status);
 
     Optional<Review> findByQuestionSetIdAndQuestionId(UUID questionSetId, UUID questionId);
 
@@ -26,7 +26,14 @@ public interface ReviewRepository extends JpaRepository<Review, UUID> {
 
     List<Review> findByQuestionSetIdAndReviewStatus(UUID questionSetId, ReviewStatus status);
 
+    @Query("SELECT DISTINCT r.questionSetId FROM Review r WHERE r.adminId = :adminId AND r.reviewStatus = :status")
+    List<UUID> findDistinctQuestionSetIdsByAdminIdAndReviewStatus(@Param("adminId") UUID adminId,
+                                                                   @Param("status") ReviewStatus status);
+
+    // Teacher-specific lookups for read-only access
+    List<Review> findByTeacherIdAndReviewStatusOrderByCreatedAtDesc(UUID teacherId, ReviewStatus status);
+
     @Query("SELECT DISTINCT r.questionSetId FROM Review r WHERE r.teacherId = :teacherId AND r.reviewStatus = :status")
     List<UUID> findDistinctQuestionSetIdsByTeacherIdAndReviewStatus(@Param("teacherId") UUID teacherId,
-                                                                      @Param("status") ReviewStatus status);
+                                                                     @Param("status") ReviewStatus status);
 }

@@ -38,7 +38,7 @@ class ReviewOrchestratorTest {
     private ReviewStateMachine stateMachine;
     private ReviewOrchestrator orchestrator;
     private Review review;
-    private UUID teacherId;
+    private UUID adminId;
 
     @BeforeEach
     void setUp() {
@@ -46,13 +46,14 @@ class ReviewOrchestratorTest {
         orchestrator = new ReviewOrchestrator(reviewRepository, questionVersionRepository,
             auditLogRepository, stateMachine, eventPublisher);
 
-        teacherId = UUID.randomUUID();
+        adminId = UUID.randomUUID();
         review = new Review();
         review.setId(UUID.randomUUID());
         review.setQuestionId(UUID.randomUUID());
         review.setQuestionSetId(UUID.randomUUID());
         review.setSessionId(UUID.randomUUID());
-        review.setTeacherId(teacherId);
+        review.setAdminId(adminId);
+        review.setTeacherId(adminId);
         review.setOriginalAiQuestion("What is 2+2?");
         review.setQuestionType("MCQ");
         review.setReviewStatus(ReviewStatus.PENDING_REVIEW);
@@ -67,10 +68,10 @@ class ReviewOrchestratorTest {
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.REJECTED)).thenReturn(0L);
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.ORPHANED)).thenReturn(0L);
 
-        var result = orchestrator.approve(review.getId(), teacherId, 0, "Looks good");
+        var result = orchestrator.approve(review.getId(), adminId, 0, "Looks good");
 
         assertEquals(ReviewStatus.APPROVED, result.getReviewStatus());
-        verify(eventPublisher).questionApproved(review);
+        verify(eventPublisher).questionApproved(review, adminId);
         verify(eventPublisher).reviewCompleted(any(), any(), eq(1), eq(0), eq(0));
         verify(eventPublisher).readyForPolling(any(), any(), any());
         verify(auditLogRepository).save(argThat(log -> log.getAction() == AuditAction.APPROVED));
@@ -82,16 +83,16 @@ class ReviewOrchestratorTest {
         review.setVersion(1);
 
         assertThrows(ReviewException.class, () ->
-            orchestrator.approve(review.getId(), teacherId, 0, "Looks good"));
+            orchestrator.approve(review.getId(), adminId, 0, "Looks good"));
     }
 
     @Test
     void approve_shouldRejectNonOwner() {
         when(reviewRepository.findById(review.getId())).thenReturn(Optional.of(review));
-        UUID otherTeacher = UUID.randomUUID();
+        UUID otherAdmin = UUID.randomUUID();
 
         assertThrows(ReviewException.class, () ->
-            orchestrator.approve(review.getId(), otherTeacher, 0, "Looks good"));
+            orchestrator.approve(review.getId(), otherAdmin, 0, "Looks good"));
     }
 
     @Test
@@ -102,10 +103,10 @@ class ReviewOrchestratorTest {
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.REJECTED)).thenReturn(1L);
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.ORPHANED)).thenReturn(0L);
 
-        var result = orchestrator.reject(review.getId(), teacherId, 0, "Incorrect");
+        var result = orchestrator.reject(review.getId(), adminId, 0, "Incorrect");
 
         assertEquals(ReviewStatus.REJECTED, result.getReviewStatus());
-        verify(eventPublisher).questionRejected(review, "Incorrect");
+        verify(eventPublisher).questionRejected(review, "Incorrect", adminId);
         verify(auditLogRepository).save(argThat(log -> log.getAction() == AuditAction.REJECTED));
     }
 
@@ -114,7 +115,7 @@ class ReviewOrchestratorTest {
         when(reviewRepository.findById(review.getId())).thenReturn(Optional.of(review));
 
         assertThrows(ReviewException.class, () ->
-            orchestrator.reject(review.getId(), teacherId, 0, ""));
+            orchestrator.reject(review.getId(), adminId, 0, ""));
     }
 
     @Test
@@ -122,12 +123,12 @@ class ReviewOrchestratorTest {
         when(reviewRepository.findById(review.getId())).thenReturn(Optional.of(review));
         when(questionVersionRepository.countByReviewId(review.getId())).thenReturn(1);
 
-        var result = orchestrator.edit(review.getId(), teacherId, 0,
+        var result = orchestrator.edit(review.getId(), adminId, 0,
             "What is 3+3?", "{\"A\":\"5\",\"B\":\"6\"}", "B");
 
         assertEquals("What is 3+3?", result.getEditedQuestion());
         verify(questionVersionRepository).save(any(QuestionVersion.class));
-        verify(eventPublisher).questionEdited(eq(review), eq(2));
+        verify(eventPublisher).questionEdited(eq(review), eq(2), eq(adminId));
         verify(auditLogRepository).save(argThat(log -> log.getAction() == AuditAction.EDITED));
     }
 
@@ -137,7 +138,7 @@ class ReviewOrchestratorTest {
         when(reviewRepository.findById(review.getId())).thenReturn(Optional.of(review));
 
         assertThrows(ReviewException.class, () ->
-            orchestrator.edit(review.getId(), teacherId, 0, "New text", "{}", "A"));
+            orchestrator.edit(review.getId(), adminId, 0, "New text", "{}", "A"));
     }
 
     @Test
@@ -149,14 +150,14 @@ class ReviewOrchestratorTest {
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.REJECTED)).thenReturn(0L);
         when(reviewRepository.countByQuestionSetIdAndReviewStatus(review.getQuestionSetId(), ReviewStatus.ORPHANED)).thenReturn(0L);
 
-        var result = orchestrator.editAndApprove(review.getId(), teacherId, 0,
+        var result = orchestrator.editAndApprove(review.getId(), adminId, 0,
             "What is 4+4?", "{\"A\":\"7\",\"B\":\"8\"}", "B", "Edited and approved");
 
         assertEquals(ReviewStatus.APPROVED, result.getReviewStatus());
         assertEquals("What is 4+4?", result.getEditedQuestion());
         verify(questionVersionRepository).save(any(QuestionVersion.class));
-        verify(eventPublisher).questionEdited(eq(review), eq(2));
-        verify(eventPublisher).questionApproved(review);
+        verify(eventPublisher).questionEdited(eq(review), eq(2), eq(adminId));
+        verify(eventPublisher).questionApproved(review, adminId);
         verify(auditLogRepository, atLeast(2)).save(any());
     }
 
@@ -167,16 +168,16 @@ class ReviewOrchestratorTest {
         r1.setQuestionOrder(0);
         var r2 = new Review();
         r2.setId(UUID.randomUUID());
-        r2.setTeacherId(teacherId);
+        r2.setAdminId(adminId);
         r2.setQuestionOrder(1);
 
         when(reviewRepository.findByQuestionSetIdOrderByQuestionOrderAsc(any())).thenReturn(List.of(r1, r2));
 
-        orchestrator.reorder(UUID.randomUUID(), teacherId, List.of(r2.getId(), r1.getId()));
+        orchestrator.reorder(UUID.randomUUID(), adminId, List.of(r2.getId(), r1.getId()));
 
         assertEquals(1, r1.getQuestionOrder());
         assertEquals(0, r2.getQuestionOrder());
-        verify(eventPublisher).questionOrderChanged(any(), anyList());
+        verify(eventPublisher).questionOrderChanged(any(), anyList(), any());
     }
 
     @Test

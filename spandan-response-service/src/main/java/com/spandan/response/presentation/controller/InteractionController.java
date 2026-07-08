@@ -7,6 +7,7 @@ import com.spandan.response.presentation.dto.SessionSummaryResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -23,6 +24,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<Page<InteractionResponse>> getBySession(
             @PathVariable UUID sessionId,
             @RequestParam(defaultValue = "0") int page,
@@ -34,6 +36,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/student/{studentId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN', 'STUDENT')")
     public ResponseEntity<List<InteractionResponse>> getBySessionAndStudent(
             @PathVariable UUID sessionId, @PathVariable UUID studentId) {
         List<InteractionResponse> result = interactionRepository
@@ -43,6 +46,7 @@ public class InteractionController {
     }
 
     @GetMapping("/question/{questionId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getByQuestion(@PathVariable UUID questionId) {
         List<InteractionResponse> result = interactionRepository
                 .findByQuestionId(questionId)
@@ -51,6 +55,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/question/{questionId}/student/{studentId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN', 'STUDENT')")
     public ResponseEntity<InteractionResponse> getBySessionQuestionStudent(
             @PathVariable UUID sessionId, @PathVariable UUID questionId, @PathVariable UUID studentId) {
         return interactionRepository
@@ -61,6 +66,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/timed-out")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getTimedOut(@PathVariable UUID sessionId) {
         List<InteractionResponse> result = interactionRepository
                 .findBySessionIdAndTimeoutTrue(sessionId)
@@ -69,6 +75,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/lecture/{lectureId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getBySessionAndLecture(
             @PathVariable UUID sessionId, @PathVariable UUID lectureId) {
         List<InteractionResponse> result = interactionRepository
@@ -78,6 +85,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/summary")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<SessionSummaryResponse> getSummary(@PathVariable UUID sessionId) {
         long total = interactionRepository.countBySessionId(sessionId);
         long answered = interactionRepository.countBySessionIdAndAnsweredTrue(sessionId);
@@ -90,6 +98,7 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/analytics/raw")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getAnalyticsRaw(@PathVariable UUID sessionId) {
         List<InteractionResponse> result = interactionRepository
                 .findBySessionId(sessionId)
@@ -98,11 +107,13 @@ public class InteractionController {
     }
 
     @GetMapping("/session/{sessionId}/analytics/questions")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getAnalyticsQuestions(@PathVariable UUID sessionId) {
         return getAnalyticsRaw(sessionId);
     }
 
     @GetMapping("/session/{sessionId}/analytics/students")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<List<InteractionResponse>> getAnalyticsStudents(@PathVariable UUID sessionId) {
         return getAnalyticsRaw(sessionId);
     }

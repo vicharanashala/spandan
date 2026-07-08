@@ -42,18 +42,21 @@ Client (Web/Mobile)
 │  • Circuit breaker           │
 └──────┬───────────────────────┘
        │
-       ├──► Auth Service          (:8080)  /api/v1/auth/**
-       ├──► Polling Service       (:8081)  /api/v1/polls/**
-       ├──► Analytics Service     (:8083)  /api/v1/analytics/**
-       ├──► Response Service      (:8084)  /api/v1/responses/**
-       ├──► Transcription Service (:8085)  /api/v1/transcripts/**
-       ├──► QGS                   (:8086)  /api/v1/questions/**
-       ├──► QRS                   (:8087)  /api/v1/reviews/**
-       ├──► Notification Service  (:8087)  /api/v1/notifications/**
-       ├──► Recording Service     (:8088)  /api/v1/streams/**
-       └──► Realtime Communication Service  (:8090)  /ws (WebSocket passthrough)
+       ├──► Auth Service              (:8081)  /api/v1/auth/**
+       ├──► Polling Service           (:8081)  /api/v1/polling/**
+       ├──► Analytics Service         (:8083)  /api/v1/analytics/**
+       ├──► Response Service          (:8084)  /api/v1/interactions/**
+       ├──► Transcription Service     (:8085)  /api/v1/transcripts/**
+       ├──► QGS                       (:8086)  /api/v1/question-generation/**
+       ├──► QRS                       (:8086)  /api/v1/reviews/**
+       ├──► Notification Service      (:8087)  /api/v1/notifications/**
+       ├──► Recording Service         (:8088)  /api/v1/streams/** + /api/v1/recordings/**
+       ├──► Realtime Communication Service (:8090)  /ws (WebSocket passthrough)
+       ├──► Admin Service             (:8092)  /api/v1/admin/**
+       ├──► Users Service             (:8093)  /api/v1/users/**
+       └──► Reporting Service         (:8093)  /api/v1/reports/**
 
-> **Note:** Ports reflect K8s container ports (each pod has its own network namespace). Two local port conflicts exist in the existing codebase: Auth Service and Realtime Communication Service both use 8080; QRS and NS both use 8087. These are harmless in K8s but require adjustment in Docker Compose local dev. See [Port Conflicts](#port-conflicts-in-existing-services) below.
+> **Note:** Ports are K8s container ports. Some services share the same port (QGS+QRS on 8086, Users+Reporting on 8093) — harmless in K8s (separate pods, separate network namespaces). See [Port Layout](#port-layout) for details.
 ```
 
 ## CAP Theorem: AP (Availability + Partition Tolerance)
@@ -145,15 +148,20 @@ Client ──► Gateway ──► Service
 
 | Prefix | Target Service | Port | Auth | Methods |
 |---|---|---|---|---|
-| `/api/v1/auth/**` | Auth Service | 8080 | Public (login/register); Protected (logout, refresh, me) | POST, GET |
-| `/api/v1/polls/**` | Polling Service | 8081 | Protected; TEACHER for write, any for GET /current | POST, GET |
-| `/api/v1/responses/**` | Response Service | 8084 | Protected; STUDENT or TEACHER | POST, GET |
-| `/api/v1/analytics/**` | Analytics Service | 8083 | Protected; TEACHER for most, STUDENT for /me | GET |
-| `/api/v1/questions/**` | QGS | 8086 | Protected; TEACHER | POST, GET, DELETE |
-| `/api/v1/reviews/**` | QRS | 8087 | Protected; TEACHER | POST, GET |
-| `/api/v1/notifications/**` | NS | 8087 | Protected | GET, PATCH |
-| `/api/v1/transcripts/**` | TS | 8085 | Protected; TEACHER, ADMIN | GET, DELETE |
-| `/api/v1/streams/**` | RS | 8088 | Protected; TEACHER, ADMIN | POST, GET |
+| `/api/v1/auth/**` | Auth Service | 8081 | Public (login/register); Protected (logout, refresh, me) | POST, GET |
+| `/api/v1/polling/**` | Polling Service | 8081 | Protected; ADMIN for lifecycle writes, any for GET /current | POST, GET |
+| `/api/v1/interactions/**` | Response Service | 8084 | Protected; STUDENT or TEACHER or ADMIN | POST, GET |
+| `/api/v1/analytics/**` | Analytics Service | 8083 | Protected; TEACHER for most, STUDENT for /me, ADMIN for cross-class | GET |
+| `/api/v1/question-generation/**` | QGS | 8086 | Protected; TEACHER (generation) | POST, GET, DELETE |
+| `/api/v1/reviews/**` | QRS | 8086 | Protected; ADMIN (review lifecycle) | POST, GET |
+| `/api/v1/transcripts/**` | TS | 8085 | Protected; TEACHER or ADMIN | GET, DELETE |
+| `/api/v1/notifications/**` | NS | 8087 | Protected; any authenticated | GET, PATCH |
+| `/api/v1/notification-preferences/**` | NS | 8087 | Protected; any authenticated | GET, PATCH |
+| `/api/v1/streams/**` | RS | 8088 | Protected; TEACHER or ADMIN | POST, GET |
+| `/api/v1/recordings/**` | RS | 8088 | Protected; TEACHER or ADMIN | GET, DELETE |
+| `/api/v1/admin/**` | Admin Service | 8092 | Protected; ADMIN only | POST, GET, PATCH |
+| `/api/v1/users/**` | Users Service | 8093 | Protected; ADMIN for write, any authenticated for /me | POST, GET, PATCH |
+| `/api/v1/reports/**` | Reporting Service | 8093 | Protected; TEACHER or ADMIN | GET |
 
 ### WebSocket Passthrough
 
@@ -269,8 +277,9 @@ Forward to downstream service
 |---|---|---|
 | **Public** | No auth required | `POST /api/v1/auth/login`, `POST /api/v1/auth/register`, `GET /health`, `/actuator/health` |
 | **Authenticated** | Valid JWT required | Default for all `/api/v1/**` routes |
-| **Teacher-only** | `role=TEACHER` required | Poll write, question generate/review, analytics view-all, stream start/stop |
-| **Admin-only** | `role=ADMIN` required | Transcript delete, system retry |
+| **Admin-only** | `role=ADMIN` required | Poll lifecycle write, review lifecycle, user management (write), admin endpoints, cross-class analytics |
+| **Teacher-only** | `role=TEACHER` required | Question generation, analytics view-all, stream start/stop, transcripts view |
+| **Teacher or Admin** | `role=TEACHER` or `ADMIN` | Transcript delete, stream lifecycle, reports view |
 
 The gateway checks `role` claim from JWT and rejects unauthorized requests with **403 Forbidden** before they reach the downstream service.
 
@@ -298,12 +307,39 @@ The gateway checks `role` claim from JWT and rejects unauthorized requests with 
 ```json
 {
   "error": "forbidden",
-  "message": "Insufficient permissions. Required role: TEACHER",
+  "message": "Insufficient permissions for this resource",
   "status": 403,
   "timestamp": "2026-07-03T11:00:00Z",
   "path": "/api/v1/polls/..."
 }
 ```
+
+### Authorization Matrix
+
+Role enforcement operates at two levels:
+
+**Gateway level (prefix)** — enforced by `RoleAuthorizationFilter`. Coarse, path-prefix only.
+
+**Downstream level (endpoint)** — enforced by each microservice. Fine-grained, per-endpoint.
+
+| Route | Gateway Enforced | Downstream Enforced | Notes |
+|---|---|---|---|
+| `POST /api/v1/auth/login` | Public | — | No auth required |
+| `POST /api/v1/auth/register` | Public | — | No auth required |
+| `/api/v1/auth/**` (other) | any authenticated | — | |
+| `/api/v1/admin/**` | ADMIN | — | |
+| `/api/v1/users/**` | ADMIN | — | `/users/me` overridden to any authenticated at gateway |
+| `/api/v1/users/me` | any authenticated | — | Override to allow self-profile access |
+| `/api/v1/polling/**` | ADMIN | ✓ | Downstream: `GET /current` any-auth; lifecycle writes ADMIN |
+| `/api/v1/interactions/**` | any authenticated | — | |
+| `/api/v1/analytics/**` | TEACHER, ADMIN | ✓ | Downstream: `GET /students/me` for STUDENT |
+| `/api/v1/question-generation/**` | TEACHER | — | |
+| `/api/v1/reviews/**` | ADMIN | — | |
+| `/api/v1/transcripts/**` | TEACHER, ADMIN | ✓ | Downstream: `DELETE` → ADMIN only |
+| `/api/v1/notifications/**` | any authenticated | ✓ | Filtered by userId downstream |
+| `/api/v1/streams/**` | TEACHER, ADMIN | — | |
+| `/api/v1/recordings/**` | TEACHER, ADMIN | — | |
+| `/api/v1/reports/**` | TEACHER, ADMIN | — | |
 
 ### CORS
 
@@ -331,8 +367,10 @@ The gateway checks `role` claim from JWT and rejects unauthorized requests with 
 ### Design
 
 | Limit Type | Scope | Rate | Backend |
-|---|---|---|---|
-| Per-user | `X-User-Id` | 100 requests/min | Redis (primary), local (fallback) |
+|---|---|---|---|---|
+| Per-user (Student) | `X-User-Id` + role=STUDENT | 100 requests/min | Redis (primary), local (fallback) |
+| Per-user (Teacher) | `X-User-Id` + role=TEACHER | 200 requests/min | Redis (primary), local (fallback) |
+| Per-user (Admin) | `X-User-Id` + role=ADMIN | 500 requests/min | Redis (primary), local (fallback) |
 | Per-IP | Client IP | 1000 requests/min | Redis (primary), local (fallback) |
 | Burst | Per-user | 20 requests burst | Token bucket algorithm |
 
@@ -390,12 +428,12 @@ The gateway **never logs**:
 ### Metrics (Micrometer + Prometheus)
 
 | Metric | Type | Tags |
-|---|---|---|
-| `gateway.requests.total` | Counter | `method`, `path`, `status`, `target_service` |
-| `gateway.requests.duration` | Timer | `method`, `path`, `target_service` |
-| `gateway.rate.limit.hits` | Counter | `user_id`, `limit_type` |
+|---|---|---|---|
+| `gateway.requests.total` | Counter | `method`, `path`, `status`, `target_service`, `role` |
+| `gateway.requests.duration` | Timer | `method`, `path`, `target_service`, `role` |
+| `gateway.rate.limit.hits` | Counter | `user_id`, `limit_type`, `role` |
 | `gateway.circuit.breaker.state` | Gauge | `route`, `state` |
-| `gateway.errors.total` | Counter | `type` (auth, rate-limit, timeout, circuit-breaker) |
+| `gateway.errors.total` | Counter | `type` (auth, rate-limit, timeout, circuit-breaker), `role` |
 
 ### Health Endpoints
 
@@ -456,7 +494,7 @@ All errors return a consistent JSON envelope:
 
 ## Communication with Every Spandan Microservice
 
-### 1. Auth Service (:8080)
+### 1. Auth Service (:8081)
 
 | Aspect | Detail |
 |---|---|
@@ -470,9 +508,9 @@ All errors return a consistent JSON envelope:
 
 | Aspect | Detail |
 |---|---|
-| Routes | `/api/v1/polls/**` |
+| Routes | `/api/v1/polling/**` |
 | Auth | Protected |
-| Authorization | TEACHER for write endpoints (`/start`, `/pause`, `/resume`, `/end`, `/cancel`). Any authenticated role for `GET /current` |
+| Authorization | ADMIN for lifecycle write endpoints (`/start`, `/pause`, `/resume`, `/end`, `/cancel`). Any authenticated role for `GET /current` |
 | Retry | GET retried once on 5xx. POST never retried |
 | Failure handling | Circuit breaker per route → 503 |
 
@@ -490,9 +528,9 @@ All errors return a consistent JSON envelope:
 
 | Aspect | Detail |
 |---|---|
-| Routes | `/api/v1/responses/**` |
+| Routes | `/api/v1/interactions/**` |
 | Auth | Protected |
-| Authorization | Any authenticated role (both students and teachers submit/view responses) |
+| Authorization | Any authenticated role (students, teachers, admins submit/view responses) |
 | Retry | No retry on POST (idempotency is handled by client-provided idempotency key). GET retried once |
 | Failure handling | Response service down → students cannot submit answers → 503. This is a known degradation |
 
@@ -502,7 +540,7 @@ All errors return a consistent JSON envelope:
 |---|---|
 | Routes | `/api/v1/analytics/**` |
 | Auth | Protected |
-| Authorization | TEACHER for `/quiz/{id}/students` and `/export`. STUDENT for `/students/me`. Both for `/session` and `/leaderboard` |
+| Authorization | TEACHER for `/quiz/{id}/students` and `/export`. STUDENT for `/students/me`. ADMIN for cross-class analytics. Both for `/session` and `/leaderboard` |
 | Retry | Idempotent GETs retried once |
 | Failure handling | Circuit breaker → 503. Analytics are post-session; temporary unavailability is acceptable |
 
@@ -520,19 +558,19 @@ All errors return a consistent JSON envelope:
 
 | Aspect | Detail |
 |---|---|
-| Routes | `/api/v1/questions/**` |
+| Routes | `/api/v1/question-generation/**` |
 | Auth | Protected |
-| Authorization | TEACHER |
+| Authorization | TEACHER (question generation only — review/approve lifecycle is ADMIN via QRS) |
 | Retry | No retry on POST (generation trigger). GET retried once |
 | Failure handling | 503 if QGS is down |
 
-### 8. Question Review Service (QRS) (:8087)
+### 8. Question Review Service (QRS) (:8086)
 
 | Aspect | Detail |
 |---|---|
 | Routes | `/api/v1/reviews/**` |
 | Auth | Protected |
-| Authorization | TEACHER |
+| Authorization | ADMIN (review/approve/reject question lifecycle) |
 | Retry | No retry on POST. GET retried once |
 | Failure handling | 503 if QRS is down |
 
@@ -540,7 +578,7 @@ All errors return a consistent JSON envelope:
 
 | Aspect | Detail |
 |---|---|
-| Routes | `/api/v1/notifications/**` |
+| Routes | `/api/v1/notifications/**`, `/api/v1/notification-preferences/**` |
 | Auth | Protected |
 | Authorization | Any authenticated role; filtered by userId in NS |
 | Retry | GET retried once |
@@ -550,11 +588,41 @@ All errors return a consistent JSON envelope:
 
 | Aspect | Detail |
 |---|---|
-| Routes | `/api/v1/streams/**` |
+| Routes | `/api/v1/streams/**`, `/api/v1/recordings/**` |
 | Auth | Protected |
 | Authorization | TEACHER or ADMIN |
 | Retry | No retry on POST (stream start/stop are state-changing commands). GET retried once |
 | Failure handling | 503 if RS is down. Audio streaming is a real-time feature; disruption is immediately visible |
+
+### 11. Admin Service (:8092)
+
+| Aspect | Detail |
+|---|---|
+| Routes | `/api/v1/admin/**` |
+| Auth | Protected |
+| Authorization | ADMIN only (enforced by gateway `RoleAuthorizationFilter`) |
+| Retry | No retry on POST/PATCH (user management commands are non-idempotent). GET retried once |
+| Failure handling | 503 if Admin Service is down. Admin operations are not on the critical path for student/teacher flows |
+
+### 12. Users Service (:8093)
+
+| Aspect | Detail |
+|---|---|
+| Routes | `/api/v1/users/**` |
+| Auth | Protected |
+| Authorization | ADMIN for write (create/update/delete users). `/api/v1/users/me` is any authenticated (handled by `RoleAuthorizationFilter` override) |
+| Retry | GET retried once. No retry on write |
+| Failure handling | 503 if Users Service is down. User management is an admin-only flow |
+
+### 13. Reporting Service (:8093)
+
+| Aspect | Detail |
+|---|---|
+| Routes | `/api/v1/reports/**` |
+| Auth | Protected |
+| Authorization | TEACHER or ADMIN |
+| Retry | GET retried once |
+| Failure handling | Circuit breaker → 503. Reports are post-session; temporary unavailability is acceptable |
 
 ## Scalability
 
@@ -672,8 +740,11 @@ Not required at the gateway level. Netty's event-loop model naturally isolates c
 
 - `GatewayRoutingTest` — start Gateway with Testcontainers, send requests to each route, verify correct downstream
 - `JwtAuthIntegrationTest` — full flow: Auth Service issues token, Gateway validates, request reaches downstream
-- `RateLimitingIntegrationTest` — Redis-backed rate limiter with Testcontainers Redis
+- `AdminAuthIntegrationTest` — ADMIN token can access admin routes; TEACHER/STUDENT tokens get 403 on admin routes
+- `RoleAuthorizationFilterTest` — verify filter allows TEACHER to QGS, blocks STUDENT from QRS, allows ADMIN to polls lifecycle
+- `RateLimitingIntegrationTest` — Redis-backed rate limiter with Testcontainers Redis, verify per-role limits
 - `CorsIntegrationTest` — preflight OPTIONS, allowed origins, disallowed origins
+- `UsersServiceMeOverrideTest` — verify `/api/v1/users/me` bypasses ADMIN-only check for any authenticated role
 
 ### Load Tests (Gatling or k6)
 
@@ -730,29 +801,35 @@ If a future requirement demands response caching at the edge, this should be han
 | Database | None |
 | Scaling | Horizontal via K8s HPA |
 | JWT validation | Local (HMAC shared secret) |
-| Rate limiting | Redis (primary) + local (fallback) |
+| Roles | STUDENT, TEACHER, ADMIN (enum in `Role.java`) |
+| Role enforcement | `RoleAuthorizationFilter` (global filter, route-based) |
+| Rate limiting | Redis (primary) + local (fallback); per-role tiers |
 | Circuit breaker | Resilience4j, per-route |
 | Retry | Conservative (GETs only, max 1) |
 | Caching | Not in gateway |
 | Aggregation | Not in gateway (future BFF) |
 | Logging | Structured JSON, correlation IDs |
-| Metrics | Micrometer → Prometheus |
+| Metrics | Micrometer → Prometheus; role-tagged |
 | WebSocket | Passthrough to Realtime Communication Service |
 
-## Port Conflicts in Existing Services
+## Port Layout
 
-Two port conflicts exist in the existing microservice codebase (`application.yml` files). These are **harmless in Kubernetes** (each pod has its own network namespace) but **must be resolved for local Docker Compose development**:
+All services are resolved via K8s DNS (`http://<service>:<container-port>`). Container ports can collide across pods without conflict in K8s. The table below shows actual container ports per service:
 
-| Conflict | Services | Port | Resolution |
+| Service | K8s Port | Dev Port (`application-dev.yml`) | Notes |
 |---|---|---|---|
-| Auth vs Realtime Communication | `spandan-auth-service`, `spandan-realtime-communication-service` | 8080 | Move Auth to 8081, Polling to 8082 (both already shifted in `application-dev.yml`) |
-| QRS vs NS | `spandan-question-review-service`, `spandan-notification-service` | 8087 | Move NS to 8088, RS to 8089 |
+| Auth Service | 8081 | 8081 | |
+| Polling Service | 8081 | 8082 | Same K8s port as Auth (different pod, no collision) |
+| Analytics Service | 8083 | 8083 | |
+| Response Service | 8084 | 8084 | |
+| Transcription Service | 8085 | 8085 | |
+| QGS | 8086 | 8086 | |
+| QRS | 8086 | 8086 | Same K8s port as QGS (different pod, no collision) |
+| Notification Service | 8087 | 8088 | Dev port shifted to avoid ambiguity |
+| Recording Service | 8088 | 8089 | Dev port shifted |
+| Realtime Communication Service | 8090 | 8090 | |
+| Admin Service | 8092 | 8092 | |
+| Users Service | 8093 | 8093 | |
+| Reporting Service | 8093 | 8093 | Same K8s port as Users (different pod, no collision) |
 
-The `application-dev.yml` profile resolves these by shifting ports:
-- Auth: 8081
-- Polling: 8082
-- NS: 8088
-- RS: 8089
-- RT Gateway (WS): 8090
-
-The `application-k8s.yml` profile uses K8s service DNS names where container port collisions don't apply.
+The `application-k8s.yml` profile uses K8s service DNS names (`http://<service>:<container-port>`). The `application-dev.yml` profile resolves local port conflicts by shifting dev ports to avoid `localhost` collisions.

@@ -47,6 +47,30 @@ class AuthServiceTest {
     }
 
     @Test
+    void adminLoginSuccess() {
+        String email = "admin@test.com";
+        String password = "adminpass";
+        String hashed = passwordEncoder.encode(password);
+        User user = User.create("Test Admin", email, hashed, Role.ADMIN);
+
+        when(userRepository.findByEmail(email)).thenReturn(Optional.of(user));
+        when(jwtService.generateAccessToken(any(), any(), any())).thenReturn("access-token");
+        when(jwtService.getAccessTokenTtlSeconds()).thenReturn(900L);
+        when(jwtService.getRefreshTokenExpirationMs()).thenReturn(604800000L);
+        when(userRepository.save(any())).thenReturn(user);
+
+        AuthResponse response = authService.login(new LoginRequest(email, password));
+
+        assertNotNull(response);
+        assertEquals("access-token", response.accessToken());
+        assertEquals("Test Admin", response.user().fullName());
+        assertEquals("ADMIN", response.user().role());
+
+        verify(userRepository).save(any());
+        verify(eventPublisher).publish(any());
+    }
+
+    @Test
     void loginSuccess() {
         String email = "teacher@test.com";
         String password = "password123";

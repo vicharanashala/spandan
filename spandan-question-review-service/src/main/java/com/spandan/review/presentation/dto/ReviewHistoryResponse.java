@@ -14,20 +14,20 @@ public record ReviewHistoryResponse(
     List<AuditEntry> auditLog
 ) {
     public static ReviewHistoryResponse from(Review review, List<QuestionVersion> versions,
-                                              List<ReviewAuditLog> auditEntries) {
+                                               List<ReviewAuditLog> auditEntries) {
         return new ReviewHistoryResponse(
             ReviewResponse.from(review),
             versions.stream().map(v -> new VersionEntry(
                 v.getVersionNumber(), v.getQuestionText(), v.getOptions(),
-                v.getCorrectAnswer(), v.getEditedByTeacherId(), v.getEditedAt()
+                v.getCorrectAnswer(), v.getEditedByAdminId(), v.getEditedAt()
             )).toList(),
             auditEntries.stream().map(a -> new AuditEntry(
-                a.getAction().name(), a.getTeacherId(), a.getActionTimestamp(), a.getDetails()
+                a.getAction().name(), a.getAdminId(), a.getActionTimestamp(), a.getDetails()
             )).toList()
         );
     }
 
     public record VersionEntry(int versionNumber, String questionText, String options,
-                                String correctAnswer, UUID editedByTeacherId, Instant editedAt) {}
-    public record AuditEntry(String action, UUID teacherId, Instant actionTimestamp, String details) {}
+                                String correctAnswer, UUID editedByAdminId, Instant editedAt) {}
+    public record AuditEntry(String action, UUID adminId, Instant actionTimestamp, String details) {}
 }

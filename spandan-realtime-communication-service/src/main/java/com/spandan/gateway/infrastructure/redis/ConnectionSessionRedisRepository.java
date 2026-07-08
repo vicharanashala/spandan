@@ -20,6 +20,7 @@ public class ConnectionSessionRedisRepository implements ConnectionSessionReposi
     private static final String SESSION_KEY_PREFIX = "session:";
     private static final String QUIZ_SESSIONS_KEY_PREFIX = "quiz_sessions:";
     private static final String USER_SESSIONS_KEY_PREFIX = "user_sessions:";
+    private static final String ADMIN_SESSIONS_KEY_PREFIX = "admin_sessions:";
 
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -91,6 +92,33 @@ public class ConnectionSessionRedisRepository implements ConnectionSessionReposi
     @Override
     public long countByQuizId(String quizId) {
         Set<String> sessionIds = redisTemplate.opsForSet().members(QUIZ_SESSIONS_KEY_PREFIX + quizId);
+        return sessionIds == null ? 0 : sessionIds.size();
+    }
+
+    @Override
+    public void addAdminSession(String quizId, String sessionId) {
+        redisTemplate.opsForSet().add(ADMIN_SESSIONS_KEY_PREFIX + quizId, sessionId);
+    }
+
+    @Override
+    public void removeAdminSession(String quizId, String sessionId) {
+        redisTemplate.opsForSet().remove(ADMIN_SESSIONS_KEY_PREFIX + quizId, sessionId);
+    }
+
+    @Override
+    public List<ConnectionSession> findAdminSessionsByQuizId(String quizId) {
+        Set<String> sessionIds = redisTemplate.opsForSet().members(ADMIN_SESSIONS_KEY_PREFIX + quizId);
+        if (sessionIds == null || sessionIds.isEmpty()) return List.of();
+        return sessionIds.stream()
+                .map(this::findBySessionId)
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countAdminSessionsByQuizId(String quizId) {
+        Set<String> sessionIds = redisTemplate.opsForSet().members(ADMIN_SESSIONS_KEY_PREFIX + quizId);
         return sessionIds == null ? 0 : sessionIds.size();
     }
 }

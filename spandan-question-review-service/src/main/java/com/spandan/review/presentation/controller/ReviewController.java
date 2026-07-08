@@ -6,6 +6,7 @@ import com.spandan.review.presentation.dto.*;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,81 +24,106 @@ public class ReviewController {
     }
 
     @GetMapping("/question-set/{questionSetId}")
+    @PreAuthorize("hasAnyRole('ADMIN', 'TEACHER')")
     public ResponseEntity<List<ReviewResponse>> getByQuestionSet(@PathVariable UUID questionSetId,
                                                                   Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
         var reviews = orchestrator.getByQuestionSetId(questionSetId);
-        reviews.forEach(r -> { if (!r.getTeacherId().equals(teacherId))
-            throw ReviewException.forbidden("Access denied"); });
+        String role = auth.getAuthorities().stream()
+            .findFirst().map(g -> g.getAuthority().replace("ROLE_", "")).orElse("");
+        UUID userId = UUID.fromString(auth.getName());
+
+        if ("ADMIN".equals(role)) {
+            reviews.forEach(r -> {
+                if (!r.getAdminId().equals(userId))
+                    throw ReviewException.forbidden("Access denied");
+            });
+        } else {
+            reviews.forEach(r -> {
+                if (!r.getTeacherId().equals(userId))
+                    throw ReviewException.forbidden("Access denied");
+            });
+        }
         return ResponseEntity.ok(reviews.stream().map(ReviewResponse::from).toList());
     }
 
     @GetMapping("/pending")
+    @PreAuthorize("hasAnyRole('ADMIN', 'TEACHER')")
     public ResponseEntity<List<PendingSetResponse>> getPendingSets(Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var sets = orchestrator.getPendingSets(teacherId);
+        UUID userId = UUID.fromString(auth.getName());
+        String role = auth.getAuthorities().stream()
+            .findFirst().map(g -> g.getAuthority().replace("ROLE_", "")).orElse("");
+        var sets = orchestrator.getPendingSets(userId, role);
         return ResponseEntity.ok(sets.values().stream().map(PendingSetResponse::from).toList());
     }
 
     @PostMapping("/{reviewId}/approve")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ReviewResponse> approve(@PathVariable UUID reviewId,
                                                    @Valid @RequestBody ApproveRequest request,
                                                    Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var review = orchestrator.approve(reviewId, teacherId, request.getVersion(), request.getComments());
+        UUID adminId = UUID.fromString(auth.getName());
+        var review = orchestrator.approve(reviewId, adminId, request.getVersion(), request.getComments());
         return ResponseEntity.ok(ReviewResponse.from(review));
     }
 
     @PostMapping("/{reviewId}/reject")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ReviewResponse> reject(@PathVariable UUID reviewId,
                                                   @Valid @RequestBody RejectRequest request,
                                                   Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var review = orchestrator.reject(reviewId, teacherId, request.getVersion(), request.getComments());
+        UUID adminId = UUID.fromString(auth.getName());
+        var review = orchestrator.reject(reviewId, adminId, request.getVersion(), request.getComments());
         return ResponseEntity.ok(ReviewResponse.from(review));
     }
 
     @PutMapping("/{reviewId}/edit")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ReviewResponse> edit(@PathVariable UUID reviewId,
                                                 @Valid @RequestBody EditRequest request,
                                                 Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var review = orchestrator.edit(reviewId, teacherId, request.getVersion(),
+        UUID adminId = UUID.fromString(auth.getName());
+        var review = orchestrator.edit(reviewId, adminId, request.getVersion(),
             request.getQuestionText(), request.getOptions(), request.getCorrectAnswer());
         return ResponseEntity.ok(ReviewResponse.from(review));
     }
 
     @PostMapping("/{reviewId}/edit-and-approve")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ReviewResponse> editAndApprove(@PathVariable UUID reviewId,
                                                           @Valid @RequestBody EditAndApproveRequest request,
                                                           Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var review = orchestrator.editAndApprove(reviewId, teacherId, request.getVersion(),
+        UUID adminId = UUID.fromString(auth.getName());
+        var review = orchestrator.editAndApprove(reviewId, adminId, request.getVersion(),
             request.getQuestionText(), request.getOptions(), request.getCorrectAnswer(), request.getComments());
         return ResponseEntity.ok(ReviewResponse.from(review));
     }
 
     @PutMapping("/question-set/{questionSetId}/reorder")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> reorder(@PathVariable UUID questionSetId,
                                          @Valid @RequestBody ReorderRequest request,
                                          Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        orchestrator.reorder(questionSetId, teacherId, request.getOrderedReviewIds());
+        UUID adminId = UUID.fromString(auth.getName());
+        orchestrator.reorder(questionSetId, adminId, request.getOrderedReviewIds());
         return ResponseEntity.ok().build();
     }
 
     @PostMapping("/question-set/{questionSetId}/save")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> save(@PathVariable UUID questionSetId, Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        orchestrator.saveSet(questionSetId, teacherId);
+        UUID adminId = UUID.fromString(auth.getName());
+        orchestrator.saveSet(questionSetId, adminId);
         return ResponseEntity.ok().build();
     }
 
     @GetMapping("/{reviewId}/history")
+    @PreAuthorize("hasAnyRole('ADMIN', 'TEACHER')")
     public ResponseEntity<ReviewHistoryResponse> getHistory(@PathVariable UUID reviewId,
                                                              Authentication auth) {
-        UUID teacherId = UUID.fromString(auth.getName());
-        var history = orchestrator.getHistory(reviewId, teacherId);
+        UUID userId = UUID.fromString(auth.getName());
+        String role = auth.getAuthorities().stream()
+            .findFirst().map(g -> g.getAuthority().replace("ROLE_", "")).orElse("");
+        var history = orchestrator.getHistory(reviewId, userId, role);
         return ResponseEntity.ok(ReviewHistoryResponse.from(history.review(), history.versions(), history.auditEntries()));
     }
 

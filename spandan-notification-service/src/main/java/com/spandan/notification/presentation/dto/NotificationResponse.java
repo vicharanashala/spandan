@@ -13,6 +13,7 @@ public record NotificationResponse(
         String status,
         String channel,
         UUID sessionId,
+        String recipientRole,
         Instant deliveredAt,
         Instant readAt,
         Instant createdAt) {
@@ -26,6 +27,7 @@ public record NotificationResponse(
                 n.getStatus().name(),
                 n.getChannel().name(),
                 n.getSessionId(),
+                n.getRecipientRole().name(),
                 n.getDeliveredAt(),
                 n.getReadAt(),
                 n.getCreatedAt());

@@ -6,7 +6,8 @@ public interface InteractionEventPublisher {
 
     void questionDisplayed(String eventId, Instant eventTimestamp, String sessionId, String lectureId,
                            String studentId, String questionId, String sectionId, String subsectionId,
-                           String topicId, String conceptId, Integer questionSequence, Instant questionDisplayedAt);
+                           String topicId, String conceptId, Integer questionSequence, Instant questionDisplayedAt,
+                           String adminId);
 
     void questionAnswered(String eventId, Instant eventTimestamp, String sessionId, String lectureId,
                           String studentId, String questionId, String selectedAnswer,

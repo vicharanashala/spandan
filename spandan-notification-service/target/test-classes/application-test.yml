@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16:///notification_test
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  kafka:
+    bootstrap-servers: ${TEST_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+kafka:
+  consumer:
+    group-id: notification-service-test
+  topics:
+    question-generation-events: test-question-generation-events
+    question-review-events: test-question-review-events
+    polling-events: test-polling-events
+    analytics-events: test-analytics-events
+    transcription-events: test-transcription-events
+    notification-events: test-notification-events
+
+auth:
+  jwt:
+    secret: test-secret-key-for-unit-tests-only-must-be-32-chars
+
+notification:
+  retry:
+    interval-ms: 60000
+    max-retries: 3

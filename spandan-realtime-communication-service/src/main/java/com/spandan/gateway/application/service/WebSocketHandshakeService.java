@@ -22,13 +22,13 @@ public class WebSocketHandshakeService {
 
     public Map<String, Object> validateToken(String token) {
         HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + token);
-        HttpEntity<Void> request = new HttpEntity<>(headers);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, String>> request = new HttpEntity<>(Map.of("token", token), headers);
 
         try {
             ResponseEntity<Map> response = restTemplate.exchange(
-                    authServiceUrl + "/api/auth/validate",
-                    HttpMethod.GET,
+                    authServiceUrl + "/api/v1/auth/validate?token=" + token,
+                    HttpMethod.POST,
                     request,
                     Map.class
             );

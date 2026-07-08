@@ -2,6 +2,7 @@ package com.spandan.notification.presentation.controller;
 
 import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.enums.NotificationStatus;
+import com.spandan.notification.domain.enums.RecipientRole;
 import com.spandan.notification.domain.exception.NotificationException;
 import com.spandan.notification.infrastructure.persistence.NotificationRepository;
 import com.spandan.notification.infrastructure.persistence.UserPushTokenRepository;
@@ -43,14 +44,25 @@ public class NotificationController {
     public ResponseEntity<Page<NotificationResponse>> getNotifications(
             Authentication auth,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String role,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
 
         UUID userId = getUserId(auth);
+        RecipientRole userRole = getRole(auth);
         PageRequest pageRequest = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
 
         Page<Notification> notifications;
-        if (status != null && !status.isBlank()) {
+        if (role != null && !role.isBlank()) {
+            RecipientRole filterRole = RecipientRole.valueOf(role.toUpperCase());
+            if (status != null && !status.isBlank()) {
+                notifications = notificationRepository.findByUserIdAndStatusAndRecipientRoleOrderByCreatedAtDesc(
+                        userId, NotificationStatus.valueOf(status.toUpperCase()), filterRole, pageRequest);
+            } else {
+                notifications = notificationRepository.findByUserIdAndRecipientRoleOrderByCreatedAtDesc(
+                        userId, filterRole, pageRequest);
+            }
+        } else if (status != null && !status.isBlank()) {
             notifications = notificationRepository.findByUserIdAndStatusOrderByCreatedAtDesc(
                     userId, NotificationStatus.valueOf(status.toUpperCase()), pageRequest);
         } else {
@@ -63,10 +75,14 @@ public class NotificationController {
     @PatchMapping("/{id}/read")
     public ResponseEntity<Void> markAsRead(Authentication auth, @PathVariable UUID id) {
         UUID userId = getUserId(auth);
+        RecipientRole userRole = getRole(auth);
         Notification notification = notificationRepository.findById(id)
                 .orElseThrow(() -> NotificationException.notFound(id));
 
         if (!notification.getUserId().equals(userId)) {
+            throw NotificationException.notOwned();
+        }
+        if (notification.getRecipientRole() != userRole) {
             throw NotificationException.notOwned();
         }
 
@@ -85,10 +101,14 @@ public class NotificationController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteNotification(Authentication auth, @PathVariable UUID id) {
         UUID userId = getUserId(auth);
+        RecipientRole userRole = getRole(auth);
         Notification notification = notificationRepository.findById(id)
                 .orElseThrow(() -> NotificationException.notFound(id));
 
         if (!notification.getUserId().equals(userId)) {
+            throw NotificationException.notOwned();
+        }
+        if (notification.getRecipientRole() != userRole) {
             throw NotificationException.notOwned();
         }
 
@@ -97,7 +117,7 @@ public class NotificationController {
     }
 
     @PostMapping("/{id}/retry")
-    @PreAuthorize("hasRole('TEACHER') or hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public ResponseEntity<Void> retryNotification(@PathVariable UUID id) {
         orchestrator.retryNotification(id);
         return ResponseEntity.accepted().build();
@@ -106,9 +126,10 @@ public class NotificationController {
     @GetMapping("/stats")
     public ResponseEntity<StatsResponse> getStats(Authentication auth) {
         UUID userId = getUserId(auth);
-        long unread = notificationRepository.countByUserIdAndStatus(userId, NotificationStatus.PENDING);
-        long delivered = notificationRepository.countByUserIdAndStatus(userId, NotificationStatus.DELIVERED);
-        long failed = notificationRepository.countByUserIdAndStatus(userId, NotificationStatus.FAILED);
+        RecipientRole userRole = getRole(auth);
+        long unread = notificationRepository.countByUserIdAndStatusAndRecipientRole(userId, NotificationStatus.PENDING, userRole);
+        long delivered = notificationRepository.countByUserIdAndStatusAndRecipientRole(userId, NotificationStatus.DELIVERED, userRole);
+        long failed = notificationRepository.countByUserIdAndStatusAndRecipientRole(userId, NotificationStatus.FAILED, userRole);
         return ResponseEntity.ok(new StatsResponse(unread, delivered, failed));
     }
 
@@ -143,5 +164,13 @@ public class NotificationController {
 
     private UUID getUserId(Authentication auth) {
         return (UUID) auth.getPrincipal();
+    }
+
+    private RecipientRole getRole(Authentication auth) {
+        String role = auth.getAuthorities().stream()
+                .findFirst()
+                .map(g -> g.getAuthority().replace("ROLE_", ""))
+                .orElse("TEACHER");
+        return RecipientRole.valueOf(role);
     }
 }

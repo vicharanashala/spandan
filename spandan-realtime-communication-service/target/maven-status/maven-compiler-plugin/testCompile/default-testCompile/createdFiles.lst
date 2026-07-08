@@ -1,0 +1,3 @@
+com\spandan\gateway\application\service\WebSocketHandshakeServiceTest.class
+com\spandan\gateway\application\service\AnswerForwardingServiceTest.class
+com\spandan\gateway\integration\RedisConnectionSessionRepositoryTest.class

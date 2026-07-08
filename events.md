@@ -26,19 +26,19 @@ This file defines every event flowing between Spandan microservices. Each entry 
 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
-| `QuizStartingEvent` | `{ quizId, lectureId, teacherId, scheduledStart, startsInMs }` | **Notification Service** |
-| `PollStarted` | `{ quizId, lectureId, teacherId, pollType, startedAt }` | Analytics Service, Notification Service, Response Service |
-| `QuizCompleted` | `{ quizId, lectureId, teacherId, endedAt }` | Analytics Service, Notification Service |
+| `QuizStartingEvent` | `{ quizId, lectureId, teacherId, adminId (optional), scheduledStart, startsInMs }` | **Notification Service** |
+| `PollStarted` | `{ quizId, lectureId, teacherId, adminId (optional), pollType, startedAt }` | Analytics Service, Notification Service, Response Service |
+| `QuizCompleted` | `{ quizId, lectureId, teacherId, adminId (optional), endedAt }` | Analytics Service, Notification Service |
 | `AnswerSubmitted` | `{ quizId, questionId, studentId, answer, submittedAt }` | Analytics Service |
-| `PollOpenedEvent` | `{ sessionId, lectureId, questionId, pollStartTime, pollDuration }` | Realtime Communication Service, Response Service |
-| `PollClosedEvent` | `{ sessionId, lectureId, questionId, pollEndTime }` | Realtime Communication Service, Response Service |
+| `PollOpenedEvent` | `{ sessionId, lectureId, questionId, adminId (optional), pollStartTime, pollDuration }` | Realtime Communication Service, Response Service |
+| `PollClosedEvent` | `{ sessionId, lectureId, questionId, adminId (optional), pollEndTime }` | Realtime Communication Service, Response Service |
 
 ## Topic: `interaction-events`
 **Producer**: Realtime Communication Service (RTC)
 
 | Event | Payload | Consumers |
 |-------|---------|-----------|
-| `QuestionDisplayedEvent` | `{ sessionId, lectureId, studentId, questionId, questionDisplayedAt }` | Response Service |
+| `QuestionDisplayedEvent` | `{ sessionId, lectureId, studentId, questionId, questionDisplayedAt, adminId (optional) }` | Response Service |
 | `QuestionAnsweredEvent` | `{ sessionId, lectureId, studentId, questionId, selectedAnswer, questionDisplayedAt, questionAnsweredAt, responseTimeMilliseconds }` | Response Service |
 | `QuestionTimedOutEvent` | `{ sessionId, lectureId, studentId, questionId, questionDisplayedAt, timeoutAt, timeoutDurationMilliseconds }` | Response Service |
 
@@ -120,10 +120,12 @@ Note: No services consume RS events in v1. Reserved for teacher dashboard live s
 | `StudentDisconnected` | `{ eventId, userId, quizId, sessionId, timestamp }` | Analytics Service |
 | `TeacherConnected` | `{ eventId, userId, quizId, sessionId, timestamp }` | Analytics Service |
 | `TeacherDisconnected` | `{ eventId, userId, quizId, sessionId, timestamp }` | Analytics Service |
+| `AdminConnected` | `{ eventId, userId, quizId, sessionId, timestamp }` | Analytics Service |
+| `AdminDisconnected` | `{ eventId, userId, quizId, sessionId, timestamp }` | Analytics Service |
 | `SocketDeliveryFailed` | `{ eventId, userId, quizId, destination, timestamp }` | Audit/logging |
 | `StudentResponseReceived` | `{ eventId, userId, quizId, questionId, timestamp }` | Analytics Service |
 
 ## Summary Statistics
 - Total topics: 12
-- Total events: 56
+- Total events: 58
 - Total services: 11

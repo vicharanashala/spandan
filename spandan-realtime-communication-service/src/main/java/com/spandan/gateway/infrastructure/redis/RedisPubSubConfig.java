@@ -11,9 +11,6 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.listener.adapter.MessageListenerAdapter;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 @Configuration
 public class RedisPubSubConfig {
 
@@ -30,7 +27,6 @@ public class RedisPubSubConfig {
         container.setConnectionFactory(connectionFactory);
         container.addMessageListener(crossPodListenerAdapter, ChannelTopic.of("quiz:*"));
         container.addMessageListener(crossPodListenerAdapter, ChannelTopic.of("notification:*"));
-        container.setExecutor(Executors.newFixedThreadPool(4));
         return container;
     }
 

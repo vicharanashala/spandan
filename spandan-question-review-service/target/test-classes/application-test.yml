@@ -1,0 +1,22 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16:///review_db
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  flyway:
+    enabled: false
+  kafka:
+    bootstrap-servers: ${embedded.kafka.brokerList:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+    listener:
+      concurrency: 1
+  main:
+    allow-bean-definition-overriding: true
+
+auth:
+  service:
+    url: http://localhost:8081

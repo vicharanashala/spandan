@@ -76,7 +76,7 @@ public class QuizSequencer {
                 currentQuestion.getQuestionRefId(), currentQuestion.getSequencePosition(),
                 now, null, null, null,
                 quiz.getLectureId(), quiz.getSectionId(), null,
-                null, null, null, null, null, null
+                null, null, null, null, null, null, quizId
         ));
 
         if (quiz.isLastQuestion()) {
@@ -88,7 +88,8 @@ public class QuizSequencer {
                     UUID.randomUUID(), "QuizCompleted", quizId, null, null, null,
                     now, null, quiz.getTotalQuestions(), quiz.getTeacherId(),
                     quiz.getLectureId(), quiz.getSectionId(), null,
-                    null, null, null, null, null, null
+                    null, null, null, null, null, null, quizId,
+                    quiz.getAdminId()
             ));
             return;
         }
@@ -116,7 +117,8 @@ public class QuizSequencer {
                 now, question.getTimerDurationSeconds(), null, null,
                 question.getLectureId(), question.getSectionId(), question.getSubsectionId(),
                 question.getTopicId(), question.getConceptId(), question.getLearningObjectiveId(),
-                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer()
+                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer(),
+                quizId
         ));
 
         QuizTimer timer = QuizTimer.create(question.getId(), question.getTimerDurationSeconds());
@@ -133,7 +135,8 @@ public class QuizSequencer {
                 now, question.getTimerDurationSeconds(), null, null,
                 question.getLectureId(), question.getSectionId(), question.getSubsectionId(),
                 question.getTopicId(), question.getConceptId(), question.getLearningObjectiveId(),
-                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer()
+                question.getDifficulty(), question.getQuestionType(), question.getCorrectAnswer(),
+                quizId
         ));
 
         log.info("Poll opened for question {} at position {} in quiz {}",
@@ -159,7 +162,7 @@ public class QuizSequencer {
                 UUID.randomUUID(), "TimerExpired", quizId, question.getId(),
                 question.getQuestionRefId(), sequencePosition,
                 Instant.now(), null, null, null, null, null, null,
-                null, null, null, null, null, null
+                null, null, null, null, null, null, null
         ));
 
         log.info("Timer expired for question {} at position {} in quiz {}",

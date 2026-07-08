@@ -12,4 +12,8 @@ public interface ConnectionSessionRepository {
     List<ConnectionSession> findByQuizId(String quizId);
     List<ConnectionSession> findByUserId(String userId);
     long countByQuizId(String quizId);
+    void addAdminSession(String quizId, String sessionId);
+    void removeAdminSession(String quizId, String sessionId);
+    List<ConnectionSession> findAdminSessionsByQuizId(String quizId);
+    long countAdminSessionsByQuizId(String quizId);
 }

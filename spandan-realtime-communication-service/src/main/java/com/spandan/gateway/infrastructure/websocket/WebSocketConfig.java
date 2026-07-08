@@ -13,15 +13,18 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final WebSocketAuthInterceptor authInterceptor;
+    private final AdminChannelSubscriptionInterceptor adminSubscriptionInterceptor;
     private final long heartbeatTime;
     private final long maxFrameSize;
     private final long maxSessionIdleTime;
 
     public WebSocketConfig(WebSocketAuthInterceptor authInterceptor,
+                           AdminChannelSubscriptionInterceptor adminSubscriptionInterceptor,
                            @Value("${websocket.heartbeat-time}") long heartbeatTime,
                            @Value("${websocket.max-frame-size}") long maxFrameSize,
                            @Value("${websocket.max-session-idle-time}") long maxSessionIdleTime) {
         this.authInterceptor = authInterceptor;
+        this.adminSubscriptionInterceptor = adminSubscriptionInterceptor;
         this.heartbeatTime = heartbeatTime;
         this.maxFrameSize = maxFrameSize;
         this.maxSessionIdleTime = maxSessionIdleTime;
@@ -43,6 +46,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(authInterceptor);
+        registration.interceptors(authInterceptor, adminSubscriptionInterceptor);
     }
 }

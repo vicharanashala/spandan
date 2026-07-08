@@ -4,6 +4,7 @@ import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.entity.UserNotificationPreference;
 import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.NotificationType;
+import com.spandan.notification.domain.enums.RecipientRole;
 import com.spandan.notification.domain.port.ChannelDeliveryResult;
 import com.spandan.notification.infrastructure.persistence.NotificationRepository;
 import com.spandan.notification.infrastructure.persistence.UserNotificationPreferenceRepository;
@@ -43,20 +44,34 @@ public class NotificationOrchestrator {
         this.channelRouter = channelRouter;
     }
 
+    public static RecipientRole determineRecipientRole(NotificationType type) {
+        return switch (type) {
+            case QUESTIONS_GENERATED, REVIEW_COMPLETED, QUIZ_STARTING, QUIZ_COMPLETED,
+                 GRADING_COMPLETED, AUTO_GRADING_FAILED -> RecipientRole.ADMIN;
+            case QUESTION_GENERATION_FAILED, TEACHER_ANALYTICS_READY, SESSION_ANALYTICS_COMPLETED,
+                 TRANSCRIPT_GENERATION_FAILED, LECTURE_CREATED, LECTURE_ENDED -> RecipientRole.TEACHER;
+            case STUDENT_ANALYTICS_READY -> RecipientRole.STUDENT;
+            case LECTURE_STARTED -> RecipientRole.TEACHER;
+            case LEADERBOARD_GENERATED -> RecipientRole.STUDENT;
+            case USER_LOGGED_IN, USER_LOGGED_OUT, USER_REGISTERED, USER_PROFILE_UPDATED,
+                 USER_DEACTIVATED -> RecipientRole.TEACHER;
+        };
+    }
+
     @Transactional
-    public void onQuestionsGenerated(String sourceEventId, UUID teacherId, UUID sessionId, int questionCount) {
+    public void onQuestionsGenerated(String sourceEventId, UUID adminId, UUID sessionId, int questionCount) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.QUESTIONS_GENERATED,
-                    "Questions Ready for Review",
-                    "AI-generated questions for your session are ready. Please review and approve them.",
+                    adminId, RecipientRole.ADMIN, NotificationType.QUESTIONS_GENERATED,
+                    "Question Set Ready for Review",
+                    "Question set is ready for administrative review.",
                     NotificationChannel.IN_APP, SOURCE_QGS, UUID.fromString(sourceEventId));
             notification.setSessionId(sessionId);
             notificationRepository.save(notification);
             notification.markDelivered();
             notificationRepository.save(notification);
             deliverToOtherChannels(notification, sessionId, null);
-            log.info("Created QUESTIONS_GENERATED notification for teacher {}", teacherId);
+            log.info("Created QUESTIONS_GENERATED notification for admin {}", adminId);
         } catch (DataIntegrityViolationException e) {
             log.debug("Duplicate QUESTIONS_GENERATED event {} ignored", sourceEventId);
         }
@@ -66,7 +81,7 @@ public class NotificationOrchestrator {
     public void onQuestionGenerationFailed(String sourceEventId, UUID teacherId, UUID sessionId, String reason) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.QUESTION_GENERATION_FAILED,
+                    teacherId, RecipientRole.TEACHER, NotificationType.QUESTION_GENERATION_FAILED,
                     "Question Generation Failed",
                     "AI question generation failed: " + reason + ". You may retry or generate manually.",
                     NotificationChannel.IN_APP, SOURCE_QGS, UUID.fromString(sourceEventId));
@@ -82,14 +97,14 @@ public class NotificationOrchestrator {
     }
 
     @Transactional
-    public void onReviewCompleted(String sourceEventId, UUID teacherId, UUID sessionId,
+    public void onReviewCompleted(String sourceEventId, UUID adminId, UUID sessionId,
                                   int approvedCount, int rejectedCount, int orphanedCount) {
         try {
             String message = String.format(
                     "Question review completed. %d approved, %d rejected, %d orphaned.",
                     approvedCount, rejectedCount, orphanedCount);
             Notification notification = new Notification(
-                    teacherId, NotificationType.REVIEW_COMPLETED,
+                    adminId, RecipientRole.ADMIN, NotificationType.REVIEW_COMPLETED,
                     "Review Complete", message,
                     NotificationChannel.IN_APP, SOURCE_QRS, UUID.fromString(sourceEventId));
             notification.setSessionId(sessionId);
@@ -97,23 +112,41 @@ public class NotificationOrchestrator {
             notification.markDelivered();
             notificationRepository.save(notification);
             deliverToOtherChannels(notification, sessionId, null);
-            log.info("Created REVIEW_COMPLETED notification for teacher {}", teacherId);
+            log.info("Created REVIEW_COMPLETED notification for admin {}", adminId);
         } catch (DataIntegrityViolationException e) {
             log.debug("Duplicate REVIEW_COMPLETED event {} ignored", sourceEventId);
         }
     }
 
     @Transactional
-    public void onQuizStarting(String sourceEventId, UUID sessionId, UUID quizId,
+    public void onQuizStarting(String sourceEventId, UUID adminId, UUID sessionId, UUID quizId,
                                int questionCount, List<UUID> studentIds) {
-        String title = "Quiz Starting Soon";
-        String message = "Question 1 of " + questionCount + " begins in one minute.";
+        if (adminId != null) {
+            try {
+                Notification adminNotification = new Notification(
+                        adminId, RecipientRole.ADMIN, NotificationType.QUIZ_STARTING,
+                        "Quiz Starting Soon", "Quiz is starting soon.",
+                        NotificationChannel.IN_APP, SOURCE_POLLING, UUID.fromString(sourceEventId));
+                adminNotification.setSessionId(sessionId);
+                adminNotification.setQuizId(quizId);
+                notificationRepository.save(adminNotification);
+                adminNotification.markDelivered();
+                notificationRepository.save(adminNotification);
+                deliverToOtherChannels(adminNotification, sessionId, quizId);
+                log.info("Created QUIZ_STARTING notification for admin {}", adminId);
+            } catch (DataIntegrityViolationException e) {
+                log.debug("Duplicate QUIZ_STARTING for admin {} in event {} ignored", adminId, sourceEventId);
+            }
+        }
+
+        String studentTitle = "Quiz Starting Soon";
+        String studentMessage = "Question 1 of " + questionCount + " begins in one minute.";
 
         for (UUID studentId : studentIds) {
             try {
                 Notification notification = new Notification(
-                        studentId, NotificationType.QUIZ_STARTING,
-                        title, message,
+                        studentId, RecipientRole.STUDENT, NotificationType.QUIZ_STARTING,
+                        studentTitle, studentMessage,
                         NotificationChannel.IN_APP, SOURCE_POLLING, UUID.fromString(sourceEventId));
                 notification.setSessionId(sessionId);
                 notification.setQuizId(quizId);
@@ -129,10 +162,30 @@ public class NotificationOrchestrator {
     }
 
     @Transactional
+    public void onQuizCompleted(String sourceEventId, UUID adminId, UUID sessionId, UUID quizId) {
+        try {
+            Notification notification = new Notification(
+                    adminId, RecipientRole.ADMIN, NotificationType.QUIZ_COMPLETED,
+                    "Quiz Completed",
+                    "Quiz has ended.",
+                    NotificationChannel.IN_APP, SOURCE_POLLING, UUID.fromString(sourceEventId));
+            notification.setSessionId(sessionId);
+            notification.setQuizId(quizId);
+            notificationRepository.save(notification);
+            notification.markDelivered();
+            notificationRepository.save(notification);
+            deliverToOtherChannels(notification, sessionId, quizId);
+            log.info("Created QUIZ_COMPLETED notification for admin {}", adminId);
+        } catch (DataIntegrityViolationException e) {
+            log.debug("Duplicate QUIZ_COMPLETED event {} ignored", sourceEventId);
+        }
+    }
+
+    @Transactional
     public void onTeacherAnalyticsReady(String sourceEventId, UUID teacherId, UUID sessionId, UUID quizId) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.TEACHER_ANALYTICS_READY,
+                    teacherId, RecipientRole.TEACHER, NotificationType.TEACHER_ANALYTICS_READY,
                     "Session Analytics Ready",
                     "Session analytics for your quiz are ready. View the report.",
                     NotificationChannel.IN_APP, SOURCE_ANALYTICS, UUID.fromString(sourceEventId));
@@ -152,7 +205,7 @@ public class NotificationOrchestrator {
     public void onStudentAnalyticsReady(String sourceEventId, UUID studentId, UUID sessionId, UUID quizId) {
         try {
             Notification notification = new Notification(
-                    studentId, NotificationType.STUDENT_ANALYTICS_READY,
+                    studentId, RecipientRole.STUDENT, NotificationType.STUDENT_ANALYTICS_READY,
                     "Your Results Are Ready",
                     "Your quiz results are ready. Check your performance.",
                     NotificationChannel.IN_APP, SOURCE_ANALYTICS, UUID.fromString(sourceEventId));
@@ -174,15 +227,10 @@ public class NotificationOrchestrator {
     }
 
     @Transactional
-    public void onQuizCompleted(String sourceEventId, UUID sessionId, UUID quizId) {
-        log.info("Quiz {} completed for session {} — notification handled by summary analytics flow", quizId, sessionId);
-    }
-
-    @Transactional
     public void onSessionAnalyticsCompleted(String sourceEventId, UUID teacherId, UUID sessionId) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.SESSION_ANALYTICS_COMPLETED,
+                    teacherId, RecipientRole.TEACHER, NotificationType.SESSION_ANALYTICS_COMPLETED,
                     "Session Analytics Completed",
                     "Full session analytics report is now available.",
                     NotificationChannel.IN_APP, SOURCE_ANALYTICS, UUID.fromString(sourceEventId));
@@ -201,7 +249,7 @@ public class NotificationOrchestrator {
     public void onUserLoggedIn(String sourceEventId, UUID userId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.USER_LOGGED_IN,
+                    userId, RecipientRole.TEACHER, NotificationType.USER_LOGGED_IN,
                     "New Login",
                     "You have successfully logged in to your account.",
                     NotificationChannel.IN_APP, SOURCE_USER, UUID.fromString(sourceEventId));
@@ -218,7 +266,7 @@ public class NotificationOrchestrator {
     public void onUserLoggedOut(String sourceEventId, UUID userId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.USER_LOGGED_OUT,
+                    userId, RecipientRole.TEACHER, NotificationType.USER_LOGGED_OUT,
                     "Logged Out",
                     "You have been logged out of your account.",
                     NotificationChannel.IN_APP, SOURCE_USER, UUID.fromString(sourceEventId));
@@ -235,7 +283,7 @@ public class NotificationOrchestrator {
     public void onUserRegistered(String sourceEventId, UUID userId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.USER_REGISTERED,
+                    userId, RecipientRole.TEACHER, NotificationType.USER_REGISTERED,
                     "Welcome to Spandan!",
                     "Your account has been created successfully. Start engaging with your classes.",
                     NotificationChannel.IN_APP, SOURCE_USER, UUID.fromString(sourceEventId));
@@ -252,7 +300,7 @@ public class NotificationOrchestrator {
     public void onUserProfileUpdated(String sourceEventId, UUID userId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.USER_PROFILE_UPDATED,
+                    userId, RecipientRole.TEACHER, NotificationType.USER_PROFILE_UPDATED,
                     "Profile Updated",
                     "Your account profile has been updated successfully.",
                     NotificationChannel.IN_APP, SOURCE_USER, UUID.fromString(sourceEventId));
@@ -269,7 +317,7 @@ public class NotificationOrchestrator {
     public void onUserDeactivated(String sourceEventId, UUID userId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.USER_DEACTIVATED,
+                    userId, RecipientRole.TEACHER, NotificationType.USER_DEACTIVATED,
                     "Account Deactivated",
                     "Your account has been deactivated. Contact support if this was unexpected.",
                     NotificationChannel.IN_APP, SOURCE_USER, UUID.fromString(sourceEventId));
@@ -286,7 +334,7 @@ public class NotificationOrchestrator {
     public void onLectureCreated(String sourceEventId, UUID teacherId, UUID lectureId, UUID sessionId) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.LECTURE_CREATED,
+                    teacherId, RecipientRole.TEACHER, NotificationType.LECTURE_CREATED,
                     "Lecture Created",
                     "Your new lecture has been created and is ready.",
                     NotificationChannel.IN_APP, SOURCE_LECTURE, UUID.fromString(sourceEventId));
@@ -306,7 +354,7 @@ public class NotificationOrchestrator {
     public void onLectureStarted(String sourceEventId, UUID userId, UUID lectureId, UUID sessionId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.LECTURE_STARTED,
+                    userId, RecipientRole.TEACHER, NotificationType.LECTURE_STARTED,
                     "Lecture In Progress",
                     "Your lecture is now in progress.",
                     NotificationChannel.IN_APP, SOURCE_LECTURE, UUID.fromString(sourceEventId));
@@ -326,7 +374,7 @@ public class NotificationOrchestrator {
     public void onLectureEnded(String sourceEventId, UUID teacherId, UUID lectureId, UUID sessionId) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.LECTURE_ENDED,
+                    teacherId, RecipientRole.TEACHER, NotificationType.LECTURE_ENDED,
                     "Lecture Ended",
                     "Your lecture has ended. Analytics will be available shortly.",
                     NotificationChannel.IN_APP, SOURCE_LECTURE, UUID.fromString(sourceEventId));
@@ -343,12 +391,12 @@ public class NotificationOrchestrator {
     }
 
     @Transactional
-    public void onGradingCompleted(String sourceEventId, UUID userId, UUID sessionId, UUID quizId) {
+    public void onGradingCompleted(String sourceEventId, UUID adminId, UUID sessionId, UUID quizId) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.GRADING_COMPLETED,
+                    adminId, RecipientRole.ADMIN, NotificationType.GRADING_COMPLETED,
                     "Auto-Grading Complete",
-                    "Your responses have been auto-graded. Check your results.",
+                    "Grading completed for the assessment.",
                     NotificationChannel.IN_APP, SOURCE_GRADING, UUID.fromString(sourceEventId));
             notification.setSessionId(sessionId);
             notification.setQuizId(quizId);
@@ -356,19 +404,19 @@ public class NotificationOrchestrator {
             notification.markDelivered();
             notificationRepository.save(notification);
             deliverToOtherChannels(notification, sessionId, quizId);
-            log.info("Created GRADING_COMPLETED notification for user {}", userId);
+            log.info("Created GRADING_COMPLETED notification for admin {}", adminId);
         } catch (DataIntegrityViolationException e) {
             log.debug("Duplicate GRADING_COMPLETED event {} ignored", sourceEventId);
         }
     }
 
     @Transactional
-    public void onAutoGradingFailed(String sourceEventId, UUID userId, UUID sessionId, UUID quizId, String reason) {
+    public void onAutoGradingFailed(String sourceEventId, UUID adminId, UUID sessionId, UUID quizId, String reason) {
         try {
             Notification notification = new Notification(
-                    userId, NotificationType.AUTO_GRADING_FAILED,
+                    adminId, RecipientRole.ADMIN, NotificationType.AUTO_GRADING_FAILED,
                     "Auto-Grading Failed",
-                    "Auto-grading failed: " + reason + ". Manual review may be required.",
+                    "Auto-grading failed: " + reason + ". Manual intervention required.",
                     NotificationChannel.IN_APP, SOURCE_GRADING, UUID.fromString(sourceEventId));
             notification.setSessionId(sessionId);
             notification.setQuizId(quizId);
@@ -376,7 +424,7 @@ public class NotificationOrchestrator {
             notification.markDelivered();
             notificationRepository.save(notification);
             deliverToOtherChannels(notification, sessionId, quizId);
-            log.info("Created AUTO_GRADING_FAILED notification for user {}", userId);
+            log.info("Created AUTO_GRADING_FAILED notification for admin {}", adminId);
         } catch (DataIntegrityViolationException e) {
             log.debug("Duplicate AUTO_GRADING_FAILED event {} ignored", sourceEventId);
         }
@@ -386,7 +434,7 @@ public class NotificationOrchestrator {
     public void onTranscriptGenerationFailed(String sourceEventId, UUID teacherId, UUID sessionId, String reason) {
         try {
             Notification notification = new Notification(
-                    teacherId, NotificationType.TRANSCRIPT_GENERATION_FAILED,
+                    teacherId, RecipientRole.TEACHER, NotificationType.TRANSCRIPT_GENERATION_FAILED,
                     "Transcript Failed",
                     "Transcript generation failed: " + reason + ". Recording may need to be re-uploaded.",
                     NotificationChannel.IN_APP, SOURCE_TRANSCRIPTION, UUID.fromString(sourceEventId));

@@ -26,7 +26,10 @@ public class Review {
     @Column(name = "session_id", nullable = false)
     private UUID sessionId;
 
-    @Column(name = "teacher_id", nullable = false)
+    @Column(name = "admin_id", nullable = false)
+    private UUID adminId;
+
+    @Column(name = "teacher_id")
     private UUID teacherId;
 
     @Column(name = "original_ai_question", nullable = false, columnDefinition = "TEXT")
@@ -89,6 +92,8 @@ public class Review {
     public void setQuestionSetId(UUID questionSetId) { this.questionSetId = questionSetId; }
     public UUID getSessionId() { return sessionId; }
     public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
+    public UUID getAdminId() { return adminId; }
+    public void setAdminId(UUID adminId) { this.adminId = adminId; }
     public UUID getTeacherId() { return teacherId; }
     public void setTeacherId(UUID teacherId) { this.teacherId = teacherId; }
     public String getOriginalAiQuestion() { return originalAiQuestion; }

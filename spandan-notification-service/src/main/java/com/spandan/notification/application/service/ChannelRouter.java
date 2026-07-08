@@ -53,7 +53,7 @@ public class ChannelRouter {
         }
     }
 
-    private boolean isChannelEnabled(NotificationChannel channel, UserNotificationPreference prefs) {
+    private boolean isChannelEnabled(com.spandan.notification.domain.enums.NotificationChannel channel, UserNotificationPreference prefs) {
         return switch (channel) {
             case IN_APP -> true;
             case PUSH -> prefs.isPushEnabled();

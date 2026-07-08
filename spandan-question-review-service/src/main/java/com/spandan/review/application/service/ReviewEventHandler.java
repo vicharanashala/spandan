@@ -52,6 +52,7 @@ public class ReviewEventHandler {
                 review.setQuestionId(questionId);
                 review.setQuestionSetId(setId);
                 review.setSessionId(sessionId);
+                review.setAdminId(teacherId);
                 review.setTeacherId(teacherId);
                 review.setOriginalAiQuestion(q.path("questionText").asText());
                 review.setQuestionType(q.path("questionType").asText());

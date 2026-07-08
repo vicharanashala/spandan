@@ -13,6 +13,8 @@ public class QuizMapper {
     public static QuizResponse toResponse(Quiz quiz) {
         return new QuizResponse(
                 quiz.getId(),
+                quiz.getAdminId(),
+                quiz.getTeacherId(),
                 quiz.getQuizStatus().name(),
                 quiz.getCurrentQuestionNumber(),
                 quiz.getTotalQuestions(),
@@ -43,6 +45,7 @@ public class QuizMapper {
 
         return new QuizDetailResponse(
                 quiz.getId(),
+                quiz.getAdminId(),
                 quiz.getTeacherId(),
                 quiz.getQuizStatus().name(),
                 quiz.getCurrentQuestionNumber(),

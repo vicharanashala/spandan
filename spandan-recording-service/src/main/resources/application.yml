@@ -49,7 +49,7 @@ grpc:
   client:
     transcription-service:
       host: ${TRANSCRIPTION_SERVICE_HOST:localhost}
-      port: ${TRANSCRIPTION_SERVICE_GRPC_PORT:9091}
+      port: ${TRANSCRIPTION_SERVICE_GRPC_PORT:50052}
 
 recording:
   chunk:

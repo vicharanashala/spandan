@@ -20,12 +20,11 @@ public class StateTransitionGuard {
     private static final java.util.Map<QuestionStatus, java.util.Set<QuestionStatus>> QUESTION_TRANSITIONS =
             java.util.Map.of(
                     QuestionStatus.SCHEDULED, java.util.Set.of(QuestionStatus.PUBLISHED, QuestionStatus.POLL_OPEN, QuestionStatus.CANCELLED),
-                    QuestionStatus.PUBLISHED, java.util.Set.of(QuestionStatus.RUNNING),
+                    QuestionStatus.PUBLISHED, java.util.Set.of(QuestionStatus.RUNNING, QuestionStatus.POLL_CLOSED),
                     QuestionStatus.POLL_OPEN, java.util.Set.of(QuestionStatus.RUNNING, QuestionStatus.TIMER_EXPIRED, QuestionStatus.POLL_CLOSED),
                     QuestionStatus.RUNNING, java.util.Set.of(QuestionStatus.TIMER_EXPIRED),
                     QuestionStatus.TIMER_EXPIRED, java.util.Set.of(QuestionStatus.CLOSED, QuestionStatus.POLL_CLOSED),
                     QuestionStatus.CLOSED, java.util.Set.of(QuestionStatus.POLL_CLOSED),
-                    QuestionStatus.PUBLISHED, java.util.Set.of(QuestionStatus.POLL_CLOSED),
                     QuestionStatus.POLL_CLOSED, java.util.Set.of(),
                     QuestionStatus.CANCELLED, java.util.Set.of()
             );

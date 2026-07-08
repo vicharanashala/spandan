@@ -6,6 +6,7 @@ import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.entity.UserNotificationPreference;
 import com.spandan.notification.domain.enums.NotificationStatus;
 import com.spandan.notification.domain.enums.NotificationType;
+import com.spandan.notification.domain.enums.RecipientRole;
 import com.spandan.notification.domain.port.ChannelDeliveryResult;
 import com.spandan.notification.infrastructure.persistence.NotificationRepository;
 import com.spandan.notification.infrastructure.persistence.UserNotificationPreferenceRepository;
@@ -24,6 +25,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -36,31 +38,32 @@ class NotificationOrchestratorTest {
 
     private NotificationOrchestrator orchestrator;
     private UUID teacherId;
+    private UUID adminId;
     private UUID sessionId;
 
     @BeforeEach
     void setUp() {
         orchestrator = new NotificationOrchestrator(notificationRepository, preferenceRepository, channelRouter);
         teacherId = UUID.randomUUID();
+        adminId = UUID.randomUUID();
         sessionId = UUID.randomUUID();
-        when(channelRouter.deliver(any(), any())).thenReturn(ChannelDeliveryResult.success());
-        when(channelRouter.deliverAsync(any(), any(), any(), any())).thenAnswer(i -> {
-            return null;
-        });
+        lenient().when(channelRouter.deliver(any(), any())).thenReturn(ChannelDeliveryResult.success());
+        lenient().doNothing().when(channelRouter).deliverAsync(any(), any(), any(), any());
     }
 
     @Test
     void onQuestionsGenerated_shouldCreateAndDeliver() {
         when(notificationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
-        when(preferenceRepository.findByUserId(any())).thenReturn(Optional.of(new UserNotificationPreference(teacherId)));
+        when(preferenceRepository.findByUserId(any())).thenReturn(Optional.of(new UserNotificationPreference(adminId)));
 
-        orchestrator.onQuestionsGenerated(UUID.randomUUID().toString(), teacherId, sessionId, 5);
+        orchestrator.onQuestionsGenerated(UUID.randomUUID().toString(), adminId, sessionId, 5);
 
         verify(notificationRepository, atLeast(2)).save(notificationCaptor.capture());
         Notification saved = notificationCaptor.getAllValues().get(0);
         assertEquals(NotificationType.QUESTIONS_GENERATED, saved.getNotificationType());
-        assertEquals(teacherId, saved.getUserId());
-        assertEquals("Questions Ready for Review", saved.getTitle());
+        assertEquals(adminId, saved.getUserId());
+        assertEquals(RecipientRole.ADMIN, saved.getRecipientRole());
+        assertEquals("Question Set Ready for Review", saved.getTitle());
     }
 
     @Test
@@ -68,7 +71,7 @@ class NotificationOrchestratorTest {
         when(notificationRepository.save(any())).thenThrow(DataIntegrityViolationException.class);
 
         assertDoesNotThrow(() ->
-                orchestrator.onQuestionsGenerated(UUID.randomUUID().toString(), teacherId, sessionId, 5));
+                orchestrator.onQuestionsGenerated(UUID.randomUUID().toString(), adminId, sessionId, 5));
     }
 
     @Test
@@ -87,26 +90,29 @@ class NotificationOrchestratorTest {
     @Test
     void onReviewCompleted_shouldCreateSummaryNotification() {
         when(notificationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
-        when(preferenceRepository.findByUserId(any())).thenReturn(Optional.of(new UserNotificationPreference(teacherId)));
+        when(preferenceRepository.findByUserId(any())).thenReturn(Optional.of(new UserNotificationPreference(adminId)));
 
-        orchestrator.onReviewCompleted(UUID.randomUUID().toString(), teacherId, sessionId, 3, 1, 0);
+        orchestrator.onReviewCompleted(UUID.randomUUID().toString(), adminId, sessionId, 3, 1, 0);
 
         verify(notificationRepository, atLeast(2)).save(notificationCaptor.capture());
         Notification saved = notificationCaptor.getAllValues().get(0);
         assertEquals(NotificationType.REVIEW_COMPLETED, saved.getNotificationType());
+        assertEquals(adminId, saved.getUserId());
+        assertEquals(RecipientRole.ADMIN, saved.getRecipientRole());
         assertTrue(saved.getMessage().contains("3 approved"));
         assertTrue(saved.getMessage().contains("1 rejected"));
     }
 
     @Test
-    void onQuizStarting_shouldCreateNotificationForEachStudent() {
+    void onQuizStarting_shouldCreateNotificationForAdminAndStudents() {
         when(notificationRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(preferenceRepository.findByUserId(any())).thenReturn(Optional.of(new UserNotificationPreference(UUID.randomUUID())));
 
         List<UUID> studentIds = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
-        orchestrator.onQuizStarting(UUID.randomUUID().toString(), sessionId, UUID.randomUUID(), 10, studentIds);
+        UUID quizId = UUID.randomUUID();
+        orchestrator.onQuizStarting(UUID.randomUUID().toString(), adminId, sessionId, quizId, 10, studentIds);
 
-        verify(notificationRepository, atLeast(6)).save(any());
+        verify(notificationRepository, atLeast(8)).save(any());
     }
 
     @Test
@@ -121,7 +127,7 @@ class NotificationOrchestratorTest {
         });
 
         assertDoesNotThrow(() ->
-                orchestrator.onQuizStarting(sourceEventId, sessionId, UUID.randomUUID(), 5, List.of(studentId, studentId)));
+                orchestrator.onQuizStarting(sourceEventId, adminId, sessionId, UUID.randomUUID(), 5, List.of(studentId, studentId)));
     }
 
     @Test
@@ -161,7 +167,7 @@ class NotificationOrchestratorTest {
     @Test
     void retryNotification_shouldResetAndDeliver() {
         UUID notificationId = UUID.randomUUID();
-        Notification notification = new Notification(teacherId, NotificationType.QUESTIONS_GENERATED,
+        Notification notification = new Notification(adminId, RecipientRole.ADMIN, NotificationType.QUESTIONS_GENERATED,
                 "title", "message", com.spandan.notification.domain.enums.NotificationChannel.PUSH,
                 "svc", UUID.randomUUID());
         notification.markFailed("FCM error");
@@ -179,7 +185,7 @@ class NotificationOrchestratorTest {
 
     @Test
     void processRetry_shouldHandleFailureAndScheduleNext() {
-        Notification notification = new Notification(teacherId, NotificationType.QUESTIONS_GENERATED,
+        Notification notification = new Notification(adminId, RecipientRole.ADMIN, NotificationType.QUESTIONS_GENERATED,
                 "title", "message", com.spandan.notification.domain.enums.NotificationChannel.PUSH,
                 "svc", UUID.randomUUID());
         notification.markFailed("fail");

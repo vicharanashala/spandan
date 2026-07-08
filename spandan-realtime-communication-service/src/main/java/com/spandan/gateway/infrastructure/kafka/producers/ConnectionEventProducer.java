@@ -67,6 +67,30 @@ public class ConnectionEventProducer {
         kafkaTemplate.send("connection-events", quizId, event);
     }
 
+    public void adminConnected(String userId, String quizId, String sessionId) {
+        Map<String, Object> event = Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "type", "AdminConnected",
+                "userId", userId,
+                "quizId", quizId,
+                "sessionId", sessionId,
+                "timestamp", Instant.now().toString()
+        );
+        kafkaTemplate.send("connection-events", quizId, event);
+    }
+
+    public void adminDisconnected(String userId, String quizId, String sessionId) {
+        Map<String, Object> event = Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "type", "AdminDisconnected",
+                "userId", userId,
+                "quizId", quizId,
+                "sessionId", sessionId,
+                "timestamp", Instant.now().toString()
+        );
+        kafkaTemplate.send("connection-events", quizId, event);
+    }
+
     public void deliveryFailed(String userId, String quizId, String destination) {
         Map<String, Object> event = Map.of(
                 "eventId", UUID.randomUUID().toString(),

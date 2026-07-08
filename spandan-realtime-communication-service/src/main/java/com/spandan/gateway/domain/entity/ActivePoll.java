@@ -13,11 +13,14 @@ public class ActivePoll {
     private String conceptId;
     private Integer questionSequence;
     private long pollDurationMs;
+    private String adminId;
     private Instant pollOpenedAt;
     private Instant createdAt;
 
     public ActivePoll() {}
 
+    public String getAdminId() { return adminId; }
+    public void setAdminId(String adminId) { this.adminId = adminId; }
     public String getSessionId() { return sessionId; }
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
     public String getQuestionId() { return questionId; }

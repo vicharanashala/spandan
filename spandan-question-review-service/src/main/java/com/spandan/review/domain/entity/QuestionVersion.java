@@ -29,8 +29,8 @@ public class QuestionVersion {
     @Column(name = "correct_answer", nullable = false, columnDefinition = "TEXT")
     private String correctAnswer;
 
-    @Column(name = "edited_by_teacher_id")
-    private UUID editedByTeacherId;
+    @Column(name = "edited_by_admin_id")
+    private UUID editedByAdminId;
 
     @Column(name = "edited_at", nullable = false)
     private Instant editedAt;
@@ -52,7 +52,7 @@ public class QuestionVersion {
     public void setOptions(String options) { this.options = options; }
     public String getCorrectAnswer() { return correctAnswer; }
     public void setCorrectAnswer(String correctAnswer) { this.correctAnswer = correctAnswer; }
-    public UUID getEditedByTeacherId() { return editedByTeacherId; }
-    public void setEditedByTeacherId(UUID editedByTeacherId) { this.editedByTeacherId = editedByTeacherId; }
+    public UUID getEditedByAdminId() { return editedByAdminId; }
+    public void setEditedByAdminId(UUID editedByAdminId) { this.editedByAdminId = editedByAdminId; }
     public Instant getEditedAt() { return editedAt; }
 }

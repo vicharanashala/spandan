@@ -1,13 +1,12 @@
 package com.spandan.notification.infrastructure.kafka.consumers;
 
-import com.spandan.notification.application.dto.event.EventEnvelope;
 import com.spandan.notification.application.service.NotificationOrchestrator;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -24,19 +23,19 @@ public class UserEventConsumer {
     @KafkaListener(topics = "${kafka.topics.user-events}",
                    groupId = "${kafka.consumer.group-id}.user",
                    containerFactory = "kafkaListenerContainerFactory")
-    public void consume(EventEnvelope event) {
+    public void consume(Map<String, Object> event) {
         try {
-            JsonNode payload = event.getPayload();
-            String eventId = event.getEventId().toString();
-            UUID userId = UUID.fromString(payload.get("userId").asText());
+            String eventType = (String) event.getOrDefault("eventType", event.get("type"));
+            String eventId = event.getOrDefault("eventId", UUID.randomUUID()).toString();
+            UUID userId = UUID.fromString(event.get("userId").toString());
 
-            switch (event.getEventType()) {
+            switch (eventType) {
                 case "UserLoggedIn" -> orchestrator.onUserLoggedIn(eventId, userId);
                 case "UserLoggedOut" -> orchestrator.onUserLoggedOut(eventId, userId);
                 case "UserRegistered" -> orchestrator.onUserRegistered(eventId, userId);
                 case "UserProfileUpdated" -> orchestrator.onUserProfileUpdated(eventId, userId);
                 case "UserDeactivated" -> orchestrator.onUserDeactivated(eventId, userId);
-                default -> log.debug("Ignored event type: {}", event.getEventType());
+                default -> log.debug("Ignored event type: {}", eventType);
             }
         } catch (Exception e) {
             log.error("Failed to process user event: {}", e.getMessage(), e);

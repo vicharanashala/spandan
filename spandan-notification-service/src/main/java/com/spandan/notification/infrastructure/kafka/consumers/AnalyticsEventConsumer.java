@@ -1,13 +1,13 @@
 package com.spandan.notification.infrastructure.kafka.consumers;
 
-import com.spandan.notification.application.dto.event.EventEnvelope;
 import com.spandan.notification.application.service.NotificationOrchestrator;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -16,33 +16,36 @@ public class AnalyticsEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(AnalyticsEventConsumer.class);
 
     private final NotificationOrchestrator orchestrator;
+    private final ObjectMapper objectMapper;
 
-    public AnalyticsEventConsumer(NotificationOrchestrator orchestrator) {
+    public AnalyticsEventConsumer(NotificationOrchestrator orchestrator, ObjectMapper objectMapper) {
         this.orchestrator = orchestrator;
+        this.objectMapper = objectMapper;
     }
 
     @KafkaListener(topics = "${kafka.topics.analytics-events}",
                    groupId = "${kafka.consumer.group-id}.analytics",
                    containerFactory = "kafkaListenerContainerFactory")
-    public void consume(EventEnvelope event) {
+    public void consume(Map<String, Object> event) {
         try {
-            JsonNode payload = event.getPayload();
-            UUID sessionId = UUID.fromString(payload.get("sessionId").asText());
-            UUID quizId = UUID.fromString(payload.get("quizId").asText());
+            String eventType = (String) event.getOrDefault("eventType", event.get("type"));
+            String eventId = event.getOrDefault("eventId", UUID.randomUUID()).toString();
+            UUID sessionId = UUID.fromString(event.get("sessionId").toString());
+            UUID quizId = UUID.fromString(event.get("quizId").toString());
 
-            switch (event.getEventType()) {
+            switch (eventType) {
                 case "TeacherAnalyticsReady" -> {
-                    UUID teacherId = UUID.fromString(payload.get("teacherId").asText());
-                    orchestrator.onTeacherAnalyticsReady(event.getEventId().toString(), teacherId, sessionId, quizId);
+                    UUID teacherId = UUID.fromString(event.get("teacherId").toString());
+                    orchestrator.onTeacherAnalyticsReady(eventId, teacherId, sessionId, quizId);
                 }
                 case "StudentAnalyticsReady" -> {
-                    UUID studentId = UUID.fromString(payload.get("studentId").asText());
-                    orchestrator.onStudentAnalyticsReady(event.getEventId().toString(), studentId, sessionId, quizId);
+                    UUID studentId = UUID.fromString(event.get("studentId").toString());
+                    orchestrator.onStudentAnalyticsReady(eventId, studentId, sessionId, quizId);
                 }
                 case "LeaderboardGenerated" -> {
-                    orchestrator.onLeaderboardGenerated(event.getEventId().toString(), sessionId, quizId);
+                    orchestrator.onLeaderboardGenerated(eventId, sessionId, quizId);
                 }
-                default -> log.debug("Ignored event type: {}", event.getEventType());
+                default -> log.debug("Ignored event type: {}", eventType);
             }
         } catch (Exception e) {
             log.error("Failed to process analytics event: {}", e.getMessage(), e);

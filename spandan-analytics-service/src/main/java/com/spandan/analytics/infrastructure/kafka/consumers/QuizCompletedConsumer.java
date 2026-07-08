@@ -29,8 +29,9 @@ public class QuizCompletedConsumer {
                 String type = (String) event.get("type");
                 if ("QuizCompleted".equals(type)) {
                     UUID quizId = UUID.fromString((String) event.get("quizId"));
+                    String teacherId = (String) event.get("teacherId");
                     log.info("Received QuizCompleted event for quizId={}", quizId);
-                    orchestrator.processQuizCompleted(quizId);
+                    orchestrator.processQuizCompleted(quizId, teacherId);
                 }
             }
             ack.acknowledge();

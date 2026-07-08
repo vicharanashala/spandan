@@ -120,7 +120,7 @@ No other service creates or modifies this hierarchy. No downstream service infer
 - **AI provider rate limiting**: provider adapters should implement client-side rate limiting; Resilience4j rate limiter configured per provider
 
 ## Security Considerations
-- **Authentication**: JWT-based, TEACHER role required for all endpoints
+- **Authentication**: JWT-based, TEACHER role required for all endpoints (ADMIN is explicitly excluded — question generation is a TEACHER-only capability)
 - **Authorization**: Teacher can only generate/access questions for their own lectures (via `teacherId`)
 - **Input validation**: `@Valid` on request bodies; UUID format validation on IDs
 - **Kafka**: internal network (no auth between brokers)

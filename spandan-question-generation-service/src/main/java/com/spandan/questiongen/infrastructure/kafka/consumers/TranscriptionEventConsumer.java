@@ -22,10 +22,14 @@ public class TranscriptionEventConsumer {
     @KafkaListener(topics = "transcription-events", groupId = "question-generation-service")
     public void onTranscriptionEvent(ConsumerRecord<String, Object> record, Acknowledgment ack) {
         try {
-            String eventType = record.key();
             var value = record.value();
+            var json = new com.fasterxml.jackson.databind.ObjectMapper().convertValue(value, com.fasterxml.jackson.databind.JsonNode.class);
+            String eventType = json.path("eventType").asText();
+            if (eventType.isEmpty()) {
+                eventType = json.path("type").asText();
+            }
 
-            log.info("Received transcription event: key={}, offset={}", eventType, record.offset());
+            log.info("Received transcription event: type={}, offset={}", eventType, record.offset());
 
             if ("TranscriptGenerated".equals(eventType)) {
                 var transcriptId = extractTranscriptId(value);

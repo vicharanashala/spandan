@@ -3,6 +3,7 @@ package com.spandan.notification.domain.entity;
 import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.NotificationStatus;
 import com.spandan.notification.domain.enums.NotificationType;
+import com.spandan.notification.domain.enums.RecipientRole;
 import jakarta.persistence.*;
 import java.time.Instant;
 import java.util.UUID;
@@ -18,6 +19,10 @@ public class Notification {
 
     @Column(name = "user_id", nullable = false)
     private UUID userId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recipient_role", nullable = false, length = 20)
+    private RecipientRole recipientRole;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "notification_type", nullable = false, length = 50)
@@ -75,9 +80,10 @@ public class Notification {
 
     public Notification() {}
 
-    public Notification(UUID userId, NotificationType notificationType, String title, String message,
+    public Notification(UUID userId, RecipientRole recipientRole, NotificationType notificationType, String title, String message,
                         NotificationChannel channel, String sourceService, UUID sourceEventId) {
         this.userId = userId;
+        this.recipientRole = recipientRole;
         this.notificationType = notificationType;
         this.title = title;
         this.message = message;
@@ -127,6 +133,7 @@ public class Notification {
 
     public UUID getId() { return id; }
     public UUID getUserId() { return userId; }
+    public RecipientRole getRecipientRole() { return recipientRole; }
     public NotificationType getNotificationType() { return notificationType; }
     public String getTitle() { return title; }
     public String getMessage() { return message; }

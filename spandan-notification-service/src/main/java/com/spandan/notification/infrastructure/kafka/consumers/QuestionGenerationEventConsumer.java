@@ -1,13 +1,12 @@
 package com.spandan.notification.infrastructure.kafka.consumers;
 
-import com.spandan.notification.application.dto.event.EventEnvelope;
 import com.spandan.notification.application.service.NotificationOrchestrator;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -24,23 +23,26 @@ public class QuestionGenerationEventConsumer {
     @KafkaListener(topics = "${kafka.topics.question-generation-events}",
                    groupId = "${kafka.consumer.group-id}.qg",
                    containerFactory = "kafkaListenerContainerFactory")
-    public void consume(EventEnvelope event) {
+    public void consume(Map<String, Object> event) {
         try {
-            JsonNode payload = event.getPayload();
-            UUID teacherId = UUID.fromString(payload.get("teacherId").asText());
-            UUID sessionId = UUID.fromString(payload.get("sessionId").asText());
-            String eventId = event.getEventId().toString();
+            String eventType = (String) event.getOrDefault("eventType", event.get("type"));
+            String eventId = event.getOrDefault("eventId", UUID.randomUUID()).toString();
+            UUID sessionId = UUID.fromString(event.get("sessionId").toString());
 
-            switch (event.getEventType()) {
+            switch (eventType) {
                 case "QuestionsGenerated" -> {
-                    int questionCount = payload.get("questionCount").asInt();
-                    orchestrator.onQuestionsGenerated(eventId, teacherId, sessionId, questionCount);
+                    UUID adminId = event.containsKey("adminId") && event.get("adminId") != null
+                            ? UUID.fromString(event.get("adminId").toString())
+                            : UUID.fromString(event.get("teacherId").toString());
+                    int questionCount = event.containsKey("questionCount") ? ((Number) event.get("questionCount")).intValue() : 0;
+                    orchestrator.onQuestionsGenerated(eventId, adminId, sessionId, questionCount);
                 }
                 case "QuestionGenerationFailed" -> {
-                    String reason = payload.get("failureReason").asText();
+                    UUID teacherId = UUID.fromString(event.get("teacherId").toString());
+                    String reason = (String) event.get("failureReason");
                     orchestrator.onQuestionGenerationFailed(eventId, teacherId, sessionId, reason);
                 }
-                default -> log.debug("Ignored event type: {}", event.getEventType());
+                default -> log.debug("Ignored event type: {}", eventType);
             }
         } catch (Exception e) {
             log.error("Failed to process question-generation event: {}", e.getMessage(), e);

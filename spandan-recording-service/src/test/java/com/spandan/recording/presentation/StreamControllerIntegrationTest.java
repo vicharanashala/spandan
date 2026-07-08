@@ -71,10 +71,12 @@ class StreamControllerIntegrationTest {
     private AudioProviderFactory audioProviderFactory;
 
     private String teacherToken;
+    private String adminToken;
 
     @BeforeEach
     void setUp() {
         teacherToken = generateToken("teacher-1", "TEACHER");
+        adminToken = generateToken("admin-1", "ADMIN");
 
         TranscriptForwarder stubForwarder = new TranscriptForwarder() {
             public void sendSegment(com.spandan.recording.domain.entity.TranscriptSegment segment) {}
@@ -240,6 +242,52 @@ class StreamControllerIntegrationTest {
                 String.class);
 
         assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+    }
+
+    @Test
+    void shouldAllowAdminToStartStream() {
+        StartStreamRequest request = createStartRequest();
+
+        ResponseEntity<StartStreamResponse> response = restTemplate.exchange(
+                "/api/v1/streams/start",
+                HttpMethod.POST,
+                new HttpEntity<>(request, authHeaders(adminToken)),
+                StartStreamResponse.class);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(request.getSessionId(), response.getBody().getSessionId());
+    }
+
+    @Test
+    void shouldAllowAdminToStopStream() {
+        StreamSession session = orchestrator.startStream(
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                com.spandan.recording.domain.enums.AudioFormat.PCM16,
+                com.spandan.recording.domain.enums.StreamProvider.DEEPGRAM);
+
+        AudioProvider mockProvider = new AudioProvider() {
+            public void connect(String e, java.util.function.Consumer<com.spandan.recording.domain.entity.TranscriptSegment> h,
+                                Runnable r, java.util.function.Consumer<Throwable> er) {}
+            public boolean isConnected() { return false; }
+            public boolean sendAudio(byte[] d, int o, int l) { return true; }
+            public void disconnect() {}
+            public void close() {}
+        };
+        TranscriptForwarder mockForwarder = new TranscriptForwarder() {
+            public void sendSegment(com.spandan.recording.domain.entity.TranscriptSegment s) {}
+            public boolean isConnected() { return false; }
+            public void close() {}
+        };
+        orchestrator.registerActiveStream(session.getSessionId(), session, mockProvider, mockForwarder);
+
+        ResponseEntity<StopStreamResponse> response = restTemplate.exchange(
+                "/api/v1/streams/" + session.getSessionId() + "/stop",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(adminToken)),
+                StopStreamResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
     }
 
     private StartStreamRequest createStartRequest() {

@@ -2,6 +2,7 @@ package com.spandan.notification.infrastructure.persistence;
 
 import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.enums.NotificationStatus;
+import com.spandan.notification.domain.enums.RecipientRole;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -20,7 +21,13 @@ public interface NotificationRepository extends JpaRepository<Notification, UUID
 
     Page<Notification> findByUserIdAndStatusOrderByCreatedAtDesc(UUID userId, NotificationStatus status, Pageable pageable);
 
+    Page<Notification> findByUserIdAndRecipientRoleOrderByCreatedAtDesc(UUID userId, RecipientRole role, Pageable pageable);
+
+    Page<Notification> findByUserIdAndStatusAndRecipientRoleOrderByCreatedAtDesc(UUID userId, NotificationStatus status, RecipientRole role, Pageable pageable);
+
     long countByUserIdAndStatus(UUID userId, NotificationStatus status);
+
+    long countByUserIdAndStatusAndRecipientRole(UUID userId, NotificationStatus status, RecipientRole role);
 
     @Query("SELECT n FROM Notification n WHERE n.status = 'FAILED' AND n.retryCount < :maxRetries " +
            "AND (n.nextRetryAt IS NULL OR n.nextRetryAt <= :now)")

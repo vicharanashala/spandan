@@ -17,6 +17,9 @@ public class QuizEntity {
     @Column(name = "teacher_id", nullable = false)
     private UUID teacherId;
 
+    @Column(name = "admin_id", nullable = false)
+    private UUID adminId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "quiz_status", nullable = false, length = 20)
     private QuizStatus quizStatus;
@@ -50,12 +53,13 @@ public class QuizEntity {
 
     public QuizEntity() {}
 
-    public QuizEntity(UUID id, UUID teacherId, QuizStatus quizStatus, int currentQuestionNumber,
+    public QuizEntity(UUID id, UUID teacherId, UUID adminId, QuizStatus quizStatus, int currentQuestionNumber,
                       int totalQuestions, UUID lectureId, UUID sectionId, UUID subsectionId,
                       Instant startedAt, Instant endedAt,
                       Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.teacherId = teacherId;
+        this.adminId = adminId;
         this.quizStatus = quizStatus;
         this.currentQuestionNumber = currentQuestionNumber;
         this.totalQuestions = totalQuestions;
@@ -70,7 +74,7 @@ public class QuizEntity {
 
     public static QuizEntity fromDomain(Quiz quiz) {
         return new QuizEntity(
-                quiz.getId(), quiz.getTeacherId(), quiz.getQuizStatus(),
+                quiz.getId(), quiz.getTeacherId(), quiz.getAdminId(), quiz.getQuizStatus(),
                 quiz.getCurrentQuestionNumber(), quiz.getTotalQuestions(),
                 quiz.getLectureId(), quiz.getSectionId(), quiz.getSubsectionId(),
                 quiz.getStartedAt(), quiz.getEndedAt(),
@@ -80,7 +84,7 @@ public class QuizEntity {
 
     public Quiz toDomain() {
         return new Quiz(
-                id, teacherId, quizStatus, currentQuestionNumber, totalQuestions,
+                id, teacherId, adminId, quizStatus, currentQuestionNumber, totalQuestions,
                 lectureId, sectionId, subsectionId,
                 startedAt, endedAt, createdAt, updatedAt
         );
@@ -93,6 +97,7 @@ public class QuizEntity {
 
     public UUID getId() { return id; }
     public UUID getTeacherId() { return teacherId; }
+    public UUID getAdminId() { return adminId; }
     public QuizStatus getQuizStatus() { return quizStatus; }
     public int getCurrentQuestionNumber() { return currentQuestionNumber; }
     public int getTotalQuestions() { return totalQuestions; }

@@ -6,6 +6,7 @@ import java.util.UUID;
 
 public record QuizDetailResponse(
         UUID id,
+        UUID adminId,
         UUID teacherId,
         String quizStatus,
         int currentQuestionNumber,

@@ -1,13 +1,12 @@
 package com.spandan.notification.infrastructure.kafka.consumers;
 
-import com.spandan.notification.application.dto.event.EventEnvelope;
 import com.spandan.notification.application.service.NotificationOrchestrator;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -24,17 +23,23 @@ public class SessionAnalyticsEventConsumer {
     @KafkaListener(topics = "${kafka.topics.session-analytics-events}",
                    groupId = "${kafka.consumer.group-id}.session-analytics",
                    containerFactory = "kafkaListenerContainerFactory")
-    public void consume(EventEnvelope event) {
+    public void consume(Map<String, Object> event) {
         try {
-            if (!"SessionAnalyticsCompletedEvent".equals(event.getEventType())) {
-                log.debug("Ignored event type: {}", event.getEventType());
+            String eventType = (String) event.getOrDefault("eventType", event.get("type"));
+            if (!"SessionAnalyticsCompletedEvent".equals(eventType)) {
+                log.debug("Ignored event type: {}", eventType);
                 return;
             }
 
-            JsonNode payload = event.getPayload();
-            String eventId = event.getEventId().toString();
-            UUID teacherId = UUID.fromString(payload.get("teacherId").asText());
-            UUID sessionId = UUID.fromString(payload.get("sessionId").asText());
+            String eventId = event.getOrDefault("eventId", UUID.randomUUID()).toString();
+            UUID sessionId = UUID.fromString(event.get("sessionId").toString());
+
+            Object teacherIdObj = event.get("teacherId");
+            if (teacherIdObj == null) {
+                log.warn("SessionAnalyticsCompletedEvent missing teacherId for sessionId={}, skipping notification", sessionId);
+                return;
+            }
+            UUID teacherId = UUID.fromString(teacherIdObj.toString());
 
             orchestrator.onSessionAnalyticsCompleted(eventId, teacherId, sessionId);
         } catch (Exception e) {

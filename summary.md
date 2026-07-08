@@ -10,7 +10,7 @@ Spandan evolves from a classroom polling platform to a research-grade educationa
 |---|---------|------|----|-----------------------------------|------------|
 | 1 | **API Gateway** (GW) | spandan-api-gateway | — | Produces: —. Consumes: — (pure infrastructure — no business logic, no Kafka). Routes HTTP/WSS. | — |
 | 2 | **Auth Service** | spandan-auth-service | auth_db | Produces: user-events. Consumes: —. | UserLoggedIn, UserLoggedOut |
-| 3 | **Realtime Communication** (RTC) | spandan-realtime-communication-service | Redis (ephemeral connections) | Produces: connection-events, **interaction-events**. Consumes: polling-events, analytics-events, notification-events. | StudentConnected/Disconnected, TeacherConnected/Disconnected, SocketDeliveryFailed, StudentResponseReceived, **QuestionDisplayedEvent, QuestionAnsweredEvent, QuestionTimedOutEvent** |
+| 3 | **Realtime Communication** (RTC) | spandan-realtime-communication-service | Redis (ephemeral connections) | Produces: connection-events, **interaction-events**. Consumes: polling-events, analytics-events, notification-events. | StudentConnected/Disconnected, TeacherConnected/Disconnected, AdminConnected/Disconnected, SocketDeliveryFailed, StudentResponseReceived, **QuestionDisplayedEvent, QuestionAnsweredEvent, QuestionTimedOutEvent** |
 | 4 | **User Service** (US) | spandan-user-service *(planned)* | user_db | Produces: user-events. Consumes: —. | UserRegistered, UserProfileUpdated, UserDeactivated |
 | 5 | **Lecture Service** (LS) | spandan-lecture-service *(planned)* | lecture_db | Produces: lecture-events. Consumes: —. | LectureCreated, LectureStarted, LectureEnded |
 | 6 | **Question Generation** (QGS) | spandan-question-generation-service | question_gen_db | Produces: question-generation-events. Consumes: transcription-events, question-review-events. **Owns educational hierarchy: Lecture→Section→Subsection→Topic→Concept→Learning Objective→Question.** | QuestionsGenerationRequested, QuestionsGenerated, QuestionGenerationFailed, **QuestionGeneratedEvent** |
@@ -57,7 +57,7 @@ GS  ──grading-events───────────────→ NS, AS 
 | `transcription-events` | TS | NS, AS, PS, QGS | TranscriptGenerated, TranscriptGenerationFailed, TranscriptDeleted |
 | `audio-stream-events` | RS | (v1: none) | StreamStarted, StreamStopped, StreamInterrupted, StreamRecovered, StreamingFailed |
 | `notification-events` | NS | RTC | NotificationCreated |
-| `connection-events` | RTC | AS | StudentConnected, StudentDisconnected, TeacherConnected, TeacherDisconnected, SocketDeliveryFailed, StudentResponseReceived |
+| `connection-events` | RTC | AS | StudentConnected, StudentDisconnected, TeacherConnected, TeacherDisconnected, AdminConnected, AdminDisconnected, SocketDeliveryFailed, StudentResponseReceived |
 | `user-events` | Auth, US(planned) | NS | UserLoggedIn, UserLoggedOut, UserRegistered, UserProfileUpdated, UserDeactivated |
 | `lecture-events` | LS | NS, AS | LectureCreated, LectureStarted, LectureEnded |
 | `grading-events` | GS | NS, AS | GradingCompleted, AutoGradingFailed |

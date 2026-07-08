@@ -83,6 +83,16 @@ class JwtServiceTest {
     }
 
     @Test
+    void generateTokenWithAdminRole() {
+        UUID userId = UUID.randomUUID();
+        String token = jwtService.generateAccessToken(userId, "admin@test.com", "ADMIN");
+
+        Claims claims = jwtService.validateToken(token);
+        assertEquals("ADMIN", claims.get("role"));
+        assertEquals(userId.toString(), claims.getSubject());
+    }
+
+    @Test
     void ttlInSeconds() {
         assertEquals(900, jwtService.getAccessTokenTtlSeconds());
     }

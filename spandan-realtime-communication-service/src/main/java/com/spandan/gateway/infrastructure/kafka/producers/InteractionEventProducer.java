@@ -34,7 +34,8 @@ public class InteractionEventProducer implements InteractionEventPublisher {
                                    String lectureId, String studentId, String questionId,
                                    String sectionId, String subsectionId, String topicId,
                                    String conceptId, Integer questionSequence,
-                                   Instant questionDisplayedAt) {
+                                   Instant questionDisplayedAt,
+                                   String adminId) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("eventId", eventId);
         event.put("eventType", "QuestionDisplayedEvent");
@@ -49,6 +50,9 @@ public class InteractionEventProducer implements InteractionEventPublisher {
         event.put("conceptId", conceptId);
         event.put("questionSequence", questionSequence);
         event.put("questionDisplayedAt", questionDisplayedAt.toString());
+        if (adminId != null) {
+            event.put("adminId", adminId);
+        }
         send(questionId, event);
     }
 

@@ -16,10 +16,10 @@ public class QuestionApprovalEventConsumer {
                    groupId = "${spring.kafka.consumer.group-id:polling-service}")
     public void onQuestionApproved(Map<String, Object> event) {
         String eventType = (String) event.get("eventType");
-        String questionRefId = (String) event.get("questionRefId");
+        String questionId = (String) event.get("questionId");
         String status = (String) event.get("status");
 
-        log.info("Received question review event: type={}, questionRefId={}, status={}",
-                eventType, questionRefId, status);
+        log.info("Received question review event: type={}, questionId={}, status={}",
+                eventType, questionId, status);
     }
 }

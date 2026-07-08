@@ -35,7 +35,8 @@ public class InteractionTimingService {
     public boolean recordQuestionDisplayed(String sessionId, String lectureId, String studentId,
                                            String questionId, String sectionId, String subsectionId,
                                            String topicId, String conceptId, Integer questionSequence,
-                                           Instant displayedAt) {
+                                           Instant displayedAt,
+                                           String adminId) {
         String key = DISPLAY_KEY_PREFIX.formatted(questionId);
         long epochMs = displayedAt.toEpochMilli();
 
@@ -44,7 +45,8 @@ public class InteractionTimingService {
             redisTemplate.expire(key, Duration.ofSeconds(gracePeriodSeconds));
             String eventId = UUID.randomUUID().toString();
             eventPublisher.questionDisplayed(eventId, Instant.now(), sessionId, lectureId, studentId,
-                    questionId, sectionId, subsectionId, topicId, conceptId, questionSequence, displayedAt);
+                    questionId, sectionId, subsectionId, topicId, conceptId, questionSequence, displayedAt,
+                    adminId);
             return true;
         }
         return false;

@@ -7,7 +7,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 public record ReviewResponse(
-    UUID id, UUID questionId, UUID questionSetId, UUID sessionId, UUID teacherId,
+    UUID id, UUID questionId, UUID questionSetId, UUID sessionId,
+    UUID adminId, UUID teacherId,
     String originalAiQuestion, String questionType, String editedQuestion,
     String editedOptions, String editedCorrectAnswer,
     ReviewStatus reviewStatus, String reviewComments, Integer questionOrder,
@@ -16,7 +17,7 @@ public record ReviewResponse(
     public static ReviewResponse from(Review entity) {
         return new ReviewResponse(
             entity.getId(), entity.getQuestionId(), entity.getQuestionSetId(),
-            entity.getSessionId(), entity.getTeacherId(),
+            entity.getSessionId(), entity.getAdminId(), entity.getTeacherId(),
             entity.getOriginalAiQuestion(), entity.getQuestionType(),
             entity.getEditedQuestion(), entity.getEditedOptions(), entity.getEditedCorrectAnswer(),
             entity.getReviewStatus(), entity.getReviewComments(), entity.getQuestionOrder(),

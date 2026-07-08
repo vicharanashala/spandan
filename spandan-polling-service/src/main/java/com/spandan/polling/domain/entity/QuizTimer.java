@@ -47,7 +47,7 @@ public class QuizTimer {
         }
         this.timerStatus = TimerStatus.PAUSED;
         this.timerPausedAt = Instant.now();
-        this.remainingSeconds = computeElapsedFromStart();
+        this.remainingSeconds = (int) computeElapsedFromStart();
     }
 
     public void resume() {

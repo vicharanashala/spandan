@@ -56,7 +56,7 @@ polling:
 
 auth:
   service:
-    url: ${AUTH_SERVICE_URL:http://localhost:8080}
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
 
 resilience4j:
   circuitbreaker:

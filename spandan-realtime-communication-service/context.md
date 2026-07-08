@@ -11,6 +11,36 @@ Live classroom communication layer and the authoritative owner of the **student 
 
 RTC is the **single owner** of interaction timing. No other service calculates response time, detects display timeouts, or knows when a question appeared on a student's screen.
 
+RTC recognizes three platform roles — **ADMIN** (assessment controller), **TEACHER** (instructional monitor), and **STUDENT** (participant). Assessment execution commands are authorized exclusively for ADMIN; TEACHER retains read-only realtime monitoring.
+
+## Role-Based Responsibility Model
+
+### ADMIN (assessment controller)
+- Publish questions
+- Broadcast polls
+- Advance quiz progression
+- Pause quiz
+- Resume quiz
+- Cancel quiz
+- End quiz
+- View live classroom statistics
+
+### TEACHER (instructional monitor — read-only)
+- Observe live response statistics
+- Monitor participation rates
+- View realtime classroom progress
+- View student engagement metrics
+- Must NOT: publish questions, advance/pause/resume/cancel quizzes
+
+### STUDENT (participant — unchanged)
+- Receive questions on screen
+- Submit answers
+- Receive timer events
+- Receive feedback
+- Receive synchronization events
+
+RTC does **NOT** enforce business rules about who may open/close polls — that belongs to Polling Service. RTC only enforces which WebSocket commands a given role may execute.
+
 ## Interaction Framework Role
 
 RTC owns the **live interaction delivery & timing** stage of the pipeline:
@@ -55,6 +85,7 @@ WebSocket delivery favors availability (AP); routing table and interaction timin
 | **Interaction events emitted after DB-independent check** | No DB dependency — pure Redis + Kafka produce |
 | **QuestionAnsweredEvent published to interaction-events Kafka topic** | Event-driven — replaces legacy REST answer forwarding |
 | **Active poll state in Redis** | `active_poll:{sessionId}` with TTL = poll duration + grace period |
+| **Role-based command authorization** | JWT `role` claim checked on every inbound command; assessment commands gated to ADMIN |
 
 ### Interaction Timing Ownership
 RTC owns the authoritative display-time clock per student because:
@@ -85,7 +116,7 @@ RTC owns the authoritative display-time clock per student because:
 - **No ordering across different questions**: Independent — response time for question A is unaffected by question B
 
 ## Bounded Context: Realtime Delivery + Interaction Timing
-**Inside:** Connection lifecycle, channel subscription routing, message fan-out, delivery acknowledgment, per-student question display timing, response time calculation, timeout detection, interaction event publication
+**Inside:** Connection lifecycle, channel subscription routing, message fan-out, delivery acknowledgment, per-student question display timing, response time calculation, timeout detection, interaction event publication, **role-based command authorization**
 **Outside:** Question/poll content, answer correctness, scoring, analytics, interaction history storage (Response Service), educational hierarchy management
 
 ## Technical Stack
@@ -97,45 +128,126 @@ RTC owns the authoritative display-time clock per student because:
 ## WebSocket Channels
 
 ### Existing (unchanged)
-| Channel | Direction | Purpose |
-|---|---|---|
-| `/topic/quiz/{quizId}` | Broadcast | Live poll events |
-| `/topic/quiz/{quizId}/teacher` | Broadcast | Per-question teacher stats |
-| `/user/{userId}/queue/result` | Unicast | Individual answer result |
-| `/topic/quiz/{quizId}/leaderboard` | Broadcast | Live ranking updates |
-| `/user/{userId}/queue/notifications` | Unicast | Personal notifications |
-| `/topic/quiz/{quizId}/notifications` | Broadcast | Quiz-scoped notifications |
-| `/app/submit-answer` | Inbound | Student answer submission |
-| `/app/activity-ack` | Inbound | Client-side activity detection ack |
+| Channel | Direction | Purpose | Authorized Roles |
+|---|---|---|---|
+| `/topic/quiz/{quizId}` | Broadcast | Live poll events | ADMIN, TEACHER, STUDENT |
+| `/topic/quiz/{quizId}/teacher` | Broadcast | Per-question teacher stats | TEACHER, ADMIN |
+| `/user/{userId}/queue/result` | Unicast | Individual answer result | STUDENT |
+| `/topic/quiz/{quizId}/leaderboard` | Broadcast | Live ranking updates | STUDENT, TEACHER |
+| `/user/{userId}/queue/notifications` | Unicast | Personal notifications | ADMIN, TEACHER, STUDENT |
+| `/topic/quiz/{quizId}/notifications` | Broadcast | Quiz-scoped notifications | ADMIN, TEACHER, STUDENT |
+| `/app/submit-answer` | Inbound | Student answer submission | STUDENT |
+| `/app/activity-ack` | Inbound | Client-side activity detection ack | STUDENT |
+| `/app/question-display-ack` | Inbound | Student acknowledges question displayed | STUDENT |
+| `/topic/question/{questionId}` | Broadcast | Per-question delivery from PollOpenedEvent | ADMIN, TEACHER, STUDENT |
 
-### New
-| Channel | Direction | Purpose |
-|---|---|---|
-| `/topic/question/{questionId}` | Broadcast | Per-question delivery from PollOpenedEvent/PollClosedEvent |
-| `/app/question-display-ack` | Inbound | Student acknowledges question displayed on screen |
+### New — Admin Channel
+| Channel | Direction | Purpose | Authorized Roles |
+|---|---|---|---|
+| `/topic/quiz/{quizId}/admin` | Broadcast | Admin assessment control events (quiz started/paused/resumed/cancelled) | ADMIN |
+| `/app/publish-question` | Inbound | Admin publishes question to live session | ADMIN |
+| `/app/pause-quiz` | Inbound | Admin pauses live quiz | ADMIN |
+| `/app/resume-quiz` | Inbound | Admin resumes paused quiz | ADMIN |
+| `/app/cancel-quiz` | Inbound | Admin cancels live quiz | ADMIN |
+| `/app/end-quiz` | Inbound | Admin ends live quiz | ADMIN |
+
+The existing `/topic/quiz/{quizId}/teacher` channel continues to serve TEACHER monitoring use cases. ADMIN may subscribe to both `/topic/quiz/{quizId}/admin` and `/topic/quiz/{quizId}/teacher` channels for full visibility.
+
+## WebSocket Command Authorization Matrix
+
+| Command | Previous Owner | New Owner | Rationale |
+|---|---|---|---|
+| Publish Question | TEACHER | **ADMIN** | Assessment execution is ADMIN responsibility |
+| Broadcast Poll | TEACHER | **ADMIN** | Poll progression is ADMIN responsibility |
+| Pause Quiz | TEACHER | **ADMIN** | Assessment control is ADMIN-only |
+| Resume Quiz | TEACHER | **ADMIN** | Assessment control is ADMIN-only |
+| Cancel Quiz | TEACHER | **ADMIN** | Assessment control is ADMIN-only |
+| End Quiz | TEACHER | **ADMIN** | Assessment lifecycle is ADMIN-owned |
+| Submit Answer | STUDENT | STUDENT (unchanged) | Participation is student-owned |
+| Question Display Ack | STUDENT | STUDENT (unchanged) | Participation is student-owned |
+| Activity Ack | STUDENT | STUDENT (unchanged) | Participation is student-owned |
+| View Live Stats | TEACHER | TEACHER, ADMIN | Read-only monitoring is shared |
+| Join Session | STUDENT, TEACHER | STUDENT, TEACHER, ADMIN | All authenticated roles may join |
+
+## Room Management
+
+### Teacher Rooms — unchanged
+- `/topic/quiz/{quizId}/teacher` — TEACHER and ADMIN subscribe
+- Contains realtime stats, participation metrics, student progress
+- No assessment control events flow through this channel
+
+### Student Rooms — unchanged
+- `/user/{userId}/queue/result` — per-student answer results
+- `/topic/quiz/{quizId}` — broadcast quiz events
+- `/topic/question/{questionId}` — per-question broadcast
+
+### Admin Rooms — new
+- `/topic/quiz/{quizId}/admin` — dedicated channel for assessment control events
+- ADMIN subscribes at quiz start, unsubscribes at quiz end
+- Contains: `QuizStarted`, `QuizPaused`, `QuizResumed`, `QuizCancelled`, `QuizEnded` events
+- TEACHER and STUDENT are **not** subscribed to this channel
+- No dedicated Redis keys required — channel subscription is managed by STOMP broker in-memory routing. Admin sessions maintain a subscription to this channel alongside existing teacher/student channels.
+
+### Redis Room Membership
+| Key | Purpose | Added By | TTL |
+|---|---|---|---|
+| `quiz_sessions:{quizId}` | Set of sessionIds in quiz | Session join | Quiz duration + 1h |
+| `user_sessions:{userId}` | Set of sessionIds for user | Session join | 24h |
+| `admin_sessions:{quizId}` | Set of admin sessionIds for quiz | Admin session join | Quiz duration + 1h |
+
+`admin_sessions:{quizId}` is a new key used for targeted admin broadcast and to track which quizzes have an admin actively monitoring.
 
 ## Kafka Topics Consumed
-| Topic | Events | Producer | Purpose |
-|---|---|---|---|
-| `polling-events` | `PollOpenedEvent`, `PollClosedEvent`, `PollStarted` (legacy), `PollEnded` (legacy) | Polling Service | Question delivery trigger |
-| `analytics-events` | `TeacherAnalyticsReady`, `LeaderboardGenerated`, etc. | Analytics Service | Broadcast analytics results |
-| `notification-events` | `NotificationCreated` | Notification Service | Broadcast notifications |
 
-### PollOpenedEvent Consumption
-When RTC consumes `PollOpenedEvent`, it:
+| Topic | Events | Producer | Purpose | Admin Impact |
+|---|---|---|---|---|
+| `polling-events` | `PollOpenedEvent`, `PollClosedEvent`, `QuizStartingEvent`, `QuizCompleted`, `QuizCancelled` | Polling Service | Question delivery trigger | Event payloads now carry `adminId`; RTC includes it in broadcast payloads |
+| `analytics-events` | `TeacherAnalyticsReady`, `LeaderboardGenerated`, etc. | Analytics Service | Broadcast analytics results | No change — analytics are role-agnostic at broadcast layer |
+| `notification-events` | `NotificationCreated` | Notification Service | Broadcast notifications | No change |
+
+### PollOpenedEvent Consumption — Updated
+When RTC consumes `PollOpenedEvent`:
 1. Stores active poll state in Redis (`active_poll:{sessionId}` with TTL = pollDuration + 30s grace)
-2. Broadcasts question metadata to `/topic/question/{questionId}`
+2. Broadcasts question metadata to `/topic/question/{questionId}` (includes `adminId` in payload)
 3. Broadcasts to `/topic/quiz/{quizId}` (legacy)
+4. Broadcasts quiz progress to `/topic/quiz/{quizId}/admin`
 
-When RTC consumes `PollClosedEvent`, it:
+When RTC consumes `PollClosedEvent`:
 1. Removes active poll state from Redis
 2. Broadcasts to `/topic/question/{questionId}` (close signal)
 3. Broadcasts to `/topic/quiz/{quizId}` (legacy)
+4. Broadcasts quiz progress to `/topic/quiz/{quizId}/admin`
+
+## Event Broadcasting — Payload Updates
+
+### Broadcast Event Payload Changes
+| Event | New Fields | Rationale |
+|---|---|---|
+| `QuestionDisplayedEvent` | `adminId` (optional) | Trace origin of poll publication |
+| `QuestionAnsweredEvent` | No change | Student action — no admin involvement |
+| `QuestionTimedOutEvent` | No change | Clock-driven — no admin involvement |
+| Connection events (`TeacherConnected`, `TeacherDisconnected`) | Split into `AdminConnected`, `AdminDisconnected` where applicable | Separate admin connections from teacher connections |
+| `StudentConnected`, `StudentDisconnected` | No change | Student role unchanged |
+
+Existing `teacherId` fields preserved in all interaction events for backward compatibility. `adminId` added as an optional field populated when available from the upstream event.
+
+### Admin Control Events (new broadcasts on `/topic/quiz/{quizId}/admin`)
+| Event | Payload |
+|---|---|
+| `QuizStarted` | `{ eventId, quizId, sessionId, adminId, startedAt }` |
+| `QuizPaused` | `{ eventId, quizId, sessionId, adminId, pausedAt }` |
+| `QuizResumed` | `{ eventId, quizId, sessionId, adminId, resumedAt }` |
+| `QuizCancelled` | `{ eventId, quizId, sessionId, adminId, cancelledAt, reason }` |
+| `QuizEnded` | `{ eventId, quizId, sessionId, adminId, endedAt }` |
+
+These events are broadcast in response to inbound WebSocket commands from ADMIN roles and also relayed when RTC consumes the corresponding Kafka events from Polling Service. This ensures consistency between direct WebSocket command paths and Kafka-driven state changes.
 
 ## Kafka Topics Produced
 
 ### Connection events (existing — `connection-events` topic)
-`StudentConnected`, `StudentDisconnected`, `TeacherConnected`, `TeacherDisconnected`, `SocketDeliveryFailed`, `StudentResponseReceived`
+`StudentConnected`, `StudentDisconnected`, `TeacherConnected`, `TeacherDisconnected`, `AdminConnected`, `AdminDisconnected`, `SocketDeliveryFailed`, `StudentResponseReceived`
+
+`AdminConnected` and `AdminDisconnected` are new event types added to distinguish admin connections from teacher connections. Downstream consumers (Analytics Service) can use this for role-segmented connection metrics.
 
 ### Interaction events (new — `interaction-events` topic)
 | Event | Trigger | Key | Consumers |
@@ -144,7 +256,7 @@ When RTC consumes `PollClosedEvent`, it:
 | `QuestionAnsweredEvent` | Student submits via `/app/submit-answer` | `questionId` | Response Service |
 | `QuestionTimedOutEvent` | Timeout sweep detects unanswered question past poll duration | `questionId` | Response Service |
 
-### QuestionDisplayedEvent
+### QuestionDisplayedEvent — Updated
 ```json
 {
   "eventId": "uuid",
@@ -158,52 +270,65 @@ When RTC consumes `PollClosedEvent`, it:
   "topicId": "uuid",
   "conceptId": "uuid",
   "questionSequence": 1,
-  "questionDisplayedAt": "2026-07-03T10:30:01Z"
-}
-```
-
-### QuestionAnsweredEvent
-```json
-{
-  "eventId": "uuid",
-  "eventTimestamp": "2026-07-03T10:30:46Z",
-  "sessionId": "uuid",
-  "lectureId": "uuid",
-  "studentId": "uuid",
-  "questionId": "uuid",
-  "selectedAnswer": "A",
   "questionDisplayedAt": "2026-07-03T10:30:01Z",
-  "questionAnsweredAt": "2026-07-03T10:30:45Z",
-  "responseTimeMilliseconds": 44000
+  "adminId": "uuid"
 }
 ```
 
-### QuestionTimedOutEvent
-```json
-{
-  "eventId": "uuid",
-  "eventTimestamp": "2026-07-03T10:31:02Z",
-  "sessionId": "uuid",
-  "lectureId": "uuid",
-  "studentId": "uuid",
-  "questionId": "uuid",
-  "questionDisplayedAt": "2026-07-03T10:30:01Z",
-  "timeoutAt": "2026-07-03T10:31:01Z",
-  "timeoutDurationMilliseconds": 60000
-}
-```
+`adminId` is populated from the upstream `PollOpenedEvent` payload when available. It is optional — events from legacy poll flows (pre-ADMIN) will omit it.
 
-## Interaction Timing Flow (Detailed)
+### QuestionAnsweredEvent — unchanged
+### QuestionTimedOutEvent — unchanged
+
+## Authorization Enforcement
+
+### WebSocket Connection Time
+1. Client presents JWT during STOMP CONNECT frame
+2. RTC validates JWT synchronously with Auth Service (existing flow — unchanged)
+3. Session attributes populated: `userId`, `role`, `sessionId`
+4. Role stored in `SimpSession` attributes for downstream command handlers
+
+### Command Authorization (per-message)
+Every inbound WebSocket command handler checks the role from session attributes before processing:
+
+| Handler | Required Role |
+|---|---|
+| `PublishQuestionHandler` | ADMIN |
+| `PauseQuizHandler` | ADMIN |
+| `ResumeQuizHandler` | ADMIN |
+| `CancelQuizHandler` | ADMIN |
+| `EndQuizHandler` | ADMIN |
+| `AnswerSubmissionHandler` | STUDENT |
+| `QuestionDisplayAckHandler` | STUDENT |
+| `ActivityAckHandler` | STUDENT |
+| `JoinSessionHandler` | ADMIN, TEACHER, STUDENT |
+| `CurrentStateHandler` (REST) | ADMIN, TEACHER, STUDENT |
+
+### Channel Subscription Authorization (per-subscribe)
+STOMP subscription requests to `/topic/quiz/{quizId}/admin` are validated at subscribe time — only ADMIN role may subscribe. Other channels remain unchanged. This is enforced via a custom `ChannelInterceptor` that checks `SimpSession` role attribute against the destination pattern.
+
+### REST Endpoint Authorization
+| Endpoint | Required Role | Change |
+|---|---|---|
+| `GET /api/v1/sessions/current` | ADMIN, TEACHER, STUDENT | No change |
+| `POST /api/v1/sessions/join` | ADMIN, TEACHER, STUDENT | No change (ADMIN now allowed) |
+| `POST /api/v1/sessions/leave` | ADMIN, TEACHER, STUDENT | No change |
+| `GET /api/v1/health` | Unauthenticated | No change |
+
+## Interaction Timing Flow (Detailed) — Unchanged
+
+Flow remains identical. The ADMIN role affects who can trigger poll-related Kafka events (via Polling Service), not the timing or delivery mechanics within RTC.
 
 ```
 1. Polling Service → PollOpenedEvent
    ↓
 2. RTC PollEventConsumer receives PollOpenedEvent
    ↓
-3. Stores active_poll:{sessionId} in Redis { questionId, pollDurationMs, metadata }
+3. Stores active_poll:{sessionId} in Redis { questionId, pollDurationMs, metadata, adminId }
    ↓
 4. Broadcasts question to /topic/question/{questionId}
    Broadcasts to /topic/quiz/{quizId} (legacy)
+   Broadcasts quiz progress to /topic/quiz/{quizId}/admin
    ↓
 5. Student client receives question, renders on screen
    ↓
@@ -212,8 +337,8 @@ When RTC consumes `PollClosedEvent`, it:
 7. QuestionDisplayAckController receives ack
    ↓
 8. InteractionTimingService:
-   a. Stores { studentId, questionId, questionDisplayedAt } in Redis sorted set question:{questionId}:displayed (TTL = pollDuration + 30s)
-   b. Publishes QuestionDisplayedEvent to interaction-events topic
+   a. Stores { studentId, questionId, questionDisplayedAt, adminId } in Redis sorted set
+   b. Publishes QuestionDisplayedEvent to interaction-events topic (with adminId)
    ↓
 9. Student submits answer via /app/submit-answer
    ↓
@@ -227,163 +352,155 @@ When RTC consumes `PollClosedEvent`, it:
     ↓
 12. (Legacy) AnswerForwardingService forwards to Response Service via REST
     ↓
-13. TimeoutSweepService (@Scheduled every 5s):
-    a. ZRANGEBYSCORE question:{questionId}:displayed -inf {now - pollDurationMs}
-    b. For each expired student entry:
-       - Publishes QuestionTimedOutEvent
-       - ZREM from sorted set
-    ↓
-14. Polling Service → PollClosedEvent
-    ↓
-15. RTC consumers → removes active_poll:{sessionId} from Redis
-    → broadcast close to /topic/question/{questionId}
-    → sweep marks all remaining as timed out
+13. TimeoutSweepService (@Scheduled every 5s): unchanged
 ```
 
-## Failure Handling
+## Failure Handling — Unchanged
 
-| Failure | Mechanism | Recovery |
-|---|---|---|
-| Student disconnects mid-question | Display state persists in Redis (TTL) | Student reconnects, resyncs via `GET /current` |
-| Redis node failure | Redis Sentinel / Cluster failover | Sorted set + TTL handles failover; worst case: lost timing for current questions |
-| Kafka broker failure | Retry with backoff; blocks until broker recovers | Events queued in memory; at-least-once delivery resumes |
-| Duplicate submission | Idempotency key check on AnswerSubmission | QuestionAnsweredEvent published exactly once per student+question |
-| Late submission after PollClosed | Accepted if within grace period; otherwise ignored | Client notified via ack |
-| Cross-pod message lost | Tolerance — one student misses one broadcast | Student reconnects, resyncs |
-| PollOpenedEvent consumed twice | Idempotent broadcast — duplicate question delivery is harmless; Redis `SET NX` on active_poll prevents double state creation | Students ignore duplicate frames |
+The introduction of ADMIN does not affect failure handling. Rationale:
+- Redis failover, Kafka retry, duplicate detection, idempotency, and reconnection logic are role-agnostic
+- Admin connections use the same WebSocket infrastructure as teacher/student connections
+- Admin-specific Redis key `admin_sessions:{quizId}` is TTL'd and non-critical — loss only affects admin-targeted broadcast tracking, which is a convenience, not a correctness requirement
 
-### Retry Strategy
-- **Kafka consumer**: Spring Kafka `DefaultErrorHandler` with 3 retries, then DLQ
-- **Redis operations**: Lettuce retry with exponential backoff (max 3 attempts)
-- **Interaction event publication**: Fire-and-forget with async callback logging; no blocking retry
+### Retry Strategy — unchanged
+### Idempotency Strategy — unchanged
+### Duplicate Event Prevention — unchanged
 
-### Idempotency Strategy
-- **QuestionDisplayAck**: Redis sorted set `ZADD NX` — only first ack per student+question is recorded
-- **AnswerSubmission**: Composite idempotency key `studentId:questionId` — downstream Response Service deduplicates
-- **PollOpenedEvent**: Redis `SET active_poll:{sessionId} NX TTL` — only first consumer creates active poll state
-- **Event publication**: Each interaction event carries `eventId` (UUID) for consumer-side deduplication
+## Database (Redis Only) — Updated
 
-### Duplicate Event Prevention
-- Display ack: `ZADD NX` ensures one entry per student+question
-- Answer: Composite idempotency key checked before event publication
-- Timeout: `ZREM` after publishing; sweep only processes entries still in sorted set
-- All interaction events include `eventId` for downstream deduplication
-
-## Database (Redis Only)
 No PostgreSQL. RTC uses Redis exclusively for:
-- **Connection metadata**: `session:{sessionId}` → TTL'd JSON (1h)
+- **Connection metadata**: `session:{sessionId}` → TTL'd JSON (1h) — **added `role` field**
 - **Quiz session membership**: `quiz_sessions:{quizId}` → set of sessionIds
 - **User session membership**: `user_sessions:{userId}` → set of sessionIds
-- **Active poll state**: `active_poll:{sessionId}` → JSON { questionId, pollDurationMs, lectureId, sectionId, subsectionId, topicId, conceptId, questionSequence } with TTL = pollDuration + 30s grace
+- **Admin session membership**: `admin_sessions:{quizId}` → set of admin sessionIds (new)
+- **Active poll state**: `active_poll:{sessionId}` → JSON { questionId, pollDurationMs, lectureId, sectionId, subsectionId, topicId, conceptId, questionSequence, **adminId** } with TTL = pollDuration + 30s grace
 - **Display timestamps**: `question:{questionId}:displayed` → sorted set of `{studentId}:{questionDisplayedAt}` with score = display epoch ms, TTL = pollDuration + 30s
 - **Cross-pod pub/sub**: `quiz:*`, `notification:*` channels
 
-## State Management (Transient Only)
-RTC maintains only transient runtime state:
-- Current active poll per session (Redis TTL)
-- Current connected students (Redis TTL)
-- Current question delivery status (Redis sorted set TTL)
-- Current display timestamps (Redis sorted set TTL)
-- Current answer timestamps (computed in-memory from Redis lookups)
+## State Management (Transient Only) — Unchanged
 
-When interaction completes (answer received or timeout detected), RTC publishes the event then immediately releases the transient state (`ZREM` from sorted set, `DEL` active poll key).
+RTC maintains only transient runtime state. Admin role does not introduce new durable state.
 
-## Horizontal Scalability
-- **Stateless WebSocket pods**: Any pod handles any connection; state lives in Redis
-- **Session affinity**: WebSocket connections are sticky (same pod for session lifetime) via load balancer
-- **Redis Pub/Sub**: Cross-pod message relay — all pods subscribe to same channels
-- **Kafka consumer group**: Partitioned by `quizId` — each partition consumed by one pod
-- **Broadcast scaling**: Broadcasting to `/topic/question/{questionId}` fans out to all connected pods
-- **No pod-to-pod communication**: Only Redis Pub/Sub + Kafka for cross-pod coordination
+## Horizontal Scalability — Unchanged
 
-## Performance
-- **Redis sorted set operations**: O(log N) per student per question — handles thousands of concurrent students
-- **WebSocket broadcast**: Spring's `SimpMessagingTemplate` with simple broker — efficient in-process fan-out
-- **Kafka producer**: Async fire-and-forget for interaction events — non-blocking
-- **Scheduled sweep**: Interval-configured (default 5000ms); scan operation is O(log N + M) where M = expired entries
+Admin connections follow the same scaling model as teacher and student connections. Rationale:
+- Admin connections are WebSocket connections like any other — stateless, sticky-session, Redis-backed
+- `admin_sessions:{quizId}` is a lightweight Redis set — negligible overhead
+- Admin broadcast channels use the same STOMP fan-out mechanism
+- No additional pod-to-pod coordination required
+
+## Performance — Unchanged
+
+Admin channels add one additional STOMP destination per quiz (`/topic/quiz/{quizId}/admin`). The subscription check (role-based) adds a single attribute lookup per subscribe/message — negligible overhead.
 
 ## Security
-- **JWT authentication**: Validated synchronously with Auth Service at WebSocket connect time
-- **Role-based authorization**: TEACHER vs STUDENT role enforced at connection level
-- **Secure WebSocket**: STOMP over WSS in production
-- **Session validation**: Session attributes populated from JWT at connect time; used in all message handlers
-- **Duplicate connection detection**: User's existing sessions are invalidated on new connect
-- **Replay protection**: Each interaction event carries `eventId` (UUID) — downstream services deduplicate
+
+- **JWT authentication**: Validated synchronously with Auth Service at WebSocket connect time — unchanged
+- **Role-based authorization**: Updated to recognize ADMIN alongside TEACHER and STUDENT
+  - ADMIN: full assessment control commands + read-only monitoring
+  - TEACHER: read-only monitoring only
+  - STUDENT: participation only
+- **Command authorization**: Per-message role check on all inbound WebSocket commands
+- **Channel authorization**: Subscription validation for `/topic/quiz/{quizId}/admin` — only ADMIN may subscribe
+- **Secure WebSocket**: STOMP over WSS in production — unchanged
+- **Session validation**: Session attributes populated from JWT at connect time; include `role` — unchanged
+- **Duplicate connection detection**: User's existing sessions are invalidated on new connect — unchanged (applies equally to ADMIN)
+- **Replay protection**: Each interaction event carries `eventId` (UUID) — unchanged
 
 ## Monitoring and Observability
-| Aspect | Implementation |
-|---|---|
-| Health check | `GET /api/v1/health` → status, service name |
-| Connection metrics | Count of active sessions per quiz |
-| Interaction metrics | QuestionDisplayedEvent count, QuestionAnsweredEvent count, QuestionTimedOutEvent count |
-| Kafka lag | Prometheus + Grafana monitoring via Spring Kafka metrics |
-| Redis latency | Lettuce command latency metrics |
-| Logging | Structured JSON logging via Logback with MDC (sessionId, userId, quizId) |
 
-### Key Metrics to Monitor
-- `rtc.active.sessions` — gauge of total connected WebSocket sessions
-- `rtc.questions.displayed` — counter of QuestionDisplayedEvents published
-- `rtc.questions.answered` — counter of QuestionAnsweredEvents published
-- `rtc.questions.timedout` — counter of QuestionTimedOutEvents published
-- `rtc.response.time.avg` — histogram of response time per question
-- `rtc.timeout.sweep.duration` — histogram of sweep execution time
-- `rtc.kafka.consumer.lag` — per-partition consumer lag for polling-events
-
-## Migration Strategy (Current → Updated)
-1. **Phase 1 — Deploy new code**: Rolling update — old pods continue handling existing connections; new pods bring interaction event producers
-2. **Phase 2 — Enable interaction events**: Once all pods updated, InteractionEventProducer publishes to `interaction-events` topic
-3. **Phase 3 — Response Service update**: Response Service starts consuming `interaction-events` from new topic
-4. **Phase 4 (future)**: Remove legacy REST answer forwarding to Response Service once all consumers are event-driven
-
-## Production-Ready Implementation Plan
-1. Add domain entities for active poll and timing state
-2. Add application ports and Redis repository for active polls
-3. Add InteractionTimingService for display tracking, response time calculation, timeout detection
-4. Add InteractionEventProducer for publishing QuestionDisplayedEvent, QuestionAnsweredEvent, QuestionTimedOutEvent
-5. Add QuestionDisplayAckController for `/app/question-display-ack`
-6. Update PollEventConsumer for enriched PollOpenedEvent/PollClosedEvent with active poll tracking
-7. Update AnswerController to emit QuestionAnsweredEvent with timing
-8. Add TimeoutSweepService for scheduled timeout detection
-9. Update MessageRoutingService with `/topic/question/{questionId}` broadcast
-10. Update application.yml with new configuration
-11. Update tests
-12. Deploy as rolling update (backward-compatible)
-
-## Service Ownership Matrix
-| Capability | Owner |
-|---|---|
-| Live classroom communication (WebSocket/STOMP) | **RTC** |
-| Connection lifecycle management | **RTC** |
-| Question delivery to students | **RTC** |
-| Interaction timing (display → answer) | **RTC** |
-| Response time calculation | **RTC** |
-| Timeout detection | **RTC** |
-| Interaction event publication | **RTC** |
-| Poll lifecycle (open, close) | Polling Service |
-| Answer correctness | Response Service |
-| Interaction history storage | Response Service |
-| Educational metadata | Question Generation Service |
-| Analytics (engagement, mastery) | Analytics Service |
-| Reporting | Reporting Service |
-
-## Environment Variables
-| Variable | Description | Default |
+### Updated Key Metrics
+| Metric | Labels Added | Rationale |
 |---|---|---|
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker list | `localhost:9092` |
-| `REDIS_HOST` | Redis host | `localhost` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `AUTH_SERVICE_URL` | Auth service base URL | `http://localhost:8081` |
-| `RESPONSE_SERVICE_URL` | Response service base URL | `http://localhost:8084` |
-| `RTC_TIMEOUT_SWEEP_INTERVAL_MS` | Timeout sweep interval | `5000` |
-| `RTC_POLL_GRACE_PERIOD_SECONDS` | Extra TTL for timing state after poll closes | `30` |
-| `RTC_CONNECTION_TTL_SECONDS` | Redis connection TTL | `3600` |
+| `rtc.active.sessions` | `role` | Distinguish ADMIN, TEACHER, STUDENT connection counts |
+| `rtc.questions.displayed` | None | Interaction event — role doesn't apply |
+| `rtc.questions.answered` | None | Interaction event — role doesn't apply |
+| `rtc.questions.timedout` | None | Interaction event — role doesn't apply |
+| `rtc.response.time.avg` | None | Interaction timing — role doesn't apply |
+| `rtc.timeout.sweep.duration` | None | Infrastructure timing — role doesn't apply |
+| `rtc.kafka.consumer.lag` | None | Infrastructure metric — role doesn't apply |
 
-## Future Extensibility
-The architecture supports adding new realtime capabilities without redesign:
-- **Multi-device participation**: Extend `ConnectionSession` with `deviceType`; allow multiple sessions per user
-- **Connection quality monitoring**: Add client-side metrics channel `/app/connection-stats`
-- **Live reactions**: New channel `/app/reaction` + broadcast to `/topic/quiz/{quizId}/reactions`
-- **Hand raise**: New channel `/app/hand-raise` + broadcast to teacher topic
-- **Breakout classrooms**: New `roomId` concept; scoped channels per room
-- **Transport abstraction**: Interface for WebSocket/STOMP; future protocols implement same contract
-- **Multiple concurrent polls**: ActivePoll state supports multiple questions per session
+Role-segmented connection metrics are useful for operational insight:
+- ADMIN connections are typically few (1 per quiz) but critical — a drop may indicate an admin lost assessment control
+- TEACHER connections indicate active classroom monitoring
+- STUDENT connections indicate participation volume
+- An admin disconnecting mid-quiz should trigger an alert (no ADMIN connected to active quiz)
+
+### Logging — Enhanced
+All log entries now include `role` in MDC context alongside existing `sessionId`, `userId`, `quizId`. ADMIN operations are distinguishable in logs without exposing sensitive information. Audit-relevant commands (publish, pause, resume, cancel, end) produce an INFO-level log entry with the admin's `userId` for traceability.
+
+## Coupling
+
+| Service | Protocol | Notes |
+|---|---|---|
+| Auth Service | REST (sync) | JWT validation — unchanged; `role` claim already includes ADMIN |
+| Polling Service | Kafka (consume) | PollOpenedEvent/PollClosedEvent payloads now include `adminId`; RTC propagates to broadcast payloads |
+| Response Service | Kafka (produce), REST (legacy) | Interaction events carry optional `adminId` — Response Service ignores if not needed |
+| Notification Service | Kafka (consume) | NotificationCreated — unchanged |
+| Analytics Service | Kafka (produce + consume) | Connection events now include `AdminConnected`/`AdminDisconnected`; analytics layer can segment by role |
+
+No new service couplings introduced. No REST dependencies added.
+
+## Components Requiring Modification
+1. Core Responsibility — documentation updated with ADMIN role
+2. WebSocket channels — added `/topic/quiz/{quizId}/admin` + admin inbound command channels
+3. Command authorization — per-handler role checks for assessment control commands
+4. Channel subscription authorization — subscribe validation for admin channel
+5. Room management — added `admin_sessions:{quizId}` Redis key
+6. Event payloads — `adminId` added to broadcast events where available
+7. Connection events — `AdminConnected`, `AdminDisconnected` event types
+8. Security — role validation includes ADMIN; TEACHER downgraded to read-only for assessment commands
+9. Metrics — `rtc.active.sessions` split by `role` label
+10. Logging — `role` added to MDC context; audit logging for admin commands
+11. Testing — admin WebSocket auth, command authorization, channel subscription, broadcast payloads
+
+## Components Remaining Unchanged
+1. Interaction timing flow (display → answer → timeout → publish)
+2. Redis sorted set structure for display timestamps
+3. Timeout sweep service
+4. Answer submission handling (STUDENT role unchanged)
+5. Kafka topic structure (no new topics)
+6. Idempotency and dedup mechanisms
+7. Retry strategy and dead-letter queue handling
+8. Horizontal scalability model (stateless pods, Redis-backed)
+9. Performance characteristics (sorted set O(log N), in-process broadcast)
+10. Environment variables (no new configuration required)
+11. Deployment infrastructure (rolling update, sticky sessions, Redis Sentinel/Cluster)
+
+## Testing — Enhanced
+
+### New Tests (Admin Role)
+| Test | Scope |
+|---|---|
+| Admin WebSocket authentication succeeds with valid ADMIN JWT | WebSocket connect → CONNECT frame |
+| Teacher WebSocket authentication succeeds (read-only) | WebSocket connect with TEACHER JWT |
+| Admin can publish question via `/app/publish-question` | Inbound command → handler → broadcast |
+| Teacher cannot publish question — 403 FORBIDDEN | Inbound command → authorization check → error frame |
+| Student cannot publish question — 403 FORBIDDEN | Inbound command → authorization check → error frame |
+| Admin can pause/resume/cancel/end quiz | Inbound command → handler → broadcast to `/topic/quiz/{quizId}/admin` |
+| Teacher cannot pause quiz — 403 FORBIDDEN | Authorization check |
+| Only ADMIN can subscribe to `/topic/quiz/{quizId}/admin` | STOMP SUBSCRIBE validation |
+| Student can still submit answers | Existing test — unchanged behavior |
+| `AdminConnected` event published on admin connect | Connection lifecycle → Kafka produce |
+| `AdminDisconnected` event published on admin disconnect | Disconnection lifecycle → Kafka produce |
+| Broadcast poll event includes `adminId` in `/topic/question/{questionId}` payload | PollOpenedEvent consumption → broadcast |
+| Admin session tracked in `admin_sessions:{quizId}` Redis set | Session join → Redis write |
+| Admin disconnected mid-quiz triggers log warning | Monitoring — no functional behavior change |
+| Backward compatibility — teacher-only flow still works with legacy PollOpenedEvent (no adminId) | Event consumption → broadcast without `adminId` |
+
+### Existing Tests — all preserved with no modification needed
+
+## Deployment
+
+| Change Type | Detail |
+|---|---|
+| WebSocket authorization config | Update role check to include ADMIN; add subscribe interceptor for admin channel |
+| Command handler beans | New handler classes for admin commands (publish, pause, resume, cancel, end) |
+| Connection event enum | Add `AdminConnected`, `AdminDisconnected` event types |
+| Redis key pattern | Add `admin_sessions:{quizId}` — no migration needed (Redis is schema-less) |
+| Logging config | Add `role` to MDC pattern; no infrastructure change |
+| Metrics config | Add `role` label to session gauge; Prometheus picks up automatically |
+| Environment variables | No new variables required |
+| Kafka topic config | No new topics; `adminId` added to existing event payloads |
+
+No infrastructure changes required. The deployment is a standard rolling update with backward-compatible event schemas.

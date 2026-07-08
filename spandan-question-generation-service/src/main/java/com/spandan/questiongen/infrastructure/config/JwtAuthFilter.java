@@ -7,6 +7,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -22,6 +24,7 @@ import java.util.List;
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
     private final SecretKey secretKey;
 
     public JwtAuthFilter(@Value("${JWT_SECRET:default-secret-that-should-be-overridden-in-prod}") String jwtSecret) {
@@ -51,6 +54,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                         userId, null, List.of(new SimpleGrantedAuthority("ROLE_TEACHER"))
                     );
                     SecurityContextHolder.getContext().setAuthentication(auth);
+                } else if (userId != null && role != null) {
+                    log.warn("Non-TEACHER role attempted to access QGS: userId={}, role={}", userId, role);
+                    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                    return;
                 }
             } catch (Exception e) {
                 SecurityContextHolder.clearContext();

@@ -49,15 +49,15 @@ public class AnalyticsOrchestrator {
 
     public void processSessionCompleted(UUID sessionId) {
         log.info("Processing session completion for sessionId={}", sessionId);
-        processFullPipeline(sessionId);
+        processFullPipeline(sessionId, null);
     }
 
-    public void processQuizCompleted(UUID quizId) {
+    public void processQuizCompleted(UUID quizId, String teacherId) {
         log.info("Processing QuizCompleted (legacy path) for quizId={}", quizId);
-        processFullPipeline(quizId);
+        processFullPipeline(quizId, teacherId);
     }
 
-    private void processFullPipeline(UUID sessionId) {
+    private void processFullPipeline(UUID sessionId, String teacherId) {
         try {
             List<Map<String, Object>> interactions = responseClient.fetchSessionResponses(sessionId);
 
@@ -77,7 +77,7 @@ public class AnalyticsOrchestrator {
 
             leaderboardService.computeLeaderboard(sessionId);
 
-            publishAnalyticsEvents(sessionId, interactions);
+            publishAnalyticsEvents(sessionId, interactions, teacherId);
 
             log.info("Full analytics pipeline complete for sessionId={}", sessionId);
         } catch (Exception e) {
@@ -86,7 +86,7 @@ public class AnalyticsOrchestrator {
         }
     }
 
-    private void publishAnalyticsEvents(UUID sessionId, List<Map<String, Object>> interactions) {
+    private void publishAnalyticsEvents(UUID sessionId, List<Map<String, Object>> interactions, String teacherId) {
         String sessionIdStr = sessionId.toString();
 
         Map<String, Object> sessionSummary = buildSessionSummary(sessionId, interactions);
@@ -100,7 +100,7 @@ public class AnalyticsOrchestrator {
         eventProducer.publishAnalyticsGeneratedEvent(sessionIdStr, "LEADERBOARD", sessionData, sessionSummary);
         eventProducer.publishAnalyticsGeneratedEvent(sessionIdStr, "LEARNING_OBJECTIVE", sessionData, sessionSummary);
 
-        eventProducer.publishSessionAnalyticsCompleted(sessionIdStr);
+        eventProducer.publishSessionAnalyticsCompleted(sessionIdStr, teacherId);
 
         eventProducer.publishAnalyticsCompleted(sessionId);
         eventProducer.publishLeaderboardGenerated(sessionId);

@@ -1,0 +1,15 @@
+com\spandan\response\ResponseServiceApplication.class
+com\spandan\response\domain\entity\Interaction.class
+com\spandan\response\infrastructure\config\JwtAuthFilter.class
+com\spandan\response\presentation\controller\InteractionController.class
+com\spandan\response\infrastructure\config\AppConfig.class
+com\spandan\response\infrastructure\rest\HealthController.class
+com\spandan\response\presentation\dto\SessionSummaryResponse.class
+com\spandan\response\application\service\QuestionMetadataService.class
+com\spandan\response\infrastructure\persistence\QuestionMetadataRepository.class
+com\spandan\response\infrastructure\kafka\consumers\QuestionMetadataConsumer.class
+com\spandan\response\infrastructure\config\SecurityConfig.class
+com\spandan\response\infrastructure\persistence\InteractionRepository.class
+com\spandan\response\presentation\dto\InteractionResponse.class
+com\spandan\response\domain\exception\ResponseServiceException.class
+com\spandan\response\domain\entity\QuestionMetadata.class

@@ -241,13 +241,13 @@ CREATE TABLE raw_events (
 ### Interaction History
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/v1/interactions/session/{sessionId}` | TEACHER | All interactions for session (paginated) |
-| GET | `/api/v1/interactions/session/{sessionId}/student/{studentId}` | TEACHER/STUDENT | Single student's interactions |
-| GET | `/api/v1/interactions/question/{questionId}` | TEACHER | All interactions for question |
-| GET | `/api/v1/interactions/session/{sessionId}/question/{questionId}/student/{studentId}` | TEACHER/STUDENT | Single interaction |
-| GET | `/api/v1/interactions/session/{sessionId}/timed-out` | TEACHER | All timed-out interactions |
-| GET | `/api/v1/interactions/session/{sessionId}/summary` | TEACHER | Aggregated summary (count by type, displays, answers, timeouts) |
-| GET | `/api/v1/interactions/session/{sessionId}/lecture/{lectureId}` | TEACHER | Interactions for specific lecture within session |
+| GET | `/api/v1/interactions/session/{sessionId}` | TEACHER/ADMIN | All interactions for session (paginated) |
+| GET | `/api/v1/interactions/session/{sessionId}/student/{studentId}` | TEACHER/ADMIN/STUDENT | Single student's interactions |
+| GET | `/api/v1/interactions/question/{questionId}` | TEACHER/ADMIN | All interactions for question |
+| GET | `/api/v1/interactions/session/{sessionId}/question/{questionId}/student/{studentId}` | TEACHER/ADMIN/STUDENT | Single interaction |
+| GET | `/api/v1/interactions/session/{sessionId}/timed-out` | TEACHER/ADMIN | All timed-out interactions |
+| GET | `/api/v1/interactions/session/{sessionId}/summary` | TEACHER/ADMIN | Aggregated summary (count by type, displays, answers, timeouts) |
+| GET | `/api/v1/interactions/session/{sessionId}/lecture/{lectureId}` | TEACHER/ADMIN | Interactions for specific lecture within session |
 
 ### Analytics Support (Internal - service token)
 | Method | Path | Auth | Purpose |
@@ -360,7 +360,7 @@ QuestionMetadata:
 
 ## Security
 - **JWT authentication**: Validated synchronously with Auth Service for all user-facing endpoints
-- **Role-based access**: TEACHER sees all interactions for their sessions; STUDENT sees only their own
+- **Role-based access**: TEACHER and ADMIN see all interactions for their sessions; STUDENT sees only their own
 - **Internal endpoints**: Analytics support endpoints require `X-Internal-Call: true` header + service token
 - **Input validation**: All request parameters validated (UUID format, pagination bounds)
 - **SQL injection**: Prevented by JPA parameterized queries

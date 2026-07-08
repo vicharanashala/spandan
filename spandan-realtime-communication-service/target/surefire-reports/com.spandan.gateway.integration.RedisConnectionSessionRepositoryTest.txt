@@ -1,0 +1,73 @@
+-------------------------------------------------------------------------------
+Test set: com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest
+-------------------------------------------------------------------------------
+Tests run: 5, Failures: 0, Errors: 5, Skipped: 0, Time elapsed: 2.518 s <<< FAILURE! -- in com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest
+com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldFindSessionsByQuizId -- Time elapsed: 2.424 s <<< ERROR!
+java.lang.IllegalArgumentException: template not initialized; call afterPropertiesSet() before using it
+	at org.springframework.util.Assert.isTrue(Assert.java:111)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:379)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:363)
+	at org.springframework.data.redis.core.AbstractOperations.execute(AbstractOperations.java:97)
+	at org.springframework.data.redis.core.DefaultValueOperations.set(DefaultValueOperations.java:253)
+	at org.springframework.data.redis.core.ValueOperations.set(ValueOperations.java:75)
+	at com.spandan.gateway.infrastructure.redis.ConnectionSessionRedisRepository.save(ConnectionSessionRedisRepository.java:42)
+	at com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldFindSessionsByQuizId(RedisConnectionSessionRepositoryTest.java:62)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldDeleteSession -- Time elapsed: 0.014 s <<< ERROR!
+java.lang.IllegalArgumentException: template not initialized; call afterPropertiesSet() before using it
+	at org.springframework.util.Assert.isTrue(Assert.java:111)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:379)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:363)
+	at org.springframework.data.redis.core.AbstractOperations.execute(AbstractOperations.java:97)
+	at org.springframework.data.redis.core.DefaultValueOperations.set(DefaultValueOperations.java:253)
+	at org.springframework.data.redis.core.ValueOperations.set(ValueOperations.java:75)
+	at com.spandan.gateway.infrastructure.redis.ConnectionSessionRedisRepository.save(ConnectionSessionRedisRepository.java:42)
+	at com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldDeleteSession(RedisConnectionSessionRepositoryTest.java:51)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldSaveAndFindSession -- Time elapsed: 0.008 s <<< ERROR!
+java.lang.IllegalArgumentException: template not initialized; call afterPropertiesSet() before using it
+	at org.springframework.util.Assert.isTrue(Assert.java:111)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:379)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:363)
+	at org.springframework.data.redis.core.AbstractOperations.execute(AbstractOperations.java:97)
+	at org.springframework.data.redis.core.DefaultValueOperations.set(DefaultValueOperations.java:253)
+	at org.springframework.data.redis.core.ValueOperations.set(ValueOperations.java:75)
+	at com.spandan.gateway.infrastructure.redis.ConnectionSessionRedisRepository.save(ConnectionSessionRedisRepository.java:42)
+	at com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldSaveAndFindSession(RedisConnectionSessionRepositoryTest.java:32)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldReturnEmptyForNonExistentSession -- Time elapsed: 0.055 s <<< ERROR!
+java.lang.IllegalArgumentException: template not initialized; call afterPropertiesSet() before using it
+	at org.springframework.util.Assert.isTrue(Assert.java:111)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:379)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:363)
+	at org.springframework.data.redis.core.AbstractOperations.execute(AbstractOperations.java:97)
+	at org.springframework.data.redis.core.DefaultValueOperations.get(DefaultValueOperations.java:50)
+	at com.spandan.gateway.infrastructure.redis.ConnectionSessionRedisRepository.findBySessionId(ConnectionSessionRedisRepository.java:52)
+	at com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldReturnEmptyForNonExistentSession(RedisConnectionSessionRepositoryTest.java:44)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldCountSessionsByQuizId -- Time elapsed: 0.010 s <<< ERROR!
+java.lang.IllegalArgumentException: template not initialized; call afterPropertiesSet() before using it
+	at org.springframework.util.Assert.isTrue(Assert.java:111)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:379)
+	at org.springframework.data.redis.core.RedisTemplate.execute(RedisTemplate.java:363)
+	at org.springframework.data.redis.core.AbstractOperations.execute(AbstractOperations.java:97)
+	at org.springframework.data.redis.core.DefaultValueOperations.set(DefaultValueOperations.java:253)
+	at org.springframework.data.redis.core.ValueOperations.set(ValueOperations.java:75)
+	at com.spandan.gateway.infrastructure.redis.ConnectionSessionRedisRepository.save(ConnectionSessionRedisRepository.java:42)
+	at com.spandan.gateway.integration.RedisConnectionSessionRepositoryTest.shouldCountSessionsByQuizId(RedisConnectionSessionRepositoryTest.java:76)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+

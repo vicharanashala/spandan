@@ -9,6 +9,7 @@ public class Quiz {
 
     private final UUID id;
     private final UUID teacherId;
+    private final UUID adminId;
     private QuizStatus quizStatus;
     private int currentQuestionNumber;
     private final int totalQuestions;
@@ -20,12 +21,13 @@ public class Quiz {
     private final Instant createdAt;
     private Instant updatedAt;
 
-    public Quiz(UUID id, UUID teacherId, QuizStatus quizStatus, int currentQuestionNumber,
+    public Quiz(UUID id, UUID teacherId, UUID adminId, QuizStatus quizStatus, int currentQuestionNumber,
                 int totalQuestions, UUID lectureId, UUID sectionId, UUID subsectionId,
                 Instant startedAt, Instant endedAt,
                 Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.teacherId = teacherId;
+        this.adminId = adminId;
         this.quizStatus = quizStatus;
         this.currentQuestionNumber = currentQuestionNumber;
         this.totalQuestions = totalQuestions;
@@ -38,15 +40,15 @@ public class Quiz {
         this.updatedAt = updatedAt;
     }
 
-    public static Quiz create(UUID teacherId, int totalQuestions) {
-        return create(teacherId, totalQuestions, null, null, null);
+    public static Quiz create(UUID teacherId, UUID adminId, int totalQuestions) {
+        return create(teacherId, adminId, totalQuestions, null, null, null);
     }
 
-    public static Quiz create(UUID teacherId, int totalQuestions,
+    public static Quiz create(UUID teacherId, UUID adminId, int totalQuestions,
                                UUID lectureId, UUID sectionId, UUID subsectionId) {
         Instant now = Instant.now();
         return new Quiz(
-                UUID.randomUUID(), teacherId, QuizStatus.DRAFT,
+                UUID.randomUUID(), teacherId, adminId, QuizStatus.DRAFT,
                 0, totalQuestions, lectureId, sectionId, subsectionId,
                 null, null, now, now
         );
@@ -141,6 +143,7 @@ public class Quiz {
 
     public UUID getId() { return id; }
     public UUID getTeacherId() { return teacherId; }
+    public UUID getAdminId() { return adminId; }
     public QuizStatus getQuizStatus() { return quizStatus; }
     public int getCurrentQuestionNumber() { return currentQuestionNumber; }
     public int getTotalQuestions() { return totalQuestions; }

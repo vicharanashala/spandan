@@ -56,7 +56,8 @@ class QuizLifecycleIntegrationTest {
     @Test
     void fullQuizLifecycle() {
         UUID teacherId = UUID.randomUUID();
-        Quiz created = Quiz.create(teacherId, 1);
+        UUID adminId = UUID.randomUUID();
+        Quiz created = Quiz.create(teacherId, adminId, 1);
         created.markScheduled();
         quizRepository.save(created);
 

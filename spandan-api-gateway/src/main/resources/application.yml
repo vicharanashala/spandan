@@ -24,7 +24,7 @@ spring:
         # all other /api/v1/auth/** calls require an authenticated principal).
         # -------------------------------------------------------------------------------------
         - id: auth-service
-          uri: ${AUTH_SERVICE_URL:http://spandan-auth-service:8080}
+          uri: ${AUTH_SERVICE_URL:http://spandan-auth-service:8081}
           predicates:
             - Path=/api/v1/auth/**
           filters:
@@ -34,12 +34,12 @@ spring:
             connect-timeout: 2000
 
         # -------------------------------------------------------------------------------------
-        # Polling Service – STUDENT or TEACHER or ADMIN
+        # Polling Service – ADMIN (gateway-level; GET /current is any-auth downstream)
         # -------------------------------------------------------------------------------------
         - id: polling-service
           uri: ${POLLING_SERVICE_URL:http://spandan-polling-service:8081}
           predicates:
-            - Path=/api/v1/polls/**
+            - Path=/api/v1/polling/**
           filters:
             - name: CircuitBreaker
               args:
@@ -100,12 +100,12 @@ spring:
             connect-timeout: 2000
 
         # -------------------------------------------------------------------------------------
-        # Question Generation Service – STUDENT or TEACHER or ADMIN
+        # Question Generation Service – TEACHER
         # -------------------------------------------------------------------------------------
         - id: question-generation-service
           uri: ${QGS_SERVICE_URL:http://spandan-question-generation-service:8086}
           predicates:
-            - Path=/api/v1/questions/**
+            - Path=/api/v1/question-generation/**
           filters:
             - name: CircuitBreaker
               args:
@@ -116,10 +116,10 @@ spring:
             connect-timeout: 2000
 
         # -------------------------------------------------------------------------------------
-        # Question Review Service – TEACHER or ADMIN
+        # Question Review Service – ADMIN
         # -------------------------------------------------------------------------------------
         - id: question-review-service
-          uri: ${QRS_SERVICE_URL:http://spandan-question-review-service:8087}
+          uri: ${QRS_SERVICE_URL:http://spandan-question-review-service:8086}
           predicates:
             - Path=/api/v1/reviews/**
           filters:
@@ -135,7 +135,7 @@ spring:
         # Notification Service – any authenticated user
         # -------------------------------------------------------------------------------------
         - id: notification-service
-          uri: ${NS_SERVICE_URL:http://spandan-notification-service:8087}
+          uri: ${NS_SERVICE_URL:http://spandan-notification-service:8088}
           predicates:
             - Path=/api/v1/notifications/**
             - Path=/api/v1/notification-preferences/**
@@ -157,7 +157,7 @@ spring:
         # Recording Service – TEACHER or ADMIN
         # -------------------------------------------------------------------------------------
         - id: recording-service
-          uri: ${RS_SERVICE_URL:http://spandan-recording-service:8088}
+          uri: ${RS_SERVICE_URL:http://spandan-recording-service:8089}
           predicates:
             - Path=/api/v1/streams/**
             - Path=/api/v1/recordings/**
@@ -176,7 +176,7 @@ spring:
         - id: response-service
           uri: ${RESPONSE_SERVICE_URL:http://spandan-response-service:8084}
           predicates:
-            - Path=/api/v1/responses/**
+            - Path=/api/v1/interactions/**
           filters:
             - name: CircuitBreaker
               args:
@@ -190,7 +190,7 @@ spring:
         # Reporting Service – TEACHER or ADMIN
         # -------------------------------------------------------------------------------------
         - id: reporting-service
-          uri: ${REPORTING_SERVICE_URL:http://spandan-reporting-service:8091}
+          uri: ${REPORTING_SERVICE_URL:http://spandan-reporting-service:8093}
           predicates:
             - Path=/api/v1/reports/**
           filters:

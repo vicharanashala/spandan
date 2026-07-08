@@ -41,6 +41,7 @@ class QuizServiceTest {
     @Mock private EventPublisher eventPublisher;
 
     private QuizService quizService;
+    private UUID adminId;
     private UUID teacherId;
     private UUID quizId;
     private Quiz draftQuiz;
@@ -51,9 +52,10 @@ class QuizServiceTest {
         quizService = new QuizService(quizRepository, questionRepository,
                 timerRepository, quizSequencer, timerService, guard, eventPublisher);
 
+        adminId = UUID.randomUUID();
         teacherId = UUID.randomUUID();
         quizId = UUID.randomUUID();
-        draftQuiz = new Quiz(quizId, teacherId, QuizStatus.DRAFT, 0, 2,
+        draftQuiz = new Quiz(quizId, teacherId, adminId, QuizStatus.DRAFT, 0, 2,
                 null, null, null, null, null, Instant.now(), Instant.now());
     }
 
@@ -61,12 +63,12 @@ class QuizServiceTest {
     void createQuiz() {
         QuestionSlot slot1 = new QuestionSlot(UUID.randomUUID(), 1, 30, null, null, null, null, null, null);
         QuestionSlot slot2 = new QuestionSlot(UUID.randomUUID(), 2, 45, null, null, null, null, null, null);
-        CreateQuizRequest request = new CreateQuizRequest(List.of(slot1, slot2), null, null, null);
+        CreateQuizRequest request = new CreateQuizRequest(teacherId, List.of(slot1, slot2), null, null, null);
 
         when(quizRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(questionRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        QuizResponse response = quizService.createQuiz(teacherId, request);
+        QuizResponse response = quizService.createQuiz(adminId, request);
 
         assertNotNull(response);
         assertEquals(2, response.totalQuestions());
@@ -79,24 +81,24 @@ class QuizServiceTest {
     void createQuizRejectsDuplicatePositions() {
         QuestionSlot slot1 = new QuestionSlot(UUID.randomUUID(), 1, 30, null, null, null, null, null, null);
         QuestionSlot slot2 = new QuestionSlot(UUID.randomUUID(), 1, 45, null, null, null, null, null, null);
-        CreateQuizRequest request = new CreateQuizRequest(List.of(slot1, slot2), null, null, null);
+        CreateQuizRequest request = new CreateQuizRequest(teacherId, List.of(slot1, slot2), null, null, null);
 
         assertThrows(IllegalArgumentException.class,
-                () -> quizService.createQuiz(teacherId, request));
+                () -> quizService.createQuiz(adminId, request));
     }
 
     @Test
     void createQuizRejectsInvalidTimer() {
         QuestionSlot slot = new QuestionSlot(UUID.randomUUID(), 1, 1000, null, null, null, null, null, null);
-        CreateQuizRequest request = new CreateQuizRequest(List.of(slot), null, null, null);
+        CreateQuizRequest request = new CreateQuizRequest(teacherId, List.of(slot), null, null, null);
 
         assertThrows(IllegalArgumentException.class,
-                () -> quizService.createQuiz(teacherId, request));
+                () -> quizService.createQuiz(adminId, request));
     }
 
     @Test
     void startQuiz() {
-        Quiz scheduled = new Quiz(quizId, teacherId, QuizStatus.SCHEDULED, 0, 2,
+        Quiz scheduled = new Quiz(quizId, teacherId, adminId, QuizStatus.SCHEDULED, 0, 2,
                 null, null, null, null, null, Instant.now(), Instant.now());
         QuizQuestion question = QuizQuestion.create(quizId, UUID.randomUUID(), 1, 30);
 
@@ -106,7 +108,7 @@ class QuizServiceTest {
         when(quizRepository.save(any())).thenReturn(scheduled);
         doNothing().when(quizSequencer).publishQuestion(any(), any());
 
-        QuizResponse response = quizService.startQuiz(quizId, teacherId);
+        QuizResponse response = quizService.startQuiz(quizId, adminId);
 
         assertNotNull(response);
         assertEquals(QuizStatus.RUNNING.name(), response.quizStatus());
@@ -116,11 +118,11 @@ class QuizServiceTest {
 
     @Test
     void startQuizNotOwner() {
-        UUID otherTeacher = UUID.randomUUID();
+        UUID otherAdmin = UUID.randomUUID();
         when(quizRepository.findByIdWithLock(quizId)).thenReturn(Optional.of(draftQuiz));
 
         assertThrows(UnauthorizedQuizAccessException.class,
-                () -> quizService.startQuiz(quizId, otherTeacher));
+                () -> quizService.startQuiz(quizId, otherAdmin));
     }
 
     @Test
@@ -128,22 +130,22 @@ class QuizServiceTest {
         when(quizRepository.findByIdWithLock(quizId)).thenReturn(Optional.empty());
 
         assertThrows(QuizNotFoundException.class,
-                () -> quizService.startQuiz(quizId, teacherId));
+                () -> quizService.startQuiz(quizId, adminId));
     }
 
     @Test
     void startQuizAlreadyRunning() {
-        Quiz running = new Quiz(quizId, teacherId, QuizStatus.RUNNING, 1, 2,
+        Quiz running = new Quiz(quizId, teacherId, adminId, QuizStatus.RUNNING, 1, 2,
                 null, null, null, Instant.now(), null, Instant.now(), Instant.now());
         when(quizRepository.findByIdWithLock(quizId)).thenReturn(Optional.of(running));
 
         assertThrows(IllegalStateTransitionException.class,
-                () -> quizService.startQuiz(quizId, teacherId));
+                () -> quizService.startQuiz(quizId, adminId));
     }
 
     @Test
     void pauseResumeQuiz() {
-        Quiz running = new Quiz(quizId, teacherId, QuizStatus.RUNNING, 1, 2,
+        Quiz running = new Quiz(quizId, teacherId, adminId, QuizStatus.RUNNING, 1, 2,
                 null, null, null, Instant.now(), null, Instant.now(), Instant.now());
         QuizQuestion currentQuestion = QuizQuestion.create(quizId, UUID.randomUUID(), 1, 30);
 
@@ -152,20 +154,20 @@ class QuizServiceTest {
                 .thenReturn(Optional.of(currentQuestion));
         when(quizRepository.save(any())).thenReturn(running);
 
-        QuizResponse pauseResponse = quizService.pauseQuiz(quizId, teacherId);
+        QuizResponse pauseResponse = quizService.pauseQuiz(quizId, adminId);
         assertEquals(QuizStatus.PAUSED.name(), pauseResponse.quizStatus());
 
-        Quiz paused = new Quiz(quizId, teacherId, QuizStatus.PAUSED, 1, 2,
+        Quiz paused = new Quiz(quizId, teacherId, adminId, QuizStatus.PAUSED, 1, 2,
                 null, null, null, Instant.now(), null, Instant.now(), Instant.now());
         when(quizRepository.findByIdWithLock(quizId)).thenReturn(Optional.of(paused));
 
-        QuizResponse resumeResponse = quizService.resumeQuiz(quizId, teacherId);
+        QuizResponse resumeResponse = quizService.resumeQuiz(quizId, adminId);
         assertEquals(QuizStatus.RUNNING.name(), resumeResponse.quizStatus());
     }
 
     @Test
     void cancelQuestionOnlyWhenScheduled() {
-        Quiz running = new Quiz(quizId, teacherId, QuizStatus.RUNNING, 1, 2,
+        Quiz running = new Quiz(quizId, teacherId, adminId, QuizStatus.RUNNING, 1, 2,
                 null, null, null, Instant.now(), null, Instant.now(), Instant.now());
         UUID questionId = UUID.randomUUID();
         QuizQuestion scheduledQuestion = QuizQuestion.create(quizId, UUID.randomUUID(), 2, 30);
@@ -174,7 +176,7 @@ class QuizServiceTest {
         when(questionRepository.findByIdWithLock(questionId)).thenReturn(Optional.of(scheduledQuestion));
         when(questionRepository.save(any())).thenReturn(scheduledQuestion);
 
-        assertDoesNotThrow(() -> quizService.cancelQuestion(quizId, questionId, teacherId));
+        assertDoesNotThrow(() -> quizService.cancelQuestion(quizId, questionId, adminId));
         verify(questionRepository).save(any());
     }
 }

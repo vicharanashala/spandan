@@ -74,6 +74,14 @@ class AuthFlowIntegrationTest {
                 Role.TEACHER
         );
         teacherId = userRepository.save(teacher).getId();
+
+        User admin = User.create(
+                "Test Admin",
+                "admin@test.com",
+                passwordEncoder.encode("adminpass"),
+                Role.ADMIN
+        );
+        userRepository.save(admin);
     }
 
     @Test
@@ -156,5 +164,58 @@ class AuthFlowIntegrationTest {
                 Void.class
         );
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    }
+
+    @Test
+    void adminLoginIssuesAdminJwt() {
+        ResponseEntity<AuthResponse> response = restTemplate.postForEntity(
+                "/api/v1/auth/login",
+                new LoginRequest("admin@test.com", "adminpass"),
+                AuthResponse.class
+        );
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        AuthResponse body = response.getBody();
+        assertNotNull(body);
+        assertEquals("ADMIN", body.user().role());
+    }
+
+    @Test
+    void adminCanCallAdminEndpoint() {
+        ResponseEntity<AuthResponse> loginResponse = restTemplate.postForEntity(
+                "/api/v1/auth/login",
+                new LoginRequest("admin@test.com", "adminpass"),
+                AuthResponse.class
+        );
+        String adminToken = loginResponse.getBody().accessToken();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(adminToken);
+        ResponseEntity<String> adminResponse = restTemplate.exchange(
+                "/api/v1/auth/admin/users",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class
+        );
+        assertEquals(HttpStatus.OK, adminResponse.getStatusCode());
+    }
+
+    @Test
+    void nonAdminCannotCallAdminEndpoint() {
+        ResponseEntity<AuthResponse> loginResponse = restTemplate.postForEntity(
+                "/api/v1/auth/login",
+                new LoginRequest("teacher@test.com", "password123"),
+                AuthResponse.class
+        );
+        String teacherToken = loginResponse.getBody().accessToken();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(teacherToken);
+        ResponseEntity<String> adminResponse = restTemplate.exchange(
+                "/api/v1/auth/admin/users",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class
+        );
+        assertEquals(HttpStatus.FORBIDDEN, adminResponse.getStatusCode());
     }
 }

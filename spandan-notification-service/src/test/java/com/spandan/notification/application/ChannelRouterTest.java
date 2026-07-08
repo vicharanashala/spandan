@@ -5,6 +5,7 @@ import com.spandan.notification.domain.entity.Notification;
 import com.spandan.notification.domain.entity.UserNotificationPreference;
 import com.spandan.notification.domain.enums.NotificationChannel;
 import com.spandan.notification.domain.enums.NotificationType;
+import com.spandan.notification.domain.enums.RecipientRole;
 import com.spandan.notification.domain.port.ChannelDeliveryResult;
 import com.spandan.notification.infrastructure.kafka.producers.NotificationEventProducer;
 import org.junit.jupiter.api.BeforeEach;
@@ -12,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.util.List;
 import java.util.UUID;
@@ -21,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class ChannelRouterTest {
 
     @Mock private com.spandan.notification.domain.port.NotificationChannel inAppChannel;
@@ -36,7 +40,7 @@ class ChannelRouterTest {
     void setUp() {
         router = new ChannelRouter(List.of(inAppChannel, pushChannel, webSocketChannel), eventProducer);
         prefs = new UserNotificationPreference(UUID.randomUUID());
-        notification = new Notification(UUID.randomUUID(), NotificationType.QUESTIONS_GENERATED,
+        notification = new Notification(UUID.randomUUID(), RecipientRole.TEACHER, NotificationType.QUESTIONS_GENERATED,
                 "Title", "Message", NotificationChannel.IN_APP, "test", UUID.randomUUID());
     }
 

@@ -16,8 +16,8 @@ public class ReviewAuditLog {
     @Column(name = "review_id", nullable = false)
     private UUID reviewId;
 
-    @Column(name = "teacher_id", nullable = false)
-    private UUID teacherId;
+    @Column(name = "admin_id", nullable = false)
+    private UUID adminId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "action", nullable = false)
@@ -38,8 +38,8 @@ public class ReviewAuditLog {
     public void setId(UUID id) { this.id = id; }
     public UUID getReviewId() { return reviewId; }
     public void setReviewId(UUID reviewId) { this.reviewId = reviewId; }
-    public UUID getTeacherId() { return teacherId; }
-    public void setTeacherId(UUID teacherId) { this.teacherId = teacherId; }
+    public UUID getAdminId() { return adminId; }
+    public void setAdminId(UUID adminId) { this.adminId = adminId; }
     public AuditAction getAction() { return action; }
     public void setAction(AuditAction action) { this.action = action; }
     public Instant getActionTimestamp() { return actionTimestamp; }

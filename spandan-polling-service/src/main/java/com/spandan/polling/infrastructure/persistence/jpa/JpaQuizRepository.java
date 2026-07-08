@@ -14,4 +14,6 @@ public interface JpaQuizRepository extends JpaRepository<QuizEntity, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT q FROM QuizEntity q WHERE q.id = :id")
     Optional<QuizEntity> findByIdWithLock(UUID id);
+
+    Optional<QuizEntity> findByAdminId(UUID adminId);
 }
