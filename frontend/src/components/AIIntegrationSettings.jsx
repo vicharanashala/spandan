@@ -5,7 +5,7 @@ const PROVIDERS = [
   { id: 'minimax', label: 'MiniMax' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'anthropic', label: 'Anthropic' },
-  { id: 'google', label: 'Google' }
+  { id: 'google', label: 'Google Gemini' }
 ]
 
 function AIIntegrationSettings() {
@@ -210,6 +210,48 @@ function AIIntegrationSettings() {
                     {providerStatus.hasKey ? 'Configured' : providerStatus.hasEnvFallback ? 'Env fallback' : 'Not set'}
                   </span>
                 </span>
+                {provider.id === 'google' && (
+                  <div style={{
+                    background: '#eff6ff',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: '10px',
+                    color: '#1d4ed8',
+                    padding: '10px 12px',
+                    fontSize: '12px',
+                    lineHeight: '1.45',
+                    marginBottom: '10px'
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '10px',
+                      flexWrap: 'wrap'
+                    }}>
+                      <span>Don't have a budget? Get a free Google Gemini API key in 30 seconds (no credit card required).</span>
+                      <a
+                        href="https://aistudio.google.com/app/apikey"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          background: '#2563eb',
+                          color: 'white',
+                          fontSize: '12px',
+                          fontWeight: '700',
+                          textDecoration: 'none',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        Get Free Gemini Key
+                      </a>
+                    </div>
+                  </div>
+                )}
                 <input
                   type="password"
                   value={keys[provider.id]}

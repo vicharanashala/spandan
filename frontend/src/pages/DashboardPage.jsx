@@ -7,7 +7,6 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
-import AIIntegrationSettings from '../components/AIIntegrationSettings'
 
 function DashboardPage() {
   const navigate = useNavigate()
@@ -222,9 +221,6 @@ function DashboardPage() {
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Responses</div>
             </div>
           </div>
-
-          {/* Create Room Section */}
-          <AIIntegrationSettings />
 
           {/* Create Room Section */}
           <div style={{

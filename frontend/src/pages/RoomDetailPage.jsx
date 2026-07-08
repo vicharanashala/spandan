@@ -1904,6 +1904,44 @@ function RoomDetailPage() {
                 >
                   Import Questions
                 </button>
+                <div style={{
+                  marginTop: '14px',
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  border: '1px solid #bfdbfe',
+                  background: '#eff6ff',
+                  color: '#1d4ed8',
+                  fontSize: '13px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                  flexWrap: 'wrap'
+                }}>
+                  <span>Want to automate this? Add your API key in the AI Settings.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGeneratingPopup(false)
+                      setFallbackPrompt('')
+                      setFallbackJson('')
+                      setFallbackError('')
+                      navigate('/teacher/ai-settings')
+                    }}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#1d4ed8',
+                      fontSize: '13px',
+                      fontWeight: '700',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      padding: 0
+                    }}
+                  >
+                    AI Settings
+                  </button>
+                </div>
               </>
             ) : (
               <>

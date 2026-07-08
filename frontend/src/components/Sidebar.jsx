@@ -4,6 +4,7 @@ import SpandanIcon from './SpandanIcon'
 
 const menuItems = {
   teacher: [
+    { id: 'ai-settings', label: 'AI Settings', icon: 'AI', path: '/teacher/ai-settings' },
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/teacher' },
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },

@@ -12,6 +12,7 @@ import RoomDetailPage from './pages/RoomDetailPage'
 import StudentRoomPage from './pages/StudentRoomPage'
 import CreateRoomPage from './pages/CreateRoomPage'
 import ManageRoomPage from './pages/ManageRoomPage'
+import AISettingsPage from './pages/AISettingsPage'
 import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
@@ -139,6 +140,11 @@ function App() {
         <Route path="/teacher/manage-room" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <ManageRoomPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/ai-settings" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <AISettingsPage />
           </ProtectedRoute>
         } />
         <Route path="/teacher/profile" element={
