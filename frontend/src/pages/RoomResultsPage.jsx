@@ -6,6 +6,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import PodiumLeaderboard from '../components/PodiumLeaderboard'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -23,6 +24,7 @@ function RoomResultsPage() {
     averageScore: 0,
     participationRate: 0
   })
+  const [leaderboard, setLeaderboard] = useState([])
 
   useEffect(() => {
     if (token) {
@@ -138,6 +140,17 @@ function RoomResultsPage() {
           totalStudents: uniqueStudents,
           participationRate: Math.min(participationRate, 100)
         })
+
+        // Fetch leaderboard
+        try {
+          const lbRes = await fetch(`${API_URL}/responses/leaderboard/${roomId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          })
+          if (lbRes.ok) {
+            const lbData = await lbRes.json()
+            setLeaderboard(lbData.leaderboard || [])
+          }
+        } catch (e) { /* silent */ }
       }
     } catch (err) {
       console.error('Failed to fetch room results:', err)
@@ -278,6 +291,24 @@ function RoomResultsPage() {
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Correct Answers</div>
             </div>
           </div>
+
+          {/* Leaderboard Section */}
+          {leaderboard.length > 0 && (
+            <div style={{
+              background: 'var(--bg-card)', borderRadius: '16px', padding: '24px',
+              boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)',
+              marginBottom: '0'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+                <span style={{ fontSize: '22px' }}>🏆</span>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>Session Leaderboard</h2>
+                <span style={{ marginLeft: 'auto', background: 'var(--accent-light)', color: 'var(--accent)', borderRadius: '20px', padding: '3px 12px', fontSize: '12px', fontWeight: '700' }}>
+                  {leaderboard.length} participants
+                </span>
+              </div>
+              <PodiumLeaderboard leaderboard={leaderboard} currentUserName={user?.name || user?.email} />
+            </div>
+          )}
 
           {/* Questions Analysis */}
           <div style={{

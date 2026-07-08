@@ -12,6 +12,8 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import LiveAnalyticsBar from '../components/LiveAnalyticsBar'
+import TeacherToolsPanel from '../components/TeacherToolsPanel'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -97,6 +99,17 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
 
+  // ── Teacher controls ──
+  const [isQuestionPaused, setIsQuestionPaused] = useState(false)
+  const [revealedAnswerOptions, setRevealedAnswerOptions] = useState(null)
+  const [liveAnalyticsCounts, setLiveAnalyticsCounts] = useState([])
+
+  // ── NEW: Communication & engagement features ──
+  const [raisedHands, setRaisedHands] = useState([])           // [{userId, userName, at}]
+  const [activePollId, setActivePollId] = useState(null)       // currently running instant poll id
+  const [instantPollVotes, setInstantPollVotes] = useState({}) // aggregated vote counts
+  const [difficultyFeedback, setDifficultyFeedback] = useState({}) // questionId -> {easy,medium,hard} // per-option counts array
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -158,6 +171,95 @@ function RoomDetailPage() {
     return () => socket.off('response:new', handleNewResponse)
   }, [socket])
 
+  // ── NEW: Listen for analytics:updated (per-option counts from students) ──
+  useEffect(() => {
+    if (!socket) return
+    const handleAnalyticsUpdated = ({ counts }) => {
+      setLiveAnalyticsCounts(counts || [])
+    }
+    socket.on('analytics:updated', handleAnalyticsUpdated)
+    return () => socket.off('analytics:updated', handleAnalyticsUpdated)
+  }, [socket])
+
+  // ── NEW: Raise hand, instant poll, difficulty feedback listeners ──
+  useEffect(() => {
+    if (!socket) return
+
+    const handleHandRaised = ({ userId, userName, at }) => {
+      setRaisedHands(prev => {
+        if (prev.find(h => h.userId === userId)) return prev // already raised
+        return [...prev, { userId, userName, at }]
+      })
+    }
+    const handleHandLowered = ({ userId }) => {
+      setRaisedHands(prev => prev.filter(h => h.userId !== userId))
+    }
+    const handlePollVote = ({ pollId, value }) => {
+      if (pollId !== activePollId) return
+      setInstantPollVotes(prev => ({ ...prev, [value]: (prev[value] || 0) + 1 }))
+    }
+    const handleDifficultyVoted = ({ questionId, rating }) => {
+      setDifficultyFeedback(prev => ({
+        ...prev,
+        [questionId]: {
+          ...(prev[questionId] || { easy: 0, medium: 0, hard: 0 }),
+          [rating]: ((prev[questionId]?.[rating]) || 0) + 1
+        }
+      }))
+    }
+
+    socket.on('hand:raised',      handleHandRaised)
+    socket.on('hand:lowered',     handleHandLowered)
+    socket.on('instant:poll:vote', handlePollVote)
+    socket.on('difficulty:voted', handleDifficultyVoted)
+
+    return () => {
+      socket.off('hand:raised',      handleHandRaised)
+      socket.off('hand:lowered',     handleHandLowered)
+      socket.off('instant:poll:vote', handlePollVote)
+      socket.off('difficulty:voted', handleDifficultyVoted)
+    }
+  }, [socket, activePollId])
+
+  // ── NEW: Teacher helper actions ──
+  const sendAnnouncement = (message, type) => {
+    if (!socket || !room) return
+    socket.emit('teacher:announce', { roomCode: room.code, message, type })
+  }
+
+  const launchInstantPoll = (question, type) => {
+    if (!socket || !room) return
+    const pollId = `poll_${Date.now()}`
+    setActivePollId(pollId)
+    setInstantPollVotes({})
+    socket.emit('instant:poll', { roomCode: room.code, pollId, question, type })
+  }
+
+  const endInstantPoll = () => {
+    if (!socket || !room || !activePollId) return
+    socket.emit('instant:poll:end', { roomCode: room.code, pollId: activePollId })
+    setActivePollId(null)
+  }
+
+  const exportCSV = async () => {
+    if (!room?._id || !token) return
+    try {
+      const res = await fetch(`${API_URL}/responses/export/${room._id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `spandan-${room.code}-${new Date().toISOString().slice(0,10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('CSV export error:', e)
+    }
+  }
+
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
     if (!socket) return
@@ -199,6 +301,46 @@ function RoomDetailPage() {
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
+
+  // ── NEW: Teacher control handlers ──
+  const pauseQuestion = () => {
+    if (!activeQuestion || !socket || !room) return
+    if (isQuestionPaused) {
+      // Resume
+      setIsQuestionPaused(false)
+      socket.emit('question:resume', { roomCode: room.code, questionId: activeQuestion._id, timeLeft: questionTimeLeft })
+      // Restart teacher's local timer
+      if (questionTimerRef.current) clearInterval(questionTimerRef.current)
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) { clearInterval(questionTimerRef.current); questionTimerRef.current = null; setActiveQuestion(null); return 0 }
+          return prev - 1
+        })
+      }, 1000)
+    } else {
+      // Pause
+      setIsQuestionPaused(true)
+      if (questionTimerRef.current) { clearInterval(questionTimerRef.current); questionTimerRef.current = null }
+      socket.emit('question:pause', { roomCode: room.code, questionId: activeQuestion._id, timeLeft: questionTimeLeft })
+    }
+  }
+
+  const skipQuestion = () => {
+    if (!activeQuestion || !socket || !room) return
+    if (questionTimerRef.current) { clearInterval(questionTimerRef.current); questionTimerRef.current = null }
+    socket.emit('question:skip', { roomCode: room.code, questionId: activeQuestion._id })
+    setActiveQuestion(null)
+    setIsQuestionPaused(false)
+    setRevealedAnswerOptions(null)
+    setLiveAnalyticsCounts([])
+  }
+
+  const revealAnswer = () => {
+    if (!activeQuestion || !socket || !room) return
+    const opts = activeQuestion.options || []
+    setRevealedAnswerOptions(opts)
+    socket.emit('answer:reveal', { roomCode: room.code, questionId: activeQuestion._id, options: opts })
+  }
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -1081,50 +1223,62 @@ function RoomDetailPage() {
               </div>
             )}
 
-            {/* Question Timer Display - Shows when a question is active */}
-            {activeQuestion && questionTimeLeft > 0 && (
+            {/* ── Active Question Panel (Premium) ── */}
+            {activeQuestion && (
               <div style={{
-                padding: '8px 16px',
-                background: questionTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.1)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
+                padding: '12px 16px',
+                background: 'linear-gradient(135deg,#1e1b4b,#4c1d95)',
+                borderRadius: '12px',
+                border: '2px solid rgba(167,139,250,.4)',
+                display: 'flex', alignItems: 'center', gap: '10px',
+                boxShadow: '0 4px 20px rgba(124,58,237,.3)',
+                color: 'white', flexWrap: 'wrap',
               }}>
-                <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
-                </span>
-                <span style={{
-                  fontSize: '20px',
-                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
-                  fontWeight: '700',
-                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+                {/* Timer circle */}
+                <div style={{
+                  width: '48px', height: '48px', borderRadius: '50%', flexShrink: 0,
+                  background: questionTimeLeft <= 5 ? 'rgba(239,68,68,.3)' : 'rgba(255,255,255,.1)',
+                  border: `3px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#a78bfa'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '16px', fontWeight: '900', color: questionTimeLeft <= 5 ? '#fca5a5' : 'white',
+                  animation: questionTimeLeft <= 5 ? 'pulse .5s infinite' : 'none',
                 }}>
-                  {questionTimeLeft}s
-                </span>
-                {questionTimeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    TIME!
-                  </span>
-                )}
+                  {isQuestionPaused ? '⏸' : `${questionTimeLeft}s`}
+                </div>
+                <div style={{ flex: 1, minWidth: '120px' }}>
+                  <div style={{ fontSize: '11px', opacity: .7, fontWeight: '600' }}>ACTIVE QUESTION</div>
+                  <div style={{ fontSize: '13px', fontWeight: '700', opacity: .95, maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {activeQuestion.question}
+                  </div>
+                  <div style={{ fontSize: '11px', opacity: .6, marginTop: '2px' }}>
+                    {answerCounts[activeQuestion._id] || 0} / {totalParticipants} answered
+                    {isQuestionPaused && <span style={{ marginLeft: '8px', color: '#93c5fd', fontWeight: '700' }}>⏸ PAUSED</span>}
+                  </div>
+                </div>
+                {/* Controls */}
+                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  <button onClick={pauseQuestion} title={isQuestionPaused ? 'Resume timer' : 'Pause timer'}
+                    style={{ padding: '6px 12px', background: isQuestionPaused ? '#10b981' : 'rgba(255,255,255,.15)', color: 'white', border: '1px solid rgba(255,255,255,.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '700' }}>
+                    {isQuestionPaused ? '▶ Resume' : '⏸ Pause'}
+                  </button>
+                  <button onClick={skipQuestion} title="Skip to next question"
+                    style={{ padding: '6px 12px', background: 'rgba(239,68,68,.2)', color: '#fca5a5', border: '1px solid rgba(239,68,68,.4)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '700' }}>
+                    ⏭ Skip
+                  </button>
+                  <button onClick={revealAnswer} disabled={!!revealedAnswerOptions} title="Show correct answer to students"
+                    style={{ padding: '6px 12px', background: revealedAnswerOptions ? 'rgba(16,185,129,.3)' : 'rgba(16,185,129,.15)', color: '#6ee7b7', border: '1px solid rgba(16,185,129,.35)', borderRadius: '8px', cursor: revealedAnswerOptions ? 'default' : 'pointer', fontSize: '13px', fontWeight: '700', opacity: revealedAnswerOptions ? .7 : 1 }}>
+                    {revealedAnswerOptions ? '✓ Revealed' : '👁 Reveal'}
+                  </button>
+                </div>
               </div>
             )}
             {activeQuestion && questionTimeLeft === 0 && (
-              <div style={{
-                padding: '8px 16px',
-                background: 'rgba(239, 68, 68, 0.1)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                border: '2px solid #ef4444'
-              }}>
-                <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
-                </span>
+              <div style={{ padding: '8px 16px', background: 'rgba(239,68,68,0.1)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', border: '2px solid #ef4444' }}>
+                <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>⏱️ Time's Up!</span>
               </div>
             )}
+
+
 
             {/* Paste & Generate Button */}
             {!isEnded && (
@@ -1230,11 +1384,22 @@ function RoomDetailPage() {
                 End Room
               </button>
             )}
+
+            {/* CSV Export Button */}
+            {generatedQuestions.length > 0 && (
+              <button onClick={exportCSV} style={{
+                padding: '8px 16px', background: 'linear-gradient(135deg,#065f46,#059669)', color: 'white',
+                border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: '6px'
+              }}>
+                Export CSV
+              </button>
+            )}
           </div>
 
-          {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
-            {/* Microphone Card - 30% */}
+          {/* Microphone, Transcription, and Tools Row */}
+          <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden', alignItems: 'flex-start' }}>
+            {/* Microphone Card - 25% */}
             <div style={{
               flex: '1 1 calc(30% - 10px)',
               minWidth: '280px',
@@ -1435,6 +1600,20 @@ function RoomDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* Teacher Tools Panel */}
+            <div style={{ flex: '1 1 260px', minWidth: '240px', maxWidth: '300px' }}>
+              <TeacherToolsPanel
+                socket={socket}
+                roomCode={room?.code}
+                raisedHands={raisedHands}
+                onAnnounce={sendAnnouncement}
+                onInstantPoll={launchInstantPoll}
+                onEndInstantPoll={endInstantPoll}
+                activePollId={activePollId}
+                instantPollVotes={instantPollVotes}
+              />
+            </div>
           </div>
 
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
@@ -1553,6 +1732,51 @@ function RoomDetailPage() {
                           )
                         })}
                       </div>
+
+                      {/* ── LiveAnalyticsBar: show for the active question ── */}
+                      {activeQuestion && String(activeQuestion._id) === String(q._id) && (
+                        <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-primary)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                          <LiveAnalyticsBar
+                            question={q}
+                            counts={liveAnalyticsCounts}
+                            totalStudents={totalParticipants}
+                            revealed={!!revealedAnswerOptions}
+                          />
+                        </div>
+                      )}
+
+                      {/* ── Difficulty Feedback: shows for any question that received ratings ── */}
+                      {difficultyFeedback[q._id] && (() => {
+                        const df = difficultyFeedback[q._id]
+                        const total = (df.easy || 0) + (df.medium || 0) + (df.hard || 0)
+                        if (total === 0) return null
+                        return (
+                          <div style={{ marginTop: '10px', padding: '10px 12px', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                            <div style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.6px', marginBottom: '7px' }}>
+                              Student Difficulty Feedback ({total} votes)
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {[
+                                { key: 'easy',   label: 'Easy',   color: '#059669', bg: '#d1fae5' },
+                                { key: 'medium', label: 'Medium', color: '#d97706', bg: '#fef3c7' },
+                                { key: 'hard',   label: 'Hard',   color: '#dc2626', bg: '#fee2e2' },
+                              ].map(({ key, label, color, bg }) => {
+                                const cnt = df[key] || 0
+                                const pct = total > 0 ? Math.round((cnt / total) * 100) : 0
+                                return (
+                                  <div key={key} style={{ flex: 1, textAlign: 'center' }}>
+                                    <div style={{ height: '4px', background: bg, borderRadius: '2px', marginBottom: '4px', overflow: 'hidden' }}>
+                                      <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '2px', transition: 'width .5s ease' }} />
+                                    </div>
+                                    <span style={{ fontSize: '10px', fontWeight: '700', color }}>{label} {cnt}</span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })()}
+
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
                       <span style={{
@@ -1569,6 +1793,7 @@ function RoomDetailPage() {
                     </div>
                   </div>
                 ))}
+
               </div>
             ) : (
               <div style={{

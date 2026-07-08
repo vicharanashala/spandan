@@ -54,11 +54,8 @@ function StudentDashboard() {
     if (!roomCode.trim()) return
     setIsJoining(true)
     try {
-      // First validate the room exists via API
       const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      // Then join via socket
       joinRoom(room.code, user._id)
-      // Then navigate to session
       navigate(`/student/session/${room.code}`)
     } catch (err) {
       console.error('Failed to join room:', err)
@@ -68,208 +65,94 @@ function StudentDashboard() {
   }
 
   return (
-    <div style={{
-      display: 'flex',
-      minHeight: '100vh',
-      background: 'var(--bg-primary)',
-      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
-    }}>
+    <div style={{ display:'flex', minHeight:'100vh', background:'var(--bg-primary)' }}>
       <Sidebar user={user} />
-      
-      {/* Main Content */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        marginLeft: '240px'
-      }}>
-        {/* Header - Blue gradient bar */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: '24px 32px'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center'
-          }}>
+
+      <div style={{ flex:1, display:'flex', flexDirection:'column', marginLeft:'240px' }}>
+
+        {/* ── Header ── */}
+        <header style={{ background:'var(--header-bg)', color:'white', padding:'18px 32px', boxShadow:'0 4px 24px rgba(0,0,0,.25)' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>
-                Welcome, {user?.name || 'Student'}!
+              <h1 style={{ margin:0, fontSize:'22px', fontWeight:'800', letterSpacing:'-.4px' }}>
+                🎓 Welcome, {user?.name || 'Student'}!
               </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Join rooms and participate in polls
-              </p>
+              <p style={{ margin:'3px 0 0', opacity:.75, fontSize:'13px' }}>Join rooms and participate in live polls</p>
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
               <ThemeToggle />
               <ProfileDropdown />
             </div>
           </div>
         </header>
 
-        {/* Dashboard content */}
-        <div style={{ flex: 1, padding: '32px' }}>
-          {/* Stats Cards */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '20px',
-            marginBottom: '32px'
-          }}>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalRooms}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>✅</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsTaken}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Taken</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>❌</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsMissed}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Missed</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📈</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.average}%</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
-            </div>
+        <div style={{ flex:1, padding:'28px 32px' }}>
+
+          {/* ── Stat Cards ── */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:'16px', marginBottom:'28px' }}>
+            {[
+              { icon:'📚', label:'Rooms Joined',  value:stats.totalRooms,  color:'#7c3aed' },
+              { icon:'✅', label:'Polls Taken',   value:stats.pollsTaken,  color:'#059669' },
+              { icon:'❌', label:'Polls Missed',  value:stats.pollsMissed, color:'#dc2626' },
+              { icon:'📈', label:'Score %',       value:`${stats.average}%`, color:'#2563eb' },
+            ].map(({ icon, label, value, color }) => (
+              <div key={label} className="stat-card fade-in">
+                <div style={{ fontSize:'28px', marginBottom:'10px' }}>{icon}</div>
+                <div style={{ fontSize:'30px', fontWeight:'800', color, lineHeight:1 }}>{value}</div>
+                <div style={{ fontSize:'12px', color:'var(--text-secondary)', marginTop:'6px', fontWeight:'500' }}>{label}</div>
+              </div>
+            ))}
           </div>
 
-          {/* Quick Join Section */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: '16px',
-            padding: '24px',
-            boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)',
-            marginBottom: '32px'
-          }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              Quick Join
-            </h2>
-            
-            <div style={{ display: 'flex', gap: '12px' }}>
+          {/* ── Quick Join ── */}
+          <div className="card fade-in" style={{ padding:'24px', marginBottom:'24px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'18px' }}>
+              <span style={{ fontSize:'18px' }}>🔗</span>
+              <div>
+                <h2 style={{ margin:0, fontSize:'16px', fontWeight:'700', color:'var(--text-primary)' }}>Quick Join</h2>
+                <p style={{ margin:0, fontSize:'12px', color:'var(--text-secondary)' }}>Enter your room code to join a live session</p>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'10px' }}>
               <input
-                type="text"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="Enter room code..."
+                type="text" value={roomCode}
+                onChange={e => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="Enter room code…"
                 maxLength={8}
-                style={{
-                  flex: 1,
-                  padding: '12px 16px',
-                  border: '2px solid var(--border-color)',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                  outline: 'none',
-                  background: 'var(--input-bg)',
-                  color: 'var(--text-primary)',
-                  letterSpacing: '2px',
-                  fontWeight: '600'
-                }}
+                className="input"
+                style={{ flex:1, letterSpacing:'3px', fontWeight:'700', fontSize:'16px', textAlign:'center' }}
+                onKeyDown={e => e.key === 'Enter' && handleJoinRoom()}
               />
-              
-              <button
-                onClick={handleJoinRoom}
-                disabled={isJoining || !roomCode.trim()}
-                style={{
-                  padding: '12px 24px',
-                  background: (isJoining || !roomCode.trim()) ? '#9ca3af' : '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {isJoining ? 'Joining...' : 'Join Room'}
+              <button onClick={handleJoinRoom} disabled={isJoining || !roomCode.trim()} className="btn btn-primary" style={{ padding:'10px 24px' }}>
+                {isJoining ? '⏳ Joining…' : '🚀 Join Room'}
               </button>
             </div>
           </div>
 
-          {/* Active Joined Rooms Section */}
+          {/* ── Previously Joined Active Rooms ── */}
           {activeRooms.length > 0 && (
             <>
-              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                🟢 Previously Joined Active Rooms
-              </h2>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', 
-                gap: '16px',
-                marginBottom: '32px'
-              }}>
-                {activeRooms.map((room) => (
-                  <div
-                    key={room._id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: '16px',
-                      border: '1px solid var(--border-color)',
-                      minHeight: '140px'
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
+              <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'16px' }}>
+                <h2 style={{ margin:0, fontSize:'16px', fontWeight:'700', color:'var(--text-primary)' }}>🟢 Active Rooms You've Joined</h2>
+                <span className="badge badge-green">{activeRooms.length}</span>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))', gap:'16px', marginBottom:'28px' }}>
+                {activeRooms.map(room => (
+                  <div key={room._id} className="card card-interactive fade-in" style={{ padding:'20px', display:'flex', flexDirection:'column', minHeight:'150px', position:'relative', overflow:'hidden' }}>
+                    <div style={{ position:'absolute', top:0, left:0, right:0, height:'3px', background:'linear-gradient(90deg,#059669,#10b981)' }} />
+                    <div style={{ flex:1 }}>
+                      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'10px' }}>
+                        <h3 style={{ margin:0, fontSize:'15px', fontWeight:'700', color:'var(--text-primary)' }}>{room.name}</h3>
+                        <span className="badge badge-green" style={{ fontSize:'10px' }}>LIVE</span>
+                      </div>
+                      <p style={{ margin:'0 0 4px', fontSize:'12px', color:'var(--text-secondary)' }}>
+                        Code: <strong style={{ color:'var(--accent)', letterSpacing:'2px', fontWeight:'700' }}>{room.code}</strong>
                       </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
+                      <p style={{ margin:0, fontSize:'12px', color:'var(--text-secondary)' }}>
+                        {room.questionCount || 0} questions · {room.settings?.timeToAnswer || 30}s each
                       </p>
                     </div>
-                    <button
-                      onClick={() => navigate(`/student/session/${room.code}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: '#3b82f6',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '13px',
-                        fontWeight: '500',
-                        cursor: 'pointer'
-                      }}
-                    >
+                    <button onClick={() => navigate(`/student/session/${room.code}`)} className="btn btn-primary" style={{ marginTop:'14px', justifyContent:'center' }}>
                       🔄 Rejoin Room →
                     </button>
                   </div>

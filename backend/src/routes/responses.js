@@ -556,4 +556,66 @@ router.get('/leaderboard/:roomId', async (req, res) => {
   }
 })
 
+// ── NEW: GET /api/responses/export/:roomId — CSV export for teacher ──
+router.get('/export/:roomId', async (req, res) => {
+  try {
+    const mongoose = (await import('mongoose')).default
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const User     = (await import('../models/User.js')).default
+    const Room     = (await import('../models/Room.js')).default
+    const currentUser = req.user
+
+    const { roomId } = req.params
+    const room = await Room.findById(roomId)
+    if (!room) return res.status(404).json({ error: 'Room not found' })
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Only the room teacher can export data' })
+    }
+
+    // Fetch all responses with populated question and student
+    const responses = await Response.find({ roomId })
+      .populate('questionId', 'question options type')
+      .populate('studentId', 'name email')
+      .sort({ createdAt: 1 })
+      .lean()
+
+    // Build CSV
+    const csvRows = [
+      ['Student Name', 'Student Email', 'Question', 'Type', 'Your Answer', 'Correct Answer', 'Correct?', 'Points', 'Response Time (s)', 'Submitted At']
+    ]
+
+    for (const r of responses) {
+      const q = r.questionId
+      const student = r.studentId
+      const selectedText = q?.options?.[r.selectedOption]?.text || String(r.selectedOption)
+      const correctText = q?.options?.filter(o => o.isCorrect).map(o => o.text).join(' | ') || ''
+
+      csvRows.push([
+        student?.name || 'Unknown',
+        student?.email || '',
+        (q?.question || '').replace(/,/g, ';'),
+        q?.type || '',
+        selectedText.replace(/,/g, ';'),
+        correctText.replace(/,/g, ';'),
+        r.isCorrect ? 'Yes' : 'No',
+        r.points || 0,
+        r.responseTime || 0,
+        r.createdAt ? new Date(r.createdAt).toISOString() : ''
+      ])
+    }
+
+    const csvContent = csvRows.map(row => row.map(v => `"${v}"`).join(',')).join('\n')
+    const filename = `spandan-session-${room.code}-${new Date().toISOString().slice(0,10)}.csv`
+
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(csvContent)
+  } catch (error) {
+    console.error('Error exporting CSV:', error)
+    res.status(500).json({ error: 'Failed to export session data' })
+  }
+})
+
 export default router
+

@@ -290,12 +290,107 @@ io.on('connection', (socket) => {
     io.to(data.roomCode).emit('leaderboard:updated', data)
   })
 
+  // ── NEW: Teacher pause/resume question timer ──
+  socket.on('question:pause', (data) => {
+    io.to(data.roomCode).emit('question:paused', { questionId: data.questionId, timeLeft: data.timeLeft })
+  })
+  socket.on('question:resume', (data) => {
+    io.to(data.roomCode).emit('question:resumed', { questionId: data.questionId, timeLeft: data.timeLeft })
+  })
+
+  // ── NEW: Teacher skip question ──
+  socket.on('question:skip', (data) => {
+    io.to(data.roomCode).emit('question:skipped', { questionId: data.questionId })
+  })
+
+  // ── NEW: Teacher reveal correct answer ──
+  socket.on('answer:reveal', (data) => {
+    io.to(data.roomCode).emit('answer:revealed', { questionId: data.questionId, options: data.options })
+  })
+
+  // ── NEW: Live analytics — per-option response count broadcast ──
+  socket.on('analytics:response', (data) => {
+    io.to(data.roomCode).emit('analytics:updated', {
+      questionId: data.questionId,
+      optionIndex: data.optionIndex,
+      counts: data.counts
+    })
+  })
+
+  // ── NEW: Raise Hand ──
+  // Student raises hand — teacher sees their name + timestamp
+  socket.on('raise:hand', (data) => {
+    // data: { roomCode, userId, userName }
+    io.to(data.roomCode).emit('hand:raised', { userId: data.userId, userName: data.userName, at: Date.now() })
+  })
+  socket.on('hand:lower', (data) => {
+    io.to(data.roomCode).emit('hand:lowered', { userId: data.userId })
+  })
+
+  // ── NEW: Teacher Announcement ──
+  // Teacher broadcasts a text message shown as a banner to all students
+  socket.on('teacher:announce', (data) => {
+    // data: { roomCode, message, type } — type: 'info'|'warning'|'success'
+    io.to(data.roomCode).emit('announcement:received', {
+      message: data.message,
+      type: data.type || 'info',
+      at: Date.now()
+    })
+  })
+
+  // ── NEW: Instant Opinion Poll ──
+  // Teacher sends a quick poll (no right answer) — thumbs or 1-5 rating
+  socket.on('instant:poll', (data) => {
+    // data: { roomCode, pollId, question, type } — type: 'thumbs'|'rating'
+    io.to(data.roomCode).emit('instant:poll:started', {
+      pollId: data.pollId,
+      question: data.question,
+      type: data.type || 'thumbs'
+    })
+  })
+  socket.on('instant:poll:response', (data) => {
+    // data: { roomCode, pollId, userId, value }
+    io.to(data.roomCode).emit('instant:poll:vote', {
+      pollId: data.pollId,
+      userId: data.userId,
+      value: data.value
+    })
+  })
+  socket.on('instant:poll:end', (data) => {
+    io.to(data.roomCode).emit('instant:poll:ended', { pollId: data.pollId })
+  })
+
+  // ── NEW: Question Difficulty Feedback ──
+  // After each question, students rate difficulty — teacher sees aggregate
+  socket.on('difficulty:feedback', (data) => {
+    // data: { roomCode, questionId, userId, rating } — rating: 'easy'|'medium'|'hard'
+    io.to(data.roomCode).emit('difficulty:voted', {
+      questionId: data.questionId,
+      userId: data.userId,
+      rating: data.rating
+    })
+  })
+
+  // ── NEW: Emoji Reactions ──
+  socket.on('reaction:send', (data) => {
+    // data: { roomCode, userId, userName, emoji }
+    io.to(data.roomCode).emit('reaction:received', {
+      id: `${socket.id}_${Date.now()}`,
+      emoji: data.emoji,
+      userId: data.userId,
+      userName: data.userName
+    })
+  })
+
   socket.on('disconnect', () => {
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
 })
+
+
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

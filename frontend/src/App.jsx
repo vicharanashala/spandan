@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import PostSessionReview from './pages/PostSessionReview'
 import { API_URL } from './config.js'
 
 function App() {
@@ -189,6 +190,11 @@ function App() {
         <Route path="/student/session/:roomCode" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentRoomPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/review/:roomId" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <PostSessionReview />
           </ProtectedRoute>
         } />
       </Routes>
