@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react'
-import { getAIProviders } from '../services/questionService'
+import { aiConfigApi } from '../lib/api.js'
 
 const DIFFICULTY_LEVELS = ['easy', 'medium', 'hard']
 const SEGMENT_TIMES = [1, 2, 3, 5, 10, 15, 20, 30]
+const AI_PROVIDER_OPTIONS = [
+  { id: 'minimax', name: 'MiniMax', icon: 'AI' },
+  { id: 'openai', name: 'OpenAI', icon: 'AI' },
+  { id: 'anthropic', name: 'Claude', icon: 'AI' },
+  { id: 'google', name: 'Gemini', icon: 'AI' }
+]
 
 function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings)
-  const [providers, setProviders] = useState([])
+  const [providerStatus, setProviderStatus] = useState({})
   const [loadingProviders, setLoadingProviders] = useState(false)
 
   useEffect(() => {
@@ -19,15 +25,42 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const loadProviders = async () => {
     setLoadingProviders(true)
     try {
-      const data = await getAIProviders()
-      if (data.success) {
-        setProviders(data.providers)
-      }
+      const data = await aiConfigApi.getStatus()
+      const combinedStatus = AI_PROVIDER_OPTIONS.reduce((acc, provider) => {
+        const personalStatus = data.providers?.[provider.id] || {}
+        const globalStatus = data.globalProviders?.[provider.id] || {}
+        acc[provider.id] = !!(
+          personalStatus.hasKey ||
+          personalStatus.hasEnvFallback ||
+          globalStatus.hasKey ||
+          globalStatus.hasEnvFallback
+        )
+        return acc
+      }, {})
+
+      setProviderStatus(combinedStatus)
     } catch (error) {
       console.error('Failed to load AI providers:', error)
+      setProviderStatus({})
+    } finally {
+      setLoadingProviders(false)
     }
-    setLoadingProviders(false)
   }
+
+  useEffect(() => {
+    if (!isOpen || loadingProviders) return
+
+    const selectedProvider = localSettings?.questionProvider || 'minimax'
+    const selectedProviderConfigured = providerStatus[selectedProvider]
+    const availableProvider = AI_PROVIDER_OPTIONS.find(provider => providerStatus[provider.id])
+
+    if (!selectedProviderConfigured && availableProvider) {
+      setLocalSettings(prev => ({
+        ...prev,
+        questionProvider: availableProvider.id
+      }))
+    }
+  }, [isOpen, loadingProviders, providerStatus, localSettings?.questionProvider])
 
   const handleSave = () => {
     onSave(localSettings)
@@ -259,9 +292,9 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             {loadingProviders ? (
               <option value="">Loading providers...</option>
             ) : (
-              providers.map(p => (
-                <option key={p.id} value={p.id} disabled={!p.enabled}>
-                  {p.icon} {p.name} {!p.enabled && '(No API Key)'}
+              AI_PROVIDER_OPTIONS.map(provider => (
+                <option key={provider.id} value={provider.id} disabled={!providerStatus[provider.id]}>
+                  {provider.icon} {provider.name} {providerStatus[provider.id] ? '(Configured) - Ready' : '(No API Key)'}
                 </option>
               ))
             )}

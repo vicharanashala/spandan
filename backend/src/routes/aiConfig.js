@@ -21,6 +21,20 @@ function providerStatus(encryptedAiKeys = {}, envKeys = {}) {
   }, {})
 }
 
+function configuredStatus(personalProviders = {}, globalProviders = {}) {
+  return PROVIDERS.reduce((acc, provider) => {
+    const personalStatus = personalProviders[provider] || {}
+    const globalStatus = globalProviders[provider] || {}
+    acc[provider] = !!(
+      personalStatus.hasKey ||
+      personalStatus.hasEnvFallback ||
+      globalStatus.hasKey ||
+      globalStatus.hasEnvFallback
+    )
+    return acc
+  }, {})
+}
+
 function getEnvKeys() {
   return {
     minimax: config.minimaxApiKey,
@@ -35,10 +49,14 @@ router.get('/', async (req, res) => {
     const user = await User.findById(req.user._id).select('+encryptedAiKeys').lean()
     const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
 
+    const providers = providerStatus(user?.encryptedAiKeys, getEnvKeys())
+    const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+
     res.json({
       success: true,
-      providers: providerStatus(user?.encryptedAiKeys, getEnvKeys()),
-      globalProviders: providerStatus(globalConfig?.encryptedAiKeys, {})
+      providers,
+      globalProviders,
+      configured: configuredStatus(providers, globalProviders)
     })
   } catch (error) {
     console.error('AI config status error:', error)
@@ -81,10 +99,14 @@ const saveAiConfig = async (req, res) => {
     const user = await User.findById(req.user._id).select('+encryptedAiKeys').lean()
     const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
 
+    const providers = providerStatus(user?.encryptedAiKeys, getEnvKeys())
+    const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+
     res.json({
       success: true,
-      providers: providerStatus(user?.encryptedAiKeys, getEnvKeys()),
-      globalProviders: providerStatus(globalConfig?.encryptedAiKeys, {})
+      providers,
+      globalProviders,
+      configured: configuredStatus(providers, globalProviders)
     })
   } catch (error) {
     console.error('AI config save error:', error)
