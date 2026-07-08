@@ -14,6 +14,9 @@ import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import LiveAnalyticsBar from '../components/LiveAnalyticsBar'
 import TeacherToolsPanel from '../components/TeacherToolsPanel'
+import QRCodeCard from '../components/QRCodeCard'
+import LiveParticipants from '../components/LiveParticipants'
+import LiveQnABoard from '../components/LiveQnABoard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -109,6 +112,7 @@ function RoomDetailPage() {
   const [activePollId, setActivePollId] = useState(null)       // currently running instant poll id
   const [instantPollVotes, setInstantPollVotes] = useState({}) // aggregated vote counts
   const [difficultyFeedback, setDifficultyFeedback] = useState({}) // questionId -> {easy,medium,hard} // per-option counts array
+  const [participants, setParticipants] = useState([])         // list of live participants
 
   useEffect(() => {
     if (token) {
@@ -147,13 +151,28 @@ function RoomDetailPage() {
     const handleRoomLeft = (data) => {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
+    
+    const handleParticipantJoined = (user) => {
+      setParticipants(prev => {
+        if (prev.find(p => p.id === user.id)) return prev
+        return [...prev, user]
+      })
+    }
+    
+    const handleParticipantLeft = (user) => {
+      setParticipants(prev => prev.filter(p => p.id !== user.id))
+    }
 
     socket.on('room:joined', handleRoomJoined)
     socket.on('room:left', handleRoomLeft)
+    socket.on('participant:joined', handleParticipantJoined)
+    socket.on('participant:left', handleParticipantLeft)
 
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
+      socket.off('participant:joined', handleParticipantJoined)
+      socket.off('participant:left', handleParticipantLeft)
     }
   }, [socket])
 
@@ -1806,15 +1825,22 @@ function RoomDetailPage() {
               </div>
             )}
             </div>
-            {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Leaderboard
-                </span>
+            {/* Right sidebar - flexible width */}
+            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+              
+              <QRCodeCard roomCode={room.code} compact={false} />
+              
+              <LiveParticipants participants={participants} />
+              
+              <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '20px' }}>🏆</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Leaderboard
+                  </span>
+                </div>
+                <Leaderboard roomId={room?._id} token={token} socket={socket} />
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
             </div>
           </div>
         </div>
@@ -1939,6 +1965,9 @@ function RoomDetailPage() {
           isLast={true}
         />
       )}
+
+      {/* ── NEW: Live Q&A Board ── */}
+      <LiveQnABoard socket={socket} roomCode={room?.code} isTeacher={true} userName={user?.name || 'Teacher'} />
 
       <style>{`
         @keyframes blink {

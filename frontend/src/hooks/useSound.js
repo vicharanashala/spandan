@@ -64,11 +64,34 @@ export default function useSound() {
     beep(400, 0.12, 'sine', 0.08, 0.08)
   }, [beep])
 
+  const bgMusicRef = useRef(null)
+
+  const toggleBgMusic = useCallback((play) => {
+    if (!enabledRef.current) return
+    
+    if (play) {
+      if (!bgMusicRef.current) {
+        // Use a stable ambient track
+        bgMusicRef.current = new Audio('https://actions.google.com/sounds/v1/ambiences/coffee_shop.ogg')
+        bgMusicRef.current.loop = true
+        bgMusicRef.current.volume = 0.2
+      }
+      bgMusicRef.current.play().catch(e => console.log('Audio play prevented', e))
+    } else {
+      if (bgMusicRef.current) {
+        bgMusicRef.current.pause()
+      }
+    }
+  }, [])
+
   const toggle = useCallback(() => {
     enabledRef.current = !enabledRef.current
     localStorage.setItem('spandan_sound', enabledRef.current ? 'on' : 'off')
+    if (!enabledRef.current && bgMusicRef.current) {
+      bgMusicRef.current.pause()
+    }
     return enabledRef.current
   }, [])
 
-  return { playCorrect, playWrong, playTick, playSuccess, playWhoosh, toggle, enabled: enabledRef }
+  return { playCorrect, playWrong, playTick, playSuccess, playWhoosh, toggleBgMusic, toggle, enabled: enabledRef }
 }

@@ -26,11 +26,13 @@ export default function TeacherToolsPanel({
   const [annType, setAnnType] = useState('info')
   const [pollQ, setPollQ] = useState('')
   const [pollType, setPollType] = useState('thumbs')
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false)
 
   const TABS = [
     { key: 'hands',    icon: '✋', label: `Hands (${raisedHands.length})` },
     { key: 'announce', icon: '📢', label: 'Announce'  },
     { key: 'poll',     icon: '📊', label: 'Poll'      },
+    { key: 'music',    icon: '🎵', label: 'Music'     },
   ]
 
   const sendAnnouncement = () => {
@@ -216,6 +218,30 @@ export default function TeacherToolsPanel({
                 </button>
               </div>
             )}
+          </div>
+        )}
+        {/* MUSIC TAB */}
+        {tab === 'music' && (
+          <div style={{ textAlign: 'center', padding: '10px 0' }}>
+            <div style={{ fontSize: '32px', marginBottom: '12px' }}>🎵</div>
+            <h4 style={{ margin: '0 0 8px', color: 'var(--text-primary)' }}>Ambient Focus Music</h4>
+            <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+              Play a lo-fi focus track synchronously across all student devices to help them concentrate during polls.
+            </p>
+            <button 
+              onClick={() => {
+                const nextState = !isMusicPlaying
+                setIsMusicPlaying(nextState)
+                socket?.emit('room:music:toggle', { roomCode, isPlaying: nextState })
+              }}
+              style={{
+                width: '100%', padding: '10px', 
+                background: isMusicPlaying ? 'linear-gradient(135deg,#991b1b,#dc2626)' : 'linear-gradient(135deg,#4c1d95,#7c3aed)',
+                color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', fontSize: '13px', cursor: 'pointer',
+              }}
+            >
+              {isMusicPlaying ? '⏹ Stop Music' : '▶ Play Music'}
+            </button>
           </div>
         )}
       </div>

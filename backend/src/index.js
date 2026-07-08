@@ -178,11 +178,19 @@ io.on('connection', (socket) => {
             { upsert: true, new: true }
           )
           console.log(`Student ${userId} added to room members for room ${roomCode}`)
+          
+          // Emit participant details
+          io.to(roomCode).emit('participant:joined', {
+            id: user._id,
+            name: user.name,
+            level: user.level || 1,
+            status: 'online'
+          })
+          io.to(roomCode).emit('participant:count', await RoomMember.countDocuments({ roomId: room._id }))
         }
         
         // Count participants from RoomMember (excludes teacher)
-        const memberCount = await RoomMember.countDocuments({ roomId: room._id })
-        participantCount = memberCount
+        participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
       
       io.to(roomCode).emit('room:joined', { 
@@ -219,8 +227,14 @@ io.on('connection', (socket) => {
         // Remove student from room members
         await RoomMember.deleteOne({ roomId: room._id, studentId: user._id })
         
+        // Emit participant left
+        io.to(roomCode).emit('participant:left', {
+          id: user._id
+        })
+        
         // Recount remaining participants
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        io.to(roomCode).emit('participant:count', participantCount)
       }
       
       io.to(roomCode).emit('room:left', { 
@@ -283,6 +297,25 @@ io.on('connection', (socket) => {
     } else {
       console.error('new_question event missing roomCode or question:', data)
     }
+  })
+
+  // Toggle ambient focus music
+  socket.on('room:music:toggle', ({ roomCode, isPlaying }) => {
+    io.to(roomCode).emit('room:music:state', { isPlaying })
+  })
+
+  // ── QnA Board Events ──
+  socket.on('qna:submit', ({ roomCode, qnaId, text, authorName }) => {
+    // broadcast to everyone in the room
+    io.to(roomCode).emit('qna:new', { id: qnaId, text, authorName, upvotes: 0, answered: false, createdAt: Date.now() })
+  })
+  
+  socket.on('qna:upvote', ({ roomCode, qnaId }) => {
+    io.to(roomCode).emit('qna:upvoted', { qnaId })
+  })
+  
+  socket.on('qna:answer', ({ roomCode, qnaId }) => {
+    io.to(roomCode).emit('qna:answered', { qnaId })
   })
 
   // Leaderboard update

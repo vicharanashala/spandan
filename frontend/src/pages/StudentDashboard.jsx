@@ -6,6 +6,7 @@ import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import PerformanceChart from '../components/PerformanceChart'
 import { API_URL } from '../config.js'
 
 function StudentDashboard() {
@@ -72,13 +73,31 @@ function StudentDashboard() {
 
         {/* ── Header ── */}
         <header style={{ background:'var(--header-bg)', color:'white', padding:'18px 32px', boxShadow:'0 4px 24px rgba(0,0,0,.25)' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap: 'wrap', gap: '20px' }}>
             <div>
               <h1 style={{ margin:0, fontSize:'22px', fontWeight:'800', letterSpacing:'-.4px' }}>
                 🎓 Welcome, {user?.name || 'Student'}!
               </h1>
               <p style={{ margin:'3px 0 0', opacity:.75, fontSize:'13px' }}>Join rooms and participate in live polls</p>
             </div>
+            
+            {/* Gamification Progress */}
+            <div style={{ flex: 1, maxWidth: '300px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', fontWeight: '700' }}>
+                <span style={{ color: '#a78bfa' }}>⭐ Level {user?.level || 1}</span>
+                <span style={{ opacity: 0.8 }}>{user?.xp || 0} / {(user?.level || 1) * 500} XP</span>
+              </div>
+              <div style={{ height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+                <div style={{ 
+                  height: '100%', 
+                  width: `${Math.min(100, ((user?.xp || 0) / ((user?.level || 1) * 500)) * 100)}%`, 
+                  background: 'linear-gradient(90deg, #8b5cf6, #d946ef)',
+                  borderRadius: '4px',
+                  transition: 'width 0.5s ease-out'
+                }} />
+              </div>
+            </div>
+
             <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
               <ThemeToggle />
               <ProfileDropdown />
@@ -88,20 +107,46 @@ function StudentDashboard() {
 
         <div style={{ flex:1, padding:'28px 32px' }}>
 
-          {/* ── Stat Cards ── */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:'16px', marginBottom:'28px' }}>
-            {[
-              { icon:'📚', label:'Rooms Joined',  value:stats.totalRooms,  color:'#7c3aed' },
-              { icon:'✅', label:'Polls Taken',   value:stats.pollsTaken,  color:'#059669' },
-              { icon:'❌', label:'Polls Missed',  value:stats.pollsMissed, color:'#dc2626' },
-              { icon:'📈', label:'Score %',       value:`${stats.average}%`, color:'#2563eb' },
-            ].map(({ icon, label, value, color }) => (
-              <div key={label} className="stat-card fade-in">
-                <div style={{ fontSize:'28px', marginBottom:'10px' }}>{icon}</div>
-                <div style={{ fontSize:'30px', fontWeight:'800', color, lineHeight:1 }}>{value}</div>
-                <div style={{ fontSize:'12px', color:'var(--text-secondary)', marginTop:'6px', fontWeight:'500' }}>{label}</div>
+          {/* ── Dashboard Stats & Chart ── */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))', gap:'24px', marginBottom:'28px' }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px', flex:1 }}>
+                {[
+                  { icon:'📚', label:'Rooms Joined',  value:stats.totalRooms,  color:'#7c3aed' },
+                  { icon:'📈', label:'Average Score', value:`${stats.average}%`, color:'#2563eb' },
+                ].map(({ icon, label, value, color }) => (
+                  <div key={label} className="stat-card fade-in" style={{ padding:'16px' }}>
+                    <div style={{ fontSize:'24px', marginBottom:'6px' }}>{icon}</div>
+                    <div style={{ fontSize:'24px', fontWeight:'800', color, lineHeight:1 }}>{value}</div>
+                    <div style={{ fontSize:'11px', color:'var(--text-secondary)', marginTop:'6px', fontWeight:'600', textTransform:'uppercase' }}>{label}</div>
+                  </div>
+                ))}
               </div>
-            ))}
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px', flex:1 }}>
+                {[
+                  { icon:'✅', label:'Polls Taken',   value:stats.pollsTaken,  color:'#059669' },
+                  { icon:'❌', label:'Polls Missed',  value:stats.pollsMissed, color:'#dc2626' },
+                ].map(({ icon, label, value, color }) => (
+                  <div key={label} className="stat-card fade-in" style={{ padding:'16px' }}>
+                    <div style={{ fontSize:'24px', marginBottom:'6px' }}>{icon}</div>
+                    <div style={{ fontSize:'24px', fontWeight:'800', color, lineHeight:1 }}>{value}</div>
+                    <div style={{ fontSize:'11px', color:'var(--text-secondary)', marginTop:'6px', fontWeight:'600', textTransform:'uppercase' }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {/* Performance Chart */}
+            <div className="card fade-in" style={{ padding:'20px', display:'flex', flexDirection:'column' }}>
+              <h2 className="section-title" style={{ marginBottom:'8px' }}>📊 Activity Overview</h2>
+              <div style={{ flex:1, minHeight:'180px' }}>
+                <PerformanceChart data={[
+                  { label: 'Rooms', value: stats.totalRooms, color: 'linear-gradient(135deg,#4c1d95,#7c3aed)' },
+                  { label: 'Taken', value: stats.pollsTaken, color: 'linear-gradient(135deg,#065f46,#10b981)' },
+                  { label: 'Missed', value: stats.pollsMissed, color: 'linear-gradient(135deg,#991b1b,#ef4444)' }
+                ]} height={160} />
+              </div>
+            </div>
           </div>
 
           {/* ── Quick Join ── */}

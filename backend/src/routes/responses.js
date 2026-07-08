@@ -98,12 +98,43 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+    // Gamification XP & Levels logic
+    let xpAwarded = 0
+    let leveledUp = false
+    let newLevel = 1
+    
+    if (isCorrect && points > 0) {
+      const User = (await import('../models/User.js')).default
+      const userDoc = await User.findById(studentId)
+      
+      if (userDoc) {
+        xpAwarded = points // 1 point = 1 XP
+        userDoc.xp += xpAwarded
+        
+        // Level threshold logic: Level N requires N * 500 XP
+        // Example: Level 1 -> 2 needs 500 XP total. Level 2 -> 3 needs 1000 XP total.
+        const requiredXpForNextLevel = userDoc.level * 500
+        
+        if (userDoc.xp >= requiredXpForNextLevel) {
+          userDoc.level += 1
+          userDoc.xp -= requiredXpForNextLevel
+          leveledUp = true
+          newLevel = userDoc.level
+        }
+        
+        await userDoc.save()
+      }
+    }
+
     res.status(201).json({
       success: true,
       response: {
         ...response.toObject(),
         isCorrect,
-        points
+        points,
+        xpAwarded,
+        leveledUp,
+        newLevel
       }
     })
   } catch (error) {

@@ -17,6 +17,7 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import PostSessionReview from './pages/PostSessionReview'
+import TeacherAnalytics from './pages/TeacherAnalytics'
 import { API_URL } from './config.js'
 
 function App() {
@@ -130,6 +131,11 @@ function App() {
         <Route path="/teacher" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <DashboardPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/analytics" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherAnalytics />
           </ProtectedRoute>
         } />
         <Route path="/teacher/create-room" element={

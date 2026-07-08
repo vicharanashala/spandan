@@ -21,6 +21,51 @@ router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema),
   }
 })
 
+// Get global teacher analytics
+router.get('/analytics', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const Response = (await import('../models/Response.js')).default
+    
+    const teacherId = req.user._id
+
+    // Get all rooms for this teacher
+    const rooms = await Room.find({ teacher: teacherId })
+    const roomIds = rooms.map(r => r._id)
+
+    // Aggregate overall response correctness
+    const responses = await Response.find({ roomId: { $in: roomIds } })
+    const totalResponses = responses.length
+    const correctResponses = responses.filter(r => r.isCorrect).length
+
+    // Aggregate questions
+    const questions = await Question.find({ roomId: { $in: roomIds } })
+    
+    // Most difficult questions (lowest correct percentage)
+    const questionStats = questions.map(q => {
+      const qResponses = responses.filter(r => r.questionId.toString() === q._id.toString())
+      const total = qResponses.length
+      const correct = qResponses.filter(r => r.isCorrect).length
+      return {
+        question: q.question,
+        total,
+        correctPct: total > 0 ? (correct / total) * 100 : 0
+      }
+    }).filter(q => q.total > 0).sort((a, b) => a.correctPct - b.correctPct).slice(0, 5)
+
+    res.json({
+      totalRooms: rooms.length,
+      totalQuestions: questions.length,
+      totalResponses,
+      averageCorrect: totalResponses > 0 ? Math.round((correctResponses / totalResponses) * 100) : 0,
+      difficultQuestions: questionStats
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Get rooms for current teacher
 router.get('/', authenticate, async (req, res) => {
   try {

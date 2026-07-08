@@ -13,6 +13,8 @@ import AnnouncementBanner from '../components/AnnouncementBanner'
 import InstantPoll from '../components/InstantPoll'
 import DifficultyRater from '../components/DifficultyRater'
 import FloatingReactions from '../components/FloatingReactions'
+import SessionNotepad from '../components/SessionNotepad'
+import LiveQnABoard from '../components/LiveQnABoard'
 import useSound from '../hooks/useSound'
 import { API_URL } from '../config.js'
 
@@ -55,10 +57,11 @@ function StudentRoomPage() {
   const [activeInstantPoll, setActiveInstantPoll] = useState(null) // { pollId, question, type }
   const [difficultyQId, setDifficultyQId] = useState(null) // show rater after answering
 
-  // ── NEW: Reactions, Sound, Session Clock ──
+  // ── NEW: Reactions, Sound, Session Clock, Participant Count ──
   const [incomingReactions, setIncomingReactions] = useState([])  // for FloatingReactions
   const [soundOn, setSoundOn] = useState(localStorage.getItem('spandan_sound') !== 'off')
   const [sessionElapsed, setSessionElapsed] = useState(0)          // seconds since joined
+  const [participantCount, setParticipantCount] = useState(1)      // live count in header
   const sessionStartRef = useRef(Date.now())
   const sound = useSound()
 
@@ -99,19 +102,32 @@ function StudentRoomPage() {
     if (!token || !socket) return
     setAuthToken(token)
     joinSession()
+
+    // Handle reconnections to auto-rejoin
+    const handleConnect = () => {
+      joinSession()
+    }
+    socket.on('connect', handleConnect)
+
     return () => {
+      socket.off('connect', handleConnect)
       if (room?.code) leaveRoom(room.code, user._id)
     }
   }, [token, socket])
 
-  // Reaction socket listener
+  // Reaction & Participant socket listeners
   useEffect(() => {
     if (!socket) return
-    const handleReaction = (data) => {
-      setIncomingReactions(prev => [...prev, data])
-    }
+    const handleReaction = (data) => setIncomingReactions(prev => [...prev, data])
+    const handleParticipantCount = (count) => setParticipantCount(count)
+    
     socket.on('reaction:received', handleReaction)
-    return () => socket.off('reaction:received', handleReaction)
+    socket.on('participant:count', handleParticipantCount)
+    
+    return () => {
+      socket.off('reaction:received', handleReaction)
+      socket.off('participant:count', handleParticipantCount)
+    }
   }, [socket])
 
   useEffect(() => {
@@ -239,6 +255,9 @@ function StudentRoomPage() {
             setCurrentQuestion(null)
             return 0
           }
+          if (prev <= 6) {
+            sound.playTick()
+          }
           return prev - 1
         })
       }, 1000)
@@ -276,15 +295,20 @@ function StudentRoomPage() {
     const handleInstantPollStarted = (poll) => setActiveInstantPoll(poll)
     const handleInstantPollEnded   = ()     => setActiveInstantPoll(null)
 
-    // \u2500\u2500 NEW: Hand lowered by teacher \u2500\u2500
     const handleHandLowered = ({ userId }) => {
       if (userId === user?._id?.toString()) setHandRaised(false)
+    }
+
+    // ── NEW: Background Music ──
+    const handleMusicState = ({ isPlaying }) => {
+      sound.toggleBgMusic(isPlaying)
     }
 
     socket.on('announcement:received',  handleAnnouncement)
     socket.on('instant:poll:started',   handleInstantPollStarted)
     socket.on('instant:poll:ended',     handleInstantPollEnded)
     socket.on('hand:lowered',           handleHandLowered)
+    socket.on('room:music:state',       handleMusicState)
 
     socket.on('room:ended', () => {
       navigate(`/student/review/${room?._id}`)
@@ -302,7 +326,10 @@ function StudentRoomPage() {
       socket.off('instant:poll:started', handleInstantPollStarted)
       socket.off('instant:poll:ended', handleInstantPollEnded)
       socket.off('hand:lowered', handleHandLowered)
+      socket.off('room:music:state', handleMusicState)
       socket.off('room:ended')
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+      sound.toggleBgMusic(false)
     }
   }, [socket, navigate, room?._id])
 
@@ -410,6 +437,9 @@ function StudentRoomPage() {
                 fetchPastResponses(roomId, studentId)
                 setCurrentQuestion(null)
                 return 0
+              }
+              if (prev <= 6) {
+                sound.playTick()
               }
               return prev - 1
             })
@@ -670,6 +700,25 @@ function StudentRoomPage() {
         <header style={{background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 55%,#4c1d95 100%)',color:'white',padding:'14px 32px',boxShadow:'0 4px 24px rgba(0,0,0,.25)'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div style={{display:'flex',alignItems:'center',gap:'14px'}}>
+              {/* Session clock */}
+              <div style={{
+                background: 'rgba(255,255,255,.08)', border: '1px solid rgba(255,255,255,.14)',
+                borderRadius: '10px', padding: '5px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center',
+              }}>
+                <span style={{fontSize:'9px',opacity:.5,fontWeight:'700',letterSpacing:'.8px',textTransform:'uppercase'}}>Session</span>
+                <span style={{fontSize:'15px',fontWeight:'900',letterSpacing:'1px',fontVariantNumeric:'tabular-nums'}}>{formatElapsed(sessionElapsed)}</span>
+              </div>
+              
+              {/* Participant Count */}
+              <div style={{
+                background: 'rgba(255,255,255,.08)', border: '1px solid rgba(255,255,255,.14)',
+                borderRadius: '10px', padding: '5px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center',
+              }} title="Live Participants">
+                <span style={{fontSize:'9px',opacity:.5,fontWeight:'700',letterSpacing:'.8px',textTransform:'uppercase'}}>Live</span>
+                <span style={{fontSize:'15px',fontWeight:'900',letterSpacing:'1px',display:'flex',alignItems:'center',gap:'4px'}}>
+                  👥 {participantCount}
+                </span>
+              </div>
               <div>
                 <h1 style={{margin:0,fontSize:'20px',fontWeight:'700',letterSpacing:'-.3px'}}>📚 {room.name}</h1>
                 <div style={{display:'flex',alignItems:'center',gap:'8px',marginTop:'3px'}}>
@@ -993,6 +1042,12 @@ function StudentRoomPage() {
           )}
         </div>
       </div>
+      
+      {/* Floating Notepad */}
+      <SessionNotepad roomCode={room.code} />
+      {/* ── NEW: Live Q&A Board ── */}
+      <LiveQnABoard socket={socket} roomCode={room?.code} isTeacher={false} userName={user?.name || 'Student'} />
+
     </div>
   )
 }

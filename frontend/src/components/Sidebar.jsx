@@ -5,6 +5,7 @@ import SpandanIcon from './SpandanIcon'
 const menuItems = {
   teacher: [
     { id: 'dashboard',     label: 'Dashboard',     icon: '📊', path: '/teacher' },
+    { id: 'analytics',     label: 'Analytics',     icon: '📈', path: '/teacher/analytics' },
     { id: 'create-room',   label: 'Create Room',   icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room',   label: 'Manage Room',   icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history',  label: 'Room History',  icon: '📜', path: '/teacher/room-history' },
@@ -62,10 +63,10 @@ export default function Sidebar({ user }) {
         </div>
 
         {/* Nav */}
-        <nav style={{ flex: 1, padding: '12px 10px', overflowY: 'auto' }}>
-          <p style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1.2px', padding: '6px 8px 10px' }}>
+        <nav style={{ flex: 1, padding: '16px 12px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '10px', fontWeight: '800', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1.2px', padding: '0 8px 8px' }}>
             Navigation
-          </p>
+          </div>
           {items.map((item) => {
             const active = isActive(item)
             return (
@@ -73,30 +74,28 @@ export default function Sidebar({ user }) {
                 key={item.id}
                 onClick={() => navigate(item.path)}
                 style={{
-                  width: '100%',
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '10px 12px',
-                  marginBottom: '3px',
-                  background: active ? 'linear-gradient(135deg, #4c1d95, #7c3aed)' : 'transparent',
-                  border: 'none',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                  color: active ? 'white' : 'var(--text-secondary)',
-                  fontSize: '13px',
-                  fontWeight: active ? '700' : '500',
-                  textAlign: 'left',
-                  transition: 'all 0.18s ease',
-                  boxShadow: active ? '0 4px 14px rgba(124,58,237,.3)' : 'none',
-                  position: 'relative',
+                  position: 'relative', width: '100%',
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  padding: '10px 14px', borderRadius: '10px',
+                  background: active ? 'var(--nav-active)' : 'transparent',
+                  color: active ? '#fff' : 'var(--text-secondary)',
+                  border: 'none', cursor: 'pointer',
+                  textAlign: 'left', fontWeight: active ? '700' : '600',
+                  fontSize: '13px', transition: 'all 0.2s',
+                  boxShadow: active ? '0 4px 12px rgba(124,58,237,.25)' : 'none',
                 }}
-                onMouseOver={(e) => { if (!active) { e.currentTarget.style.background = 'var(--nav-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
-                onMouseOut={(e)  => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
+                onMouseEnter={e => !active && (e.currentTarget.style.background = 'var(--nav-hover)')}
+                onMouseLeave={e => !active && (e.currentTarget.style.background = 'transparent')}
               >
-                <span style={{ fontSize: '16px', width: '22px', textAlign: 'center', flexShrink: 0 }}>{item.icon}</span>
-                <span>{item.label}</span>
                 {active && (
-                  <span style={{ marginLeft: 'auto', width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(255,255,255,.7)' }} />
+                  <div style={{
+                    position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)',
+                    width: '4px', height: '20px', background: '#fff',
+                    borderRadius: '0 4px 4px 0', animation: 'slideRight 0.3s ease'
+                  }} />
                 )}
+                <span style={{ fontSize: '16px', filter: active ? 'drop-shadow(0 2px 4px rgba(0,0,0,.2))' : 'none' }}>{item.icon}</span>
+                <span style={{ letterSpacing: '.3px' }}>{item.label}</span>
               </button>
             )
           })}
