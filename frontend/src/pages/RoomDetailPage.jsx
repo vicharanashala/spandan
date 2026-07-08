@@ -893,7 +893,13 @@ function RoomDetailPage() {
           question: questionData.question,
           options: questionData.options,
           timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
-          points: questionData.points || roomSettings.points || 100,
+          correctPoints: questionData.correctPoints !== undefined ? questionData.correctPoints : (roomSettings.points || 10),
+          incorrectPoints: questionData.incorrectPoints || 0,
+          imageUrl: questionData.imageUrl,
+          matrixRows: questionData.matrixRows,
+          matrixColumns: questionData.matrixColumns,
+          categories: questionData.categories,
+          subQuestions: questionData.subQuestions,
           status: 'approved'
         })
       })
@@ -1523,6 +1529,13 @@ function RoomDetailPage() {
                           <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
                             {q.question}
                           </p>
+                          {q.imageUrl && (
+                            <img 
+                              src={q.imageUrl} 
+                              alt="Question" 
+                              style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', marginBottom: '12px' }}
+                            />
+                          )}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {(q.options || []).map((opt, optIdx) => {
                               const letter = String.fromCharCode(65 + optIdx)

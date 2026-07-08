@@ -181,13 +181,18 @@ function getQuestionTypeMix(numQuestions) {
   } else if (numQuestions === 3) {
     types.push('MCQ', 'TF', 'MSQ')
   } else {
-    const mcqCount = Math.round(numQuestions * 0.5)
-    const tfCount = Math.round(numQuestions * 0.3)
-    const msqCount = numQuestions - mcqCount - tfCount
+    const rankingCount = Math.round(numQuestions * 0.1)
+    const categoryCount = Math.round(numQuestions * 0.1)
+    const remainingForCore = numQuestions - rankingCount - categoryCount
+    const mcqCount = Math.round(remainingForCore * 0.5)
+    const tfCount = Math.round(remainingForCore * 0.3)
+    const msqCount = remainingForCore - mcqCount - tfCount
     
     for (let i = 0; i < mcqCount; i++) types.push('MCQ')
     for (let i = 0; i < tfCount; i++) types.push('TF')
     for (let i = 0; i < msqCount; i++) types.push('MSQ')
+    for (let i = 0; i < rankingCount; i++) types.push('RANKING')
+    for (let i = 0; i < categoryCount; i++) types.push('CATEGORIZATION')
   }
   
   return types.slice(0, numQuestions)
@@ -226,6 +231,10 @@ function buildQuestionPrompt(transcript, questionTypes, difficulty) {
         return `${index + 1}. T/F: Create a True or False question. Mark the correct answer.`
       case 'MSQ':
         return `${index + 1}. MSQ: Create a multiple select question with multiple correct answers (2-4 correct options). Mark ALL correct options.`
+      case 'RANKING':
+        return `${index + 1}. RANKING: Create a question asking to rank 4 items in chronological or logical order. Provide the items in the correct order in the options array.`
+      case 'CATEGORIZATION':
+        return `${index + 1}. CATEGORIZATION: Create a question asking to categorize 4 items into 2-3 categories. Provide the 'categories' array and set 'categoryId' (0-indexed) for each option.`
       default:
         return ''
     }
@@ -274,6 +283,30 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
         { "text": "Option D", "isCorrect": false }
       ],
       "explanation": "Brief explanation of which options are correct"
+    }
+    },
+    {
+      "type": "RANKING",
+      "question": "Rank these items from oldest to newest:",
+      "options": [
+        { "text": "Oldest item", "isCorrect": true },
+        { "text": "Second oldest", "isCorrect": true },
+        { "text": "Third oldest", "isCorrect": true },
+        { "text": "Newest item", "isCorrect": true }
+      ],
+      "explanation": "Brief explanation of the order"
+    },
+    {
+      "type": "CATEGORIZATION",
+      "question": "Categorize these items:",
+      "categories": ["Fruits", "Vegetables"],
+      "options": [
+        { "text": "Apple", "isCorrect": true, "categoryId": 0 },
+        { "text": "Carrot", "isCorrect": true, "categoryId": 1 },
+        { "text": "Banana", "isCorrect": true, "categoryId": 0 },
+        { "text": "Broccoli", "isCorrect": true, "categoryId": 1 }
+      ],
+      "explanation": "Brief explanation of categories"
     }
   ]
 }

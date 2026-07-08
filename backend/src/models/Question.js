@@ -8,8 +8,12 @@ const questionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['MCQ', 'TF', 'MSQ'],
+    enum: ['MCQ', 'TF', 'MSQ', 'RANKING', 'MATRIX', 'CATEGORIZATION'],
     required: true
+  },
+  imageUrl: {
+    type: String,
+    default: ''
   },
   question: {
     type: String,
@@ -17,7 +21,10 @@ const questionSchema = new mongoose.Schema({
   },
   options: [{
     text: { type: String, required: true },
-    isCorrect: { type: Boolean, default: false }
+    isCorrect: { type: Boolean, default: false },
+    imageUrl: { type: String, default: '' },
+    categoryId: { type: Number }, // Index of the category this option belongs to (for CATEGORIZATION)
+    nextSubQuestionId: { type: mongoose.Schema.Types.ObjectId } // For conditional routing to a sub-question
   }],
   explanation: {
     type: String,
@@ -36,10 +43,26 @@ const questionSchema = new mongoose.Schema({
     type: Number,
     default: 30
   },
-  points: {
+  correctPoints: {
     type: Number,
     default: 10
   },
+  incorrectPoints: {
+    type: Number,
+    default: 0
+  },
+  matrixRows: [{ type: String }],
+  matrixColumns: [{ type: String }],
+  categories: [{ type: String }],
+  subQuestions: [{
+    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+    type: { type: String, enum: ['MCQ', 'TF', 'MSQ'] },
+    question: { type: String },
+    options: [{
+      text: { type: String },
+      isCorrect: { type: Boolean, default: false }
+    }]
+  }],
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'

@@ -18,12 +18,31 @@ const responseSchema = new mongoose.Schema({
   },
   selectedOption: {
     type: Number,
-    required: true
+    required: false // Now optional since other types might not use this
   },
   selectedOptions: {
     type: [Number], // Array for MSQ - stores all selected option indices
     default: []
   },
+  rankedOptions: {
+    type: [Number], // For RANKING type: array of option indices in ranked order
+    default: []
+  },
+  matrixAnswers: {
+    type: Map,
+    of: Number, // key: rowIndex (as string), value: columnIndex
+    default: {}
+  },
+  categoryAnswers: {
+    type: Map,
+    of: Number, // key: optionIndex (as string), value: categoryIndex
+    default: {}
+  },
+  subResponses: [{
+    subQuestionId: { type: mongoose.Schema.Types.ObjectId },
+    selectedOption: { type: Number },
+    isCorrect: { type: Boolean, default: false }
+  }],
   isCorrect: {
     type: Boolean,
     default: false

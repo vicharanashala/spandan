@@ -13,7 +13,7 @@ router.post('/', authorize('student'), async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const { roomId, questionId, selectedOptions, rankedOptions, matrixAnswers, categoryAnswers, subResponses, responseTime } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember)
@@ -41,24 +41,58 @@ router.post('/', authorize('student'), async (req, res) => {
         .map((opt, idx) => opt.isCorrect ? idx : -1)
         .filter(idx => idx !== -1)
       
-      const selectedSet = new Set(selectedOptions)
+      const selectedSet = new Set(selectedOptions || [])
       const correctSet = new Set(correctIndices)
       
-      // Check all correct are selected AND no incorrect selected
       const allCorrectSelected = correctIndices.every(idx => selectedSet.has(idx))
-      const noIncorrectSelected = selectedOptions.every(idx => correctSet.has(idx))
+      const noIncorrectSelected = (selectedOptions || []).every(idx => correctSet.has(idx))
       
       isCorrect = allCorrectSelected && noIncorrectSelected
+    } else if (question.type === 'RANKING') {
+      // Compare rankedOptions with the correct order (assuming options array is the correct order)
+      isCorrect = true
+      if (rankedOptions && rankedOptions.length === question.options.length) {
+        for (let i = 0; i < rankedOptions.length; i++) {
+          if (rankedOptions[i] !== i) {
+            isCorrect = false
+            break
+          }
+        }
+      } else {
+        isCorrect = false
+      }
+    } else if (question.type === 'CATEGORIZATION') {
+      // Not fully checking categorization correctness for MVP unless defined in schema
+      isCorrect = true // Placeholder
+    } else if (question.type === 'MATRIX') {
+      // Not fully checking matrix correctness for MVP unless defined in schema
+      isCorrect = true // Placeholder
     } else {
       // MCQ/TF: Single correct answer
-      const selectedOptionData = question.options[selectedOptions[0]]
+      const selectedOptionData = question.options && selectedOptions && selectedOptions.length > 0 ? question.options[selectedOptions[0]] : null
       isCorrect = selectedOptionData?.isCorrect || false
+    }
+
+    // Grade sub-responses
+    let processedSubResponses = []
+    if (subResponses && Array.isArray(subResponses)) {
+      processedSubResponses = subResponses.map(sr => {
+        const subQ = question.subQuestions?.find(sq => sq._id.toString() === sr.subQuestionId.toString())
+        let subCorrect = false
+        if (subQ) {
+          const subOpt = subQ.options[sr.selectedOptions[0]]
+          subCorrect = subOpt?.isCorrect || false
+        }
+        return {
+          ...sr,
+          isCorrect: subCorrect
+        }
+      })
     }
     
     // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
-    // Minimum 10% of max points for correct answers (even if time runs out)
-    const maxPoints = question.points || 100
+    const maxPoints = question.correctPoints !== undefined ? question.correctPoints : (question.points || 100)
+    const negPoints = question.incorrectPoints !== undefined ? question.incorrectPoints : 0
     const tta = question.timeToAnswer || 30
     const respTime = responseTime || 0
     let points = 0
@@ -67,15 +101,21 @@ router.post('/', authorize('student'), async (req, res) => {
       const timeRemaining = Math.max(0, tta - respTime)
       const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
       points = Math.round(maxPoints * timeDecayFactor)
+    } else {
+      // Incorrect answers deduct points
+      points = -Math.abs(negPoints)
     }
-    // Incorrect answers get 0 points
 
     const response = new Response({
       roomId,
       questionId,
       studentId,
-      selectedOption: selectedOptions[0], // Store first selection for MCQ compatibility
-      selectedOptions, // Store all selections for MSQ
+      selectedOption: selectedOptions && selectedOptions.length > 0 ? selectedOptions[0] : undefined,
+      selectedOptions: selectedOptions || [],
+      rankedOptions: rankedOptions || [],
+      matrixAnswers: matrixAnswers || {},
+      categoryAnswers: categoryAnswers || {},
+      subResponses: processedSubResponses,
       isCorrect,
       responseTime: respTime,
       points

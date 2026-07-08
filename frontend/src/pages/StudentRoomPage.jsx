@@ -21,6 +21,11 @@ function StudentRoomPage() {
   const [error, setError] = useState('')
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
+  const [rankedOptions, setRankedOptions] = useState([]) // Array of option indices
+  const [matrixAnswers, setMatrixAnswers] = useState({}) // { [rowIndex]: colIndex }
+  const [categoryAnswers, setCategoryAnswers] = useState({}) // { [optionIndex]: categoryId }
+  const [subResponses, setSubResponses] = useState([])
+  const [activeSubQuestionIndex, setActiveSubQuestionIndex] = useState(-1)
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
@@ -48,6 +53,11 @@ function StudentRoomPage() {
     const handleQuestionStarted = (data) => {
       setCurrentQuestion(data)
       setSelectedOptions([])
+      setRankedOptions(data.options ? data.options.map((_, i) => i) : [])
+      setMatrixAnswers({})
+      setCategoryAnswers({})
+      setSubResponses([])
+      setActiveSubQuestionIndex(-1)
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
       
@@ -103,6 +113,11 @@ function StudentRoomPage() {
       
       setCurrentQuestion(question)
       setSelectedOptions([])
+      setRankedOptions(question.options ? question.options.map((_, i) => i) : [])
+      setMatrixAnswers({})
+      setCategoryAnswers({})
+      setSubResponses([])
+      setActiveSubQuestionIndex(-1)
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
       
@@ -150,6 +165,11 @@ function StudentRoomPage() {
         if (remaining > 0) {
           setCurrentQuestion(q);
           setSelectedOptions([]);
+          setRankedOptions(q.options ? q.options.map((_, i) => i) : [])
+          setMatrixAnswers({})
+          setCategoryAnswers({})
+          setSubResponses([])
+          setActiveSubQuestionIndex(-1)
           setSubmitted(false);
           setTimeLeft(remaining);
           
@@ -241,7 +261,8 @@ function StudentRoomPage() {
   }
 
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    // Basic empty check. For advanced types, we might need different checks, but this is fine for MVP.
+    if ((selectedOptions.length === 0 && currentQuestion?.type !== 'RANKING' && currentQuestion?.type !== 'MATRIX' && currentQuestion?.type !== 'CATEGORIZATION') || submitted || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -252,6 +273,10 @@ function StudentRoomPage() {
       roomId: room._id, 
       studentId: user._id, 
       selectedOptions,
+      rankedOptions,
+      matrixAnswers,
+      categoryAnswers,
+      subResponses,
       timeToAnswer: tta,
       timeLeft,
       responseTime
@@ -270,6 +295,10 @@ function StudentRoomPage() {
           questionId,
           studentId: user._id,
           selectedOptions,
+          rankedOptions,
+          matrixAnswers,
+          categoryAnswers,
+          subResponses,
           responseTime
         })
       })
@@ -296,6 +325,10 @@ function StudentRoomPage() {
       questionId,
       studentId: user._id,
       selectedOptions,
+      rankedOptions,
+      matrixAnswers,
+      categoryAnswers,
+      subResponses,
       responseTime
     })
     
@@ -481,14 +514,141 @@ function StudentRoomPage() {
                 <p style={{ fontSize: '14px', opacity: 0.9 }}>seconds remaining</p>
               </div>
 
-              {/* Question */}
-              <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
+              {/* Question Text */}
+              <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '16px' }}>
                 {currentQuestion.question}
               </h2>
+              {currentQuestion.imageUrl && (
+                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                  <img 
+                    src={currentQuestion.imageUrl} 
+                    alt="Question" 
+                    style={{ maxWidth: '100%', maxHeight: '300px', borderRadius: '12px', border: '2px solid rgba(255,255,255,0.2)' }}
+                  />
+                </div>
+              )}
+
+              {/* Conditional Sub-question rendering (if active) */}
+              {activeSubQuestionIndex !== -1 && currentQuestion.subQuestions?.[activeSubQuestionIndex] && (
+                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '16px', borderRadius: '12px', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '12px' }}>
+                    Follow-up: {currentQuestion.subQuestions[activeSubQuestionIndex].question}
+                  </h3>
+                  <div style={{ display: 'grid', gap: '8px' }}>
+                    {currentQuestion.subQuestions[activeSubQuestionIndex].options.map((opt, sIdx) => {
+                      const isSubSelected = subResponses.some(sr => sr.subQuestionId === currentQuestion.subQuestions[activeSubQuestionIndex]._id && sr.selectedOptions.includes(sIdx))
+                      return (
+                        <button
+                          key={sIdx}
+                          onClick={() => {
+                            if (submitted) return
+                            setSubResponses(prev => {
+                              const existing = prev.find(sr => sr.subQuestionId === currentQuestion.subQuestions[activeSubQuestionIndex]._id)
+                              if (existing) {
+                                return prev.map(sr => sr.subQuestionId === currentQuestion.subQuestions[activeSubQuestionIndex]._id ? { ...sr, selectedOptions: [sIdx] } : sr)
+                              }
+                              return [...prev, { subQuestionId: currentQuestion.subQuestions[activeSubQuestionIndex]._id, selectedOptions: [sIdx] }]
+                            })
+                          }}
+                          style={{
+                            padding: '12px',
+                            background: isSubSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
+                            border: `2px solid ${isSubSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
+                            borderRadius: '8px',
+                            color: 'white',
+                            textAlign: 'left',
+                            cursor: submitted ? 'default' : 'pointer'
+                          }}
+                        >
+                          {typeof opt === 'string' ? opt : opt.text}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Options */}
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
-                {currentQuestion.options && currentQuestion.options.map((option, index) => {
+                {currentQuestion.type === 'RANKING' && currentQuestion.options && rankedOptions.map((optIndex, rankPos) => {
+                  const option = currentQuestion.options[optIndex]
+                  const optionText = typeof option === 'string' ? option : option.text
+                  
+                  const moveUp = () => {
+                    if (submitted || rankPos === 0) return
+                    const newOrder = [...rankedOptions]
+                    const temp = newOrder[rankPos - 1]
+                    newOrder[rankPos - 1] = newOrder[rankPos]
+                    newOrder[rankPos] = temp
+                    setRankedOptions(newOrder)
+                  }
+                  
+                  const moveDown = () => {
+                    if (submitted || rankPos === rankedOptions.length - 1) return
+                    const newOrder = [...rankedOptions]
+                    const temp = newOrder[rankPos + 1]
+                    newOrder[rankPos + 1] = newOrder[rankPos]
+                    newOrder[rankPos] = temp
+                    setRankedOptions(newOrder)
+                  }
+
+                  return (
+                    <div key={optIndex} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px', background: 'rgba(255,255,255,0.1)', borderRadius: '12px', border: '2px solid rgba(255,255,255,0.2)' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <button onClick={moveUp} disabled={submitted || rankPos === 0} style={{ background: 'transparent', border: 'none', color: 'white', cursor: (submitted || rankPos === 0) ? 'not-allowed' : 'pointer', opacity: (submitted || rankPos === 0) ? 0.3 : 1 }}>▲</button>
+                        <button onClick={moveDown} disabled={submitted || rankPos === rankedOptions.length - 1} style={{ background: 'transparent', border: 'none', color: 'white', cursor: (submitted || rankPos === rankedOptions.length - 1) ? 'not-allowed' : 'pointer', opacity: (submitted || rankPos === rankedOptions.length - 1) ? 0.3 : 1 }}>▼</button>
+                      </div>
+                      <span style={{ fontWeight: '700', fontSize: '18px', color: '#ffd700', minWidth: '24px' }}>{rankPos + 1}.</span>
+                      <span style={{ fontSize: '18px', color: 'white' }}>{optionText}</span>
+                    </div>
+                  )
+                })}
+
+                {currentQuestion.type === 'CATEGORIZATION' && currentQuestion.options && currentQuestion.options.map((option, index) => {
+                  const optionText = typeof option === 'string' ? option : option.text
+                  const currentCategory = categoryAnswers[index] !== undefined ? categoryAnswers[index] : -1
+                  const categories = currentQuestion.categories || ['Category 1', 'Category 2']
+                  
+                  const cycleCategory = () => {
+                    if (submitted) return
+                    setCategoryAnswers(prev => ({
+                      ...prev,
+                      [index]: (currentCategory + 1) % categories.length
+                    }))
+                    setSelectedOptions(prev => prev.includes(index) ? prev : [...prev, index]) // Mark as touched
+                  }
+                  
+                  return (
+                    <button key={index} onClick={cycleCategory} disabled={submitted} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', background: currentCategory !== -1 ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)', border: `2px solid ${currentCategory !== -1 ? '#ffd700' : 'rgba(255,255,255,0.2)'}`, borderRadius: '12px', color: 'white', cursor: submitted ? 'default' : 'pointer' }}>
+                      <span style={{ fontSize: '18px' }}>{optionText}</span>
+                      <span style={{ fontSize: '14px', background: currentCategory !== -1 ? '#ffd700' : 'rgba(0,0,0,0.3)', color: currentCategory !== -1 ? '#1f2937' : 'white', padding: '4px 12px', borderRadius: '16px', fontWeight: '600' }}>
+                        {currentCategory !== -1 ? categories[currentCategory] : 'Assign Category'}
+                      </span>
+                    </button>
+                  )
+                })}
+
+                {currentQuestion.type === 'MATRIX' && currentQuestion.matrixRows && currentQuestion.matrixRows.map((row, rIdx) => (
+                  <div key={rIdx} style={{ padding: '16px', background: 'rgba(255,255,255,0.1)', borderRadius: '12px', border: '2px solid rgba(255,255,255,0.2)' }}>
+                    <p style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: '600', color: 'white' }}>{row}</p>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {currentQuestion.matrixColumns && currentQuestion.matrixColumns.map((col, cIdx) => {
+                        const isSelected = matrixAnswers[rIdx] === cIdx
+                        return (
+                          <button key={cIdx} onClick={() => {
+                            if (submitted) return
+                            setMatrixAnswers(prev => ({ ...prev, [rIdx]: cIdx }))
+                            setSelectedOptions([0]) // just to pass the empty check
+                          }} disabled={submitted} style={{ padding: '8px 16px', background: isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)', color: isSelected ? '#1f2937' : 'white', border: 'none', borderRadius: '20px', cursor: submitted ? 'default' : 'pointer', fontWeight: '600', fontSize: '14px' }}>
+                            {col}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+
+                {(currentQuestion.type === 'MCQ' || currentQuestion.type === 'TF' || currentQuestion.type === 'MSQ') && currentQuestion.options && currentQuestion.options.map((option, index) => {
                   const isMSQ = currentQuestion.type === 'MSQ'
                   const isSelected = isMSQ 
                     ? selectedOptions.includes(index)
@@ -508,6 +668,12 @@ function StudentRoomPage() {
                     } else {
                       // MCQ/TF: Single selection
                       setSelectedOptions([index])
+                      
+                      // Check for conditional sub-questions
+                      if (currentQuestion.subQuestions && currentQuestion.subQuestions.length > 0) {
+                        const subQIdx = currentQuestion.subQuestions.findIndex(sq => sq.dependsOnOptionIndex === index)
+                        setActiveSubQuestionIndex(subQIdx) // Could be -1 if no sub-question for this option
+                      }
                     }
                   }
                   
@@ -584,17 +750,17 @@ function StudentRoomPage() {
               ) : (
                 <button
                   onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
+                  disabled={selectedOptions.length === 0 && currentQuestion.type !== 'RANKING' && currentQuestion.type !== 'MATRIX' && currentQuestion.type !== 'CATEGORIZATION'}
                   style={{
                     width: '100%',
                     padding: '16px',
-                    background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
-                    color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
+                    background: (selectedOptions.length > 0 || currentQuestion.type === 'RANKING' || currentQuestion.type === 'MATRIX' || currentQuestion.type === 'CATEGORIZATION') ? '#ffd700' : 'rgba(255,255,255,0.2)',
+                    color: (selectedOptions.length > 0 || currentQuestion.type === 'RANKING' || currentQuestion.type === 'MATRIX' || currentQuestion.type === 'CATEGORIZATION') ? '#1f2937' : 'rgba(255,255,255,0.5)',
                     border: 'none',
                     borderRadius: '12px',
                     fontSize: '16px',
                     fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    cursor: (selectedOptions.length > 0 || currentQuestion.type === 'RANKING' || currentQuestion.type === 'MATRIX' || currentQuestion.type === 'CATEGORIZATION') ? 'pointer' : 'not-allowed'
                   }}
                 >
                   Submit Answer

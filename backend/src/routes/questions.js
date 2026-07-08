@@ -77,7 +77,13 @@ router.post('/', authorize('teacher'), async (req, res) => {
       question, 
       options, 
       timeToAnswer = 30, 
-      points = 100,
+      correctPoints = 10,
+      incorrectPoints = 0,
+      imageUrl = '',
+      matrixRows = [],
+      matrixColumns = [],
+      categories = [],
+      subQuestions = [],
       status = 'approved',
       segmentIndex = 0
     } = req.body
@@ -87,7 +93,11 @@ router.post('/', authorize('teacher'), async (req, res) => {
     }
 
     // Sanitize user input to prevent XSS
-    const sanitizedData = sanitizeObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = sanitizeObject({ 
+      roomId, type, question, options, timeToAnswer, 
+      correctPoints, incorrectPoints, imageUrl, matrixRows, 
+      matrixColumns, categories, subQuestions, status, segmentIndex 
+    })
 
     const newQuestion = new Question(sanitizedData)
 
