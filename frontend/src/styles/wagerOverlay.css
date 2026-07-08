@@ -1,0 +1,221 @@
+﻿.wager-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto;
+}
+
+.wager-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 8, 14, 0.78);
+  backdrop-filter: blur(6px);
+}
+
+.wager-overlay__panel {
+  position: relative;
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: linear-gradient(155deg, #1a1a26 0%, #13131c 100%);
+  color: #f4f4f5;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.wager-overlay__header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wager-overlay__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.wager-overlay__subtitle {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.wager-overlay__snapshot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.wager-overlay__snapshot-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+}
+
+.wager-overlay__snapshot-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: #fde68a;
+  margin-top: 2px;
+}
+
+.wager-overlay__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.wager-overlay__preview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.08);
+  color: #bbf7d0;
+}
+
+.wager-overlay__preview-row--muted {
+  background: rgba(239, 68, 68, 0.06);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.wager-overlay__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.wager-overlay__button {
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 10px 14px;
+  border: none;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.wager-overlay__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.wager-overlay__button--primary {
+  background: linear-gradient(135deg, #f97316, #f59e0b);
+  color: #fff;
+}
+
+.wager-overlay__button--primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.wager-overlay__button--ghost {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.wager-overlay__button--text {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  border: none;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.wager-overlay__button--text:hover:not(:disabled) {
+  color: #fff;
+}
+
+/* ---------- WagerSlider ---------- */
+
+.wager-slider {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wager-slider__stop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.wager-slider__stop:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wager-slider__stop--selected {
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(245, 158, 11, 0.18));
+  border-color: rgba(249, 115, 22, 0.55);
+  color: #fde68a;
+}
+
+.wager-slider__stop--disabled,
+.wager-slider__stop:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.wager-slider__stop-value {
+  font-size: 14px;
+}
+
+.wager-slider__stop-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+@media (max-width: 520px) {
+  .wager-overlay__panel {
+    padding: 18px;
+  }
+  .wager-slider {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .wager-slider__stop-label {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wager-overlay__button,
+  .wager-slider__stop {
+    transition: none;
+  }
+}

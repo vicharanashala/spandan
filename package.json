@@ -19,6 +19,7 @@
     "concurrently": "^8.2.2"
   },
   "dependencies": {
-    "pm2": "^7.0.1"
+    "pm2": "^7.0.1",
+    "sharp": "^0.35.3"
   }
 }

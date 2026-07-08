@@ -1,0 +1,230 @@
+﻿/* peerReview.css
+ * --------------
+ * Phase 6 Peer Review layout. Modal-style panel, timer bar,
+ * accuracy meter, ghost-mode badge. BEM-style class names.
+ */
+
+.pr-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.pr-layer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 18, 0.78);
+  backdrop-filter: blur(2px);
+}
+
+.pr-layer__content {
+  position: relative;
+  z-index: 1;
+  width: min(720px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #15182a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 1.5rem;
+  color: #f4f4f7;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+/* ---- panel ---- */
+
+.pr-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.pr-panel__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.pr-panel__col {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.pr-panel__col h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  color: rgba(244, 244, 247, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pr-panel__col p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pr-panel__rubric {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.pr-panel__rubric legend {
+  padding: 0 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(244, 244, 247, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pr-panel__radio {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background 0.15s ease;
+}
+
+.pr-panel__radio:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pr-panel__radio input {
+  margin: 0;
+}
+
+.pr-panel__actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.pr-panel__actions button {
+  padding: 0.55rem 1.25rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pr-panel__actions button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.pr-panel__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pr-panel__actions button[data-testid="pr-submit"] {
+  background: #6c8cff;
+  color: #0c0f1a;
+  font-weight: 600;
+}
+
+.pr-panel__actions button[data-testid="pr-submit"]:hover:not(:disabled) {
+  background: #8aa3ff;
+}
+
+/* ---- timer ---- */
+
+.pr-timer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pr-timer__label {
+  font-size: 0.85rem;
+  color: rgba(244, 244, 247, 0.75);
+}
+
+.pr-timer__track {
+  position: relative;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pr-timer__bar {
+  height: 100%;
+  background: #6c8cff;
+  transition: width 0.2s linear, background 0.2s ease;
+}
+
+.pr-timer__bar--critical {
+  background: #ff7a59;
+}
+
+.pr-timer__bar--expired {
+  background: #b23a3a;
+}
+
+.pr-timer__badge {
+  align-self: flex-start;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 999px;
+  background: rgba(255, 200, 80, 0.18);
+  color: #ffd57a;
+  border: 1px solid rgba(255, 200, 80, 0.4);
+}
+
+/* ---- accuracy meter ---- */
+
+.pr-accuracy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pr-accuracy__label {
+  font-size: 0.8rem;
+  color: rgba(244, 244, 247, 0.7);
+}
+
+.pr-accuracy__track {
+  position: relative;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pr-accuracy__bar {
+  height: 100%;
+  background: #4ad295;
+  transition: width 0.2s ease, background 0.2s ease;
+}
+
+.pr-accuracy__bar--below {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.pr-accuracy__floor {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 12px;
+  background: rgba(244, 244, 247, 0.6);
+  pointer-events: none;
+}
