@@ -7,6 +7,7 @@ export const useSocketStore = create((set, get) => ({
   isConnected: false,
   currentRoom: null,
   participants: 0,
+  onSyncPendingAnswers: null, // Callback for syncing pending answers on reconnect
 
   connect: (token) => {
     const { socket: existingSocket } = get()
@@ -25,6 +26,13 @@ export const useSocketStore = create((set, get) => ({
       console.log('Socket connected')
       set({ isConnected: true })
       socket.emit('authenticate', { token })
+      
+      // Trigger pending answers sync on reconnect
+      const { onSyncPendingAnswers } = get()
+      if (onSyncPendingAnswers) {
+        console.log('[Socket] Triggering pending answers sync on reconnect')
+        onSyncPendingAnswers()
+      }
     })
 
     socket.on('disconnect', () => {
@@ -119,6 +127,21 @@ export const useSocketStore = create((set, get) => ({
     if (socket) {
       socket.emit('question:end', data)
     }
+  },
+
+  /**
+   * Register a callback to sync pending answers when socket reconnects
+   * This is typically called from StudentRoomPage to handle offline submissions
+   */
+  registerSyncPendingAnswersCallback: (callback) => {
+    set({ onSyncPendingAnswers: callback })
+  },
+
+  /**
+   * Unregister the sync callback (e.g., when leaving the room)
+   */
+  unregisterSyncPendingAnswersCallback: () => {
+    set({ onSyncPendingAnswers: null })
   }
 }))
 

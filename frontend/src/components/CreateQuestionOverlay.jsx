@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
+function CreateQuestionOverlay({ isOpen, onClose, onLaunch, onSaveToBank, defaultType = 'MCQ' }) {
   const [questionType, setQuestionType] = useState(defaultType)
   const [question, setQuestion] = useState('')
   const [options, setOptions] = useState([
@@ -11,6 +11,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   ])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [points, setPoints] = useState(100)
+  const [saveToBank, setSaveToBank] = useState(false)
+  const [bankTagsInput, setBankTagsInput] = useState('')
 
   // Launched state - once teacher launches, show timer mode
   const [isLaunched, setIsLaunched] = useState(false)
@@ -97,16 +99,23 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
       return
     }
 
-    // First, emit the question to students via onLaunch
-    onLaunch({
+    const questionData = {
       type: questionType,
       question: question.trim(),
       options: questionType === 'TF' 
         ? [{ text: 'True', isCorrect: options[0].isCorrect }, { text: 'False', isCorrect: options[1].isCorrect }]
         : options.filter(o => o.text.trim()),
       timeToAnswer,
-      points
-    })
+      points,
+      tags: bankTagsInput.split(',').map(tag => tag.trim()).filter(Boolean)
+    }
+
+    // First, emit the question to students via onLaunch
+    onLaunch(questionData)
+
+    if (saveToBank && onSaveToBank) {
+      onSaveToBank(questionData)
+    }
 
     // Start launched timer - question is now live
     setIsLaunched(true)
@@ -145,6 +154,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     ])
     setTimeToAnswer(30)
     setPoints(100)
+    setSaveToBank(false)
+    setBankTagsInput('')
     onClose()
   }
 
@@ -480,6 +491,34 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
               </button>
             </div>
           </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-primary)' }}>
+            <input
+              type="checkbox"
+              checked={saveToBank}
+              onChange={(e) => setSaveToBank(e.target.checked)}
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            Save to Question Bank
+          </label>
+          <input
+            type="text"
+            value={bankTagsInput}
+            onChange={(e) => setBankTagsInput(e.target.value)}
+            placeholder="Tags (comma separated)"
+            disabled={!saveToBank}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: saveToBank ? 'var(--bg-primary)' : 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              fontSize: '13px'
+            }}
+          />
         </div>
 
         {/* Launch Button */}

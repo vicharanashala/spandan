@@ -7,6 +7,8 @@ router.use(authenticate)
 
 // POST /api/responses - Save a student's answer
 // Authorization: student only, and studentId must match authenticated user
+// Handles offline submissions: duplicate submissions are safely rejected with 409 status
+// Late arrivals: submissions are accepted regardless of timing (accept all valid submissions)
 router.post('/', authorize('student'), async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
@@ -82,6 +84,8 @@ router.post('/', authorize('student'), async (req, res) => {
     })
 
     // Check if already responded to prevent duplicates
+    // This handles offline submissions: if a student's answer reaches the server before
+    // the ack is lost on the way back, the queued duplicate is safely rejected here
     const existingResponse = await Response.findOne({ roomId, questionId, studentId })
     if (existingResponse) {
       return res.status(409).json({ 

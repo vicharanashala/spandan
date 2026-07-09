@@ -3,18 +3,21 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import { usePendingAnswersStore } from '../stores/pendingAnswersStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import SyncStatusBanner from '../components/SyncStatusBanner'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, registerSyncPendingAnswersCallback, unregisterSyncPendingAnswersCallback } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
+  const { pendingAnswers, addPendingAnswer, removePendingAnswer, setSyncing, isSyncing } = usePendingAnswersStore()
   
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -25,6 +28,7 @@ function StudentRoomPage() {
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
+  const [offlineSubmissionFeedback, setOfflineSubmissionFeedback] = useState('') // 'queued', 'syncing', 'synced', or ''
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
@@ -138,6 +142,17 @@ function StudentRoomPage() {
     }
   }, [socket, navigate, room?._id])
 
+  // Register sync callback for pending answers
+  useEffect(() => {
+    if (!socket) return
+    
+    registerSyncPendingAnswersCallback(handleSyncPendingAnswers)
+    
+    return () => {
+      unregisterSyncPendingAnswersCallback()
+    }
+  }, [socket, room?._id, user?._id, token])
+
   const joinSession = async () => {
     setIsLoading(true)
     try {
@@ -202,24 +217,145 @@ function StudentRoomPage() {
     }
   }
 
+  /**
+   * Sync a single pending answer to the server
+   * Called when reconnected or manually
+   */
+  const syncPendingAnswer = async (pendingAnswer) => {
+    try {
+      console.log('[StudentRoom] Syncing pending answer:', pendingAnswer)
+
+      const saveResponse = await fetch(`${API_URL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId: pendingAnswer.roomId,
+          questionId: pendingAnswer.questionId,
+          studentId: pendingAnswer.studentId,
+          selectedOptions: pendingAnswer.selectedOptions,
+          responseTime: pendingAnswer.responseTime
+        })
+      })
+
+      const saveData = await saveResponse.json()
+      console.log('[StudentRoom] Synced answer response:', saveData)
+
+      // Check response status
+      if (saveData.success && saveData.response) {
+        console.log('[StudentRoom] Answer synced successfully')
+        // Broadcast the points update
+        socket?.emit('points:update', {
+          roomCode: pendingAnswer.roomCode,
+          questionId: pendingAnswer.questionId,
+          studentId: pendingAnswer.studentId,
+          points: saveData.response.points,
+          isCorrect: saveData.response.isCorrect
+        })
+        return { success: true }
+      } else if (saveData.error === 'Already responded to this question') {
+        // Already submitted (duplicate from earlier ack loss) - treat as success
+        console.log('[StudentRoom] Duplicate submission detected, treating as success')
+        return { success: true }
+      } else {
+        console.error('[StudentRoom] Sync failed:', saveData.error)
+        return { success: false, error: saveData.error }
+      }
+    } catch (err) {
+      console.error('[StudentRoom] Error syncing pending answer:', err)
+      return { success: false, error: err.message }
+    }
+  }
+
+  /**
+   * Handle syncing all pending answers when reconnected
+   */
+  const handleSyncPendingAnswers = async () => {
+    const pending = pendingAnswers
+    if (pending.length === 0) {
+      console.log('[StudentRoom] No pending answers to sync')
+      return
+    }
+
+    console.log(`[StudentRoom] Starting sync of ${pending.length} pending answer(s)`)
+    setSyncing(true)
+    setOfflineSubmissionFeedback('syncing')
+
+    let syncedCount = 0
+    for (const answer of pending) {
+      const result = await syncPendingAnswer(answer)
+      if (result.success) {
+        removePendingAnswer(answer.id)
+        syncedCount++
+        // Refresh past responses after each sync
+        if (room?._id && user?._id) {
+          await fetchPastResponses(room._id, user._id)
+        }
+      } else {
+        console.warn('[StudentRoom] Failed to sync answer:', answer.id, result.error)
+        // Don't remove failed answers - they'll retry on next reconnect
+      }
+    }
+
+    console.log(`[StudentRoom] Synced ${syncedCount}/${pending.length} pending answers`)
+    setSyncing(false)
+
+    if (syncedCount === pending.length) {
+      setOfflineSubmissionFeedback('synced')
+      // Clear feedback after 3 seconds
+      setTimeout(() => {
+        setOfflineSubmissionFeedback('')
+      }, 3000)
+    } else if (syncedCount > 0) {
+      setOfflineSubmissionFeedback('') // Clear since some synced
+    }
+  }
+
   const handleSubmitAnswer = async () => {
     if (selectedOptions.length === 0 || submitted || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
     const responseTime = tta - timeLeft
-    
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
+
+    console.log('[StudentRoom] handleSubmitAnswer called:', {
+      isConnected,
+      questionId,
+      roomId: room._id,
+      studentId: user._id,
       selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
       responseTime
     })
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
+    // If offline: queue the answer instead of trying to submit
+    if (!isConnected) {
+      console.log('[StudentRoom] Currently offline, queueing answer')
+      addPendingAnswer(
+        room._id,
+        questionId,
+        selectedOptions,
+        room.code,
+        user._id,
+        responseTime
+      )
+      
+      setSubmitted(true)
+      setHasAnsweredPoll(true)
+      setOfflineSubmissionFeedback('queued')
+      
+      // Clear feedback after 4 seconds
+      setTimeout(() => {
+        setOfflineSubmissionFeedback('')
+      }, 4000)
+      
+      console.log('[StudentRoom] Answer queued for sync on reconnect')
+      return
+    }
+
+    // Online: submit normally
+    console.log('[StudentRoom] Online, submitting answer')
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -237,7 +373,7 @@ function StudentRoomPage() {
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-      
+
       // Emit points:update for leaderboard broadcast
       if (saveData.success && saveData.response) {
         socket.emit('points:update', {
@@ -260,7 +396,7 @@ function StudentRoomPage() {
       selectedOptions,
       responseTime
     })
-    
+
     // Set submitted immediately and fetch past responses without delay
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
@@ -351,6 +487,7 @@ function StudentRoomPage() {
       maxWidth: '100vw',
       overflowX: 'hidden'
     }}>
+      <SyncStatusBanner />
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
@@ -538,10 +675,35 @@ function StudentRoomPage() {
                   background: 'rgba(255,255,255,0.1)',
                   borderRadius: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
-                  <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
-                    Waiting for next question...
-                  </p>
+                  {offlineSubmissionFeedback === 'queued' ? (
+                    <>
+                      <p style={{ fontSize: '18px', fontWeight: '600' }}>💾 Answer Saved Locally</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
+                        Will sync when connection is restored
+                      </p>
+                    </>
+                  ) : offlineSubmissionFeedback === 'syncing' ? (
+                    <>
+                      <p style={{ fontSize: '18px', fontWeight: '600' }}>🔄 Syncing...</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
+                        Sending pending answer
+                      </p>
+                    </>
+                  ) : offlineSubmissionFeedback === 'synced' ? (
+                    <>
+                      <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Synced</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
+                        Waiting for next question...
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
+                        Waiting for next question...
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <button

@@ -18,11 +18,73 @@ export const createQuestion = async (data, createdBy) => {
     segmentIndex: data.segmentIndex || 0,
     timeToAnswer: data.timer || data.timeToAnswer || 30,
     points: data.points || 100,
+    savedByTeacher: Boolean(data.savedByTeacher),
+    isTemplate: Boolean(data.isTemplate),
+    tags: Array.isArray(data.tags) ? data.tags : [],
     createdBy
   })
 
   await question.save()
   return question
+}
+
+export const normalizeTags = (tags = []) => {
+  if (!Array.isArray(tags)) return []
+
+  return [...new Set(tags
+    .map((tag) => String(tag).trim().toLowerCase())
+    .filter(Boolean))]
+}
+
+export const buildQuestionBankQuery = (teacherId, filters = {}) => {
+  const query = {
+    createdBy: teacherId,
+    savedByTeacher: true,
+    isTemplate: true
+  }
+
+  const search = String(filters.search || '').trim()
+  const tags = normalizeTags(filters.tags)
+
+  if (search) {
+    query.question = { $regex: search, $options: 'i' }
+  }
+
+  if (tags.length) {
+    query.tags = { $in: tags }
+  }
+
+  return query
+}
+
+export const reuseQuestionAsRoomQuestion = async (questionId, roomId, createdBy) => {
+  const sourceQuestion = await Question.findById(questionId)
+
+  if (!sourceQuestion) {
+    throw new Error('Question template not found')
+  }
+
+  const reusedQuestion = new Question({
+    roomId,
+    type: sourceQuestion.type,
+    question: sourceQuestion.question,
+    options: sourceQuestion.options.map((option) => ({
+      text: option.text,
+      isCorrect: option.isCorrect
+    })),
+    explanation: sourceQuestion.explanation,
+    segmentIndex: sourceQuestion.segmentIndex,
+    status: 'approved',
+    timeToAnswer: sourceQuestion.timeToAnswer,
+    points: sourceQuestion.points,
+    createdBy,
+    savedByTeacher: false,
+    isTemplate: false,
+    tags: sourceQuestion.tags || []
+  })
+
+  await reusedQuestion.save()
+  return reusedQuestion
 }
 
 export const getQuestionById = async (id) => {

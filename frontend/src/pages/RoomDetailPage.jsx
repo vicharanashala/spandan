@@ -14,6 +14,7 @@ import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
+import { getQuestionBank, saveQuestionToBank, reuseQuestionFromBank } from '../services/questionService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -80,6 +81,11 @@ function RoomDetailPage() {
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
+  const [showQuestionBank, setShowQuestionBank] = useState(false)
+  const [questionBankItems, setQuestionBankItems] = useState([])
+  const [questionBankSearch, setQuestionBankSearch] = useState('')
+  const [questionBankTagsInput, setQuestionBankTagsInput] = useState('')
+  const [questionBankLoading, setQuestionBankLoading] = useState(false)
   // Segment pause/resume state
   const [isSegmentPaused, setIsSegmentPaused] = useState(false)
   const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
@@ -888,6 +894,61 @@ function RoomDetailPage() {
     setPendingTextQuestions([])
   }
 
+  const loadQuestionBank = async (search = '') => {
+    try {
+      setQuestionBankLoading(true)
+      const data = await getQuestionBank(search, questionBankTagsInput.split(',').map(tag => tag.trim()).filter(Boolean))
+      if (data.success) {
+        setQuestionBankItems(data.questions || [])
+      }
+    } catch (error) {
+      console.error('Failed to load question bank:', error)
+    } finally {
+      setQuestionBankLoading(false)
+    }
+  }
+
+  const handleSaveQuestionToBank = async (questionData) => {
+    try {
+      const payload = {
+        roomId: room._id,
+        type: questionData.type,
+        question: questionData.question,
+        options: questionData.options,
+        timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
+        points: questionData.points || roomSettings.points || 100,
+        tags: questionData.tags || questionBankTagsInput.split(',').map(tag => tag.trim()).filter(Boolean)
+      }
+
+      const data = await saveQuestionToBank(payload)
+      if (data.success) {
+        setQuestionBankTagsInput('')
+        loadQuestionBank(questionBankSearch)
+      } else {
+        alert(data.error || 'Failed to save question to bank')
+      }
+    } catch (error) {
+      console.error('Failed to save question to bank:', error)
+      alert('Failed to save question to bank')
+    }
+  }
+
+  const handleReuseQuestionFromBank = async (questionId) => {
+    try {
+      const data = await reuseQuestionFromBank(questionId, room._id)
+      if (data.success) {
+        setGeneratedQuestions(prev => [data.question, ...prev])
+        setShowQuestionBank(false)
+        alert('Question reused in this room')
+      } else {
+        alert(data.error || 'Failed to reuse question')
+      }
+    } catch (error) {
+      console.error('Failed to reuse question:', error)
+      alert('Failed to reuse question')
+    }
+  }
+
   const handleCreateQuestion = async (questionData) => {
     try {
       const response = await fetch(`${API_URL}/questions`, {
@@ -1167,6 +1228,30 @@ function RoomDetailPage() {
                 }}
               >
                 ✍️ Create Q
+              </button>
+            )}
+
+            {!isEnded && (
+              <button
+                onClick={() => {
+                  setShowQuestionBank(true)
+                  loadQuestionBank(questionBankSearch)
+                }}
+                style={{
+                  padding: '8px 16px',
+                  background: '#8b5cf6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                📚 Question Bank
               </button>
             )}
 
@@ -1646,7 +1731,75 @@ function RoomDetailPage() {
           isOpen={showCreateQuestion}
           onClose={() => setShowCreateQuestion(false)}
           onLaunch={handleCreateQuestion}
+          onSaveToBank={handleSaveQuestionToBank}
         />
+      )}
+
+      {/* Question Bank Modal */}
+      {showQuestionBank && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 2500,
+          padding: '24px'
+        }}>
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            width: '720px',
+            maxWidth: '100%',
+            maxHeight: '80vh',
+            overflow: 'auto',
+            padding: '24px',
+            border: '1px solid var(--border-color)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>Question Bank</h3>
+              <button onClick={() => setShowQuestionBank(false)} style={{ background: 'transparent', border: 'none', fontSize: '20px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
+            </div>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+              <input
+                value={questionBankSearch}
+                onChange={(e) => setQuestionBankSearch(e.target.value)}
+                placeholder="Search by question text"
+                style={{ flex: 1, padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}
+              />
+              <input
+                value={questionBankTagsInput}
+                onChange={(e) => setQuestionBankTagsInput(e.target.value)}
+                placeholder="Tags, comma separated"
+                style={{ width: '220px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}
+              />
+              <button onClick={() => loadQuestionBank(questionBankSearch)} style={{ padding: '10px 14px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Search</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {questionBankLoading ? (
+                <p style={{ color: 'var(--text-secondary)' }}>Loading saved questions...</p>
+              ) : questionBankItems.length === 0 ? (
+                <p style={{ color: 'var(--text-secondary)' }}>No saved questions yet. Save a question to your bank from the create flow.</p>
+              ) : questionBankItems.map((item) => (
+                <div key={item._id} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', background: 'var(--bg-primary)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ margin: '0 0 8px', color: 'var(--text-primary)', fontWeight: '600' }}>{item.question}</p>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                        <span style={{ padding: '2px 8px', borderRadius: '999px', background: '#dbeafe', color: '#1d4ed8', fontSize: '11px' }}>{item.type}</span>
+                        {(item.tags || []).map((tag) => (
+                          <span key={tag} style={{ padding: '2px 8px', borderRadius: '999px', background: '#f3e8ff', color: '#7c3aed', fontSize: '11px' }}>{tag}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <button onClick={() => handleReuseQuestionFromBank(item._id)} style={{ padding: '8px 12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Reuse</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Text to Questions Popup */}

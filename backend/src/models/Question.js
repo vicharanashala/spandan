@@ -44,6 +44,18 @@ const questionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  savedByTeacher: {
+    type: Boolean,
+    default: false
+  },
+  isTemplate: {
+    type: Boolean,
+    default: false
+  },
+  tags: {
+    type: [String],
+    default: []
+  },
   createdAt: {
     type: Date,
     default: Date.now

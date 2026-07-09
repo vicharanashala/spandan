@@ -1,6 +1,6 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
-import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
+import { generateQuestions, AI_PROVIDERS, buildQuestionBankQuery, normalizeTags, reuseQuestionAsRoomQuestion } from '../services/questionService.js'
 import { sanitizeObject } from '../utils/sanitize.js'
 
 const router = express.Router()
@@ -79,7 +79,10 @@ router.post('/', authorize('teacher'), async (req, res) => {
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
-      segmentIndex = 0
+      segmentIndex = 0,
+      savedByTeacher = false,
+      isTemplate = false,
+      tags = []
     } = req.body
 
     if (!roomId || !type || !question || !options) {
@@ -87,7 +90,19 @@ router.post('/', authorize('teacher'), async (req, res) => {
     }
 
     // Sanitize user input to prevent XSS
-    const sanitizedData = sanitizeObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = sanitizeObject({
+      roomId,
+      type,
+      question,
+      options,
+      timeToAnswer,
+      points,
+      status,
+      segmentIndex,
+      savedByTeacher,
+      isTemplate,
+      tags
+    })
 
     const newQuestion = new Question(sanitizedData)
 
@@ -102,6 +117,94 @@ router.post('/', authorize('teacher'), async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to create question'
+    })
+  }
+})
+
+// GET /api/questions/bank - Get teacher's saved reusable question templates
+router.get('/bank', authorize('teacher'), async (req, res) => {
+  try {
+    const Question = (await import('../models/Question.js')).default
+    const { search = '', tags = [] } = req.query
+    const teacherId = req.user._id
+    const query = buildQuestionBankQuery(teacherId, { search, tags: Array.isArray(tags) ? tags : [tags] })
+
+    const questions = await Question.find(query).sort({ createdAt: -1 }).lean()
+
+    res.json({
+      success: true,
+      questions
+    })
+  } catch (error) {
+    console.error('Error fetching question bank:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch question bank'
+    })
+  }
+})
+
+// POST /api/questions/bank - Save a question template to the teacher's question bank
+router.post('/bank', authorize('teacher'), async (req, res) => {
+  try {
+    const Question = (await import('../models/Question.js')).default
+    const { roomId, type, question, options, timeToAnswer = 30, points = 100, tags = [] } = req.body
+
+    if (!roomId || !type || !question || !options) {
+      return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    const sanitizedData = sanitizeObject({
+      roomId,
+      type,
+      question,
+      options,
+      timeToAnswer,
+      points,
+      status: 'approved',
+      savedByTeacher: true,
+      isTemplate: true,
+      tags: normalizeTags(tags),
+      createdBy: req.user._id
+    })
+
+    const templateQuestion = new Question(sanitizedData)
+    await templateQuestion.save()
+
+    res.status(201).json({
+      success: true,
+      question: templateQuestion
+    })
+  } catch (error) {
+    console.error('Error saving question template:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Failed to save question template'
+    })
+  }
+})
+
+// POST /api/questions/bank/reuse/:id - Reuse a saved template in a room
+router.post('/bank/reuse/:id', authorize('teacher'), async (req, res) => {
+  try {
+    const { roomId } = req.body
+    const { id } = req.params
+
+    if (!roomId) {
+      return res.status(400).json({ error: 'roomId is required' })
+    }
+
+    const reusedQuestion = await reuseQuestionAsRoomQuestion(id, roomId, req.user._id)
+
+    res.status(201).json({
+      success: true,
+      question: reusedQuestion
+    })
+  } catch (error) {
+    console.error('Error reusing question template:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to reuse question template'
     })
   }
 })
