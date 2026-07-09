@@ -25,12 +25,15 @@ An advanced, real-time interactive polling and student evaluation platform desig
 * **Student Dashboard:** Individual performance tracking, including lifetime score, accuracy, and weekly rollups.
 * **Strict Auth Routing:** Secure entrance flow that forces unauthenticated users directly to an animated login page.
 
+## Scope
+This PR adds *in-session, real-time* functionality: a Socket.IO layer, live teacher/student dashboards, server-authoritative TTA (time-to-answer) scoring, an anti-cheat browser extension, and a standalone ai-service for adaptive question generation. It operates entirely on live session data while a class is in progress. It does not touch notes, saved transcripts, or post-session revision workflows — that surface area is out of scope here.
+
 ### 5. Autonomous AI Microservice (`ai-service`)
 A standalone Node.js/Express service running alongside the core application, powered by Google's Gemini 2.5 Flash LLM.
 * **Transcript-to-Question:** Automatically ingests live class transcripts from MongoDB and generates relevant interactive questions on the fly.
 * **Adaptive Timer Calculation:** Intelligently determines the cognitive load of a generated question and assigns a tailored countdown timer (e.g., 15s for recall, 45s for calculation).
 * **Semantic Grading:** Evaluates short text answers based on meaning and rubric alignment, rather than rigid string matching.
-* **Personalized Recommendations:** Analyzes a student's historical dashboard stats to generate targeted study recommendations.
+* **Adaptive Question Selection:** Analyzes a student's live performance stats during an active session to steer which category of question (recall / analysis / calculation) the AI generates next. This is a real-time, in-session mechanism — distinct from post-session study/revision workflows.
 
 ---
 

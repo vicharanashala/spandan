@@ -6,6 +6,20 @@ import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 
+const DEFAULT_ROOM_STATS = {
+  totalStudents: 0,
+  averageAccuracy: 0,
+  averageTTAMs: 0,
+  flaggedTabSwitches: 0
+};
+
+const DEFAULT_QUESTION_STATS = {
+  correctPercentage: 0,
+  averageTTAMs: 0,
+  tabSwitchesDuringQuestion: 0,
+  answerDistribution: {}
+};
+
 // Teacher Dashboard: Get stats for a specific past room/session
 router.get('/teacher/:roomCode', authenticate, async (req, res) => {
   try {
@@ -16,7 +30,7 @@ router.get('/teacher/:roomCode', authenticate, async (req, res) => {
     
     // In a full production app, we would only allow the teacher who created it
     if (room.teacher.toString() !== req.user._id.toString()) {
-       // return res.status(403).json({ error: 'Not your room' });
+       return res.status(403).json({ error: 'Not your room' });
     }
 
     const questions = await Question.find({ roomId: room._id });
@@ -26,27 +40,20 @@ router.get('/teacher/:roomCode', authenticate, async (req, res) => {
         roomCode: room.code,
         endTime: room.endedAt || new Date(), // fallback for demo
         stats: room.stats || {
-          totalStudents: 0,
-          totalQuestions: questions.length,
-          averageAccuracy: 0,
-          averageTTAMs: 0,
-          flaggedTabSwitches: 0
+          ...DEFAULT_ROOM_STATS,
+          totalQuestions: questions.length
         }
       },
       questions: questions.map(q => ({
         _id: q._id,
         text: q.question,
-        stats: q.stats || {
-          correctPercentage: 0,
-          averageTTAMs: 0,
-          tabSwitchesDuringQuestion: 0,
-          answerDistribution: {}
-        }
+        stats: q.stats || DEFAULT_QUESTION_STATS
       })),
       leaderboard: room.leaderboard || []
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[dashboard]', error);
+    res.status(500).json({ error: 'Failed to load teacher dashboard' });
   }
 });
 
@@ -67,12 +74,14 @@ router.get('/student', authenticate, async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[dashboard]', error);
+    res.status(500).json({ error: 'Failed to load student dashboard' });
   }
 });
 
 // Demo endpoint to populate fake aggregates for UI testing without simulating a whole session manually
 router.post('/demo-seed/:roomCode', async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).end();
   try {
     const room = await Room.findOne({ code: req.params.roomCode });
     if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -107,7 +116,8 @@ router.post('/demo-seed/:roomCode', async (req, res) => {
 
     res.json({ message: 'Seed successful' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[dashboard]', error);
+    res.status(500).json({ error: 'Failed to seed demo data' });
   }
 });
 

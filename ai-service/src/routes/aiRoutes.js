@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateQuestionFromTranscript, evaluateShortAnswer, getPersonalizedRecommendation } from '../services/llmService.js';
+import { generateQuestionFromTranscript, evaluateShortAnswer, getAdaptiveQuestionCategory } from '../services/llmService.js';
 import Question from '../models/Question.js';
 import Room from '../models/Room.js';
 import Transcript from '../models/Transcript.js';
@@ -68,16 +68,16 @@ router.post('/evaluate-response', async (req, res) => {
   }
 });
 
-// 3. Personalized Question Selection / Recommendation
-router.get('/personalized-recommendations/:studentId', async (req, res) => {
+// 3. Adaptive Question Category Selection
+router.get('/adaptive-question-category/:studentId', async (req, res) => {
   try {
     const user = await User.findById(req.params.studentId);
     if (!user) return res.status(404).json({ error: 'Student not found' });
 
     const stats = user.studentStats || {};
-    const recommendation = await getPersonalizedRecommendation(stats);
+    const recommendedCategory = await getAdaptiveQuestionCategory(stats);
 
-    res.json({ success: true, recommendation });
+    res.json({ success: true, recommendedCategory });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

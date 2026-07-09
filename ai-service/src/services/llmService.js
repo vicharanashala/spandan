@@ -72,14 +72,19 @@ Return strictly JSON matching this schema:
   }
 };
 
-export const getPersonalizedRecommendation = async (studentStats) => {
-  const prompt = `Based on the following student stats, recommend a specific type of question to help them improve.
+// Suggests which category of question (recall / analysis /
+// calculation) the AI should generate NEXT during a live session,
+// based on the student's live performance stats. This steers
+// real-time question generation — it is not a post-session study
+// recommendation.
+export const getAdaptiveQuestionCategory = async (studentStats) => {
+  const prompt = `Based on the following student stats, determine the optimal category of question to generate next for them during this live session.
 Stats: ${JSON.stringify(studentStats)}
 
 Return strictly JSON matching this schema:
 {
   "recommendedCategory": "recall" | "analysis" | "calculation",
-  "reasoning": "Why this category is recommended based on their stats"
+  "reasoning": "Why this category is selected based on their live stats"
 }`;
 
   try {
@@ -93,7 +98,7 @@ Return strictly JSON matching this schema:
     });
     return JSON.parse(response.text);
   } catch (error) {
-    console.error('LLM Recommendation Error:', error);
-    throw new Error('Failed to generate recommendation');
+    console.error('LLM Adaptive Category Error:', error);
+    throw new Error('Failed to determine adaptive category');
   }
 };
