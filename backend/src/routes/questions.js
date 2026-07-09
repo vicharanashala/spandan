@@ -56,6 +56,9 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       return res.status(200).json({
         success: true,
         fallbackRequired: true,
+        providerRateLimited: !!questions.providerRateLimited,
+        providerModelUnavailable: !!questions.providerModelUnavailable,
+        fallbackReason: questions.fallbackReason,
         suggestedPrompt: questions.suggestedPrompt
       })
     }
@@ -68,9 +71,13 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     })
   } catch (error) {
     console.error('Question generation error:', error)
-    res.status(500).json({
+    console.error('Detailed Error:', error)
+
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500
+    res.status(statusCode).json({
       success: false,
-      error: error.message || 'Failed to generate questions'
+      error: error.message || 'Failed to generate questions',
+      provider: error.provider || undefined
     })
   }
 })
@@ -108,6 +115,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
     })
   } catch (error) {
     console.error('Error creating question:', error)
+    console.error('Detailed Error:', error)
     res.status(500).json({
       success: false,
       error: 'Failed to create question'
@@ -158,6 +166,7 @@ router.get('/', async (req, res) => {
     })
   } catch (error) {
     console.error('Error fetching questions:', error)
+    console.error('Detailed Error:', error)
     res.status(500).json({
       success: false,
       error: 'Failed to fetch questions'

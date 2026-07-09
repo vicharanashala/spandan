@@ -7,10 +7,10 @@ const encryptedValueSchema = new mongoose.Schema({
 }, { _id: false })
 
 const encryptedAiKeysSchema = new mongoose.Schema({
-  minimax: { type: encryptedValueSchema, default: null },
-  openai: { type: encryptedValueSchema, default: null },
-  anthropic: { type: encryptedValueSchema, default: null },
-  google: { type: encryptedValueSchema, default: null }
+  minimax: { type: mongoose.Schema.Types.Mixed, default: null },
+  openai: { type: mongoose.Schema.Types.Mixed, default: null },
+  anthropic: { type: mongoose.Schema.Types.Mixed, default: null },
+  google: { type: mongoose.Schema.Types.Mixed, default: null }
 }, { _id: false })
 
 const globalConfigSchema = new mongoose.Schema({

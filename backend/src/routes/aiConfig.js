@@ -2,7 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import User from '../models/User.js'
 import GlobalConfig from '../models/GlobalConfig.js'
-import { encryptString } from '../utils/crypto.js'
+import { encrypt } from '../utils/crypto.js'
 import { config } from '../config.js'
 
 const router = express.Router()
@@ -21,15 +21,25 @@ function providerStatus(encryptedAiKeys = {}, envKeys = {}) {
   }, {})
 }
 
-function configuredStatus(personalProviders = {}, globalProviders = {}) {
+function getPersonalKeys(user = {}) {
+  return {
+    ...(user?.encryptedAiKeys || {}),
+    ...(user?.encryptedPersonalAiKeys || {})
+  }
+}
+
+function configuredStatus(personalProviders = {}, globalProviders = {}, envProviders = {}) {
   return PROVIDERS.reduce((acc, provider) => {
     const personalStatus = personalProviders[provider] || {}
     const globalStatus = globalProviders[provider] || {}
+    const envStatus = envProviders[provider] || {}
     acc[provider] = !!(
       personalStatus.hasKey ||
       personalStatus.hasEnvFallback ||
       globalStatus.hasKey ||
-      globalStatus.hasEnvFallback
+      globalStatus.hasEnvFallback ||
+      envStatus.hasKey ||
+      envStatus.hasEnvFallback
     )
     return acc
   }, {})
@@ -44,22 +54,31 @@ function getEnvKeys() {
   }
 }
 
+function envProviderStatus() {
+  return providerStatus({}, getEnvKeys())
+}
+
 router.get('/', async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('+encryptedAiKeys').lean()
+    const user = await User.findById(req.user._id)
+      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
+      .lean()
     const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
 
-    const providers = providerStatus(user?.encryptedAiKeys, getEnvKeys())
+    const providers = providerStatus(getPersonalKeys(user), {})
     const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+    const envProviders = envProviderStatus()
 
     res.json({
       success: true,
       providers,
       globalProviders,
-      configured: configuredStatus(providers, globalProviders)
+      envProviders,
+      configured: configuredStatus(providers, globalProviders, envProviders)
     })
   } catch (error) {
     console.error('AI config status error:', error)
+    console.error('Detailed Error:', error)
     res.status(500).json({
       success: false,
       error: 'Unable to load AI configuration status'
@@ -69,13 +88,17 @@ router.get('/', async (req, res) => {
 
 const saveAiConfig = async (req, res) => {
   try {
-    const { keys = {}, scope = 'personal' } = req.body
+    const { keys = {}, provider, apiKey, scope = 'personal' } = req.body
+    const requestedKeys = provider && apiKey
+      ? { [provider]: apiKey }
+      : keys
     const encryptedUpdates = {}
 
     for (const provider of PROVIDERS) {
-      const value = typeof keys[provider] === 'string' ? keys[provider].trim() : ''
+      const value = typeof requestedKeys[provider] === 'string' ? requestedKeys[provider].trim() : ''
       if (value) {
-        encryptedUpdates[`encryptedAiKeys.${provider}`] = encryptString(value)
+        const fieldPrefix = scope === 'global' ? 'encryptedAiKeys' : 'encryptedPersonalAiKeys'
+        encryptedUpdates[`${fieldPrefix}.${provider}`] = encrypt(value)
       }
     }
 
@@ -90,26 +113,35 @@ const saveAiConfig = async (req, res) => {
       await GlobalConfig.findOneAndUpdate(
         { key: 'default' },
         { $set: { ...encryptedUpdates, updatedBy: req.user._id } },
-        { upsert: true, new: true }
+        { upsert: true, new: true, runValidators: true }
       )
     } else {
-      await User.findByIdAndUpdate(req.user._id, { $set: encryptedUpdates })
+      await User.findByIdAndUpdate(
+        req.user._id,
+        { $set: encryptedUpdates },
+        { new: true, runValidators: true }
+      )
     }
 
-    const user = await User.findById(req.user._id).select('+encryptedAiKeys').lean()
+    const user = await User.findById(req.user._id)
+      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
+      .lean()
     const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
 
-    const providers = providerStatus(user?.encryptedAiKeys, getEnvKeys())
+    const providers = providerStatus(getPersonalKeys(user), {})
     const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+    const envProviders = envProviderStatus()
 
     res.json({
       success: true,
       providers,
       globalProviders,
-      configured: configuredStatus(providers, globalProviders)
+      envProviders,
+      configured: configuredStatus(providers, globalProviders, envProviders)
     })
   } catch (error) {
     console.error('AI config save error:', error)
+    console.error('Detailed Error:', error)
     res.status(500).json({
       success: false,
       error: error.message || 'Unable to save AI configuration'

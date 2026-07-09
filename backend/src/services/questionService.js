@@ -6,10 +6,18 @@ import Room from '../models/Room.js'
 import User from '../models/User.js'
 import GlobalConfig from '../models/GlobalConfig.js'
 import { config, AI_PROVIDERS } from '../config.js'
-import { decryptString } from '../utils/crypto.js'
+import { decrypt } from '../utils/crypto.js'
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
 // Re-export for convenience
 export { AI_PROVIDERS }
+
+function createProviderError(provider, statusCode, message, details = '') {
+  const error = new Error(details ? `${message} - ${details}` : message)
+  error.provider = provider
+  error.statusCode = statusCode
+  return error
+}
 
 export const createQuestion = async (data, createdBy) => {
   const question = new Question({
@@ -289,25 +297,21 @@ IMPORTANT:
 - Questions should be based ONLY on the transcription content`
 }
 
-function getEnvApiKey(provider) {
-  const envKeys = {
-    minimax: config.minimaxApiKey,
-    openai: config.openaiApiKey,
-    anthropic: config.anthropicApiKey,
-    google: config.googleApiKey
-  }
-
-  return envKeys[provider] || ''
-}
-
 async function resolveAiApiKey(provider, userId) {
   if (userId) {
-    const user = await User.findById(userId).select('+encryptedAiKeys').lean()
-    const encryptedPersonalKey = user?.encryptedAiKeys?.[provider]
+    const user = await User.findById(userId)
+      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
+      .lean()
+    const encryptedPersonalKey = user?.encryptedPersonalAiKeys?.[provider] || user?.encryptedAiKeys?.[provider]
     if (encryptedPersonalKey) {
-      return {
-        apiKey: decryptString(encryptedPersonalKey),
-        source: 'personal'
+      try {
+        return {
+          apiKey: decrypt(encryptedPersonalKey),
+          source: 'personal'
+        }
+      } catch (error) {
+        console.error('Decryption failed')
+        console.error('Detailed Error:', error)
       }
     }
   }
@@ -315,9 +319,14 @@ async function resolveAiApiKey(provider, userId) {
   const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
   const encryptedGlobalKey = globalConfig?.encryptedAiKeys?.[provider]
   if (encryptedGlobalKey) {
-    return {
-      apiKey: decryptString(encryptedGlobalKey),
-      source: 'global'
+    try {
+      return {
+        apiKey: decrypt(encryptedGlobalKey),
+        source: 'global'
+      }
+    } catch (error) {
+      console.error('Decryption failed')
+      console.error('Detailed Error:', error)
     }
   }
 
@@ -333,6 +342,17 @@ async function resolveAiApiKey(provider, userId) {
     apiKey: '',
     source: 'none'
   }
+}
+
+function getEnvApiKey(provider) {
+  const envKeys = {
+    minimax: config.minimaxApiKey,
+    openai: config.openaiApiKey,
+    anthropic: config.anthropicApiKey,
+    google: config.googleApiKey
+  }
+
+  return envKeys[provider] || ''
 }
 
 // Parse questions from AI response
@@ -364,6 +384,7 @@ function parseQuestions(responseText, expectedTypes) {
     }))
   } catch (error) {
     console.error('Failed to parse questions:', error)
+    console.error('Detailed Error:', error)
     return []
   }
 }
@@ -430,7 +451,7 @@ async function generateWithMiniMax(prompt, apiKey) {
 
   if (!response.ok) {
     const errorData = await response.text()
-    throw new Error(`MiniMax API error: ${response.status} - ${errorData}`)
+    throw createProviderError('minimax', response.status, `MiniMax API error: ${response.status}`, errorData)
   }
 
   const data = await response.json()
@@ -460,7 +481,7 @@ async function generateWithOpenAI(prompt, apiKey, model = 'gpt-4o-mini') {
 
   if (!response.ok) {
     const errorData = await response.text()
-    throw new Error(`OpenAI API error: ${response.status} - ${errorData}`)
+    throw createProviderError('openai', response.status, `OpenAI API error: ${response.status}`, errorData)
   }
 
   const data = await response.json()
@@ -491,44 +512,70 @@ async function generateWithAnthropic(prompt, apiKey, model = 'claude-sonnet-4-20
 
   if (!response.ok) {
     const errorData = await response.text()
-    throw new Error(`Anthropic API error: ${response.status} - ${errorData}`)
+    throw createProviderError('anthropic', response.status, `Anthropic API error: ${response.status}`, errorData)
   }
 
   const data = await response.json()
   return data.content?.[0]?.text || ''
 }
 
-// Google Gemini API call
-async function generateWithGoogle(prompt, apiKey, model = 'gemini-2.0-flash') {
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              text: prompt
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2000
-      }
-    })
-  })
+const GOOGLE_GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash'
+]
 
-  if (!response.ok) {
-    const errorData = await response.text()
-    throw new Error(`Google API error: ${response.status} - ${errorData}`)
+function isGoogleModelUnavailable(error) {
+  const message = String(error?.message || '')
+  return error?.status === 404 ||
+    error?.statusCode === 404 ||
+    message.includes('404') ||
+    message.includes('is not found') ||
+    message.includes('not supported for generateContent')
+}
+
+// Google Gemini API call
+async function generateWithGoogle(prompt, apiKey, models = GOOGLE_GEMINI_MODELS) {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  let lastError = null
+
+  for (const model of models) {
+    try {
+      const geminiModel = genAI.getGenerativeModel({
+        model,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2000,
+          responseMimeType: 'application/json'
+        }
+      })
+
+      const result = await geminiModel.generateContent(prompt)
+      console.log(`Generated questions using Google model ${model}`)
+      return result.response.text() || ''
+    } catch (error) {
+      lastError = error
+      console.error(`Google Gemini API error for ${model}:`, error)
+      console.error('Detailed Error:', error)
+
+      if (!isGoogleModelUnavailable(error)) {
+        const statusCode = error.status || error.statusCode || (String(error.message || '').includes('429') ? 429 : 500)
+        const message = statusCode === 429
+          ? 'Google Gemini API quota or rate limit exceeded. Wait and retry, reduce generation frequency, or use a Google API key with available quota.'
+          : `Google API error: ${statusCode}`
+
+        throw createProviderError('google', statusCode, message, error.message)
+      }
+    }
   }
 
-  const data = await response.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+  const details = lastError?.message || 'No configured Gemini model supports generateContent for this API key.'
+  throw createProviderError(
+    'google',
+    404,
+    'Google Gemini model is unavailable for this API key. The backend tried current fallback models, but Google rejected them.',
+    details
+  )
 }
 
 // Main question generation function
@@ -559,21 +606,38 @@ export async function generateQuestions(transcript, cfg) {
 
   let responseText
 
-  switch (provider) {
-    case 'minimax':
-      responseText = await generateWithMiniMax(prompt, apiKey)
-      break
-    case 'openai':
-      responseText = await generateWithOpenAI(prompt, apiKey)
-      break
-    case 'anthropic':
-      responseText = await generateWithAnthropic(prompt, apiKey)
-      break
-    case 'google':
-      responseText = await generateWithGoogle(prompt, apiKey)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
+  try {
+    switch (provider) {
+      case 'minimax':
+        responseText = await generateWithMiniMax(prompt, apiKey)
+        break
+      case 'openai':
+        responseText = await generateWithOpenAI(prompt, apiKey)
+        break
+      case 'anthropic':
+        responseText = await generateWithAnthropic(prompt, apiKey)
+        break
+      case 'google':
+        responseText = await generateWithGoogle(prompt, apiKey)
+        break
+      default:
+        throw new Error(`Unknown provider: ${provider}`)
+    }
+  } catch (error) {
+    console.error('AI provider generation failed:', error)
+    console.error('Detailed Error:', error)
+
+    if (error.statusCode === 429 || error.statusCode === 404) {
+      return {
+        fallbackRequired: true,
+        providerRateLimited: error.statusCode === 429,
+        providerModelUnavailable: error.statusCode === 404,
+        fallbackReason: error.message,
+        suggestedPrompt: prompt
+      }
+    }
+
+    throw error
   }
 
   const questions = parseQuestions(responseText, questionTypes)

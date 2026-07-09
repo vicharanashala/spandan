@@ -1,45 +1,52 @@
 import crypto from 'crypto'
 
-const ALGORITHM = 'aes-256-gcm'
-const IV_LENGTH = 12
+const ALGORITHM = 'aes-256-cbc'
+const IV_LENGTH = 16
 
-function getMasterSecret() {
-  const secret = process.env.AI_CONFIG_MASTER_SECRET || process.env.JWT_SECRET
-  if (!secret) {
-    throw new Error('AI_CONFIG_MASTER_SECRET is required to encrypt AI provider keys')
+function getEncryptionKey() {
+  const key = process.env.ENCRYPTION_KEY
+  if (!key) {
+    throw new Error('ENCRYPTION_KEY is required to encrypt AI provider keys')
   }
-  return crypto.createHash('sha256').update(secret).digest()
+
+  if (Buffer.byteLength(key, 'utf8') !== 32) {
+    throw new Error('ENCRYPTION_KEY must be exactly 32 bytes')
+  }
+
+  return Buffer.from(key, 'utf8')
 }
 
-export function encryptString(value) {
+export function encrypt(value) {
   if (!value || typeof value !== 'string') return null
 
   const iv = crypto.randomBytes(IV_LENGTH)
-  const cipher = crypto.createCipheriv(ALGORITHM, getMasterSecret(), iv)
+  const cipher = crypto.createCipheriv(ALGORITHM, getEncryptionKey(), iv)
   const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
-  const authTag = cipher.getAuthTag()
 
-  return {
-    iv: iv.toString('base64'),
-    authTag: authTag.toString('base64'),
-    ciphertext: encrypted.toString('base64')
-  }
+  return `${iv.toString('base64')}:${encrypted.toString('base64')}`
 }
 
-export function decryptString(payload) {
-  if (!payload?.iv || !payload?.authTag || !payload?.ciphertext) return ''
+export function decrypt(hash) {
+  if (!hash || typeof hash !== 'string') return ''
+
+  const [ivBase64, ciphertextBase64] = hash.split(':')
+  if (!ivBase64 || !ciphertextBase64) {
+    throw new Error('Malformed encrypted value')
+  }
 
   const decipher = crypto.createDecipheriv(
     ALGORITHM,
-    getMasterSecret(),
-    Buffer.from(payload.iv, 'base64')
+    getEncryptionKey(),
+    Buffer.from(ivBase64, 'base64')
   )
-  decipher.setAuthTag(Buffer.from(payload.authTag, 'base64'))
 
   const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(payload.ciphertext, 'base64')),
+    decipher.update(Buffer.from(ciphertextBase64, 'base64')),
     decipher.final()
   ])
 
   return decrypted.toString('utf8')
 }
+
+export const encryptString = encrypt
+export const decryptString = decrypt

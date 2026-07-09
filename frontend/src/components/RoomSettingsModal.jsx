@@ -29,11 +29,14 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
       const combinedStatus = AI_PROVIDER_OPTIONS.reduce((acc, provider) => {
         const personalStatus = data.providers?.[provider.id] || {}
         const globalStatus = data.globalProviders?.[provider.id] || {}
+        const envStatus = data.envProviders?.[provider.id] || {}
         acc[provider.id] = !!(
           personalStatus.hasKey ||
           personalStatus.hasEnvFallback ||
           globalStatus.hasKey ||
-          globalStatus.hasEnvFallback
+          globalStatus.hasEnvFallback ||
+          envStatus.hasKey ||
+          envStatus.hasEnvFallback
         )
         return acc
       }, {})

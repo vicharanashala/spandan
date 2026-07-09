@@ -17,6 +17,7 @@ function AIIntegrationSettings() {
   })
   const [status, setStatus] = useState({})
   const [globalStatus, setGlobalStatus] = useState({})
+  const [envStatus, setEnvStatus] = useState({})
   const [scope, setScope] = useState('personal')
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -34,6 +35,7 @@ function AIIntegrationSettings() {
       const data = await aiConfigApi.getStatus()
       setStatus(data.providers || {})
       setGlobalStatus(data.globalProviders || {})
+      setEnvStatus(data.envProviders || {})
     } catch (err) {
       setError(err.message || 'Unable to load AI configuration')
     } finally {
@@ -189,6 +191,7 @@ function AIIntegrationSettings() {
             const providerStatus = scope === 'global'
               ? (globalStatus[provider.id] || {})
               : (status[provider.id] || {})
+            const providerEnvStatus = envStatus[provider.id] || {}
             return (
               <label key={provider.id} style={{ display: 'block' }}>
                 <span style={{
@@ -203,11 +206,11 @@ function AIIntegrationSettings() {
                 }}>
                   {provider.label}
                   <span style={{
-                    color: providerStatus.hasKey ? '#047857' : 'var(--text-secondary)',
+                    color: providerStatus.hasKey ? '#047857' : providerEnvStatus.hasEnvFallback ? '#2563eb' : 'var(--text-secondary)',
                     fontSize: '11px',
                     fontWeight: '600'
                   }}>
-                    {providerStatus.hasKey ? 'Configured' : providerStatus.hasEnvFallback ? 'Env fallback' : 'Not set'}
+                    {providerStatus.hasKey ? 'Configured' : providerEnvStatus.hasEnvFallback ? 'Env fallback' : 'Not set'}
                   </span>
                 </span>
                 {provider.id === 'google' && (

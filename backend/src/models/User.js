@@ -1,17 +1,18 @@
 import mongoose from 'mongoose'
 import bcrypt from 'bcryptjs'
 
-const encryptedValueSchema = new mongoose.Schema({
-  iv: { type: String, required: true },
-  authTag: { type: String, required: true },
-  ciphertext: { type: String, required: true }
+const encryptedAiKeysSchema = new mongoose.Schema({
+  minimax: { type: mongoose.Schema.Types.Mixed, default: null },
+  openai: { type: mongoose.Schema.Types.Mixed, default: null },
+  anthropic: { type: mongoose.Schema.Types.Mixed, default: null },
+  google: { type: mongoose.Schema.Types.Mixed, default: null }
 }, { _id: false })
 
-const encryptedAiKeysSchema = new mongoose.Schema({
-  minimax: { type: encryptedValueSchema, default: null },
-  openai: { type: encryptedValueSchema, default: null },
-  anthropic: { type: encryptedValueSchema, default: null },
-  google: { type: encryptedValueSchema, default: null }
+const encryptedPersonalAiKeysSchema = new mongoose.Schema({
+  google: { type: String, default: null },
+  openai: { type: String, default: null },
+  minimax: { type: String, default: null },
+  anthropic: { type: String, default: null }
 }, { _id: false })
 
 const userSchema = new mongoose.Schema({
@@ -108,6 +109,11 @@ const userSchema = new mongoose.Schema({
     type: encryptedAiKeysSchema,
     default: () => ({}),
     select: false
+  },
+  encryptedPersonalAiKeys: {
+    type: encryptedPersonalAiKeysSchema,
+    default: () => ({}),
+    select: false
   }
 }, {
   timestamps: true
@@ -136,6 +142,7 @@ userSchema.methods.toJSON = function() {
   const obj = this.toObject()
   delete obj.password
   delete obj.encryptedAiKeys
+  delete obj.encryptedPersonalAiKeys
   return obj
 }
 
