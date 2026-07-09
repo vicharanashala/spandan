@@ -16,6 +16,8 @@ import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import dashboardRoutes from './routes/dashboard.js'
+import reportsRoutes from './routes/reports.js'
+import lmsAuthRoutes from './routes/lmsAuth.js'
 
 // Import socket service
 import { setupSockets, getActiveRoomState } from './services/socketService.js'
@@ -128,6 +130,8 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/dashboard', dashboardRoutes)
+app.use('/api/reports', reportsRoutes)
+app.use('/api/lms', lmsAuthRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {

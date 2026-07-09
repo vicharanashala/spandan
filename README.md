@@ -22,6 +22,7 @@ An advanced, real-time interactive polling and student evaluation platform desig
 ### 4. Dashboards & Scoring Engine
 * **TTA (Time-to-Answer) Scoring:** A dynamic scoring algorithm that rewards speed and actively penalizes edited answers.
 * **Teacher Dashboard:** Live session analytics, per-question breakdown (correct percentages, answer distributions, tab-switch flags), and a real-time leaderboard.
+* **Post-Session Reporting:** Generate and download attendance records, PDF analytics reports, and CSV data. Automatically push graded session results directly to Google Classroom or Moodle via the extensible LMS Connector.
 * **Student Dashboard:** Individual performance tracking, including lifetime score, accuracy, and weekly rollups.
 * **Strict Auth Routing:** Secure entrance flow that forces unauthenticated users directly to an animated login page.
 

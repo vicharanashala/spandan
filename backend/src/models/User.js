@@ -91,6 +91,14 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // LMS Integrations
+  lmsIntegrations: {
+    googleClassroom: {
+      accessToken: String,
+      refreshToken: String,
+      expiryDate: Number
+    }
+  },
   // Precomputed Student Aggregates (updated on session end)
   studentStats: {
     lifetimeScore: { type: Number, default: 0 },

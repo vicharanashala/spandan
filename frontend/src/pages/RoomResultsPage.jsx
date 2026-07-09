@@ -23,13 +23,34 @@ function RoomResultsPage() {
     averageScore: 0,
     participationRate: 0
   })
+  
+  const [lmsConnected, setLmsConnected] = useState(false)
+  const [isPushingGrades, setIsPushingGrades] = useState(false)
+  const [pushStatus, setPushStatus] = useState(null)
 
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchRoomData()
+      if (user?.role === 'teacher') {
+        fetchLmsStatus()
+      }
     }
   }, [token, roomId])
+
+  const fetchLmsStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/lms/status`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success && data.connected?.googleClassroom) {
+        setLmsConnected(true)
+      }
+    } catch (err) {
+      console.error('Failed to fetch LMS status:', err)
+    }
+  }
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -146,6 +167,87 @@ function RoomResultsPage() {
     }
   }
 
+  const handleDownload = async (type) => {
+    try {
+      const endpoint = type === 'attendance' 
+        ? `${API_URL}/reports/${roomId}/attendance.csv`
+        : type === 'csv'
+          ? `${API_URL}/reports/${roomId}/analytics/csv`
+          : `${API_URL}/reports/${roomId}/analytics/pdf`
+
+      const res = await fetch(endpoint, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+
+      if (!res.ok) throw new Error('Download failed')
+
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${type}-${roomId}.${type === 'pdf' ? 'pdf' : 'csv'}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Failed to download file:', error)
+      alert('Failed to download report. Please try again.')
+    }
+  }
+
+  const handlePushGrades = async () => {
+    if (!lmsConnected) {
+      // Open OAuth popup
+      try {
+        const res = await fetch(`${API_URL}/lms/google/auth`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        const data = await res.json()
+        if (data.url) {
+          window.open(data.url, 'LMSAuth', 'width=600,height=700')
+          // Optional: Poll for status or just let user click again
+          alert('Please complete authentication in the popup window, then click Push to Gradebook again.')
+        }
+      } catch (err) {
+        console.error('Failed to get auth URL:', err)
+      }
+      return
+    }
+
+    const courseId = prompt('Enter Google Classroom Course ID:')
+    const assignmentId = prompt('Enter Google Classroom CourseWork ID:')
+    if (!courseId || !assignmentId) return
+
+    setIsPushingGrades(true)
+    setPushStatus('Pushing grades...')
+    try {
+      const res = await fetch(`${API_URL}/reports/${roomId}/push-grades`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          provider: 'googleClassroom',
+          courseId,
+          assignmentId
+        })
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setPushStatus(`Success! Pushed ${data.results.length} grades.`)
+      } else {
+        setPushStatus(`Failed: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      setPushStatus(`Error: ${err.message}`)
+    } finally {
+      setIsPushingGrades(false)
+      setTimeout(() => setPushStatus(null), 5000)
+    }
+  }
+
   if (isLoading) {
     return (
       <div style={{
@@ -207,25 +309,58 @@ function RoomResultsPage() {
 
         {/* Content */}
         <div style={{ flex: 1, padding: '32px' }}>
-          {/* Back Button */}
-          <button
-            onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              padding: '8px 12px',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              fontSize: '14px',
-              cursor: 'pointer',
-              marginBottom: '20px'
-            }}
-          >
-            ←
-          </button>
+          {/* Back Button and Export Actions */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <button
+              onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '8px 12px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                fontSize: '14px',
+                cursor: 'pointer'
+              }}
+            >
+              ←
+            </button>
+
+            {user?.role === 'teacher' && (
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <button onClick={() => handleDownload('attendance')} style={{ padding: '8px 12px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}>
+                  Download Attendance
+                </button>
+                <button onClick={() => handleDownload('csv')} style={{ padding: '8px 12px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}>
+                  Export CSV
+                </button>
+                <button onClick={() => handleDownload('pdf')} style={{ padding: '8px 12px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}>
+                  Export PDF
+                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button 
+                    onClick={handlePushGrades} 
+                    disabled={isPushingGrades}
+                    style={{ 
+                      padding: '8px 12px', 
+                      background: lmsConnected ? '#3b82f6' : 'var(--bg-card)', 
+                      color: lmsConnected ? 'white' : 'var(--text-primary)', 
+                      border: lmsConnected ? 'none' : '1px solid var(--border-color)', 
+                      borderRadius: '8px', 
+                      fontSize: '14px', 
+                      cursor: isPushingGrades ? 'not-allowed' : 'pointer',
+                      opacity: isPushingGrades ? 0.7 : 1
+                    }}>
+                    {isPushingGrades ? 'Pushing...' : lmsConnected ? 'Push to Gradebook' : 'Connect LMS & Push'}
+                  </button>
+                  {pushStatus && <span style={{ fontSize: '12px', color: pushStatus.startsWith('Error') || pushStatus.startsWith('Failed') ? '#dc2626' : '#059669' }}>{pushStatus}</span>}
+                </div>
+              </div>
+            )}
+          </div>
           
           {/* Overview Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
