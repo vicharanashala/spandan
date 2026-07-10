@@ -8,14 +8,18 @@ import { config } from '../config.js'
 const router = express.Router()
 const PROVIDERS = ['minimax', 'openai', 'anthropic', 'google']
 
+function hasValidKey(value) {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
 router.use(authenticate)
 router.use(authorize('teacher'))
 
 function providerStatus(encryptedAiKeys = {}, envKeys = {}) {
   return PROVIDERS.reduce((acc, provider) => {
     acc[provider] = {
-      hasKey: !!encryptedAiKeys?.[provider],
-      hasEnvFallback: !!envKeys?.[provider]
+      hasKey: hasValidKey(encryptedAiKeys?.[provider]),
+      hasEnvFallback: hasValidKey(envKeys?.[provider])
     }
     return acc
   }, {})
@@ -68,13 +72,15 @@ router.get('/', async (req, res) => {
     const providers = providerStatus(getPersonalKeys(user), {})
     const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
     const envProviders = envProviderStatus()
+    const statuses = configuredStatus(providers, globalProviders, envProviders)
 
     res.json({
       success: true,
+      statuses,
       providers,
       globalProviders,
       envProviders,
-      configured: configuredStatus(providers, globalProviders, envProviders)
+      configured: statuses
     })
   } catch (error) {
     console.error('AI config status error:', error)
@@ -131,13 +137,15 @@ const saveAiConfig = async (req, res) => {
     const providers = providerStatus(getPersonalKeys(user), {})
     const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
     const envProviders = envProviderStatus()
+    const statuses = configuredStatus(providers, globalProviders, envProviders)
 
     res.json({
       success: true,
+      statuses,
       providers,
       globalProviders,
       envProviders,
-      configured: configuredStatus(providers, globalProviders, envProviders)
+      configured: statuses
     })
   } catch (error) {
     console.error('AI config save error:', error)

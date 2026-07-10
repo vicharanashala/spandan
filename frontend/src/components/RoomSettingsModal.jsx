@@ -10,9 +10,38 @@ const AI_PROVIDER_OPTIONS = [
   { id: 'google', name: 'Gemini', icon: 'AI' }
 ]
 
+const EMPTY_PROVIDER_STATUS = {
+  minimax: false,
+  openai: false,
+  anthropic: false,
+  google: false
+}
+
+const hasProviderKey = (status) => Boolean(
+  typeof status === 'boolean' ? status : status?.hasKey
+)
+
+const hasEnvFallback = (status) => Boolean(
+  typeof status === 'boolean' ? status : status?.hasEnvFallback
+)
+
+const combineProviderStatuses = (providers = {}, globalProviders = {}, envProviders = {}) => (
+  AI_PROVIDER_OPTIONS.reduce((acc, provider) => {
+    acc[provider.id] = Boolean(
+      hasProviderKey(providers[provider.id]) ||
+      hasEnvFallback(providers[provider.id]) ||
+      hasProviderKey(globalProviders[provider.id]) ||
+      hasEnvFallback(globalProviders[provider.id]) ||
+      hasProviderKey(envProviders[provider.id]) ||
+      hasEnvFallback(envProviders[provider.id])
+    )
+    return acc
+  }, { ...EMPTY_PROVIDER_STATUS })
+)
+
 function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings)
-  const [providerStatus, setProviderStatus] = useState({})
+  const [providerStatus, setProviderStatus] = useState(EMPTY_PROVIDER_STATUS)
   const [loadingProviders, setLoadingProviders] = useState(false)
 
   useEffect(() => {
@@ -26,25 +55,13 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
     setLoadingProviders(true)
     try {
       const data = await aiConfigApi.getStatus()
-      const combinedStatus = AI_PROVIDER_OPTIONS.reduce((acc, provider) => {
-        const personalStatus = data.providers?.[provider.id] || {}
-        const globalStatus = data.globalProviders?.[provider.id] || {}
-        const envStatus = data.envProviders?.[provider.id] || {}
-        acc[provider.id] = !!(
-          personalStatus.hasKey ||
-          personalStatus.hasEnvFallback ||
-          globalStatus.hasKey ||
-          globalStatus.hasEnvFallback ||
-          envStatus.hasKey ||
-          envStatus.hasEnvFallback
-        )
-        return acc
-      }, {})
-
+      const combinedStatus = data.statuses ||
+        data.configured ||
+        combineProviderStatuses(data.providers, data.globalProviders, data.envProviders)
       setProviderStatus(combinedStatus)
     } catch (error) {
       console.error('Failed to load AI providers:', error)
-      setProviderStatus({})
+      setProviderStatus(EMPTY_PROVIDER_STATUS)
     } finally {
       setLoadingProviders(false)
     }

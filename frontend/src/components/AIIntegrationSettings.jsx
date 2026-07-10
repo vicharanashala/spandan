@@ -8,6 +8,14 @@ const PROVIDERS = [
   { id: 'google', label: 'Google Gemini' }
 ]
 
+const hasProviderKey = (status) => Boolean(
+  typeof status === 'boolean' ? status : status?.hasKey
+)
+
+const hasEnvFallback = (status) => Boolean(
+  typeof status === 'boolean' ? status : status?.hasEnvFallback
+)
+
 function AIIntegrationSettings() {
   const [keys, setKeys] = useState({
     minimax: '',
@@ -33,9 +41,13 @@ function AIIntegrationSettings() {
     setError('')
     try {
       const data = await aiConfigApi.getStatus()
-      setStatus(data.providers || {})
-      setGlobalStatus(data.globalProviders || {})
-      setEnvStatus(data.envProviders || {})
+      const providers = data.providers || {}
+      const globalProviders = data.globalProviders || {}
+      const envProviders = data.envProviders || {}
+
+      setStatus(providers)
+      setGlobalStatus(globalProviders)
+      setEnvStatus(envProviders)
     } catch (err) {
       setError(err.message || 'Unable to load AI configuration')
     } finally {
@@ -65,8 +77,13 @@ function AIIntegrationSettings() {
       }
 
       const data = await aiConfigApi.saveKeys(nonEmptyKeys, scope)
-      setStatus(data.providers || {})
-      setGlobalStatus(data.globalProviders || {})
+      const providers = data.providers || {}
+      const globalProviders = data.globalProviders || {}
+      const envProviders = data.envProviders || {}
+
+      setStatus(providers)
+      setGlobalStatus(globalProviders)
+      setEnvStatus(envProviders)
       setKeys({ minimax: '', openai: '', anthropic: '', google: '' })
       setMessage('AI integration settings saved')
     } catch (err) {
@@ -192,6 +209,8 @@ function AIIntegrationSettings() {
               ? (globalStatus[provider.id] || {})
               : (status[provider.id] || {})
             const providerEnvStatus = envStatus[provider.id] || {}
+            const providerHasKey = hasProviderKey(providerStatus)
+            const providerHasEnvFallback = hasEnvFallback(providerEnvStatus)
             return (
               <label key={provider.id} style={{ display: 'block' }}>
                 <span style={{
@@ -206,11 +225,11 @@ function AIIntegrationSettings() {
                 }}>
                   {provider.label}
                   <span style={{
-                    color: providerStatus.hasKey ? '#047857' : providerEnvStatus.hasEnvFallback ? '#2563eb' : 'var(--text-secondary)',
+                    color: providerHasKey ? '#047857' : providerHasEnvFallback ? '#2563eb' : 'var(--text-secondary)',
                     fontSize: '11px',
                     fontWeight: '600'
                   }}>
-                    {providerStatus.hasKey ? 'Configured' : providerEnvStatus.hasEnvFallback ? 'Env fallback' : 'Not set'}
+                    {providerHasKey ? 'Configured' : providerHasEnvFallback ? 'Env fallback' : 'Not set'}
                   </span>
                 </span>
                 {provider.id === 'google' && (
@@ -259,7 +278,7 @@ function AIIntegrationSettings() {
                   type="password"
                   value={keys[provider.id]}
                   onChange={(event) => handleChange(provider.id, event.target.value)}
-                  placeholder={providerStatus.hasKey ? 'Leave blank to keep current key' : 'Paste API key'}
+                  placeholder={providerHasKey ? 'Leave blank to keep current key' : 'Paste API key'}
                   autoComplete="off"
                   style={{
                     width: '100%',
