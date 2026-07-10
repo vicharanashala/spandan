@@ -163,9 +163,15 @@ function RoomDetailPage() {
   // TAWM-Alternative: Listen for live pulse updates
   useEffect(() => {
     if (!socket) return
-    const handlePulseUpdate = (data) => {
-      setPulseData(data)
-    }
+      const handlePulseUpdate = (data) => {
+    console.log('🔴 PULSE UPDATE TEACHER', data)
+    setPulseData({
+      like: data.like || 0,
+      confused: data.confused || 0,
+      lost: data.lost || 0,
+      lastUpdate: data.timestamp || data.lastUpdate || Date.now()
+    })
+  }
     socket.on('pulse:update', handlePulseUpdate)
     return () => socket.off('pulse:update', handlePulseUpdate)
   }, [socket])
@@ -1078,7 +1084,7 @@ function RoomDetailPage() {
 
             
       {/* TAWM-Alternative: Live Pulse Display */}
-      {pulseData.lastUpdate && (
+      {true && (
         <div style={{
           padding: '10px 16px',
           background: 'linear-gradient(135deg, rgba(16,185,129,0.1), rgba(245,158,11,0.1))',

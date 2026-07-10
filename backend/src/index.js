@@ -268,7 +268,7 @@ io.on('connection', (socket) => {
         like: counters.like,
         confused: counters.confused,
         lost: counters.lost,
-        timestamp: counters.lastUpdate
+        timestamp: counters.lastUpdate,
       })
     } catch (error) {
       console.error('Error in pulse:submit:', error)

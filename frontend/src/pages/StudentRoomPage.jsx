@@ -131,7 +131,6 @@ function StudentRoomPage() {
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
-})
 
 
     // TAWM-Alternative: Listen for live pulse updates
@@ -781,6 +780,8 @@ function StudentRoomPage() {
               </div>
             </div>
           )}
+        </div>
+      </div>
 
       {/* TAWM-Alternative: Live Pulse Widget (floating) */}
       <div style={{
@@ -826,10 +827,8 @@ function StudentRoomPage() {
         </p>
       </div>
 
-
-        </div>
-      </div>
     </div>
   )
 }
+
 export default StudentRoomPage
