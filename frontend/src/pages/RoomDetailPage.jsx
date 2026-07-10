@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import TeamLeaderboard from '../components/TeamLeaderboard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -96,6 +97,15 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // ── Team Battle Mode state ──────────────────────────────────────────────
+  const [teams, setTeams] = useState([])
+  const [teamsLoading, setTeamsLoading] = useState(false)
+  const [newTeamName, setNewTeamName] = useState('')
+  const [showTeamPanel, setShowTeamPanel] = useState(false)
+  const [assigningTeam, setAssigningTeam] = useState(null) // teamId being assigned
+  const [roomMembers, setRoomMembers] = useState([]) // students in the room
+  // ── End Team Battle Mode state ──────────────────────────────────────────
 
   useEffect(() => {
     if (token) {
@@ -492,6 +502,8 @@ function RoomDetailPage() {
       }
       // Load questions for this room from database
       loadQuestions(roomId)
+      // Load teams for this room
+      loadTeams(roomId)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -526,6 +538,130 @@ function RoomDetailPage() {
       console.error('Failed to load questions:', err)
     }
   }
+
+  // ── Team Battle Mode handlers ───────────────────────────────────────────
+  const loadTeams = async (rid) => {
+    if (!rid || !token) return
+    setTeamsLoading(true)
+    try {
+      const res = await fetch(`${API_URL}/teams?roomId=${rid}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success) setTeams(data.teams)
+    } catch (err) {
+      console.error('Failed to load teams:', err)
+    } finally {
+      setTeamsLoading(false)
+    }
+  }
+
+  const loadRoomMembers = async () => {
+    if (!room?._id || !token) return
+    try {
+      // Fetch all students who have joined this room via the RoomMember collection
+      const res = await fetch(`${API_URL}/rooms/${room._id}/members`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.members) setRoomMembers(data.members)
+      }
+    } catch (err) {
+      console.error('Failed to load room members:', err)
+    }
+  }
+
+  const handleCreateTeam = async () => {
+    const name = newTeamName.trim()
+    if (!name || !room?._id) return
+    try {
+      const res = await fetch(`${API_URL}/teams`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ roomId: room._id, name })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTeams(prev => [...prev, data.team])
+        setNewTeamName('')
+      } else {
+        alert('Failed to create team: ' + (data.error || 'Unknown error'))
+      }
+    } catch (err) {
+      console.error('Failed to create team:', err)
+      alert('Failed to create team')
+    }
+  }
+
+  const handleDeleteTeam = async (teamId) => {
+    if (!window.confirm('Delete this team? This cannot be undone.')) return
+    try {
+      const res = await fetch(`${API_URL}/teams/${teamId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTeams(prev => prev.filter(t => t._id !== teamId))
+      } else {
+        alert('Failed to delete team: ' + (data.error || 'Unknown error'))
+      }
+    } catch (err) {
+      console.error('Failed to delete team:', err)
+    }
+  }
+
+  const handleAssignMember = async (teamId, memberId, assign) => {
+    // assign=true adds the member; assign=false removes them
+    const team = teams.find(t => t._id === teamId)
+    if (!team) return
+
+    const currentIds = (team.memberIds || []).map(m =>
+      typeof m === 'object' ? m._id : m
+    )
+    let updatedIds
+    if (assign) {
+      // Remove from any other team first (a student can only be in one team)
+      const updated = teams.map(t => {
+        if (t._id === teamId) return t
+        const filtered = (t.memberIds || []).filter(m => {
+          const id = typeof m === 'object' ? m._id : m
+          return id !== memberId
+        })
+        return { ...t, memberIds: filtered }
+      })
+      setTeams(updated)
+      updatedIds = [...new Set([...currentIds, memberId])]
+    } else {
+      updatedIds = currentIds.filter(id => id !== memberId)
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/teams/${teamId}/members`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ memberIds: updatedIds })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTeams(prev => prev.map(t => t._id === teamId ? data.team : t))
+      } else {
+        alert('Failed to update team: ' + (data.error || 'Unknown error'))
+        loadTeams(room._id) // re-sync on failure
+      }
+    } catch (err) {
+      console.error('Failed to update team members:', err)
+      loadTeams(room._id)
+    }
+  }
+  // ── End Team Battle Mode handlers ───────────────────────────────────────
 
   const handleEndRoom = async () => {
     if (room.endedAt) return
@@ -1581,15 +1717,194 @@ function RoomDetailPage() {
               </div>
             )}
             </div>
-            {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Leaderboard
-                </span>
+            {/* Leaderboard + Team Leaderboard - flexible width */}
+            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: '16px', boxSizing: 'border-box' }}>
+
+              {/* Team Management Panel (teacher only) */}
+              {!isEnded && (
+                <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '18px' }}>⚔️</span>
+                      <span style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-primary)' }}>Team Battle</span>
+                    </div>
+                    <button
+                      id="btn-toggle-team-panel"
+                      onClick={() => {
+                        setShowTeamPanel(p => !p)
+                        if (!showTeamPanel) loadRoomMembers()
+                      }}
+                      style={{
+                        padding: '4px 12px',
+                        background: showTeamPanel ? 'var(--nav-hover)' : '#3b82f6',
+                        color: showTeamPanel ? 'var(--text-primary)' : 'white',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {showTeamPanel ? 'Hide' : 'Manage'}
+                    </button>
+                  </div>
+
+                  {showTeamPanel && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {/* Create new team */}
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          id="input-new-team-name"
+                          type="text"
+                          placeholder="Team name…"
+                          value={newTeamName}
+                          onChange={e => setNewTeamName(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleCreateTeam()}
+                          style={{
+                            flex: 1,
+                            padding: '8px 10px',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '8px',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '13px'
+                          }}
+                        />
+                        <button
+                          id="btn-create-team"
+                          onClick={handleCreateTeam}
+                          disabled={!newTeamName.trim()}
+                          style={{
+                            padding: '8px 12px',
+                            background: newTeamName.trim() ? '#10b981' : '#9ca3af',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            fontWeight: '600',
+                            cursor: newTeamName.trim() ? 'pointer' : 'not-allowed'
+                          }}
+                        >
+                          + Add
+                        </button>
+                      </div>
+
+                      {teamsLoading && (
+                        <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>Loading…</div>
+                      )}
+
+                      {/* Existing teams */}
+                      {teams.map(team => (
+                        <div key={team._id} style={{
+                          background: 'var(--bg-primary)',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          overflow: 'hidden'
+                        }}>
+                          {/* Team header */}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
+                            <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                              🏅 {team.name}
+                            </span>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                {(team.memberIds || []).length} member{(team.memberIds || []).length !== 1 ? 's' : ''}
+                              </span>
+                              <button
+                                onClick={() => setAssigningTeam(assigningTeam === team._id ? null : team._id)}
+                                style={{
+                                  padding: '3px 8px',
+                                  background: assigningTeam === team._id ? '#3b82f6' : 'var(--nav-hover)',
+                                  color: assigningTeam === team._id ? 'white' : 'var(--text-secondary)',
+                                  border: '1px solid var(--border-color)',
+                                  borderRadius: '6px',
+                                  fontSize: '11px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                {assigningTeam === team._id ? 'Done' : 'Assign'}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTeam(team._id)}
+                                style={{
+                                  padding: '3px 8px',
+                                  background: 'transparent',
+                                  color: '#ef4444',
+                                  border: '1px solid #fecaca',
+                                  borderRadius: '6px',
+                                  fontSize: '11px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Assign students — shown when this team is being edited */}
+                          {assigningTeam === team._id && (
+                            <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              {roomMembers.length === 0 && (
+                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  No students have joined this room yet.
+                                </div>
+                              )}
+                              {roomMembers.map(member => {
+                                const memberId = member._id || member.studentId
+                                const isInThisTeam = (team.memberIds || []).some(m =>
+                                  (typeof m === 'object' ? m._id : m) === memberId
+                                )
+                                return (
+                                  <label key={memberId} style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    fontSize: '13px',
+                                    color: 'var(--text-primary)',
+                                    cursor: 'pointer',
+                                    padding: '4px 0'
+                                  }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={isInThisTeam}
+                                      onChange={e => handleAssignMember(team._id, memberId, e.target.checked)}
+                                      style={{ cursor: 'pointer' }}
+                                    />
+                                    {member.name || member.email || memberId}
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+
+                      {!teamsLoading && teams.length === 0 && (
+                        <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px', fontStyle: 'italic' }}>
+                          No teams yet — add one above.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Leaderboard with Individual / Teams tab switcher */}
+              <div style={{ flex: '1 1 auto', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '20px' }}>🏆</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Leaderboard
+                  </span>
+                </div>
+                <TeamLeaderboard
+                  roomId={room?._id}
+                  token={token}
+                  socket={socket}
+                  IndividualLeaderboard={Leaderboard}
+                />
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+
             </div>
           </div>
         </div>

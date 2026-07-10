@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import TeamLeaderboard from '../components/TeamLeaderboard'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -762,7 +763,12 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                  <TeamLeaderboard
+                    roomId={room?._id}
+                    token={token}
+                    socket={socket}
+                    IndividualLeaderboard={Leaderboard}
+                  />
                 </div>
               </div>
             </div>

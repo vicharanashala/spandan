@@ -98,6 +98,38 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+    // ── Team Battle Mode: roll up individual points to the student's team ──
+    if (points > 0) {
+      try {
+        const Team = (await import('../models/Team.js')).default
+        const Room = (await import('../models/Room.js')).default
+
+        // Find the team this student belongs to in this room
+        const team = await Team.findOneAndUpdate(
+          { roomId, memberIds: studentId },
+          { $inc: { totalPoints: points } },
+          { new: true }
+        )
+
+        if (team) {
+          // Retrieve room code for Socket.IO room broadcast
+          const room = await Room.findById(roomId).select('code').lean()
+          if (room?.code) {
+            const io = req.app.get('io')
+            io.to(room.code).emit('team:score:update', {
+              teamId: team._id.toHexString(),
+              teamName: team.name,
+              totalPoints: team.totalPoints
+            })
+          }
+        }
+      } catch (teamError) {
+        // Team scoring is non-critical — log but never fail the response save
+        console.error('Error updating team score:', teamError)
+      }
+    }
+    // ── End Team Battle Mode ──
+
     res.status(201).json({
       success: true,
       response: {
@@ -111,6 +143,7 @@ router.post('/', authorize('student'), async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to save response' })
   }
 })
+
 
 // GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
 router.get('/', async (req, res) => {

@@ -45,10 +45,24 @@ export const api = {
   },
 
   async handleResponse(response) {
-    const data = await response.json()
+    let data = null
+    const text = await response.text()
+
+    if (text) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        // Server returned non-JSON (e.g. proxy error, server crash)
+        if (!response.ok) {
+          throw new Error(`Server error (${response.status}): ${text.substring(0, 100)}`)
+        }
+      }
+    }
 
     if (!response.ok) {
-      throw new Error(data.error || data.message || 'Request failed')
+      throw new Error(
+        data?.error || data?.message || `Request failed with status ${response.status}`
+      )
     }
 
     return data
