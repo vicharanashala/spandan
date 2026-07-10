@@ -447,6 +447,20 @@ function RoomResultsPage() {
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                                 {qStats.totalResponses || 0} responses
                               </div>
+                              {correctRate !== null && correctRate < 50 && (
+                                <div style={{ 
+                                  marginTop: '12px', 
+                                  padding: '4px', 
+                                  background: '#ef4444', 
+                                  color: 'white', 
+                                  fontSize: '10px', 
+                                  fontWeight: 'bold', 
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase'
+                                }}>
+                                  ⚠️ Risk: Misconception
+                                </div>
+                              )}
                             </>
                           ) : (
                             <>
