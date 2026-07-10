@@ -242,7 +242,8 @@ io.on('connection', (socket) => {
       questionId: data.questionId,
       studentId: data.studentId,
       selectedOption: data.selectedOption,
-      responseTime: data.responseTime
+      responseTime: data.responseTime,
+      confidenceLevel: data.confidenceLevel
     })
   })
 
