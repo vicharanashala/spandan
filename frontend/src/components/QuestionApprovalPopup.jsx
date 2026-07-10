@@ -263,8 +263,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                   gap: '12px',
                   padding: '12px 16px',
                   borderRadius: '10px',
-                  background: option.isCorrect ? '#d1fae5' : 'var(--bg-card)',
-                  border: option.isCorrect ? '2px solid #10b981' : '1px solid var(--border-color)',
+                  background: option.isCorrect ? 'var(--correct-option-bg)' : 'var(--bg-card)',
+                  border: option.isCorrect ? '2px solid var(--correct-option-border)' : '1px solid var(--border-color)',
                   color: 'var(--text-primary)'
                 }}
               >
@@ -272,7 +272,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                   width: '28px',
                   height: '28px',
                   borderRadius: '50%',
-                  background: option.isCorrect ? '#10b981' : 'var(--nav-hover)',
+                  background: option.isCorrect ? 'var(--correct-option-accent)' : 'var(--nav-hover)',
                   color: 'white',
                   display: 'flex',
                   alignItems: 'center',
@@ -287,8 +287,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                   <span style={{ 
                     padding: '2px 8px', 
                     borderRadius: '4px', 
-                    background: '#10b981', 
-                    color: 'white', 
+                    background: 'var(--correct-badge-bg)',
+                    color: 'var(--correct-badge-text)',
                     fontSize: '10px', 
                     fontWeight: '600'
                   }}>

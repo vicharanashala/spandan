@@ -42,7 +42,14 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       })
     }
 
-    console.log(`Generating ${numQuestions} questions with ${provider}...`)
+    console.log('[QUESTIONS_ROUTE] /api/questions/generate request:', {
+      provider,
+      numQuestions,
+      difficulty,
+      transcriptLength: transcript.trim().length,
+      hasQuestionTypeMix: !!questionTypeMix,
+      userId: String(req.user._id)
+    })
 
     const questions = await generateQuestions(transcript, {
       numQuestions,
@@ -53,30 +60,60 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     })
 
     if (questions?.fallbackRequired) {
+      console.log('[QUESTIONS_ROUTE] Fallback required:', {
+        provider: questions.provider || provider,
+        reason: questions.fallbackReason,
+        providerRateLimited: !!questions.providerRateLimited,
+        providerModelUnavailable: !!questions.providerModelUnavailable,
+        rawResponsePreview: questions.rawResponsePreview
+      })
+
       return res.status(200).json({
         success: true,
         fallbackRequired: true,
         providerRateLimited: !!questions.providerRateLimited,
         providerModelUnavailable: !!questions.providerModelUnavailable,
         fallbackReason: questions.fallbackReason,
-        suggestedPrompt: questions.suggestedPrompt
+        suggestedPrompt: questions.suggestedPrompt,
+        provider: questions.provider || provider,
+        rawResponsePreview: questions.rawResponsePreview
       })
     }
 
-    console.log(`Generated ${questions.questions.length} questions successfully`)
+    const generatedQuestions = Array.isArray(questions?.questions) ? questions.questions : []
+    console.log('[QUESTIONS_ROUTE] Generation result:', {
+      requestedProvider: questions?.requestedProvider || provider,
+      provider: questions?.provider || provider,
+      usedFallbackProvider: !!questions?.usedFallbackProvider,
+      questionCount: generatedQuestions.length
+    })
+
+    if (generatedQuestions.length === 0) {
+      return res.status(200).json({
+        success: true,
+        fallbackRequired: true,
+        message: 'API failed, falling back to manual generation',
+        fallbackReason: 'The AI provider returned no parseable questions.',
+        suggestedPrompt: questions?.suggestedPrompt,
+        provider: questions?.provider || provider
+      })
+    }
 
     res.json({
       success: true,
-      questions: questions.questions
+      questions: generatedQuestions,
+      provider: questions.provider,
+      requestedProvider: questions.requestedProvider,
+      usedFallbackProvider: !!questions.usedFallbackProvider
     })
   } catch (error) {
-    console.error('Question generation error:', error)
-    console.error('Detailed Error:', error)
+    console.error('AI Generation Failed:', error)
 
-    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500
-    res.status(statusCode).json({
-      success: false,
-      error: error.message || 'Failed to generate questions',
+    res.status(200).json({
+      success: true,
+      fallbackRequired: true,
+      message: 'API failed, falling back to manual generation',
+      fallbackReason: error.message || 'API failed, falling back to manual generation',
       provider: error.provider || undefined
     })
   }

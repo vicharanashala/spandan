@@ -321,10 +321,10 @@ function TextQuestionApprovalPopup({
                   key={idx}
                   style={{
                     padding: '12px 14px',
-                    background: option.isCorrect 
-                      ? 'rgba(16, 185, 129, 0.1)' 
+                    background: option.isCorrect
+                      ? 'var(--correct-option-subtle-bg)'
                       : 'var(--bg-secondary)',
-                    border: `2px solid ${option.isCorrect ? '#10b981' : 'var(--border-color)'}`,
+                    border: `2px solid ${option.isCorrect ? 'var(--correct-option-border)' : 'var(--border-color)'}`,
                     borderRadius: '10px',
                     display: 'flex',
                     alignItems: 'center',
@@ -335,7 +335,7 @@ function TextQuestionApprovalPopup({
                     width: '26px',
                     height: '26px',
                     borderRadius: '50%',
-                    background: option.isCorrect ? '#10b981' : 'var(--border-color)',
+                    background: option.isCorrect ? 'var(--correct-option-accent)' : 'var(--border-color)',
                     color: 'white',
                     display: 'flex',
                     alignItems: 'center',

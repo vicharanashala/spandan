@@ -30,6 +30,12 @@ html {
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.08);
   --nav-hover: #f3f4f6;
   --input-bg: #ffffff;
+  --correct-option-bg: #d1fae5;
+  --correct-option-subtle-bg: rgba(16, 185, 129, 0.1);
+  --correct-option-border: #10b981;
+  --correct-option-accent: #10b981;
+  --correct-badge-bg: #10b981;
+  --correct-badge-text: #ffffff;
 }
 
 /* Dark Theme */
@@ -46,6 +52,12 @@ html {
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.5);
   --nav-hover: #374151;
   --input-bg: #1f2937;
+  --correct-option-bg: #064e3b;
+  --correct-option-subtle-bg: #064e3b;
+  --correct-option-border: #10b981;
+  --correct-option-accent: #047857;
+  --correct-badge-bg: #047857;
+  --correct-badge-text: #ffffff;
 }
 
 /* Custom scrollbar */

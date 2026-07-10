@@ -81,6 +81,9 @@ function RoomDetailPage() {
   const [fallbackPrompt, setFallbackPrompt] = useState('')
   const [fallbackJson, setFallbackJson] = useState('')
   const [fallbackError, setFallbackError] = useState('')
+  const [fallbackReason, setFallbackReason] = useState('')
+  const [fallbackMode, setFallbackMode] = useState('approval')
+  const [fallbackSegmentIndex, setFallbackSegmentIndex] = useState(0)
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
   // Segment pause/resume state
@@ -364,7 +367,11 @@ function RoomDetailPage() {
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       const questions = await generateQuestionsFromText(textToUse, currentSegment)
-      if (questions && questions.length > 0) {
+      if (questions?.fallbackRequired) {
+        return
+      }
+
+      if (Array.isArray(questions) && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
@@ -375,7 +382,11 @@ function RoomDetailPage() {
       try {
         console.log('[SEGMENT] Retrying question generation...')
         const questions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (questions && questions.length > 0) {
+        if (questions?.fallbackRequired) {
+          return
+        }
+
+        if (Array.isArray(questions) && questions.length > 0) {
           setPendingQuestions(questions)
           setShowQuestionPopup(true)
           setIsPopupOpen(true)
@@ -388,10 +399,63 @@ function RoomDetailPage() {
     }
   }
 
+  const buildLocalFallbackPrompt = (text) => {
+    const questionCount = roomSettings.questionsPerSegment || 2
+    const difficulty = roomSettings.difficulty || 'medium'
+
+    return `You are an expert quiz question generator. Based on the following transcription, generate ${questionCount} quiz questions.
+
+TRANSCRIPTION:
+${text}
+
+DIFFICULTY: ${difficulty.toUpperCase()}
+
+OUTPUT FORMAT (respond ONLY with valid JSON):
+{
+  "questions": [
+    {
+      "type": "MCQ",
+      "question": "The question text here?",
+      "options": [
+        { "text": "Option A", "isCorrect": true },
+        { "text": "Option B", "isCorrect": false },
+        { "text": "Option C", "isCorrect": false },
+        { "text": "Option D", "isCorrect": false }
+      ],
+      "explanation": "Brief explanation of the answer"
+    }
+  ]
+}
+
+IMPORTANT:
+- Respond ONLY with valid JSON, no markdown or additional text
+- Make questions clear and unambiguous
+- Ensure wrong options are plausible but clearly wrong
+- Questions should be based ONLY on the transcription content`
+  }
+
+  const openFallbackModal = (data, segmentIndex, mode = 'approval') => {
+    console.log('[QUESTION_GENERATION] Opening fallback modal:', {
+      mode,
+      segmentIndex,
+      provider: data.provider,
+      reason: data.fallbackReason || data.message
+    })
+    setFallbackPrompt(data.suggestedPrompt || '')
+    setFallbackReason(data.fallbackReason || data.message || 'Question generation needs manual fallback.')
+    setFallbackJson('')
+    setFallbackError('')
+    setFallbackMode(mode)
+    setFallbackSegmentIndex(segmentIndex)
+    setGenerateQEnabled(true)
+    setShowGeneratingPopup(true)
+  }
+
   const generateQuestionsFromText = async (text, segmentIndex) => {
-    return new Promise((resolve, reject) => {
-      setIsGeneratingQuestions(true)
-      fetch(`${API_URL}/questions/generate`, {
+    setIsGeneratingQuestions(true)
+
+    try {
+      const response = await fetch(`${API_URL}/questions/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -406,27 +470,55 @@ function RoomDetailPage() {
           }
         })
       })
-      .then(response => response.json())
-      .then(data => {
-        setIsGeneratingQuestions(false)
 
-        if (data.success && data.questions && data.questions.length > 0) {
-          const markedQuestions = data.questions.map(q => ({
-            ...q,
-            timeToAnswer: roomSettings.timeToAnswer,
-            points: roomSettings.points,
-            segmentIndex: segmentIndex
-          }))
-          resolve(markedQuestions) // Return questions for popup handling
-        } else {
-          reject(new Error(data.error || 'No questions generated'))
+      const data = await response.json().catch(() => ({
+        fallbackRequired: true,
+        fallbackReason: 'Question generation returned an unreadable response.',
+        suggestedPrompt: buildLocalFallbackPrompt(text)
+      }))
+      console.log('[QUESTION_GENERATION] Backend response:', {
+        ok: response.ok,
+        success: data.success,
+        fallbackRequired: !!data.fallbackRequired,
+        provider: data.provider,
+        requestedProvider: data.requestedProvider,
+        usedFallbackProvider: !!data.usedFallbackProvider,
+        questionCount: Array.isArray(data.questions) ? data.questions.length : 0,
+        error: data.error,
+        fallbackReason: data.fallbackReason
+      })
+
+      if (data.fallbackRequired || !response.ok || !data.success) {
+        if (!data.suggestedPrompt) {
+          data.suggestedPrompt = buildLocalFallbackPrompt(text)
         }
-      })
-      .catch(error => {
-        setIsGeneratingQuestions(false)
-        reject(error)
-      })
-    })
+        if (!data.fallbackReason) {
+          data.fallbackReason = data.error || data.message || 'Question generation failed. Use the manual clipboard fallback.'
+        }
+        openFallbackModal(data, segmentIndex, 'approval')
+        return { fallbackRequired: true }
+      }
+
+      if (Array.isArray(data.questions) && data.questions.length > 0) {
+        return data.questions.map(q => ({
+          ...q,
+          timeToAnswer: roomSettings.timeToAnswer,
+          points: roomSettings.points,
+          segmentIndex: segmentIndex
+        }))
+      }
+
+      throw new Error(data.error || 'No questions generated')
+    } catch (error) {
+      console.error('[QUESTION_GENERATION] Falling back after generation request failed:', error)
+      openFallbackModal({
+        fallbackReason: 'Question generation request failed. Use the manual clipboard fallback.',
+        suggestedPrompt: buildLocalFallbackPrompt(text)
+      }, segmentIndex, 'approval')
+      return { fallbackRequired: true }
+    } finally {
+      setIsGeneratingQuestions(false)
+    }
   }
 
   // Handle question generation from pasted text (TextToQuestionsPopup)
@@ -437,6 +529,9 @@ function RoomDetailPage() {
     setFallbackPrompt('')
     setFallbackJson('')
     setFallbackError('')
+    setFallbackReason('')
+    setFallbackMode('text')
+    setFallbackSegmentIndex(currentSegment)
 
     try {
       const typeMix = mode === 'TF'
@@ -460,11 +555,32 @@ function RoomDetailPage() {
         })
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => ({
+        fallbackRequired: true,
+        fallbackReason: 'Question generation returned an unreadable response.',
+        suggestedPrompt: buildLocalFallbackPrompt(text)
+      }))
+      console.log('[TEXT_QUESTION_GENERATION] Backend response:', {
+        ok: response.ok,
+        success: data.success,
+        fallbackRequired: !!data.fallbackRequired,
+        provider: data.provider,
+        requestedProvider: data.requestedProvider,
+        usedFallbackProvider: !!data.usedFallbackProvider,
+        questionCount: Array.isArray(data.questions) ? data.questions.length : 0,
+        error: data.error,
+        fallbackReason: data.fallbackReason
+      })
       setIsGeneratingFromText(false)
 
-      if (data.fallbackRequired) {
-        setFallbackPrompt(data.suggestedPrompt || '')
+      if (data.fallbackRequired || !response.ok || !data.success) {
+        if (!data.suggestedPrompt) {
+          data.suggestedPrompt = buildLocalFallbackPrompt(text)
+        }
+        if (!data.fallbackReason) {
+          data.fallbackReason = data.error || data.message || 'Question generation failed. Use the manual clipboard fallback.'
+        }
+        openFallbackModal(data, currentSegment, 'text')
         return
       }
 
@@ -480,26 +596,36 @@ function RoomDetailPage() {
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
       } else {
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        openFallbackModal({
+          fallbackReason: data.error || 'No questions were generated. Use the manual clipboard fallback.',
+          suggestedPrompt: buildLocalFallbackPrompt(text)
+        }, currentSegment, 'text')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      openFallbackModal({
+        fallbackReason: 'Question generation request failed. Use the manual clipboard fallback.',
+        suggestedPrompt: buildLocalFallbackPrompt(text)
+      }, currentSegment, 'text')
     }
   }
 
-  const parseManualQuestions = (rawText) => {
-    const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
-    const candidate = fencedMatch ? fencedMatch[1] : rawText
-    const objectMatch = candidate.match(/\{[\s\S]*\}/)
-    if (!objectMatch) {
+  const parseManualQuestions = (rawText, segmentIndex = currentSegment) => {
+    const fencedMatch = rawText.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+    const candidate = (fencedMatch ? fencedMatch[1] : rawText).trim()
+    const firstObject = candidate.indexOf('{')
+    const firstArray = candidate.indexOf('[')
+    const startsWithArray = firstArray !== -1 && (firstObject === -1 || firstArray < firstObject)
+    const startIndex = startsWithArray ? firstArray : firstObject
+    const endIndex = candidate.lastIndexOf(startsWithArray ? ']' : '}')
+
+    if (startIndex === -1 || endIndex <= startIndex) {
       throw new Error('Paste valid JSON with a questions array')
     }
 
-    const parsed = JSON.parse(objectMatch[0])
-    const questions = Array.isArray(parsed.questions) ? parsed.questions : []
+    const parsed = JSON.parse(candidate.slice(startIndex, endIndex + 1))
+    const questions = Array.isArray(parsed) ? parsed : (parsed.questions || [])
     if (questions.length === 0) {
       throw new Error('JSON must include at least one question')
     }
@@ -515,19 +641,27 @@ function RoomDetailPage() {
       explanation: question.explanation || '',
       timeToAnswer: roomSettings.timeToAnswer,
       points: roomSettings.points,
-      segmentIndex: currentSegment
+      segmentIndex
     }))
   }
 
   const handleFallbackSubmit = () => {
     setFallbackError('')
     try {
-      const manualQuestions = parseManualQuestions(fallbackJson)
-      setPendingTextQuestions(manualQuestions)
+      const manualQuestions = parseManualQuestions(fallbackJson, fallbackSegmentIndex)
       setShowGeneratingPopup(false)
       setFallbackPrompt('')
       setFallbackJson('')
-      setShowTextQuestionPopup(true)
+      setFallbackReason('')
+
+      if (fallbackMode === 'text') {
+        setPendingTextQuestions(manualQuestions)
+        setShowTextQuestionPopup(true)
+      } else {
+        setPendingQuestions(manualQuestions)
+        setShowQuestionPopup(true)
+        setIsPopupOpen(true)
+      }
     } catch (err) {
       setFallbackError(err.message || 'Unable to parse pasted JSON')
     }
@@ -849,7 +983,11 @@ function RoomDetailPage() {
 
     try {
       const questions = await generateQuestionsFromText(textToUse, currentSegment + 1)
-      if (questions && questions.length > 0) {
+      if (questions?.fallbackRequired) {
+        return
+      }
+
+      if (Array.isArray(questions) && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
@@ -1770,7 +1908,7 @@ function RoomDetailPage() {
                       margin: 0,
                       color: 'var(--text-secondary)',
                       fontSize: '13px'
-                    }}>No AI key is configured. Copy this prompt into an AI tool, then paste the JSON response below.</p>
+                    }}>{fallbackReason || 'AI generation needs manual fallback. Copy this prompt into an AI tool, then paste the JSON response below.'}</p>
                   </div>
                   <button
                     onClick={() => {
@@ -1778,6 +1916,7 @@ function RoomDetailPage() {
                       setFallbackPrompt('')
                       setFallbackJson('')
                       setFallbackError('')
+                      setFallbackReason('')
                     }}
                     style={{
                       background: 'transparent',
@@ -1926,6 +2065,7 @@ function RoomDetailPage() {
                       setFallbackPrompt('')
                       setFallbackJson('')
                       setFallbackError('')
+                      setFallbackReason('')
                       navigate('/teacher/ai-settings')
                     }}
                     style={{

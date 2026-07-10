@@ -305,8 +305,9 @@ async function resolveAiApiKey(provider, userId) {
     const encryptedPersonalKey = user?.encryptedPersonalAiKeys?.[provider] || user?.encryptedAiKeys?.[provider]
     if (encryptedPersonalKey) {
       try {
+        const apiKey = decrypt(encryptedPersonalKey)
         return {
-          apiKey: decrypt(encryptedPersonalKey),
+          apiKey: typeof apiKey === 'string' ? apiKey.trim() : '',
           source: 'personal'
         }
       } catch (error) {
@@ -320,8 +321,9 @@ async function resolveAiApiKey(provider, userId) {
   const encryptedGlobalKey = globalConfig?.encryptedAiKeys?.[provider]
   if (encryptedGlobalKey) {
     try {
+      const apiKey = decrypt(encryptedGlobalKey)
       return {
-        apiKey: decrypt(encryptedGlobalKey),
+        apiKey: typeof apiKey === 'string' ? apiKey.trim() : '',
         source: 'global'
       }
     } catch (error) {
@@ -331,9 +333,9 @@ async function resolveAiApiKey(provider, userId) {
   }
 
   const envApiKey = getEnvApiKey(provider)
-  if (envApiKey) {
+  if (typeof envApiKey === 'string' && envApiKey.trim()) {
     return {
-      apiKey: envApiKey,
+      apiKey: envApiKey.trim(),
       source: 'env'
     }
   }
@@ -341,6 +343,35 @@ async function resolveAiApiKey(provider, userId) {
   return {
     apiKey: '',
     source: 'none'
+  }
+}
+
+const PROVIDER_FALLBACK_ORDER = ['google', 'openai', 'anthropic', 'minimax']
+
+async function resolveAvailableAiProvider(requestedProvider, userId) {
+  const providerOrder = [
+    requestedProvider,
+    ...PROVIDER_FALLBACK_ORDER.filter(provider => provider !== requestedProvider)
+  ].filter(Boolean)
+
+  for (const provider of providerOrder) {
+    const resolved = await resolveAiApiKey(provider, userId)
+    if (resolved.apiKey) {
+      return {
+        ...resolved,
+        provider,
+        requestedProvider,
+        usedFallbackProvider: provider !== requestedProvider
+      }
+    }
+  }
+
+  return {
+    apiKey: '',
+    source: 'none',
+    provider: requestedProvider,
+    requestedProvider,
+    usedFallbackProvider: false
   }
 }
 
@@ -355,24 +386,46 @@ function getEnvApiKey(provider) {
   return envKeys[provider] || ''
 }
 
+function stripMarkdownJsonFence(responseText = '') {
+  const trimmed = String(responseText || '').trim()
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  return fencedMatch ? fencedMatch[1].trim() : trimmed
+}
+
+function extractJsonPayload(responseText = '') {
+  const cleaned = stripMarkdownJsonFence(responseText)
+  const firstObject = cleaned.indexOf('{')
+  const firstArray = cleaned.indexOf('[')
+
+  if (firstObject === -1 && firstArray === -1) {
+    throw new Error('No JSON object or array found in AI response')
+  }
+
+  const startsWithArray = firstArray !== -1 && (firstObject === -1 || firstArray < firstObject)
+  const startIndex = startsWithArray ? firstArray : firstObject
+  const endChar = startsWithArray ? ']' : '}'
+  const endIndex = cleaned.lastIndexOf(endChar)
+
+  if (endIndex <= startIndex) {
+    throw new Error(`Incomplete JSON payload ending with ${endChar}`)
+  }
+
+  return cleaned.slice(startIndex, endIndex + 1)
+}
+
 // Parse questions from AI response
 function parseQuestions(responseText, expectedTypes) {
   try {
-    let jsonStr = responseText
-    
-    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1]
-    }
-    
-    const objMatch = jsonStr.match(/\{[\s\S]*\}/)
-    if (!objMatch) {
-      throw new Error('No JSON found in response')
-    }
-    
-    const parsed = JSON.parse(objMatch[0])
-    const questions = parsed.questions || []
-    
+    console.log('[QUESTION_PARSE] Raw AI response preview:', String(responseText || '').slice(0, 500))
+
+    const jsonPayload = extractJsonPayload(responseText)
+    console.log('[QUESTION_PARSE] JSON payload preview:', jsonPayload.slice(0, 500))
+
+    const parsed = JSON.parse(jsonPayload)
+    const questions = Array.isArray(parsed) ? parsed : (parsed.questions || [])
+
+    console.log('[QUESTION_PARSE] Parsed question count:', questions.length)
+
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
@@ -385,6 +438,7 @@ function parseQuestions(responseText, expectedTypes) {
   } catch (error) {
     console.error('Failed to parse questions:', error)
     console.error('Detailed Error:', error)
+    console.error('[QUESTION_PARSE] Unparseable response:', responseText)
     return []
   }
 }
@@ -592,22 +646,37 @@ export async function generateQuestions(transcript, cfg) {
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  console.log(`[QUESTION_GENERATION] Requested provider: ${provider}`)
+  console.log(`[QUESTION_GENERATION] Transcript length: ${transcript.length}`)
+  console.log(`[QUESTION_GENERATION] Question types: ${questionTypes.join(', ')}`)
 
-  const { apiKey, source } = await resolveAiApiKey(provider, userId)
+  const {
+    apiKey,
+    source,
+    provider: resolvedProvider,
+    requestedProvider,
+    usedFallbackProvider
+  } = await resolveAvailableAiProvider(provider, userId)
+
   if (!apiKey) {
+    console.log(`[QUESTION_GENERATION] No API key found for requested provider ${provider} or any fallback provider`)
     return {
       fallbackRequired: true,
+      fallbackReason: `No API key is configured for ${provider} or any supported fallback provider.`,
       suggestedPrompt: prompt
     }
   }
 
-  console.log(`Using ${source} AI configuration for ${provider}`)
+  if (usedFallbackProvider) {
+    console.log(`[QUESTION_GENERATION] Provider ${requestedProvider} has no usable key. Falling back to ${resolvedProvider} (${source}).`)
+  } else {
+    console.log(`[QUESTION_GENERATION] Using ${source} AI configuration for ${resolvedProvider}`)
+  }
 
   let responseText
 
   try {
-    switch (provider) {
+    switch (resolvedProvider) {
       case 'minimax':
         responseText = await generateWithMiniMax(prompt, apiKey)
         break
@@ -621,30 +690,41 @@ export async function generateQuestions(transcript, cfg) {
         responseText = await generateWithGoogle(prompt, apiKey)
         break
       default:
-        throw new Error(`Unknown provider: ${provider}`)
+        throw new Error(`Unknown provider: ${resolvedProvider}`)
     }
   } catch (error) {
-    console.error('AI provider generation failed:', error)
+    console.error(`[QUESTION_GENERATION] AI provider generation failed for ${resolvedProvider}:`, error)
     console.error('Detailed Error:', error)
 
-    if (error.statusCode === 429 || error.statusCode === 404) {
-      return {
-        fallbackRequired: true,
-        providerRateLimited: error.statusCode === 429,
-        providerModelUnavailable: error.statusCode === 404,
-        fallbackReason: error.message,
-        suggestedPrompt: prompt
-      }
+    return {
+      fallbackRequired: true,
+      providerRateLimited: error.statusCode === 429,
+      providerModelUnavailable: error.statusCode === 404,
+      fallbackReason: error.message || `${resolvedProvider} failed during question generation.`,
+      suggestedPrompt: prompt,
+      provider: resolvedProvider
     }
-
-    throw error
   }
 
+  console.log(`[QUESTION_GENERATION] ${resolvedProvider} response length: ${String(responseText || '').length}`)
   const questions = parseQuestions(responseText, questionTypes)
-  console.log(`Generated ${questions.length} questions successfully`)
+  console.log(`[QUESTION_GENERATION] Generated ${questions.length} parsed questions successfully`)
+
+  if (questions.length === 0) {
+    return {
+      fallbackRequired: true,
+      fallbackReason: `${resolvedProvider} responded, but the backend could not parse any questions from the response.`,
+      suggestedPrompt: prompt,
+      provider: resolvedProvider,
+      rawResponsePreview: String(responseText || '').slice(0, 1000)
+    }
+  }
 
   return {
     success: true,
-    questions
+    questions,
+    provider: resolvedProvider,
+    requestedProvider,
+    usedFallbackProvider
   }
 }
