@@ -49,6 +49,7 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
+  const roomEndedTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -149,7 +150,7 @@ function StudentRoomPage() {
     socket.on('new_question', handleNewQuestion)
     socket.on('room:ended', () => {
       setRoomEndedBanner(true)
-      setTimeout(() => navigate(`/student/room/${room?._id}/results`), 5000)
+      roomEndedTimerRef.current = setTimeout(() => navigate(`/student/room/${room?._id}/results`), 5000)
     })
 
     return () => {
@@ -157,6 +158,8 @@ function StudentRoomPage() {
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('room:ended')
+      if (confusionTimerRef.current) clearInterval(confusionTimerRef.current)
+      if (roomEndedTimerRef.current) clearTimeout(roomEndedTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -375,7 +378,7 @@ function StudentRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column',marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width))', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
@@ -456,7 +459,10 @@ function StudentRoomPage() {
                   Redirecting to your results... For full session review, visit the <strong>Room History</strong> tab.
                 </p>
                 <button
-                  onClick={() => navigate(`/student/room/${room?._id}/results`)}
+                  onClick={() => {
+                    if (roomEndedTimerRef.current) clearTimeout(roomEndedTimerRef.current)
+                    navigate(`/student/room/${room?._id}/results`)
+                  }}
                   style={{
                     padding: '10px 24px', background: '#3b82f6', color: 'white',
                     border: 'none', borderRadius: '10px', cursor: 'pointer',
@@ -468,32 +474,6 @@ function StudentRoomPage() {
               </div>
             </div>
           )}
-
-          {/* Confusion Button - always visible */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
-            <button
-              onClick={handleConfusion}
-              disabled={confusionActive || confusionCooldown > 0}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '10px 18px', borderRadius: '20px',
-                border: confusionActive ? '2px solid #f59e0b' : '2px solid var(--border-color)',
-                background: confusionActive ? 'rgba(245,158,11,0.12)' : 'var(--bg-card)',
-                color: confusionActive ? '#f59e0b' : 'var(--text-secondary)',
-                cursor: confusionActive || confusionCooldown > 0 ? 'not-allowed' : 'pointer',
-                fontSize: '13px', fontWeight: '600',
-                opacity: confusionCooldown > 0 && !confusionActive ? 0.5 : 1,
-                transition: 'all 0.2s'
-              }}
-            >
-              <span style={{ fontSize: '18px' }}>😕</span>
-              {confusionActive
-                ? `Confused (${confusionCooldown}s)`
-                : confusionCooldown > 0
-                  ? `Wait ${confusionCooldown}s`
-                  : 'I\'m Confused'}
-            </button>
-          </div>
 
           {/* Live Question */}
           {currentQuestion ? (
@@ -620,6 +600,26 @@ function StudentRoomPage() {
                   <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
                     Waiting for next question...
                   </p>
+                  {/* Confusion button - only after submitting */}
+                  <button
+                    onClick={handleConfusion}
+                    disabled={confusionActive || confusionCooldown > 0}
+                    style={{
+                      marginTop: '16px',
+                      display: 'inline-flex', alignItems: 'center', gap: '8px',
+                      padding: '8px 16px', borderRadius: '20px',
+                      border: confusionActive ? '2px solid #f59e0b' : '2px solid rgba(255,255,255,0.3)',
+                      background: confusionActive ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.1)',
+                      color: confusionActive ? '#fcd34d' : 'rgba(255,255,255,0.75)',
+                      cursor: confusionActive || confusionCooldown > 0 ? 'not-allowed' : 'pointer',
+                      fontSize: '13px', fontWeight: '600',
+                      opacity: confusionCooldown > 0 && !confusionActive ? 0.5 : 1,
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    <span>😕</span>
+                    {confusionActive ? `Still Confused (${confusionCooldown}s)` : confusionCooldown > 0 ? `Wait ${confusionCooldown}s` : 'Still Confused?'}
+                  </button>
                 </div>
               ) : (
                 <button
@@ -775,51 +775,82 @@ function StudentRoomPage() {
                             if (q.answered && isSelected && isCorrect) {
                               bgColor = '#d1fae5'
                               borderColor = '#059669'
+                              textColor = '#065f46'
                               label = ' (Your correct answer)'
                             } else if (q.answered && isSelected && !isCorrect) {
                               bgColor = '#fee2e2'
                               borderColor = '#dc2626'
+                              textColor = '#991b1b'
                               label = ' (Your wrong answer)'
-                            } else if (!q.answered && isCorrect) {
+                            } else if (isCorrect) {
                               bgColor = '#d1fae5'
                               borderColor = '#059669'
+                              textColor = '#065f46'
                               label = ' (Correct answer)'
                             }
                             
                             return (
-                              <div key={optIdx} style={{
-                                padding: '12px 16px',
-                                background: bgColor,
-                                border: `2px solid ${borderColor}`,
-                                borderRadius: '8px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px'
-                              }}>
-                                <span style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '50%',
-                                  background: isCorrect ? '#059669' : 'var(--border-color)',
-                                  color: 'white',
+                              <React.Fragment key={optIdx}>
+                                <div style={{
+                                  padding: '12px 16px',
+                                  background: bgColor,
+                                  border: `2px solid ${borderColor}`,
+                                  borderRadius: '8px',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  gap: '12px'
                                 }}>
-                                  {letter}
-                                </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
-                                </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
+                                  <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: '700',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
                                   </span>
+                                  <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                    {option.text || option}
+                                  </span>
+                                  {label && (
+                                    <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                      {label}
+                                    </span>
+                                  )}
+                                </div>
+                                {isCorrect && q.answered && !q.isCorrect && q.explanation && (
+                                  <div style={{
+                                    margin: '4px 0 2px 0',
+                                    padding: '8px 12px',
+                                    background: '#eff6ff',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: '#1e40af',
+                                    lineHeight: '1.5'
+                                  }}>
+                                    💡 {q.explanation}
+                                  </div>
                                 )}
-                              </div>
+                                {isCorrect && !q.answered && q.explanation && (
+                                  <div style={{
+                                    margin: '4px 0 2px 0',
+                                    padding: '8px 12px',
+                                    background: '#eff6ff',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: '#1e40af',
+                                    lineHeight: '1.5'
+                                  }}>
+                                    💡 {q.explanation}
+                                  </div>
+                                )}
+                              </React.Fragment>
                             )
                           })}
                         </div>

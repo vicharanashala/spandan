@@ -15,6 +15,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import summaryRoutes from './routes/summary.js'
 
 // Import models for reference
 import './models/index.js'
@@ -24,22 +25,21 @@ dotenv.config()
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
 
-// Request timeout middleware - defined BEFORE use due to hoisting
+// Request timeout middleware
+// Kept above aiProviderService's FETCH_TIMEOUT_MS (45s) so a slow-but-alive
+// AI provider call is never cut off early by the generic Express timeout.
+const REQUEST_TIMEOUT_MS = 60000
 const requestTimeout = (req, res, next) => {
-  // Set a 30-second timeout for all requests
-  req.setTimeout(30000, () => {
+  req.setTimeout(REQUEST_TIMEOUT_MS, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Request timeout', message: 'The request took too long to process' })
     }
   })
-  
-  // Also set server-side timeout for the response
-  res.setTimeout(30000, () => {
+  res.setTimeout(REQUEST_TIMEOUT_MS, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Response timeout', message: 'The response took too long to generate' })
     }
   })
-  
   next()
 }
 
@@ -48,11 +48,8 @@ const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
       if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
       if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
       if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
         return callback(null, true)
       }
@@ -71,26 +68,26 @@ app.set('trust proxy', 1)
 
 // Rate limiting
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 2000, // limit each IP to 2000 requests per windowMs (increased for real-time classroom use)
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
   message: { error: 'Too many requests, please try again later' }
 })
 
 const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 300, // limit each IP to 300 auth requests per hour (increased for live classroom use)
+  windowMs: 60 * 60 * 1000,
+  max: 300,
   message: { error: 'Too many authentication attempts, please try again later' }
 })
 
 const responseLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  windowMs: 15 * 60 * 1000,
+  max: 5000,
   message: { error: 'Too many response submissions, please try again later' }
 })
 
 const leaderboardLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
+  windowMs: 15 * 60 * 1000,
+  max: 10000,
   message: { error: 'Too many requests, please try again later' }
 })
 
@@ -101,10 +98,12 @@ app.use(cors({
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
-app.use('/api/', apiLimiter)           // general /api/ routes
-app.use('/api/auth/', authLimiter)     // auth routes
-app.use('/api/responses/', responseLimiter)  // response submission routes
-app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
+app.use('/api/', apiLimiter)
+app.use('/api/auth/', authLimiter)
+// FIX: leaderboard route registered BEFORE the broader responses limiter so its
+// higher limit (10k) applies instead of being overridden by responses' 5k limit.
+app.use('/api/responses/leaderboard/', leaderboardLimiter)
+app.use('/api/responses/', responseLimiter)
 
 // Apply timeout middleware before routes
 app.use(requestTimeout)
@@ -116,6 +115,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/summary', summaryRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -127,11 +127,48 @@ app.get('/api/health', (req, res) => {
   })
 })
 
+// FIX: confusionCounts moved OUTSIDE io.on('connection') — previously declared
+// inside, so every socket got a fresh empty Map and counts never aggregated
+// across students (confusion % was always 1/total no matter how many signalled).
+const confusionCounts = new Map() // roomCode -> { count, totalStudents }
+
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
+
+  socket.on('confusion:signal', async ({ roomCode }) => {
+    if (!roomCode) return
+    
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const RoomMember = (await import('./models/RoomMember.js')).default
+      const room = await Room.findOne({ code: roomCode })
+      if (!room) return
+      const totalStudents = await RoomMember.countDocuments({ roomId: room._id })
+      
+      const current = confusionCounts.get(roomCode) || { count: 0, totalStudents }
+      current.count += 1
+      current.totalStudents = totalStudents // refresh in case students joined/left
+      confusionCounts.set(roomCode, current)
+      
+      const percentage = totalStudents > 0 ? Math.round((current.count / totalStudents) * 100) : 0
+      
+      let level = 'LOW'
+      if (percentage >= 40) level = 'HIGH'
+      else if (percentage >= 20) level = 'MEDIUM'
+      
+      io.to(roomCode).emit('confusion:signal', {
+        count: current.count,
+        totalStudents,
+        percentage,
+        level
+      })
+    } catch (error) {
+      console.error('Error handling confusion signal:', error)
+    }
+  })
 
   // Authenticate socket
   socket.on('authenticate', (data) => {
@@ -162,16 +199,13 @@ io.on('connection', (socket) => {
       socket.join(roomCode)
       console.log(`Client ${socket.id} (user: ${userId}) joining room ${roomCode}`)
       
-      // Find user and room
       const user = await User.findById(userId)
       const room = await Room.findByCode(roomCode)
       
       let participantCount = 0
       
       if (user && room) {
-        // Only students get added to RoomMember (not teachers)
         if (user.role === 'student') {
-          // Upsert: add student to room members if not already there
           await RoomMember.findOneAndUpdate(
             { roomId: room._id, studentId: user._id },
             { roomId: room._id, studentId: user._id, joinedAt: new Date() },
@@ -180,7 +214,6 @@ io.on('connection', (socket) => {
           console.log(`Student ${userId} added to room members for room ${roomCode}`)
         }
         
-        // Count participants from RoomMember (excludes teacher)
         const memberCount = await RoomMember.countDocuments({ roomId: room._id })
         participantCount = memberCount
       }
@@ -216,11 +249,16 @@ io.on('connection', (socket) => {
       let participantCount = 0
       
       if (user && room && user.role === 'student') {
-        // Remove student from room members
         await RoomMember.deleteOne({ roomId: room._id, studentId: user._id })
-        
-        // Recount remaining participants
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
+
+        // Reset confusion count for this room when a student leaves
+        if (confusionCounts.has(roomCode)) {
+          const current = confusionCounts.get(roomCode)
+          current.count = Math.max(0, current.count - 1)
+          current.totalStudents = participantCount
+          confusionCounts.set(roomCode, current)
+        }
       }
       
       io.to(roomCode).emit('room:left', { 
@@ -236,7 +274,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Submit response (real-time)
+  // Submit response (real-time broadcast only — DB save is done via HTTP POST)
   socket.on('response:submit', (data) => {
     io.to(data.roomCode).emit('response:new', {
       questionId: data.questionId,
@@ -267,6 +305,9 @@ io.on('connection', (socket) => {
   })
 
   socket.on('question:end', (data) => {
+    // Reset confusion counts when question ends
+    if (data.roomCode) confusionCounts.delete(data.roomCode)
+
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
@@ -279,6 +320,8 @@ io.on('connection', (socket) => {
     const roomCode = data.roomCode
     const question = data.question
     if (roomCode && question) {
+      // Reset confusion counts for the new question
+      confusionCounts.delete(roomCode)
       io.to(roomCode).emit('new_question', question)
     } else {
       console.error('new_question event missing roomCode or question:', data)
@@ -330,7 +373,6 @@ const connectDB = async () => {
 
 const PORT = process.env.PORT || 3001
 
-// Start server
 const startServer = async () => {
   await connectDB()
   

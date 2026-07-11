@@ -175,7 +175,7 @@ const Leaderboard = ({ roomId, token, socket }) => {
     }
     
     return (
-      <div key={entry.studentId} style={{
+        <div key={entry.studentId} style={{
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
@@ -185,13 +185,23 @@ const Leaderboard = ({ roomId, token, socket }) => {
         maxWidth: '100%',
         overflow: 'hidden',
         boxSizing: 'border-box',
-        background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
-                     entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
-                     entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' : 
+        background: entry.rank === 1 ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' :
+                     entry.rank === 2 ? 'linear-gradient(135deg, #eff6ff, #dbeafe)' :
+                     entry.rank === 3 ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 
                      isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
-        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` : 
-               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
+        border: entry.rank <= 3 ? `2px solid #3b82f6` : 
+               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+        transition: 'all 0.2s ease',
+        cursor: 'pointer'
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.transform = 'translateY(-1px)'
+        e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.15)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = 'translateY(0)'
+        e.currentTarget.style.boxShadow = 'none'
       }}>
         <span style={{
           width: '28px',
