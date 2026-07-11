@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { API_URL } from '../config.js'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
-import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -12,7 +11,6 @@ function DashboardPage() {
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
   const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
-  const { isConnected } = useSocketStore()
   
   const [roomName, setRoomName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -173,48 +171,32 @@ function DashboardPage() {
             gap: '20px',
             marginBottom: '32px'
           }}>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
+            <div className="glass-panel interactive-hover" style={{
               padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
             }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalRooms}</div>
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
             </div>
             
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
+            <div className="glass-panel interactive-hover" style={{
               padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
             }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>✅</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.activeRooms}</div>
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Active Rooms</div>
             </div>
             
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
+            <div className="glass-panel interactive-hover" style={{
               padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
             }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>📊</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalPolls}</div>
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Polls</div>
             </div>
             
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
+            <div className="glass-panel interactive-hover" style={{
               padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
             }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>💬</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalResponses}</div>
@@ -223,12 +205,8 @@ function DashboardPage() {
           </div>
 
           {/* Create Room Section */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: '16px',
+          <div className="glass-panel" style={{
             padding: '24px',
-            boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)',
             marginBottom: '24px'
           }}>
             <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -286,14 +264,12 @@ function DashboardPage() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
                 {rooms.filter(r => !r.endedAt).map((room) => (
                   <div
+                    className="glass-panel interactive-hover"
                     key={room._id}
                     style={{
                       display: 'flex',
                       flexDirection: 'column',
                       padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: '16px',
-                      border: '1px solid var(--border-color)',
                       minHeight: '140px'
                     }}
                   >

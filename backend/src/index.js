@@ -2,11 +2,11 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
-import { createServer } from 'http'
-import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
+import compression from 'compression'
+import morgan from 'morgan'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -18,9 +18,10 @@ import responseRoutes from './routes/responses.js'
 import dashboardRoutes from './routes/dashboard.js'
 import reportsRoutes from './routes/reports.js'
 import lmsAuthRoutes from './routes/lmsAuth.js'
+import liveRoutes from './routes/live.js'
 
-// Import socket service
-import { setupSockets, getActiveRoomState } from './services/socketService.js'
+// Import services
+import { startCleanupRoutine } from './services/roomStateService.js'
 
 // Import models for reference
 import './models/index.js'
@@ -50,27 +51,6 @@ const requestTimeout = (req, res, next) => {
 }
 
 const app = express()
-const httpServer = createServer(app)
-const io = new Server(httpServer, {
-  cors: {
-    origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
-      if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
-      if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-        return callback(null, true)
-      }
-      callback(new Error('Not allowed by CORS'))
-    },
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
-})
-
-// Make io accessible to routes
-app.set('io', io)
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
@@ -102,6 +82,12 @@ const leaderboardLimiter = rateLimit({
 
 // Middleware
 app.use(helmet())
+app.use(compression())
+
+// HTTP Logging in production
+if (process.env.NODE_ENV !== 'test') {
+  app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
+}
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true)
@@ -132,6 +118,7 @@ app.use('/api/responses', responseRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/reports', reportsRoutes)
 app.use('/api/lms', lmsAuthRoutes)
+app.use('/api/live', liveRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -143,17 +130,7 @@ app.get('/api/health', (req, res) => {
   })
 })
 
-// REST Fallback for Active Poll State
-app.get('/api/rooms/:roomCode/state', (req, res) => {
-  const { roomCode } = req.params;
-  const state = getActiveRoomState(roomCode);
-  if (!state) {
-      return res.json({ activePoll: null });
-  }
-  res.json(state);
-})
-
-// Demo token generation for testing the socket connection
+// Demo token generation for testing
 app.get('/api/auth/demo-token', (req, res) => {
   const role = req.query.role || 'student';
   const userId = role === 'teacher' ? 'teacher_1' : 'student_1';
@@ -161,22 +138,21 @@ app.get('/api/auth/demo-token', (req, res) => {
   res.json({ token, userId, role });
 })
 
-// Socket.IO connection handling
-setupSockets(io)
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Error:', err)
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
-  })
-})
-
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' })
 })
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  res.status(500).json({ 
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  })
+})
+
+const PORT = process.env.PORT || 3001
 
 // MongoDB connection
 const connectDB = async () => {
@@ -195,18 +171,17 @@ const connectDB = async () => {
   }
 }
 
-const PORT = process.env.PORT || 3001
-
 // Start server
 const startServer = async () => {
   await connectDB()
   
-  httpServer.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
+    startCleanupRoutine()
   })
 }
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app }

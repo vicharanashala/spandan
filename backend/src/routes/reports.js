@@ -47,10 +47,18 @@ router.get('/:roomId/attendance.csv', async (req, res) => {
       if (!student) return null // handle deleted users
       
       const questionsAnswered = responseCountMap[student._id.toString()] || 0
+      
+      // Calculate total time spent (in minutes)
+      const joinedAt = m.joinedAt || new Date()
+      const leftAt = m.leftAt || new Date()
+      const timeInRoomMs = Math.max(0, leftAt - joinedAt)
+      const timeInRoomMin = (timeInRoomMs / 60000).toFixed(2)
+
       return {
         StudentName: student.name || student.email,
         Email: student.email,
         JoinedAt: m.joinedAt ? m.joinedAt.toISOString() : 'N/A',
+        TimeSpentMinutes: timeInRoomMin,
         QuestionsAnswered: questionsAnswered,
         Participated: questionsAnswered > 0 ? 'Yes' : 'No'
       }
@@ -80,7 +88,9 @@ router.get('/:roomId/analytics/csv', async (req, res) => {
         _id: '$studentId',
         totalPoints: { $sum: '$points' },
         correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-        totalAnswered: { $sum: 1 }
+        totalAnswered: { $sum: 1 },
+        avgResponseTime: { $avg: '$responseTime' },
+        tabSwitches: { $sum: { $cond: ['$tabSwitched', 1, 0] } }
       }},
       { $sort: { totalPoints: -1 } }
     ])
@@ -100,7 +110,9 @@ router.get('/:roomId/analytics/csv', async (req, res) => {
         Email: user ? user.email : 'Unknown',
         TotalScore: d.totalPoints,
         CorrectAnswers: d.correctCount,
-        QuestionsAnswered: d.totalAnswered
+        QuestionsAnswered: d.totalAnswered,
+        AvgResponseTimeSec: d.avgResponseTime ? (d.avgResponseTime / 1000).toFixed(2) : '0.00',
+        TabSwitches: d.tabSwitches || 0
       }
     })
 

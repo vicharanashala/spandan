@@ -58,6 +58,8 @@ const questionSchema = new mongoose.Schema({
   }
 })
 
+questionSchema.index({ roomId: 1 })
+
 const Question = mongoose.model('Question', questionSchema)
 
 export default Question

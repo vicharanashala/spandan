@@ -88,6 +88,8 @@ roomSchema.statics.findByCode = function(code) {
   return this.findOne({ code: code.toUpperCase() })
 }
 
+roomSchema.index({ teacher: 1 })
+
 const Room = mongoose.model('Room', roomSchema)
 
 export default Room

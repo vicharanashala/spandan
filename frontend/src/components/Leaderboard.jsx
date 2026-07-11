@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket }) => {
+const Leaderboard = ({ roomId, token }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
@@ -37,15 +37,13 @@ const Leaderboard = ({ roomId, token, socket }) => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Listen for points:updated events
-    if (socket) {
-      socket.on('points:updated', () => {
-        console.log('[Leaderboard] Points updated, refreshing...')
-        fetchLeaderboard()
-      })
-      return () => socket.off('points:updated')
-    }
-  }, [roomId, socket])
+    // Poll leaderboard every 2 seconds
+    const interval = setInterval(() => {
+      fetchLeaderboard()
+    }, 2000)
+    
+    return () => clearInterval(interval)
+  }, [roomId, token])
 
   if (loading) {
     return (

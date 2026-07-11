@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
-import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import { useLiveRoom } from '../hooks/useLiveRoom'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -22,8 +22,8 @@ function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { roomCode, joinRoom, participants, pushQuestion } = useLiveRoom(roomId, token, 'teacher')
   
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -92,6 +92,11 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
 
+  // Synchronize participants from hook
+  useEffect(() => {
+    setTotalParticipants(participants)
+  }, [participants])
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -100,9 +105,6 @@ function RoomDetailPage() {
     }
     
     return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user?._id)
-      }
       stopRecording()
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
@@ -111,56 +113,24 @@ function RoomDetailPage() {
   }, [roomId])
 
   useEffect(() => {
-    if (room?.code && user?._id) {
-      joinRoom(room.code, user._id)
-    }
-  }, [room?.code, user?._id])
-
-  // Listen for room:joined event
-  useEffect(() => {
-    if (!socket) return
-    
-    const handleRoomJoined = (data) => {
-      console.log('Teacher joined room successfully')
+    if (room?.code) {
+      joinRoom(room.code)
       setIsRoomJoined(true)
-      if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
-    
-    const handleRoomLeft = (data) => {
-      if (data?.participants !== undefined) setTotalParticipants(data.participants)
-    }
-    
-    socket.on('room:joined', handleRoomJoined)
-    socket.on('room:left', handleRoomLeft)
-    
-    return () => {
-      socket.off('room:joined', handleRoomJoined)
-      socket.off('room:left', handleRoomLeft)
-    }
-  }, [socket])
+  }, [room?.code])
 
-  // Listen for response:new events to update answer counts
+  // Replace new response socket event by relying on polling the reports/counts endpoint
   useEffect(() => {
-    if (!socket) return
-    const handleNewResponse = (data) => {
-      console.log('[DEBUG] New response received:', data)
-      setAnswerCounts(prev => ({
-        ...prev,
-        [data.questionId]: (prev[data.questionId] || 0) + 1
-      }))
-    }
-    socket.on('response:new', handleNewResponse)
-    return () => socket.off('response:new', handleNewResponse)
-  }, [socket])
+    if (!room) return
+    const interval = setInterval(() => {
+      loadQuestions(room._id) // reloads answer counts
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [room])
 
-  // Listen for question launch events to show timer to teacher
-  useEffect(() => {
-    if (!socket) return
-    
   const startQuestionTimer = (question) => {
     const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
     
-    // Clear any existing timer
     if (questionTimerRef.current) {
       clearInterval(questionTimerRef.current)
       questionTimerRef.current = null
@@ -181,19 +151,6 @@ function RoomDetailPage() {
       })
     }, 1000)
   }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
-    
-    socket.on('new_question', handleQuestionLaunched)
-    socket.on('question:started', handleQuestionLaunched)
-    
-    return () => {
-      socket.off('new_question', handleQuestionLaunched)
-      socket.off('question:started', handleQuestionLaunched)
-    }
-  }, [socket, roomSettings.timeToAnswer])
 
   // Auto-scroll transcription (legacy textarea)
   useEffect(() => {
@@ -716,13 +673,15 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
         
-        // Emit to students via socket
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        // Push via polling API
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       }
     } catch (error) {
       console.error('Failed to save question:', error)
@@ -759,12 +718,14 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
         
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       }
     } catch (error) {
       console.error('Failed to save text question:', error)
@@ -803,18 +764,15 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
         
-        // Emit to socket for students to receive (include roomCode)
-        console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
-        console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-          console.log('new_question event emitted successfully')
-        } else {
-          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
-        }
+        // Push via polling API
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       } else {
         const errorData = await response.json()
         console.error('Failed to save question:', errorData)
@@ -1439,7 +1397,7 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <Leaderboard roomId={room?._id} token={token} />
             </div>
           </div>
         </div>

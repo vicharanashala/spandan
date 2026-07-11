@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
-import useSocketStore from '../stores/socketStore'
 import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
@@ -32,7 +31,6 @@ function AuthPage() {
     clearError
   } = useAuthStore()
   const { isDark, toggleTheme } = useThemeStore()
-  const socket = useSocketStore(state => state.socket)
 
   const [step, setStep] = useState('auth')
   const [isLogin, setIsLogin] = useState(true)
