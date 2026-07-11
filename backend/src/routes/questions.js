@@ -31,9 +31,12 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const { 
       numQuestions = 2, 
       difficulty = 'medium',
-      provider = 'minimax',
-      questionTypeMix = null
+      difficultyMix = null,
+      questionTypeMix = null,
+      mode = null,
+      provider: reqProvider = 'minimax'
     } = config || {}
+    const provider = AI_PROVIDERS[reqProvider] ? reqProvider : 'minimax'
 
     if (!transcript || transcript.trim().length === 0) {
       return res.status(400).json({
@@ -47,8 +50,10 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const questions = await generateQuestions(transcript, {
       numQuestions,
       difficulty,
+      difficultyMix,
       provider,
-      questionTypeMix
+      questionTypeMix,
+      mode
     })
 
     console.log(`Generated ${questions.length} questions successfully`)
@@ -76,6 +81,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
       type, 
       question, 
       options, 
+      explanation = '',
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
@@ -87,10 +93,9 @@ router.post('/', authorize('teacher'), async (req, res) => {
     }
 
     // Sanitize user input to prevent XSS
-    const sanitizedData = sanitizeObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = sanitizeObject({ roomId, type, question, options, explanation, timeToAnswer, points, status, segmentIndex })
 
     const newQuestion = new Question(sanitizedData)
-
     await newQuestion.save()
 
     res.status(201).json({
