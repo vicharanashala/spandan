@@ -6,6 +6,7 @@ body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   margin: 0;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 * {
@@ -89,7 +90,6 @@ html {
 .card-hover:hover {
   transform: translateY(-4px) !important;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12) !important;
-  border-color: rgba(255,255,255,0.18) !important;
 }
 
 /* Panel hover effect */
@@ -109,7 +109,6 @@ html {
 .btn-hover:hover:not(:disabled) {
   transform: translateY(-2px) !important;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15) !important;
-  border-color: rgba(255,255,255,0.22) !important;
 }
 .btn-hover:active:not(:disabled) {
   transform: translateY(0) !important;
@@ -126,16 +125,14 @@ html {
 
 /* Page transition */
 .page-transition {
-  animation: pageEnter 0.35s ease-out;
+  animation: pageEnter 0.3s ease-out;
+  min-height: 100vh;
+  overflow-x: hidden;
 }
 
 @keyframes pageEnter {
-  from {
-    transform: translateY(12px);
-  }
-  to {
-    transform: translateY(0);
-  }
+  from { transform: translateY(10px); }
+  to { transform: translateY(0); }
 }
 
 /* Sidebar toggle button hover */
@@ -154,7 +151,6 @@ html {
 .stats-card-hover:hover {
   transform: translateY(-4px) !important;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1) !important;
-  border-color: rgba(255,255,255,0.18) !important;
 }
 
 /* Tab hover effect */
