@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -27,6 +27,12 @@ function RoomResultsPage() {
   const [bookmarked, setBookmarked] = useState(new Set())
   const [showReviewTab, setShowReviewTab] = useState(false)
   const [expandedQuestions, setExpandedQuestions] = useState({})
+  const [sessionSummary, setSessionSummary] = useState(null)
+  const [studentAnalysis, setStudentAnalysis] = useState(null)
+  const [isRegenerating, setIsRegenerating] = useState(false)
+  const [regenerateError, setRegenerateError] = useState(null)
+  const [regenerateCooldownUntil, setRegenerateCooldownUntil] = useState(0)
+  const [, setCooldownTick] = useState(0) // forces re-render while cooldown counts down
 
   const toggleBookmark = (qId) => {
     setBookmarked(prev => {
@@ -43,6 +49,38 @@ function RoomResultsPage() {
     }))
   }
 
+  const handleRegenerateSummary = async () => {
+    if (isRegenerating) return
+    if (Date.now() < regenerateCooldownUntil) return
+
+    setIsRegenerating(true)
+    setRegenerateError(null)
+
+    try {
+      const res = await fetch(`${API_URL}/summary/generate/${roomId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 429) {
+        setRegenerateError(data.error || 'Please wait before regenerating again')
+      } else if (res.ok && data.summary) {
+        setSessionSummary(data.summary)
+      } else {
+        setRegenerateError(data.error || 'Failed to regenerate summary. Please try again.')
+      }
+    } catch (err) {
+      console.error('Failed to regenerate summary:', err)
+      setRegenerateError('Network error while regenerating. Please try again.')
+    } finally {
+      // Local cooldown mirrors the backend's, so the button visibly disables
+      // instead of the user hitting 429s repeatedly.
+      setRegenerateCooldownUntil(Date.now() + 15000)
+      setIsRegenerating(false)
+    }
+  }
+
   const fetchRoomData = async () => {
     setIsLoading(true)
     try {
@@ -53,6 +91,10 @@ function RoomResultsPage() {
       const roomData = await roomRes.json()
       if (roomRes.ok) {
         setRoom(roomData.room || roomData)
+        // Fetch session summary if available
+        if ((roomData.room || roomData).summary) {
+          setSessionSummary((roomData.room || roomData).summary)
+        }
       }
 
       // Fetch questions for this room
@@ -61,6 +103,19 @@ function RoomResultsPage() {
       })
       const qData = await qRes.json()
       const roomQuestions = qData.questions || []
+      
+      // If no summary in room data, try to fetch separately
+      if (!sessionSummary) {
+        const summaryRes = await fetch(`${API_URL}/summary/${roomId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (summaryRes.ok) {
+          const summaryData = await summaryRes.json()
+          if (summaryData.summary) {
+            setSessionSummary(summaryData.summary)
+          }
+        }
+      }
 
       if (user?.role === 'student') {
         // Student: fetch their own responses (includes questions with answers)
@@ -99,6 +154,19 @@ function RoomResultsPage() {
         })
         const leaderboardData = await leaderboardRes.json()
         const userRank = leaderboardData.userRank || 0
+
+        // Personal wrong-answer analysis + weak areas
+        try {
+          const analysisRes = await fetch(`${API_URL}/summary/${roomId}/student`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+          if (analysisRes.ok) {
+            const analysisData = await analysisRes.json()
+            if (analysisData.analysis) setStudentAnalysis(analysisData.analysis)
+          }
+        } catch (analysisErr) {
+          console.error('Failed to fetch personal analysis:', analysisErr)
+        }
         
         const averageScore = totalResponses > 0 ? Math.round((totalPoints / (totalResponses * 100)) * 100) : 0
         
@@ -164,6 +232,50 @@ function RoomResultsPage() {
       fetchRoomData()
     }
   }, [token, roomId])
+
+  // Re-render every second while a regenerate cooldown is active, so the
+  // button re-enables itself and the countdown label stays accurate.
+  useEffect(() => {
+    if (regenerateCooldownUntil <= Date.now()) return
+    const interval = setInterval(() => {
+      setCooldownTick(t => t + 1)
+      if (Date.now() >= regenerateCooldownUntil) {
+        clearInterval(interval)
+      }
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [regenerateCooldownUntil])
+
+  // Deterministic "class struggled here" list, computed directly from the
+  // already-fetched questions/response stats — no AI call involved, so it's
+  // always available (teacher view only, since only teachers get class-wide
+  // stats in `responses`). This guarantees a struggle-areas view even if the
+  // AI summary has never successfully generated.
+  const localStruggleAreas = useMemo(() => {
+    if (user?.role !== 'teacher') return []
+
+    return questions
+      .map(q => {
+        const qStats = responses[q._id] || {}
+        const totalResp = qStats.totalResponses || 0
+        if (totalResp === 0) return null // no data yet for this question
+
+        const correctRate = Math.round(((qStats.correctCount || 0) / totalResp) * 100)
+        if (correctRate >= 70) return null // fewer than 30% got it wrong
+
+        const correctOption = (q.options || []).find(opt => opt.isCorrect)
+
+        return {
+          id: q._id,
+          question: q.question || 'Question',
+          correctAnswer: correctOption?.text || correctOption || 'N/A',
+          correctRate,
+          totalResponses: totalResp
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.correctRate - b.correctRate)
+  }, [questions, responses, user])
 
   if (isLoading) {
     return (
@@ -298,6 +410,223 @@ function RoomResultsPage() {
             </div>
           </div>
 
+          {/* Session Summary - Both Teacher & Student */}
+          <div style={{
+            background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+            borderRadius: '16px',
+            padding: '24px',
+            marginBottom: '24px',
+            border: '1px solid #3b82f6'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#1e40af', flex: 1 }}>
+                🤖 AI Session Summary
+              </h2>
+              <button
+                onClick={handleRegenerateSummary}
+                disabled={isRegenerating || Date.now() < regenerateCooldownUntil}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  background: (isRegenerating || Date.now() < regenerateCooldownUntil) ? '#93c5fd' : '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: (isRegenerating || Date.now() < regenerateCooldownUntil) ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap'
+                }}
+                title="Generate a fresh AI summary from the saved transcript, questions & answers"
+              >
+                {isRegenerating
+                  ? '⏳ Regenerating...'
+                  : Date.now() < regenerateCooldownUntil
+                    ? `🔄 Wait ${Math.ceil((regenerateCooldownUntil - Date.now()) / 1000)}s`
+                    : '🔄 Regenerate'}
+              </button>
+            </div>
+
+            {regenerateError && (
+              <div style={{
+                padding: '8px 12px',
+                background: '#fef2f2',
+                border: '1px solid #fca5a5',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: '#dc2626',
+                marginBottom: '16px'
+              }}>
+                ⚠️ {regenerateError}
+              </div>
+            )}
+
+            {!sessionSummary && !isRegenerating && (
+              <div style={{
+                padding: '14px 16px',
+                background: 'white',
+                borderRadius: '10px',
+                fontSize: '13px',
+                color: 'var(--text-secondary)',
+                textAlign: 'center'
+              }}>
+                No AI summary yet for this session. Click Regenerate to generate one.
+              </div>
+            )}
+
+            {sessionSummary && (
+              <>
+              {/* Narrative Summary - 5-line AI text */}
+              {sessionSummary.narrativeSummary && (
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'white',
+                  borderRadius: '10px',
+                  marginBottom: '16px',
+                  fontSize: '13px',
+                  color: '#1e40af',
+                  lineHeight: '1.7',
+                  fontWeight: '500'
+                }}>
+                  {sessionSummary.narrativeSummary}
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '16px' }}>
+                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
+                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>Overview</div>
+                  <div style={{ fontSize: '14px', color: '#1e40af', fontWeight: '600' }}>
+                    {sessionSummary.overview?.totalQuestions} questions • {sessionSummary.overview?.totalResponses} responses
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#1e40af', fontWeight: '600' }}>
+                    {sessionSummary.overview?.totalStudents} students participated
+                  </div>
+                </div>
+                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
+                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>Performance</div>
+                  <div style={{ fontSize: '14px', color: '#059669', fontWeight: '600' }}>
+                    Average Score: {sessionSummary.overview?.averagePoints || 0} pts
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#059669', fontWeight: '600' }}>
+                    Participation: {sessionSummary.overview?.averageParticipation || 0}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Struggling Questions - show where +30% got wrong */}
+              {sessionSummary.strugglingQuestions && sessionSummary.strugglingQuestions.length > 0 && (
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: '#dc2626', marginBottom: '8px' }}>
+                    ⚠️ Areas to Review ({sessionSummary.strugglingQuestions.length} — where +30% of class struggled)
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {sessionSummary.strugglingQuestions.slice(0, 5).map((q, idx) => (
+                      <div key={idx} style={{ padding: '10px', background: '#fef2f2', borderRadius: '8px', fontSize: '13px' }}>
+                        <div style={{ fontWeight: '600', marginBottom: '2px' }}>{q.question?.substring(0, 100)}{q.question?.length > 100 ? '...' : ''}</div>
+                        <div style={{ fontSize: '11px', color: '#dc2626' }}>
+                          Only {q.correctnessRate}% answered correctly • {q.timesAnswered} response(s)
+                        </div>
+                        {q.explanation && (
+                          <div style={{ fontSize: '11px', color: '#92400e', marginTop: '4px', fontStyle: 'italic' }}>
+                            💡 {q.explanation}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recommendations */}
+              {(sessionSummary.quickRecommendations?.length > 0 || sessionSummary.recommendations?.length > 0) && (
+                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
+                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '6px' }}>Quick Recommendations</div>
+                  <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '13px', color: '#374151' }}>
+                    {(sessionSummary.quickRecommendations || sessionSummary.recommendations || []).map((rec, idx) => (
+                      <li key={idx} style={{ marginBottom: '4px' }}>{rec}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              </>
+            )}
+          </div>
+
+          {/* Class Struggle Areas - deterministic, teacher-only, always available
+              (computed from real response stats already loaded — no AI dependency) */}
+          {user?.role === 'teacher' && localStruggleAreas.length > 0 && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px 24px',
+              marginBottom: '24px',
+              border: '1px solid #fca5a5',
+              boxShadow: 'var(--card-shadow)'
+            }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: '600', color: '#dc2626' }}>
+                ⚠️ Class Struggle Areas ({localStruggleAreas.length})
+              </h3>
+              <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Questions where 30%+ of the class answered incorrectly, with the correct answer
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {localStruggleAreas.map((item, idx) => (
+                  <div key={item.id || idx} style={{
+                    padding: '10px 12px',
+                    background: '#fef2f2',
+                    borderRadius: '8px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                      {item.question}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#059669', marginBottom: '2px' }}>
+                      ✓ Correct answer: {item.correctAnswer}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#dc2626' }}>
+                      Only {item.correctRate}% answered correctly • {item.totalResponses} response(s)
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Personal Weak-Area Analysis - Student only */}
+          {user?.role === 'student' && studentAnalysis && studentAnalysis.wrongAnswers?.length > 0 && (
+            <div style={{
+              background: 'linear-gradient(135deg, #fef2f2, #fee2e2)',
+              borderRadius: '16px',
+              padding: '24px',
+              marginBottom: '24px',
+              border: '1px solid #fca5a5'
+            }}>
+              <h2 style={{ margin: '0 0 12px', fontSize: '18px', fontWeight: '600', color: '#991b1b' }}>
+                🎯 Your Weak Areas ({studentAnalysis.accuracy}% accuracy overall)
+              </h2>
+              {studentAnalysis.weakAreas?.length > 0 && (
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                  {studentAnalysis.weakAreas.map((topic, idx) => (
+                    <span key={idx} style={{
+                      padding: '4px 10px', background: 'white', borderRadius: '999px',
+                      fontSize: '12px', fontWeight: '600', color: '#991b1b', border: '1px solid #fca5a5'
+                    }}>{topic}</span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {studentAnalysis.wrongAnswers.map((w, idx) => (
+                  <div key={idx} style={{ padding: '10px', background: 'white', borderRadius: '8px', fontSize: '13px' }}>
+                    <div style={{ fontWeight: '600', marginBottom: '2px', color: '#1f2937' }}>{w.question}</div>
+                    <div style={{ fontSize: '12px', color: '#991b1b', fontStyle: 'italic' }}>💡 {w.explanation}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',
@@ -314,9 +643,9 @@ function RoomResultsPage() {
                 <button
                   onClick={() => setShowReviewTab(v => !v)}
                   style={{
-                    padding: '6px 14px', background: showReviewTab ? '#f59e0b' : 'transparent',
-                    border: '1px solid #f59e0b', borderRadius: '8px',
-                    color: showReviewTab ? 'white' : '#f59e0b', fontSize: '12px',
+                    padding: '6px 14px', background: showReviewTab ? '#3b82f6' : 'transparent',
+                    border: '1px solid #3b82f6', borderRadius: '8px',
+                    color: showReviewTab ? 'white' : '#3b82f6', fontSize: '12px',
                     fontWeight: '600', cursor: 'pointer'
                   }}
                 >
@@ -443,9 +772,17 @@ function RoomResultsPage() {
 
                               return (
                                 <div key={optIdx}>
-                                  <div style={{
+                              <div style={{
                                     padding: '8px 12px', background: bg, borderRadius: '8px',
-                                    border, display: 'flex', alignItems: 'center', gap: '10px'
+                                    border, display: 'flex', alignItems: 'center', gap: '10px',
+                                    transition: 'all 0.2s ease', cursor: 'pointer'
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (!isTeacher) return
+                                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.15)'
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.boxShadow = 'none'
                                   }}>
                                     <span style={{
                                       width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
@@ -480,8 +817,33 @@ function RoomResultsPage() {
                                       }} />
                                     </div>
                                   )}
-                                  {/* Explanation under correct answer - student only */}
-                                  {!isTeacher && isCorrect && q.explanation && (
+                                  {/* Explanation under correct answer - teacher always sees it */}
+                                  {isTeacher && isCorrect && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
+                                  )}
+                                  {/* Student sees explanation only when wrong or missed */}
+                                  {!isTeacher && isCorrect && q.answered && !q.isCorrect && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
+                                  )}
+                                  {!isTeacher && isCorrect && !q.answered && q.explanation && (
                                     <div style={{
                                       margin: '4px 0 2px',
                                       padding: '8px 12px',

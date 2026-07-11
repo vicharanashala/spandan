@@ -273,16 +273,24 @@ router.get('/stats/room/:roomId', async (req, res) => {
     // Get total questions in this room
     const totalQuestions = await Question.countDocuments({ roomId })
 
-    // Get question-level breakdown
+// Get question-level breakdown
     const questionStats = await Question.find({ roomId }).lean()
     const stats = await Promise.all(questionStats.map(async (q) => {
       const responses = await Response.find({ roomId, questionId: q._id })
+      
+      // Calculate answer counts per option
       const answerCounts = {}
+      const answerCountsPerOption = {}
       let correctCount = 0
       
       q.options.forEach((opt, idx) => {
         const countForOption = responses.filter(r => r.selectedOption === idx).length
         answerCounts[idx] = countForOption
+        
+        // For MSQ: also count from selectedOptions array
+        const countFromMSQ = responses.filter(r => r.selectedOptions && r.selectedOptions.includes(idx)).length
+        answerCountsPerOption[idx] = countForOption + countFromMSQ
+        
         // If this option is correct, add to correctCount
         if (opt.isCorrect) {
           correctCount += countForOption
@@ -295,7 +303,8 @@ router.get('/stats/room/:roomId', async (req, res) => {
         type: q.type,
         totalResponses: responses.length,
         correctCount,
-        answerCounts
+        answerCounts,
+        answerCountsPerOption
       }
     }))
 
@@ -408,6 +417,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         question: q.question,
         type: q.type,
         options: q.options,
+        explanation: q.explanation || '',
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
