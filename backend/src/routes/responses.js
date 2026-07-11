@@ -13,7 +13,7 @@ router.post('/', authorize('student'), async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const { roomId, questionId, selectedOptions, responseTime, answerSwitches, firstInteractionMs } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember)
@@ -78,6 +78,8 @@ router.post('/', authorize('student'), async (req, res) => {
       selectedOptions, // Store all selections for MSQ
       isCorrect,
       responseTime: respTime,
+      answerSwitches: Math.max(0, parseInt(answerSwitches, 10) || 0),
+      firstInteractionMs: Number.isFinite(Number(firstInteractionMs)) ? Number(firstInteractionMs) : null,
       points
     })
 

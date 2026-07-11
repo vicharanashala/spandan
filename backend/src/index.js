@@ -18,6 +18,7 @@ import responseRoutes from './routes/responses.js'
 
 // Import models for reference
 import './models/index.js'
+import { recordSignal, getRoomEngagement, clearRoom } from './services/engagementService.js'
 
 dotenv.config()
 
@@ -236,7 +237,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Submit response (real-time)
+  // Submit response (real-time) — now also feeds the Engagement Index
   socket.on('response:submit', (data) => {
     io.to(data.roomCode).emit('response:new', {
       questionId: data.questionId,
@@ -244,6 +245,59 @@ io.on('connection', (socket) => {
       selectedOption: data.selectedOption,
       responseTime: data.responseTime
     })
+
+    // SEI: score this interaction and push live update to the room
+    try {
+      const result = recordSignal(data.roomCode, data.studentId, {
+        answered: true,
+        isCorrect: !!data.isCorrect,
+        responseTime: data.responseTime,
+        timerSeconds: data.timerSeconds,
+        answerSwitches: data.answerSwitches
+      })
+
+      io.to(data.roomCode).emit('engagement:update', {
+        studentId: data.studentId,
+        studentName: data.studentName,
+        index: result.index,
+        disengaged: result.disengaged
+      })
+
+      if (result.shouldAlert) {
+        io.to(data.roomCode).emit('engagement:alert', {
+          studentId: data.studentId,
+          studentName: data.studentName,
+          index: result.index
+        })
+      }
+    } catch (err) {
+      // Engagement scoring must never break the core answer flow
+      console.error('SEI scoring error:', err.message)
+    }
+  })
+
+    // When a question ends, penalize non-responders in the SEI
+  socket.on('question:end:engagement', ({ roomCode, nonResponderIds = [] }) => {
+    try {
+      for (const studentId of nonResponderIds) {
+        const result = recordSignal(roomCode, studentId, { answered: false })
+        io.to(roomCode).emit('engagement:update', {
+          studentId,
+          index: result.index,
+          disengaged: result.disengaged
+        })
+        if (result.shouldAlert) {
+          io.to(roomCode).emit('engagement:alert', { studentId, index: result.index })
+        }
+      }
+    } catch (err) {
+      console.error('SEI non-responder scoring error:', err.message)
+    }
+  })
+
+  // Free engagement memory when a room ends
+  socket.on('room:end', ({ roomCode }) => {
+    clearRoom(roomCode)
   })
 
   // Points update event (emitted after response is saved with calculated points)
