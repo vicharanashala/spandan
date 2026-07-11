@@ -12,13 +12,15 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
-import QuestionQueuePanel from '../components/QuestionQueuePanel'
-import PollReadyPopup from '../components/PollReadyPopup'
-import * as questionQueueService from '../services/questionQueueService'
-import * as transcriptWindowService from '../services/transcriptWindowService'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
+
+// Keep in sync with backend AI_PROVIDERS (config.js). Guards against stale
+// saved room settings (e.g. old 'groq' values from before that provider was
+// folded into minimax) leaking into display or outgoing requests.
+const KNOWN_PROVIDERS = ['minimax', 'openai', 'anthropic', 'google']
+const safeProvider = (p) => (KNOWN_PROVIDERS.includes(p) ? p : 'minimax')
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -33,6 +35,11 @@ function RoomDetailPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [toast, setToast] = useState(null) // {msg, type: 'info'|'error'|'success'}
+  const showToast = (msg, type = 'info', duration = 3500) => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), duration)
+  }
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
 
@@ -75,40 +82,41 @@ function RoomDetailPage() {
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
-  // Segment pause/resume state
-  const [isSegmentPaused, setIsSegmentPaused] = useState(false)
-  const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
-  // Pending review state - when timer hits zero and questions auto-generated
-  const [isPendingReview, setIsPendingReview] = useState(false)
-  const [generateQEnabled, setGenerateQEnabled] = useState(true) // fail-safe button
   const [roomSettings, setRoomSettings] = useState({
     segmentTime: 2,
     questionsPerSegment: 2,
-    difficulty: 'medium',
+    difficultyMix: { medium: 70, hard: 30 },
     questionProvider: 'minimax',
     timeToAnswer: 30,
     points: 100
   })
+  // Derives human-readable label from difficultyMix
+  const getDifficultyLabel = (difficultyMix) => {
+    const hard = 100 - (difficultyMix?.medium ?? 70)
+    if (hard >= 65) return 'Hard'
+    if (hard >= 35) return 'Medium / Hard'
+    return 'Medium'
+  }
+  // Derives the effective API difficulty value from difficultyMix
+  const getEffectiveDifficulty = (difficultyMix) => {
+    const hard = 100 - (difficultyMix?.medium ?? 70)
+    if (hard >= 65) return 'hard'
+    if (hard >= 35) return 'medium'   // backend gets 'medium', prompt gets pushed harder
+    return 'medium'
+  }
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
-  const [aiQueueState, setAiQueueState] = useState(questionQueueService.getState())
-  const [showQueueApproval, setShowQueueApproval] = useState(false)
+  const [answerCountsByOption, setAnswerCountsByOption] = useState({}) // questionId -> {optionIndex: count}
   const [confusionCount, setConfusionCount] = useState(0)
   const [totalStudents, setTotalStudents] = useState(0)
-  const [isAutoSegmentReview, setIsAutoSegmentReview] = useState(false)
-
-  // Explicit ref for recognition to avoid runtime break
-  const recognitionRef = useRef(null)
+  const [recentQuestion, setRecentQuestion] = useState(null) // For quick re-poll
+  const [showResultsModal, setShowResultsModal] = useState(false) // Show results after poll ends
 
   useEffect(() => {
-    return questionQueueService.subscribe(setAiQueueState)
-  }, [])
-
-  useEffect(() => {
-    const anyOpen = showQueueApproval || showQuestionPopup || showTextQuestionPopup
+    const anyOpen = showQuestionPopup || showTextQuestionPopup
     document.body.style.overflow = anyOpen ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
-  }, [showQueueApproval, showQuestionPopup, showTextQuestionPopup])
+  }, [showQuestionPopup, showTextQuestionPopup])
 
   useEffect(() => {
     if (token) {
@@ -122,8 +130,6 @@ function RoomDetailPage() {
         leaveRoom(room.code, user?._id)
       }
       stopRecording()
-      questionQueueService.clear()
-      transcriptWindowService.reset()
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
@@ -164,16 +170,42 @@ function RoomDetailPage() {
     if (!socket) return
     const handleNewResponse = (data) => {
       console.log('[DEBUG] New response received:', data)
+      const qid = data.questionId
+      const opt = data.selectedOption
+      
+      // Update total answer count
       setAnswerCounts(prev => ({
         ...prev,
-        [data.questionId]: (prev[data.questionId] || 0) + 1
+        [qid]: (prev[qid] || 0) + 1
       }))
+      
+      // Update per-option answer counts for live participation bar
+      if (typeof opt === 'number') {
+        setAnswerCountsByOption(prev => {
+          const newByOption = { ...prev }
+          if (!newByOption[qid]) newByOption[qid] = {}
+          newByOption[qid][opt] = (newByOption[qid][opt] || 0) + 1
+          return newByOption
+        })
+      }
+    }
+    const handleConfusionSignal = (data) => {
+      console.log('[CONFUSION]', data)
+      // data: { count, totalStudents, percentage, level }
+      // confusionCount must stay a number (it's used in "confusionCount / totalStudents"
+      // math and "confusionCount > 0" checks below) — storing an object here made those
+      // checks silently always-false.
+      setConfusionCount(data.count || 0)
+      if (data.totalStudents !== undefined) setTotalStudents(data.totalStudents)
     }
     socket.on('response:new', handleNewResponse)
-    socket.on('confusion:signal', () => setConfusionCount(c => c + 1))
+    socket.on('confusion:signal', handleConfusionSignal)
     socket.on('student:joined', () => setTotalStudents(c => c + 1))
     socket.on('student:left', () => setTotalStudents(c => Math.max(0, c - 1)))
-    return () => socket.off('response:new', handleNewResponse)
+    return () => {
+      socket.off('response:new', handleNewResponse)
+      socket.off('confusion:signal', handleConfusionSignal)
+    }
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -205,29 +237,30 @@ function RoomDetailPage() {
       }, 1000)
     }
 
-    const handleQuestionLaunched = (data) => {
-      console.log('[QUESTION LAUNCHED]', data)
-      if (data && data.question) {
-        startQuestionTimer(data.question)
-      }
+    const handleNewQuestionLaunched = (question) => {
+      console.log('[QUESTION LAUNCHED] new_question', question)
+      if (question) startQuestionTimer(question)
     }
 
-    socket.on('new_question', handleQuestionLaunched)
-    socket.on('question:started', handleQuestionLaunched)
+    const handleQuestionStartedLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED] question:started', data)
+      if (data && data.question) startQuestionTimer(data.question)
+    }
+
+    socket.on('new_question', handleNewQuestionLaunched)
+    socket.on('question:started', handleQuestionStartedLaunched)
 
     return () => {
-      socket.off('new_question', handleQuestionLaunched)
-      socket.off('question:started', handleQuestionLaunched)
+      socket.off('new_question', handleNewQuestionLaunched)
+      socket.off('question:started', handleQuestionStartedLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
 
-  // Fixed background scroll locking check
-  useEffect(() => {
-    const el = document.getElementById('room-page-root')
-    if (el) {
-      el.style.overflowY = activeQuestion ? 'hidden' : 'auto'
-    }
-  }, [activeQuestion])
+  // NOTE: previously locked page scroll while a question was active
+  // (`el.style.overflowY = activeQuestion ? 'hidden' : 'auto'`). Removed —
+  // it made the "⏹ End Poll" button and rest of the dashboard unreachable
+  // by scroll for the full duration of every question, which is exactly
+  // what was being reported as "page unresponsive until timer hits 0".
 
 
   // Auto-scroll transcription with a layout-repaint safety guard
@@ -241,31 +274,29 @@ function RoomDetailPage() {
     }
   }, [transcript])
 
-  // Start segment timer when recording
+  // Start segment timer when recording, pause when popup is shown
   useEffect(() => {
-    console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
-    // Only start timer if recording AND not pending review (popup shown)
-    if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
+    if (isRecording && !showQuestionPopup && !showTextQuestionPopup && roomSettings.segmentTime > 0) {
       startSegmentTimer()
     } else {
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
+        segmentTimerRef.current = null
       }
     }
-  }, [isRecording, roomSettings.segmentTime, isPendingReview])
+  }, [isRecording, showQuestionPopup, showTextQuestionPopup, roomSettings.segmentTime])
 
-  // Close settings dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (settingsRef.current && !settingsRef.current.contains(event.target)) {
-        setShowSettings(false)
-      }
-    }
+  // // Close settings dropdown when clicking outside
+  // useEffect(() => {
+  //   const handleClickOutside = (event) => {
+  //     if (settingsRef.current && !settingsRef.current.contains(event.target)) {
+  //       setShowSettings(false)
+  //     }
+  //   }
 
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
-
+  //   document.addEventListener('mousedown', handleClickOutside)
+  //   return () => document.removeEventListener('mousedown', handleClickOutside)
+  // }, [])
 
 
   // Check server transcription status on mount
@@ -302,7 +333,6 @@ function RoomDetailPage() {
 
     let secondsLeft = totalSeconds
     setSegmentTimeLeft(secondsLeft)
-    setIsSegmentPaused(false)
 
     console.log('[TIMER] Creating interval for', totalSeconds, 'seconds')
     segmentTimerRef.current = setInterval(() => {
@@ -327,56 +357,27 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const pauseSegmentTimer = () => {
-    if (segmentTimerRef.current) {
-      clearInterval(segmentTimerRef.current)
-      segmentTimerRef.current = null
-    }
-    setIsSegmentPaused(true)
-    console.log('[TIMER] Timer paused at', segmentTimeLeft, 'seconds')
-  }
-
-  const resumeSegmentTimer = () => {
-    if (isSegmentPaused && segmentTimeLeft > 0) {
-      console.log('[TIMER] Resuming timer from', segmentTimeLeft, 'seconds')
-      startSegmentTimer(segmentTimeLeft)
-    }
-  }
-
   // On segment timer hit zero - auto-save and auto-generate questions
   const handleSegmentComplete = async () => {
     console.log('[SEGMENT] Timer hit zero - handling segment completion')
 
-    // PAUSE: stop recording and timer
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop() } catch (e) { }
-    }
-    setIsRecording(false)
-    setIsTranscribing(false)
-
+    // Clear timer
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
       segmentTimerRef.current = null
     }
 
-    // Mark as pending review
-    setIsPendingReview(true)
-    setGenerateQEnabled(false) // Disable manual button during auto-process
-
-    // Capture transcript
-    const textToUse = segmentTranscript.trim() || transcript.trim()
+    // Strip noise artifacts before using transcript
+    const clean = (s) => s.replace(/\[BLANK_AUDIO\]/gi, '').replace(/\s+/g, ' ').trim()
+    const textToUse = clean(segmentTranscript) || clean(transcript)
 
     if (!textToUse || textToUse.length < 50) {
-      console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
-      window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
-
-      // Resume for next segment
-      setIsPendingReview(false)
-      setGenerateQEnabled(true)
+      console.log('[SEGMENT] Transcript too short, resuming next segment silently')
       setCurrentSegment(prev => prev + 1)
       setSegmentTranscript('')
       finalTranscriptRef.current = ''
+      // useEffect deps haven't changed so it won't re-fire — restart directly
+      if (isRecordingRef.current) startSegmentTimer()
       return
     }
 
@@ -385,22 +386,15 @@ function RoomDetailPage() {
       .then(() => console.log('[SEGMENT] Transcript saved to DB'))
       .catch(err => console.error('[SEGMENT] Failed to save transcript:', err))
 
-    // Skip generation if nothing meaningfully new has been said since the
-    // last successful generation (prevents repeat questions at 12min/24min etc.)
-    const newSinceLastGen = transcriptWindowService.getNewTranscript(transcript)
-    if (newSinceLastGen.length < 30) {
-      console.log('[SEGMENT] No new transcript since last generation, skipping AI call')
-      resumeForNextSegment()
-      return
-    }
-
     // Auto-generate questions
+    let popupShown = false
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       const questions = await generateQuestionsFromText(textToUse, currentSegment)
       if (questions && questions.length > 0) {
-        questionQueueService.setQuestions(questions)
-        transcriptWindowService.markProcessed(transcript)
+        setPendingQuestions(questions)
+        setShowQuestionPopup(true)
+        popupShown = true
       }
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
@@ -409,19 +403,25 @@ function RoomDetailPage() {
         console.log('[SEGMENT] Retrying question generation...')
         const questions = await generateQuestionsFromText(textToUse, currentSegment)
         if (questions && questions.length > 0) {
-          questionQueueService.setQuestions(questions)
-          transcriptWindowService.markProcessed(transcript)
+          setPendingQuestions(questions)
+          setShowQuestionPopup(true)
+          popupShown = true
         }
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        showToast('Failed to generate questions after retry. Use Generate Q button manually.', 'error')
       }
     }
 
-    // Resume recording for the next segment immediately — review of the
-    // generated batch now happens asynchronously via the queue panel/popup
-    // instead of blocking here.
-    resumeForNextSegment()
+    // Reset segment state
+    setSegmentTranscript('')
+    finalTranscriptRef.current = ''
+    // If popup was shown, timer restarts via useEffect when popup closes.
+    // If not (failed/no questions), useEffect deps unchanged — restart directly.
+    if (!popupShown && isRecordingRef.current) {
+      startSegmentTimer()
+    }
+    
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
@@ -434,13 +434,14 @@ function RoomDetailPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
-          }
-        })
+        transcript: text,
+        config: {
+          numQuestions: roomSettings.questionsPerSegment,
+          difficulty: getEffectiveDifficulty(roomSettings.difficultyMix),  // ← was hardcoded 'medium'
+          difficultyMix: roomSettings.difficultyMix,                        // ← NEW: pass the split
+          provider: safeProvider(roomSettings.questionProvider)
+        }
+      })
       })
         .then(response => response.json())
         .then(data => {
@@ -481,16 +482,27 @@ function RoomDetailPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          transcript: text,
-          config: {
-            mode: generationMode
-          }
-        })
+        transcript: text,
+        config: {
+        mode: generationMode,
+        numQuestions: roomSettings.questionsPerSegment,
+        difficulty: getEffectiveDifficulty(roomSettings.difficultyMix),   // ← fixed
+        difficultyMix: roomSettings.difficultyMix,                         // ← NEW
+        provider: safeProvider(roomSettings.questionProvider)
+      }
+      })
       })
 
-      const data = await response.json()
+      let data
+      try {
+        data = await response.json()
+      } catch (parseError) {
+        // Response wasn't valid JSON - show raw error
+        throw new Error(`Server returned status ${response.status} with invalid response`)
+      }
+      
       setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
+      setShowGeneratingPopup(false)
 
       if (data.success && data.questions && data.questions.length > 0) {
         const markedQuestions = data.questions.map(q => ({
@@ -502,13 +514,13 @@ function RoomDetailPage() {
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
       } else {
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        showToast(data.error || 'Failed to generate questions', 'error')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
+      setShowGeneratingPopup(false)
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      showToast('Failed to generate: ' + (error.message || 'Unknown error').slice(0, 80), 'error')
     }
   }
 
@@ -524,6 +536,11 @@ function RoomDetailPage() {
           ...roomData.settings
         }))
       }
+      // Fetch current student count on load so a teacher refresh mid-session
+      // doesn't reset "X% responded" to 0% until the next socket event.
+      // Adjust the field name below to match whatever your /rooms/:id response uses.
+      const studentCount = roomData.participantCount ?? roomData.studentsCount ?? roomData.students?.length
+      if (studentCount !== undefined) setTotalStudents(studentCount)
       // Load questions for this room from database
       loadQuestions(roomId)
     } catch (err) {
@@ -565,6 +582,40 @@ function RoomDetailPage() {
     if (room.endedAt) return
 
     try {
+      // Generate session summary via API — retry up to 2 times (3 attempts total)
+      // before giving up, so a transient AI/API failure doesn't leave the
+      // summary permanently null for the room.
+      const MAX_SUMMARY_ATTEMPTS = 3
+      let summaryGenerated = false
+
+      for (let attempt = 1; attempt <= MAX_SUMMARY_ATTEMPTS; attempt++) {
+        try {
+          const summaryRes = await fetch(`${API_URL}/summary/generate/${room._id}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+
+          if (summaryRes.ok) {
+            console.log(`Session summary generated successfully (attempt ${attempt})`)
+            summaryGenerated = true
+            break
+          }
+
+          console.warn(`Summary generation failed (attempt ${attempt}/${MAX_SUMMARY_ATTEMPTS})`)
+        } catch (summaryErr) {
+          console.warn(`Summary generation request errored (attempt ${attempt}/${MAX_SUMMARY_ATTEMPTS}):`, summaryErr.message)
+        }
+
+        // Wait briefly before retrying (skip wait after the last attempt)
+        if (attempt < MAX_SUMMARY_ATTEMPTS) {
+          await new Promise(resolve => setTimeout(resolve, 1500))
+        }
+      }
+
+      if (!summaryGenerated) {
+        console.warn('Failed to generate session summary after all retries, continuing anyway')
+      }
+
       const updated = await updateRoom(room._id, {
         isActive: false,
         endedAt: new Date()
@@ -572,7 +623,32 @@ function RoomDetailPage() {
       setRoom(updated)
       navigate(`/teacher/room/${room._id}/results`)
     } catch (err) {
+      console.error('Failed to end room:', err)
       setError(err.message)
+      // Even if summary generation fails, still try to navigate to results
+      navigate(`/teacher/room/${room._id}/results`)
+    }
+  }
+
+  // Manually end the currently active poll instead of waiting for the local
+  // countdown to reach 0. Clears local state immediately (unlocks scroll)
+  // and tells students + resets confusion tracking via the same event the
+  // countdown already relies on server-side.
+  const handleEndActiveQuestion = () => {
+    if (!activeQuestion) return
+
+    if (questionTimerRef.current) {
+      clearInterval(questionTimerRef.current)
+      questionTimerRef.current = null
+    }
+    setActiveQuestion(null)
+    setQuestionTimeLeft(0)
+
+    if (socket && isConnected && room) {
+      socket.emit('question:end', {
+        roomCode: room.code,
+        questionId: activeQuestion._id
+      })
     }
   }
 
@@ -721,43 +797,38 @@ function RoomDetailPage() {
     setTranscript('')
     finalTranscriptRef.current = ''
     setSegmentTranscript('')
-    transcriptWindowService.reset()
   }
 
   const handleManualGenerateQuestions = async () => {
-    const textToUse = segmentTranscript.trim() || transcript
+    const clean = (s) => s.replace(/\[BLANK_AUDIO\]/gi, '').replace(/\s+/g, ' ').trim()
+    const textToUse = clean(segmentTranscript) || clean(transcript)
     if (!textToUse) {
       alert('No transcript available to generate questions from.')
       return
     }
 
     setIsGeneratingQuestions(true)
-    setGenerateQEnabled(false)
-
-    const newSinceLastGen = transcriptWindowService.getNewTranscript(transcript)
-    if (newSinceLastGen.length < 30) {
-      alert('No new transcript since the last generation. Keep talking, then try again.')
-      setGenerateQEnabled(true)
-      setIsGeneratingQuestions(false)
-      return
-    }
 
     try {
       const questions = await generateQuestionsFromText(textToUse, currentSegment + 1)
       if (questions && questions.length > 0) {
-        questionQueueService.setQuestions(questions)
-        transcriptWindowService.markProcessed(transcript)
+        setPendingQuestions(questions)
+        setShowQuestionPopup(true)
         setCurrentSegment(prev => prev + 1)
       }
     } catch (error) {
       console.error('Manual question generation failed:', error)
       alert('Failed to generate questions: ' + error.message)
     }
-    setGenerateQEnabled(true)
     setIsGeneratingQuestions(false)
   }
 
   const handleApproveQuestion = async (question) => {
+    // A new poll is about to go live — never let two run at once. This is
+    // what was silently missing before: the old question's timer/UI kept
+    // ticking in the background instead of being told to stop.
+    if (activeQuestion) handleEndActiveQuestion()
+
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -781,6 +852,12 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        
+        // Store recent question for quick re-poll
+        setRecentQuestion(data.question)
+        // Reset answer counts for new question
+        setAnswerCounts(prev => ({ ...prev, [data.question._id]: 0 }))
+        setAnswerCountsByOption(prev => ({ ...prev, [data.question._id]: {} }))
 
         // Emit to students via socket
         if (socket && isConnected) {
@@ -799,8 +876,10 @@ function RoomDetailPage() {
     console.log('Question rejected:', question.question)
   }
 
-  // Save + emit a question picked from the AI queue (QuestionQueuePanel / PollReadyPopup)
+  // Save + emit a question picked from the AI queue
   const handleLaunchQueuedQuestion = async (question) => {
+    if (activeQuestion) handleEndActiveQuestion()
+
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -824,6 +903,12 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        
+        // Store recent question for quick re-poll
+        setRecentQuestion(data.question)
+        // Reset answer counts for new question
+        setAnswerCounts(prev => ({ ...prev, [data.question._id]: 0 }))
+        setAnswerCountsByOption(prev => ({ ...prev, [data.question._id]: {} }))
 
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -837,29 +922,59 @@ function RoomDetailPage() {
     }
   }
 
-  // Reset segment state and resume recording — runs right after a generation
-  // batch is pushed to the queue, so recording never stays paused waiting
-  // for review (review now happens async via the queue panel/popup).
-  const resumeForNextSegment = () => {
-    setSegmentTranscript('')
-    finalTranscriptRef.current = ''
-    setIsPendingReview(false)
-    setGenerateQEnabled(true)
-    setSegmentTimeLeft(roomSettings.segmentTime * 60)
-    setIsRecording(true)
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start()
-        setIsTranscribing(true)
-        setModelStatus('Listening...')
-      } catch (error) {
-        console.error('Error resuming transcription:', error)
+  // Quick re-poll - relaunch the most recently asked question
+  const handleQuickRepoll = async () => {
+    if (!recentQuestion) return
+    if (activeQuestion) handleEndActiveQuestion()
+
+    try {
+      // Create a duplicate of the question with a new timestamp
+      const response = await fetch(`${API_URL}/questions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId: room._id,
+          type: recentQuestion.type,
+          question: recentQuestion.question,
+          options: recentQuestion.options,
+          explanation: recentQuestion.explanation,
+          segmentIndex: recentQuestion.segmentIndex,
+          timeToAnswer: roomSettings.timeToAnswer || 30,
+          points: roomSettings.points || 100,
+          status: 'approved'
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setGeneratedQuestions(prev => [data.question, ...prev])
+        
+        // Reset answer counts for new question
+        setAnswerCounts(prev => ({ ...prev, [data.question._id]: 0 }))
+        setAnswerCountsByOption(prev => ({ ...prev, [data.question._id]: {} }))
+        
+        // Update recent question reference
+        setRecentQuestion(data.question)
+
+        if (socket && isConnected) {
+          socket.emit('new_question', {
+            roomCode: room.code,
+            question: data.question
+          })
+        }
       }
+    } catch (error) {
+      console.error('Failed to quick re-poll question:', error)
     }
   }
 
   // Handle approve from TextQuestionApprovalPopup (text-based questions)
   const handleTextQuestionApprove = async (question) => {
+    if (activeQuestion) handleEndActiveQuestion()
+
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -883,6 +998,8 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        setAnswerCounts(prev => ({ ...prev, [data.question._id]: 0 }))
+        setAnswerCountsByOption(prev => ({ ...prev, [data.question._id]: {} }))
 
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -906,6 +1023,8 @@ function RoomDetailPage() {
   }
 
   const handleCreateQuestion = async (questionData) => {
+    if (activeQuestion) handleEndActiveQuestion()
+
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -927,6 +1046,8 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        setAnswerCounts(prev => ({ ...prev, [data.question._id]: 0 }))
+        setAnswerCountsByOption(prev => ({ ...prev, [data.question._id]: {} }))
 
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
@@ -1009,12 +1130,15 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden', height: '100vh' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width))', overflowX: 'hidden', height: '100vh' }}>
         {/* Header */}
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
+        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '24px 32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
+              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>{room?.name || 'Room'} Results</h1>
+            <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
+                  Code: {room?.code} • Ongoing
+                </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1024,7 +1148,7 @@ function RoomDetailPage() {
         </header>
 
         {/* Content */}
-        <div className="card-hover" id="room-page-root" style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden', overflowY: 'auto' }}>
+        <div id="room-page-root" style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden', overflowY: 'auto' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
               {error}
@@ -1098,49 +1222,50 @@ function RoomDetailPage() {
               </div>
             )}
 
-            {/* Question Timer Display - Shows when a question is active */}
-            {activeQuestion && questionTimeLeft > 0 && (
-              <div style={{
-                padding: '8px 16px',
-                background: questionTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.1)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
-              }}>
-                <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
-                </span>
-                <span style={{
-                  fontSize: '20px',
-                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
-                  fontWeight: '700',
-                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
-                }}>
-                  {questionTimeLeft}s
-                </span>
-                {questionTimeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    TIME!
-                  </span>
-                )}
-              </div>
+            {/* Show Results Button - Appears when poll ends */}
+            {!activeQuestion && recentQuestion && (
+              <button
+                onClick={() => setShowResultsModal(true)}
+                className="btn-hover"
+                style={{
+                  padding: '8px 16px',
+                  background: '#8b5cf6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                📊 Show Results
+              </button>
             )}
-            {activeQuestion && questionTimeLeft === 0 && (
-              <div style={{
-                padding: '8px 16px',
-                background: 'rgba(239, 68, 68, 0.1)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                border: '2px solid #ef4444'
-              }}>
-                <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
-                </span>
-              </div>
+
+            {/* Quick Re-poll Button - Relaunch last question */}
+            {!isEnded && recentQuestion && !activeQuestion && (
+              <button
+                onClick={handleQuickRepoll}
+                className="btn-hover"
+                style={{
+                  padding: '8px 16px',
+                  background: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                🔄 Quick Re-poll
+              </button>
             )}
 
             {/* Paste & Generate Button */}
@@ -1189,8 +1314,8 @@ function RoomDetailPage() {
               </button>
             )}
 
-            {/* Settings Dropdown */}
-            <div style={{ position: 'relative' }} ref={settingsRef}>
+            {/* Settings button - ref kept for future use, modal is now top-level */}
+            <div ref={settingsRef}>
               <button
                 onClick={() => setShowSettings(true)}
                 className="btn-hover"
@@ -1210,30 +1335,30 @@ function RoomDetailPage() {
               >
                 ⚙️ Settings
               </button>
-
-              <RoomSettingsModal
-                isOpen={showSettings}
-                onClose={() => setShowSettings(false)}
-                settings={roomSettings}
-                onSave={async (newSettings) => {
-                  setRoomSettings(newSettings)
-                  // Persist settings to backend
-                  try {
-                    await fetch(`${API_URL}/rooms/${room._id}`, {
-                      method: 'PUT',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                      },
-                      body: JSON.stringify({ settings: newSettings })
-                    })
-                  } catch (err) {
-                    console.error('Failed to save room settings:', err)
-                  }
-                  setShowSettings(false)
-                }}
-              />
             </div>
+
+            {/* Room Settings Modal - top-level, fixed positioned, not inside toolbar */}
+            <RoomSettingsModal
+              isOpen={showSettings}
+              onClose={() => setShowSettings(false)}
+              settings={roomSettings}
+              onSave={async (newSettings) => {
+                setRoomSettings(newSettings)
+                try {
+                  await fetch(`${API_URL}/rooms/${room._id}`, {
+                    method: 'PUT',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ settings: newSettings })
+                  })
+                } catch (err) {
+                  console.error('Failed to save room settings:', err)
+                }
+                setShowSettings(false)
+              }}
+            />
 
             {/* End Room Button */}
             {!isEnded && (
@@ -1352,7 +1477,7 @@ function RoomDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{safeProvider(roomSettings.questionProvider)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
@@ -1372,7 +1497,9 @@ function RoomDetailPage() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>
+                      {getDifficultyLabel(roomSettings.difficultyMix)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1452,7 +1579,7 @@ function RoomDetailPage() {
                   )}
                   <button
                     onClick={handleManualGenerateQuestions}
-                    disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
+                    disabled={isGeneratingQuestions || !transcript}
                     className="btn-hover"
                     style={{
                       padding: '4px 12px',
@@ -1462,8 +1589,8 @@ function RoomDetailPage() {
                       borderRadius: '6px',
                       fontSize: '12px',
                       fontWeight: '500',
-                      cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
-                      opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
+                      cursor: isGeneratingQuestions || !transcript ? 'not-allowed' : 'pointer',
+                      opacity: isGeneratingQuestions || !transcript ? 0.6 : 1,
                       display: 'flex',
                       alignItems: 'center',
                       gap: '4px'
@@ -1494,6 +1621,87 @@ function RoomDetailPage() {
             </div>
           </div>
 
+          {/* Active Poll Banner - Teacher only, in content (not toolbar) */}
+          {activeQuestion && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '16px',
+              padding: '12px 20px',
+              background: 'var(--bg-card)',
+              borderRadius: '12px',
+              border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`,
+              marginBottom: '20px',
+              flexWrap: 'wrap'
+            }}>
+              <span style={{ fontWeight: '600', color: 'var(--text-primary)', flex: 1, fontSize: '14px' }}>
+                📢 {activeQuestion.question?.substring(0, 80)}...
+              </span>
+
+              {/* Countdown timer */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 14px',
+                background: questionTimeLeft <= 5 ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.1)',
+                borderRadius: '8px',
+                border: `1.5px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
+              }}>
+                <span style={{ fontSize: '13px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>⏱️ Answer</span>
+                <span style={{
+                  fontSize: '20px',
+                  fontWeight: '700',
+                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
+                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+                }}>{questionTimeLeft}s</span>
+              </div>
+
+              <button
+                onClick={handleEndActiveQuestion}
+                className="btn-hover"
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '8px',
+                  border: '1.5px solid #ef4444',
+                  background: 'rgba(239,68,68,0.1)',
+                  color: '#ef4444',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                ⏹ End Poll
+              </button>
+
+              {/* Response metric - teacher only, never leaks to student */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '3px',
+                padding: '6px 14px',
+                background: 'rgba(59,130,246,0.08)',
+                borderRadius: '8px',
+                border: '1.5px solid #3b82f6',
+                minWidth: '130px'
+              }}>
+                <span style={{ fontSize: '13px', color: '#3b82f6', fontWeight: '600' }}>
+                  📊 {totalStudents > 0
+                    ? Math.round(((answerCounts[activeQuestion._id] || 0) / totalStudents) * 100)
+                    : 0}% Responded
+                </span>
+                <div style={{ height: '3px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${totalStudents > 0 ? Math.round(((answerCounts[activeQuestion._id] || 0) / totalStudents) * 100) : 0}%`,
+                    background: '#3b82f6',
+                    transition: 'width 0.3s ease'
+                  }} />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
@@ -1516,12 +1724,6 @@ function RoomDetailPage() {
                   </span>
                 )}
               </div>
-
-              {aiQueueState.queue.length > 0 && (
-                <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>🔔</span> {aiQueueState.queue.length} AI question{aiQueueState.queue.length > 1 ? 's' : ''} ready — see popup to review
-                </p>
-              )}
 
               {generatedQuestions.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -1665,78 +1867,33 @@ function RoomDetailPage() {
           onApprove={handleApproveQuestion}
           onReject={handleRejectQuestion}
           onComplete={() => {
-            // All questions reviewed - close popup and resume for next segment
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
             setPendingQuestions([])
-
-            // Clear segment transcript for fresh start
-            setSegmentTranscript('')
-            finalTranscriptRef.current = ''
-
-            // Reset pending review flag
-            setIsPendingReview(false)
-            setGenerateQEnabled(true)
-
-            // Reset segment timer
-            setSegmentTimeLeft(roomSettings.segmentTime * 60)
-
-            // Resume recording for next segment
-            setIsRecording(true)
-            if (recognitionRef.current) {
-              try {
-                recognitionRef.current.start()
-                setIsTranscribing(true)
-                setModelStatus('Listening...')
-              } catch (error) {
-                console.error('Error resuming transcription:', error)
-              }
-            }
-
-            // Timer will auto-start via the useEffect since isPendingReview is now false
+            // Timer auto-restarts via useEffect when showQuestionPopup becomes false
           }}
           onClose={() => {
-            // Teacher manually closed popup - same as complete for next segment
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
             setPendingQuestions([])
-            setSegmentTranscript('')
-            finalTranscriptRef.current = ''
-            setIsPendingReview(false)
-            setGenerateQEnabled(true)
-            setSegmentTimeLeft(roomSettings.segmentTime * 60)
-            setIsRecording(true)
-            if (recognitionRef.current) {
-              try {
-                recognitionRef.current.start()
-                setIsTranscribing(true)
-                setModelStatus('Listening...')
-              } catch (error) {
-                console.error('Error resuming transcription:', error)
-              }
-            }
+            // Timer auto-restarts via useEffect when showQuestionPopup becomes false
           }}
         />
       )}
 
-      {/* AI Question Queue Toast */}
-      <PollReadyPopup onLaunch={() => setShowQueueApproval(true)} />
-
-      {/* Queue-based Approval Modal (same UX as image 4) */}
-      {showQueueApproval && aiQueueState.queue.length > 0 && (
-        <QuestionApprovalPopup
-          questions={aiQueueState.queue}
-          onApprove={(q) => {
-            handleLaunchQueuedQuestion(q)
-            questionQueueService.dismiss(q._id || q.id)
-          }}
-          onReject={(q) => questionQueueService.dismiss(q._id || q.id)}
-          onClose={() => setShowQueueApproval(false)}
-          onComplete={() => {
-            setShowQueueApproval(false)
-            questionQueueService.clear()
-          }}
-        />
+      {/* Toast Notification */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 9999, padding: '12px 20px', borderRadius: '10px',
+          background: toast.type === 'error' ? '#dc2626' : toast.type === 'success' ? '#059669' : '#1e40af',
+          color: 'white', fontSize: '13px', fontWeight: '500',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+          animation: 'pollPopIn 0.2s ease',
+          maxWidth: '480px', textAlign: 'center'
+        }}>
+          {toast.msg}
+        </div>
       )}
 
       {/* Create Question Overlay */}
@@ -1810,8 +1967,132 @@ function RoomDetailPage() {
           onReject={handleTextQuestionReject}
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
+          onEndActivePoll={handleEndActiveQuestion}
+          hasActivePoll={!!activeQuestion}
+          activePollText={activeQuestion?.question}
+          roomSettings={roomSettings}
           isLast={true}
         />
+      )}
+
+      {/* Show Results Modal - Displays quick results after poll ends */}
+      {showResultsModal && recentQuestion && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 3000
+        }}>
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '480px',
+            width: '90%',
+            boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
+            border: '1px solid var(--border-color)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                📊 Poll Results
+              </h3>
+              <button onClick={() => setShowResultsModal(false)} style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: '20px',
+                cursor: 'pointer',
+                color: 'var(--text-secondary)'
+              }}>✕</button>
+            </div>
+            
+            <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-primary)', fontWeight: '500' }}>
+              {recentQuestion.question}
+            </p>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+              {(recentQuestion.options || []).map((opt, idx) => {
+                const optCount = answerCountsByOption[recentQuestion._id]?.[idx] || 0
+                const total = answerCounts[recentQuestion._id] || 0
+                const pct = total > 0 ? Math.round((optCount / total) * 100) : 0
+                const letter = String.fromCharCode(65 + idx)
+                
+                return (
+                  <div key={idx} style={{
+                    padding: '10px 12px',
+                    background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                    border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}>
+                    <span style={{
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                      color: 'white',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '11px',
+                      fontWeight: '700'
+                    }}>{letter}</span>
+                    <span style={{ flex: 1, fontSize: '13px', color: opt.isCorrect ? '#065f46' : 'var(--text-primary)', fontWeight: opt.isCorrect ? '600' : '400' }}>
+                      {opt.text}
+                    </span>
+                    <span style={{ fontSize: '11px', color: opt.isCorrect ? '#059669' : 'var(--text-secondary)', fontWeight: '600' }}>
+                      {pct}% ({optCount})
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowResultsModal(false)}
+                className="btn-hover"
+                style={{
+                  padding: '8px 16px',
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  setShowResultsModal(false)
+                  navigate(`/teacher/room/${roomId}/results`)
+                }}
+                className="btn-hover"
+                style={{
+                  padding: '8px 16px',
+                  background: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                View Full Results →
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <style>{`
@@ -1851,6 +2132,26 @@ function RoomDetailPage() {
         .card-hover:hover {
           transform: translateY(-2px);
           box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+        }
+          /* Fix z-index clipping from card hover transforms */
+        .card-hover {
+          position: relative;
+          z-index: 0;
+          isolation: isolate;
+        }
+
+        /* Fix white flash on load/theme switch */
+        html, body {
+          background: var(--bg-primary) !important;
+          overflow-x: hidden;
+        }
+
+        /* Fix right-edge overflow track */
+        ::-webkit-scrollbar {
+          width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+          background: transparent;
         }
       `}</style>
     </div>

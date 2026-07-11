@@ -50,7 +50,6 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
         justifyContent: 'center',
         zIndex: 1000
       }}
-      onClick={onClose}
     >
       <div 
         style={{
@@ -206,8 +205,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             Difficulty Distribution
           </label>
           {(() => {
-            const medium = localSettings.difficultyMix?.medium ?? 70
-            const hard = 100 - medium
+            const hard = localSettings.difficultyMix?.hard ?? 30
+            const medium = 100 - hard
             return (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
@@ -229,12 +228,12 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
                   type="range"
                   min="0"
                   max="100"
-                  value={medium}
+                  value={hard}
                   onChange={(e) => {
-                    const newMedium = parseInt(e.target.value)
+                    const newHard = parseInt(e.target.value)
                     setLocalSettings(prev => ({
                       ...prev,
-                      difficultyMix: { medium: newMedium, hard: 100 - newMedium }
+                      difficultyMix: { medium: 100 - newHard, hard: newHard }
                     }))
                   }}
                   style={{ width: '100%', cursor: 'pointer' }}
@@ -284,33 +283,46 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </select>
         </div>
 
-        {/* Question Type Distribution - Auto-generation mix (locked V1) */}
+        {/* Question Type Distribution - dynamic 75/25 ratio */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{
-            display: 'block',
-            marginBottom: '8px',
-            fontSize: '14px',
-            fontWeight: '500',
-            color: 'var(--text-primary)'
+            display: 'block', marginBottom: '8px',
+            fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)'
           }}>
             Question Type Distribution
           </label>
-          <div style={{
-            padding: '12px 14px',
-            borderRadius: '8px',
-            border: '1px solid var(--border-color)',
-            background: 'var(--bg-primary)',
-            display: 'flex',
-            gap: '16px',
-            fontSize: '13px',
-            color: 'var(--text-primary)'
-          }}>
-            <span>✅ True / False <strong>×3</strong></span>
-            <span>✅ Multiple Choice <strong>×1</strong></span>
-          </div>
-          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Auto-generation always produces the best 3 True/False + 1 Multiple Choice question per segment for you to review.
-          </p>
+
+          {(() => {
+            const total = localSettings.questionsPerSegment || 2
+            const mcqCount = total === 1 ? 0 : Math.min(
+              Math.max(1, Math.round(total * 0.25)),
+              total - 1
+            )
+            const tfCount = total - mcqCount
+
+            return (
+              <>
+                <div style={{
+                  padding: '12px 14px', borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-primary)',
+                  display: 'flex', gap: '16px',
+                  fontSize: '13px', color: 'var(--text-primary)'
+                }}>
+                  <span>✅ True / False <strong>×{tfCount}</strong></span>
+                  {mcqCount > 0
+                    ? <span>✅ Multiple Choice <strong>×{mcqCount}</strong></span>
+                    : <span style={{ color: 'var(--text-secondary)' }}>— MCQ needs ≥2 questions</span>
+                  }
+                </div>
+                <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  {total === 1
+                    ? '1 question → True/False only.'
+                    : `~75% TF / ~25% MCQ ratio. For ${total} questions: ${tfCount} TF + ${mcqCount} MCQ.`}
+                </p>
+              </>
+            )
+          })()}
         </div>
 
         {/* Time to Answer (TTA) */}

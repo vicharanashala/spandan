@@ -15,6 +15,12 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setCurrentIndex(0)
   }, [questions])
 
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [])
+
   // Start the countdown timer for a launched question
   const startTimer = (questionIndex) => {
     if (timerRef.current) {

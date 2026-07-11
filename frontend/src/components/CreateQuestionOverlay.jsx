@@ -17,6 +17,12 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   const [launchedTimeLeft, setLaunchedTimeLeft] = useState(0)
   const launchedTimerRef = useRef(null)
 
+  useEffect(() => {
+    return () => {
+      if (launchedTimerRef.current) clearInterval(launchedTimerRef.current)
+    }
+  }, [])
+
   if (!isOpen) return null
 
   const handleTypeChange = (newType) => {

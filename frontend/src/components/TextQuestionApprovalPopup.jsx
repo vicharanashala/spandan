@@ -6,6 +6,10 @@ function TextQuestionApprovalPopup({
   onReject, 
   onClose, 
   onNext,
+  onEndActivePoll,
+  hasActivePoll = false,
+  activePollText = '',
+  roomSettings = {},
   isLast 
 }) {
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -14,12 +18,18 @@ function TextQuestionApprovalPopup({
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1)
   const timerRef = useRef(null)
-  const defaultTimeToAnswer = 30
+  const defaultTimeToAnswer = roomSettings.timeToAnswer || 30
 
   useEffect(() => {
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
   }, [questions])
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [])
 
   const currentQuestion = pendingQuestions[currentIndex]
 
@@ -46,6 +56,7 @@ function TextQuestionApprovalPopup({
             setTimeout(() => moveToNext(), 300)
           } else {
             setTimeout(() => {
+              if (onEndActivePoll) onEndActivePoll()
               if (onNext) onNext()
               else onClose()
             }, 300)
@@ -106,6 +117,7 @@ function TextQuestionApprovalPopup({
     if (currentIndex < pendingQuestions.length - 1) {
       moveToNext()
     } else {
+      if (isQuestionLaunched && onEndActivePoll) onEndActivePoll()
       if (onNext) onNext()
       else onClose()
     }
@@ -248,6 +260,44 @@ function TextQuestionApprovalPopup({
           </div>
         </div>
 
+        {/* A poll from BEFORE this modal opened (or from a different action)
+            may still be live on the dashboard behind this overlay — that
+            control is unreachable while this modal covers the screen, so
+            surface a direct way to end it right here, regardless of which
+            question card is currently shown. */}
+        {hasActivePoll && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '10px 14px',
+            marginBottom: '16px',
+            background: 'rgba(239, 68, 68, 0.1)',
+            border: '1.5px solid #ef4444',
+            borderRadius: '10px'
+          }}>
+            <span style={{ fontSize: '12px', color: '#ef4444', flex: 1 }}>
+              ⚠️ A poll is still live{activePollText ? `: "${activePollText.substring(0, 60)}${activePollText.length > 60 ? '...' : ''}"` : ''}
+            </span>
+            <button
+              onClick={() => onEndActivePoll && onEndActivePoll()}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '8px',
+                border: 'none',
+                background: '#ef4444',
+                color: 'white',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              ⏹ End it
+            </button>
+          </div>
+        )}
+
         {/* Question Card */}
         <div style={{
           background: 'var(--bg-primary)',
@@ -388,7 +438,7 @@ function TextQuestionApprovalPopup({
               gap: '8px'
             }}
           >
-            {isLastQuestion ? '📋 Finish' : '⏭️ Next Question'}
+            {isLastQuestion ? '⏹ End Poll' : '⏭️ Next Question'}
           </button>
         ) : (
           // Timer not started - show Approve and Reject
