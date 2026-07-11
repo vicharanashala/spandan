@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import EngagementPanel from '../components/EngagementPanel'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -96,6 +97,42 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [roomMemberIds, setRoomMemberIds] = useState([]) // array of studentId strings
+  const [respondedByQuestion, setRespondedByQuestion] = useState({}) // questionId -> Set of studentIds
+
+  const roomRef = useRef(room)
+  const roomMemberIdsRef = useRef([])
+  const respondedByQuestionRef = useRef({})
+
+  useEffect(() => {
+    roomRef.current = room
+  }, [room])
+
+  useEffect(() => {
+    roomMemberIdsRef.current = roomMemberIds
+  }, [roomMemberIds])
+
+  useEffect(() => {
+    respondedByQuestionRef.current = respondedByQuestion
+  }, [respondedByQuestion])
+
+  const fetchRoomMembers = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/rooms/${roomId}/members`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      if (response.ok) {
+        const data = await response.json()
+        if (data.studentIds) {
+          setRoomMemberIds(data.studentIds.map(String))
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch room members:', err)
+    }
+  }, [roomId, token])
 
   useEffect(() => {
     if (token) {
@@ -116,10 +153,10 @@ function RoomDetailPage() {
   }, [roomId])
 
   useEffect(() => {
-    if (room?.code && user?._id) {
+    if (room?.code && user?._id && socket && isConnected) {
       joinRoom(room.code, user._id)
     }
-  }, [room?.code, user?._id])
+  }, [room?.code, user?._id, socket, isConnected])
 
   // Listen for room:joined event
   useEffect(() => {
@@ -129,10 +166,12 @@ function RoomDetailPage() {
       console.log('Teacher joined room successfully')
       setIsRoomJoined(true)
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      fetchRoomMembers()
     }
 
     const handleRoomLeft = (data) => {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      fetchRoomMembers()
     }
 
     socket.on('room:joined', handleRoomJoined)
@@ -142,17 +181,33 @@ function RoomDetailPage() {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
     }
-  }, [socket])
+  }, [socket, fetchRoomMembers])
 
   // Listen for response:new events to update answer counts
   useEffect(() => {
     if (!socket) return
     const handleNewResponse = (data) => {
       console.log('[DEBUG] New response received:', data)
+
+      // ── FIX: update ref SYNCHRONOUSLY so the question-timer interval
+      // never reads stale data.  The React state path below handles UI
+      // re-renders, but has a render-cycle delay that caused a race
+      // condition where students who answered were still being counted
+      // as non-responders and scored a second time with answered=false.
+      if (!respondedByQuestionRef.current[data.questionId]) {
+        respondedByQuestionRef.current[data.questionId] = new Set()
+      }
+      respondedByQuestionRef.current[data.questionId].add(String(data.studentId))
+
       setAnswerCounts(prev => ({
         ...prev,
         [data.questionId]: (prev[data.questionId] || 0) + 1
       }))
+      setRespondedByQuestion(prev => {
+        const set = new Set(prev[data.questionId] || [])
+        set.add(String(data.studentId))
+        return { ...prev, [data.questionId]: set }
+      })
     }
     socket.on('response:new', handleNewResponse)
     return () => socket.off('response:new', handleNewResponse)
@@ -162,34 +217,60 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            // SEI: report students who never answered this question
+            const respondedIds = respondedByQuestionRef.current[question._id] || new Set()
+            const nonResponderIds = roomMemberIdsRef.current.filter(id => !respondedIds.has(String(id)))
+            const roomCode = roomRef.current?.code
+            if (socket && roomCode) {
+              socket.emit('question:end:engagement', { roomCode, nonResponderIds })
+            }
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      let questionObj = null
+      if (data && typeof data === 'object') {
+        if (data._id) {
+          questionObj = data
+        } else if (data.question && typeof data.question === 'object' && data.question._id) {
+          questionObj = data.question
+        } else if (data.questionId) {
+          questionObj = {
+            _id: data.questionId,
+            question: typeof data.question === 'string' ? data.question : '',
+            timeToAnswer: data.timer || 30
+          }
         }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+      }
+      if (questionObj && questionObj._id) {
+        startQuestionTimer(questionObj)
+      } else {
+        console.warn('[QUESTION LAUNCHED] Could not extract valid question with _id:', data)
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -472,17 +553,22 @@ function RoomDetailPage() {
       }
     } catch (error) {
       setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
+      setShowGeneratingPopup(false)
       console.error('Text to questions error:', error)
       window.alert('Failed to generate questions. Please try again.')
     }
   }
+
+  
+
+
 
   const loadRoom = async () => {
     setIsLoading(true)
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
+      await fetchRoomMembers()
       // Apply room settings if they exist
       if (roomData.settings) {
         setRoomSettings(prev => ({
@@ -1590,6 +1676,7 @@ function RoomDetailPage() {
                 </span>
               </div>
               <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <EngagementPanel socket={socket} />
             </div>
           </div>
         </div>

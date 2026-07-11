@@ -167,4 +167,25 @@ router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   }
 })
 
+// Get all members (students) in a room
+router.get('/:id/members', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const room = await getRoomById(req.params.id)
+    
+    // Verify ownership
+    if (room.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only the room owner can access members' })
+    }
+
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const members = await RoomMember.find({ roomId: req.params.id })
+    const studentIds = members.map(m => m.studentId.toString())
+    
+    res.json({ studentIds })
+  } catch (error) {
+    const status = error.message === 'Room not found' ? 404 : 500
+    res.status(status).json({ error: error.message })
+  }
+})
+
 export default router
