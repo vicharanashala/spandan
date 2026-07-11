@@ -30,3 +30,4 @@ coverage/
 *.tgz
 .cache/
 # Research plans (local only - stored at /home/spandan/RESEARCH_PLAN.md)
+.env 
