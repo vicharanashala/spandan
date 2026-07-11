@@ -43,7 +43,13 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    copyProtectionEnabled: { type: Boolean, default: false },
+    copyProtectionAction: { type: String, default: 'auto-submit', enum: ['auto-submit', 'mark-not-submitted', 'close-poll-only'] },
+    randomAnswerDetectionEnabled: { type: Boolean, default: false },
+    randomAnswerSensitivity: { type: String, default: 'medium', enum: ['low', 'medium', 'high'] },
+    randomAnswerMinRepeated: { type: Number, default: 2 },
+    randomAnswerAlertsEnabled: { type: Boolean, default: true }
   }
 }, {
   timestamps: true
