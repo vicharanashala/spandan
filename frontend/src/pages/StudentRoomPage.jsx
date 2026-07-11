@@ -28,6 +28,10 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
+  // SEI behavioral signals
+  const answerSwitchesRef = useRef(0)
+  const firstInteractionRef = useRef(null)  // ms timestamp of first option click
+  const questionStartRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -49,6 +53,9 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      answerSwitchesRef.current = 0
+      firstInteractionRef.current = null
+      questionStartRef.current = Date.now()
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -104,6 +111,9 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      answerSwitchesRef.current = 0
+      firstInteractionRef.current = null
+      questionStartRef.current = Date.now()
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -219,6 +229,8 @@ function StudentRoomPage() {
       responseTime
     })
 
+    let saveData = null
+
     // Save to MongoDB - wait for it to complete before fetching past responses
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
@@ -232,10 +244,12 @@ function StudentRoomPage() {
           questionId,
           studentId: user._id,
           selectedOptions,
-          responseTime
+          responseTime,
+          answerSwitches: answerSwitchesRef.current,
+          firstInteractionMs: firstInteractionRef.current,
         })
       })
-      const saveData = await saveResponse.json()
+      saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
       
       // Emit points:update for leaderboard broadcast
@@ -258,7 +272,11 @@ function StudentRoomPage() {
       questionId,
       studentId: user._id,
       selectedOptions,
-      responseTime
+      responseTime,
+      answerSwitches: answerSwitchesRef.current,
+      timerSeconds: currentQuestion?.question?.timeToAnswer || currentQuestion?.timer || 30,
+      isCorrect: saveData?.response?.isCorrect ?? false,
+      studentName: user?.name,
     })
     
     // Set submitted immediately and fetch past responses without delay
@@ -460,6 +478,12 @@ function StudentRoomPage() {
                   
                   const handleOptionClick = () => {
                     if (submitted) return
+                    if (firstInteractionRef.current === null) {
+                      firstInteractionRef.current = Date.now() - questionStartRef.current
+                    }
+                    if (selectedOptions.length > 0 && !selectedOptions.includes(index)) {
+                      answerSwitchesRef.current += 1
+                    }
                     if (isMSQ) {
                       // MSQ: Toggle selection
                       setSelectedOptions(prev => 
