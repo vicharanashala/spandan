@@ -1,5 +1,6 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { applyAnswer } from '../services/streakService.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -12,13 +13,15 @@ router.post('/', authorize('student'), async (req, res) => {
     const Response = (await import('../models/Response.js')).default
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
+    const mongoose = (await import('mongoose')).default
+
     const { roomId, questionId, selectedOptions, responseTime } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember)
-    const isMember = await RoomMember.findOne({ roomId, studentId })
-    if (!isMember) {
+    // NOTE: keep the doc (not .lean()) so we can persist streak fields later.
+    const member = await RoomMember.findOne({ roomId, studentId })
+    if (!member) {
       return res.status(403).json({ error: 'You have not joined this room' })
     }
 
@@ -98,16 +101,152 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+  // --- Streak Fire: streak multiplier (applied after applyAnswer) ---
+  // Multiplier tiers:
+  //   0-2  streak → ×1 (base)
+  //   3-4  streak → ×2
+  //   5-9  streak → ×3
+  //   10+  streak → ×5
+  // Only correct answers are boosted — wrong answers get 0 either way.
+  const computeMultiplier = (s) =>
+    s >= 10 ? 5 :
+    s >= 5  ? 3 :
+    s >= 3  ? 2 : 1
+  const basePoints = points
+  let multiplier = 1
+  let multiplierBoosted = false
+
+    // --- Streak Fire: missed-question sweep ---
+    // Find any approved questions in this room that the student did NOT answer
+    // between their most recent response and now (before the current question).
+    // This is the "missed since last answer" semantics — once a question has
+    // been swept and penalized, it won't be detected again on subsequent answers.
+    //
+    // Why "since last response" and not "all unanswered before current"?
+    //   The latter (older behavior) caused the sweep to re-detect the same
+    //   skipped questions on every subsequent answer, breaking the streak
+    //   infinitely. Now we only count questions in the gap since the last answer.
+    const toObjectId = (id) => {
+      if (!id) return null
+      if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
+      return new mongoose.Types.ObjectId(id)
+    }
+    const sweepEvents = []
+    let sweepBrokeStreak = false
+    // Tracks whether a streak freeze was consumed this response, and what
+    // it blocked. null | 'sweep' | 'wrong_answer'
+    let freezeUsed = null
+    try {
+      // Find the student's most recent response (before the current one).
+      // Use a stable tiebreaker: any older response.
+      const lastResponse = await Response.findOne({
+        roomId: toObjectId(roomId),
+        studentId,
+        _id: { $ne: response._id }, // exclude the just-saved response
+      })
+        .sort({ createdAt: -1 })
+        .select('createdAt')
+        .lean()
+
+      const fromDate = lastResponse ? lastResponse.createdAt : new Date(0)
+      // Use `$gte` so we don't miss a question created in the same millisecond
+      // as the previous response (with `$gt` we'd skip it).
+      const priorQuestions = await Question.find({
+        roomId: toObjectId(roomId),
+        status: 'approved',
+        _id: { $ne: toObjectId(questionId) },
+        createdAt: { $gte: fromDate, $lt: question.createdAt },
+      }).select('_id').lean()
+
+      const answeredIdsInGap = await Response.distinct('questionId', {
+        roomId: toObjectId(roomId),
+        studentId,
+        questionId: { $in: priorQuestions.map(q => q._id) },
+      })
+      const answeredSet = new Set(answeredIdsInGap.map(id => id.toString()))
+      const missedIds = priorQuestions.filter(q => !answeredSet.has(q._id.toString()))
+
+      // Skipped-question handling under the new spec:
+      //   - Freeze present  -> consume the freeze, streak is preserved (no change to counter)
+      //   - No freeze left  -> silently ignore; streak counter is NOT touched
+      // The streak counter never breaks due to a skip under the new rule;
+      // 'sweepBrokeStreak' therefore stays false.
+      if (missedIds.length > 0 && member.streakFreezes > 0) {
+        member.streakFreezes -= 1
+        freezeUsed = 'sweep'
+        // Don't change member.currentStreak / bestStreak — streak preserved.
+      } else if (missedIds.length > 0) {
+        // No freeze left — skip is a silent no-op for the streak counter.
+        // (Previously this path would reset the streak. Under the new rule
+        // it doesn't.)
+      }
+    } catch (streakSweepErr) {
+      // Don't fail the response on sweep errors; log and continue.
+      console.error('[streak] missed-question sweep failed:', streakSweepErr)
+    }
+
+    // --- Streak Fire: apply this answer ---
+    const after = applyAnswer(member, isCorrect)
+    // applyAnswer is pure — it returns the next state but doesn't mutate member.
+    // Use after.currentStreak so the multiplier reflects the POST-answer value.
+    multiplier = isCorrect ? computeMultiplier(after.currentStreak) : 1
+    if (isCorrect && multiplier > 1) {
+      const boosted = Math.round(basePoints * multiplier)
+      if (boosted !== basePoints) {
+        response.points = boosted
+        await response.save()
+        multiplierBoosted = true
+      }
+    }
+    // --- Wrong-answer streak handling ---
+    // Under the current spec, a wrong answer always applies the -3 decrement
+    // (floored at 0) computed by applyAnswer. The freeze is reserved for
+    // skipped questions only and is never consumed by a wrong answer here.
+    member.currentStreak = after.currentStreak
+    member.bestStreak    = after.bestStreak
+    await member.save()
+
     res.status(201).json({
       success: true,
       response: {
         ...response.toObject(),
         isCorrect,
-        points
+        points: response.points,  // reflects multiplier-boosted value if applicable
+        basePoints,               // pre-multiplier (for "you got 100 × 3 = 300!" display)
+        multiplier                // 1 | 2 | 3 | 5
+      },
+      streak: {
+        currentStreak: member.currentStreak,
+        bestStreak: member.bestStreak,
+        // Final answer event:
+        //   'increment' = correct (+2)
+        //   'decrement' = wrong  (-3, floored at 0)
+        //   'noop'      = wrong while streak was already 0
+        event: after.event,
+        // Under the new spec the missed-question sweep never resets the streak,
+        // so this array is always empty (kept for backward compatibility with
+        // any frontend that still inspects it).
+        sweep: sweepEvents,
+        // Always false under the new spec (skips no longer break the streak).
+        sweepBrokeStreak,
+        // Always 0 under the new spec (skips don't trigger reset events).
+        missedCount: sweepEvents.length,
+        // --- Streak Freeze ---
+        // 'sweep' = freeze consumed by a skipped-question sweep (streak preserved)
+        // null    = no freeze was used this turn
+        // (Previously also 'wrong_answer' when a freeze blocked a wrong-answer
+        // reset; that path was removed under the new spec — wrong answers now
+        // always apply the -3 decrement and never consume a freeze.)
+        freezeUsed,
+        // How many freezes the student has left in this room
+        streakFreezesRemaining: member.streakFreezes,
+        multiplier,
+        multiplierBoosted,
       }
     })
   } catch (error) {
-    console.error('Error saving response:', error)
+    console.error(`[ERROR] POST /api/responses — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to save response' })
   }
 })
@@ -168,7 +307,8 @@ router.get('/', async (req, res) => {
       }
     })
   } catch (error) {
-    console.error('Error fetching responses:', error)
+    console.error(`[ERROR] GET /api/responses — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch responses' })
   }
 })
@@ -228,17 +368,42 @@ router.get('/stats/student/:studentId', async (req, res) => {
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
 
+    // --- Streak Fire ---
+    // Streaks live on RoomMember, one record per (student, room). Aggregate
+    // to give the student a lifetime peak + the strongest active streak.
+    const bestStreak = roomMemberships.reduce(
+      (max, m) => Math.max(max, m.bestStreak || 0),
+      0
+    )
+    // Active streak: the largest non-zero currentStreak across rooms.
+    // (Sums across rooms would inflate numbers; max reflects "best run in
+    // progress right now", which is the meaningful display value.)
+    const activeStreak = roomMemberships.reduce(
+      (max, m) => Math.max(max, m.currentStreak || 0),
+      0
+    )
+    // Total freezes remaining across all active rooms (sum — student could be in
+    // multiple rooms, each gives 1 freeze).
+    const totalStreakFreezes = roomMemberships.reduce(
+      (sum, m) => sum + (m.streakFreezes || 0),
+      0
+    )
+
     res.json({
       success: true,
       stats: {
         totalRooms,
         pollsTaken,
         pollsMissed,
-        average
+        average,
+        bestStreak,
+        currentStreak: activeStreak,
+        streakFreezes: totalStreakFreezes
       }
     })
   } catch (error) {
-    console.error('Error fetching student stats:', error)
+    console.error(`[ERROR] GET /api/responses/stats/student/:id — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch stats' })
   }
 })
@@ -428,7 +593,8 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       questions: questionsWithResponses
     })
   } catch (error) {
-    console.error('Error fetching student room responses:', error)
+    console.error(`[ERROR] GET /api/responses/room/:roomId/student/:studentId — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch responses' })
   }
 })
@@ -460,7 +626,8 @@ router.get('/counts/:roomId', async (req, res) => {
 
     res.json({ success: true, counts: countMap })
   } catch (error) {
-    console.error('Error fetching answer counts:', error)
+    console.error(`[ERROR] GET /api/responses/room/:roomId/counts — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ error: 'Failed to fetch counts' })
   }
 })
@@ -507,16 +674,24 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       { $sort: { totalPoints: -1 } }
     ])
 
-    // Resolve student names and build ranked response
+    // Resolve student names and per-room streak fields
     const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
       const user = await User.findById(entry._id).lean()
+      const member = await RoomMember.findOne({
+        roomId: toObjectId(roomId),
+        studentId: entry._id
+      }).select('currentStreak bestStreak streakFreezes').lean()
       return {
         rank: index + 1,
         studentId: entry._id.toHexString(),
         studentName: user?.name || user?.email || 'Unknown Student',
         totalPoints: entry.totalPoints,
         correctCount: entry.correctCount,
-        totalAnswered: entry.totalAnswered
+        totalAnswered: entry.totalAnswered,
+        // --- Streak Fire ---
+        currentStreak:    member?.currentStreak ?? 0,
+        bestStreak:       member?.bestStreak    ?? 0,
+        streakFreezes:    member?.streakFreezes ?? 0
       }
     }))
 
@@ -551,7 +726,8 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       totalParticipants: leaderboard.length
     })
   } catch (error) {
-    console.error('Error fetching leaderboard:', error)
+    console.error(`[ERROR] GET /api/responses/leaderboard/:roomId — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ error: 'Failed to fetch leaderboard' })
   }
 })

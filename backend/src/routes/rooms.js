@@ -88,9 +88,11 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
     }
     
     // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
+    // We use $setOnInsert to seed streakFreezes=1 on the first join only —
+    // re-joining the same room won't reset a previously-consumed freeze.
     await RoomMember.findOneAndUpdate(
       { roomId: room._id, studentId: req.user._id },
-      { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
+      { $setOnInsert: { roomId: room._id, studentId: req.user._id, joinedAt: new Date(), streakFreezes: 1 } },
       { upsert: true, new: true }
     )
     
