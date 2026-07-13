@@ -46,13 +46,21 @@ export async function getBotStatus({ botId, apiKey, baseUrl }) {
   return client({ apiKey, baseUrl })('GET', `/bots/${botId}`)
 }
 
-/** Post a chat message to everyone in the meeting (emoji stripped). */
-export async function sendChat({ botId, message, apiKey, baseUrl }) {
+/**
+ * Post a chat message. Defaults to everyone; pass to='specific_user' + toUserUuid to DM one
+ * participant (e.g. the current speaker). Emoji are stripped.
+ */
+export async function sendChat({ botId, message, to = 'everyone', toUserUuid, apiKey, baseUrl }) {
   if (!botId) throw new Error('botId is required')
-  return client({ apiKey, baseUrl })('POST', `/bots/${botId}/send_chat_message`, {
-    to: 'everyone',
-    message: sanitizeChat(message),
-  })
+  const body = { to, message: sanitizeChat(message) }
+  if (to === 'specific_user') body.to_user_uuid = toUserUuid
+  return client({ apiKey, baseUrl })('POST', `/bots/${botId}/send_chat_message`, body)
+}
+
+/** List meeting participants (used to target the current speaker for a private nudge). */
+export async function getParticipants({ botId, apiKey, baseUrl }) {
+  if (!botId) throw new Error('botId is required')
+  return client({ apiKey, baseUrl })('GET', `/bots/${botId}/participants`)
 }
 
 /** Make the bot leave the meeting. */

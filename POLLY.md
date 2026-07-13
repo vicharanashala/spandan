@@ -10,10 +10,29 @@ answer.
 ## What it does
 
 - Sends a named bot into a Zoom/Meet meeting from the dashboard.
+- Gives the teacher a full control panel to manage how the session runs (see "Meeting settings" below).
 - Generates a poll question from a topic or transcript text the teacher provides, using the AI provider
-  configured for Spandan.
-- Posts the question into the meeting chat so everyone in the call can see and answer it.
+  configured for Spandan, and posts it into the meeting chat.
+- Broadcasts a "poll coming soon" heads-up, and privately nudges the current speaker to wrap up (with
+  optional "how to pause / end" guidance) before a poll.
 - Reports the bot's live state and lets the teacher remove the bot when the session ends.
+
+## Meeting settings (the control panel)
+
+The panel exposes a "Meeting settings" section the teacher can adjust before and during a session:
+
+- **Polls** - which meeting minutes to run polls at; automatic vs manual triggering; which question types
+  the AI may produce (MCQ / True-False / Fill-in-the-blank); whether to show a poll countdown and its length.
+- **Notifications** - automatic vs manual; whether to broadcast a "poll coming soon" heads-up and how many
+  seconds ahead; whether to send notifications to everyone in chat and/or privately to the current speaker.
+- **Timer** - whether to keep an always-on meeting timer visible.
+- **Speaker** - whether to privately nudge the current speaker to wrap up before a poll, and whether to
+  include "how to pause or end" guidance in that nudge.
+- **Breaks** - whether to schedule breaks, how often, and how long.
+
+Settings are stored per bot for the life of the session. Manual polls, notifications, and speaker nudges
+work today over the meeting chat. The fully automatic scheduling, the on-camera meeting timer, and live
+transcription need the full Polly bot runtime and are on the roadmap.
 
 ## Who can use it
 
@@ -90,13 +109,16 @@ generation elsewhere.
 All routes are under `/api/polly` and require the `teacher` role. Attendee credentials are supplied in the
 request body per call and are never stored or logged.
 
-| Method | Path                  | Body                                                        | Purpose |
-|--------|-----------------------|-------------------------------------------------------------|---------|
-| GET    | `/api/polly/providers`| -                                                           | List AI providers the server has keys for. |
-| POST   | `/api/polly/join`     | `meetingUrl, attendeeApiKey, attendeeBaseUrl?, botName?`     | Send the bot into the meeting; posts a hello. |
-| POST   | `/api/polly/status`   | `botId, attendeeApiKey, attendeeBaseUrl?`                    | Get the bot's current state. |
-| POST   | `/api/polly/poll`     | `botId, topic\|transcript, provider, attendeeApiKey, ...`   | Generate a poll with the chosen AI and post it to chat. |
-| POST   | `/api/polly/leave`    | `botId, attendeeApiKey, attendeeBaseUrl?`                    | Remove the bot from the meeting. |
+| Method | Path                     | Body                                                        | Purpose |
+|--------|--------------------------|-------------------------------------------------------------|---------|
+| GET    | `/api/polly/providers`   | -                                                           | List AI providers the server has keys for. |
+| POST   | `/api/polly/join`        | `meetingUrl, attendeeApiKey, attendeeBaseUrl?, botName?, settings?` | Send the bot into the meeting with settings; posts a hello. |
+| POST   | `/api/polly/config`      | `botId, settings`                                           | Read/update the meeting settings for the session. |
+| POST   | `/api/polly/status`      | `botId, attendeeApiKey, attendeeBaseUrl?`                   | Get the bot's current state. |
+| POST   | `/api/polly/participants`| `botId, attendeeApiKey, attendeeBaseUrl?`                   | List participants (to target the speaker for a nudge). |
+| POST   | `/api/polly/notify`      | `botId, kind (headsup\|wrapup), speakerUuid?, attendeeApiKey, ...` | Send a heads-up or speaker wrap-up nudge per settings. |
+| POST   | `/api/polly/poll`        | `botId, topic\|transcript, provider, attendeeApiKey, ...`  | Generate a poll with the chosen AI and post it to chat. |
+| POST   | `/api/polly/leave`       | `botId, attendeeApiKey, attendeeBaseUrl?`                   | Remove the bot from the meeting. |
 
 ## Notes and limitations
 
