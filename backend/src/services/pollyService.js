@@ -7,7 +7,7 @@
 
 const DEFAULT_BASE_URL = 'https://app.attendee.dev'
 
-// Attendee chat rejects non-BMP characters (most emoji, e.g. 🦜) with a 400 — strip them.
+// Attendee chat rejects non-BMP characters (most emoji) with a 400 - strip them.
 export function sanitizeChat(text = '') {
   return [...String(text)]
     .filter((ch) => ch.codePointAt(0) <= 0xffff)

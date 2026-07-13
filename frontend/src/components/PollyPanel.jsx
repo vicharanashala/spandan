@@ -96,7 +96,7 @@ function PollyPanel() {
       {/* Header + toggle */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-          🦜 Polly — meeting bot
+          Polly - meeting bot
         </h2>
         <button
           onClick={() => setEnabled((v) => !v)}
@@ -121,6 +121,25 @@ function PollyPanel() {
 
       {enabled && (
         <div style={{ marginTop: '16px' }}>
+          {/* Short guide so a teacher knows how to get Polly into their meeting */}
+          <details style={{
+            marginBottom: '16px', border: '1px solid var(--border-color)', borderRadius: '10px',
+            padding: '12px 16px', background: 'var(--input-bg)'
+          }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+              How to run Polly in your meeting
+            </summary>
+            <ol style={{ margin: '12px 0 0', paddingLeft: '20px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              <li>Set up Attendee (the meeting-bot service Polly uses): sign up at app.attendee.dev or self-host it.</li>
+              <li>In Attendee's Settings, add your Zoom Meeting SDK credentials and a Deepgram key, then create an API key.</li>
+              <li>Start your Zoom or Google Meet meeting and copy its join link.</li>
+              <li>Below, paste the meeting link and your Attendee API key, choose your AI provider, and click "Add to the meeting".</li>
+              <li>If the bot lands in the waiting room, admit it like any participant.</li>
+              <li>Enter a topic or paste transcript text and click "Generate poll" - Polly posts the poll into the meeting chat for students to answer.</li>
+              <li>Click "Remove from meeting" when you are done.</li>
+            </ol>
+          </details>
+
           {!bot ? (
             <>
               <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
