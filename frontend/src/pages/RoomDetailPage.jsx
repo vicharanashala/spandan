@@ -453,7 +453,7 @@ function RoomDetailPage() {
     try {
       const typeMix = mode === 'TF'
         ? { MCQ: 0, TF: 100, MSQ: 0 }
-        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
+        : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
 
       const response = await fetch(`${API_URL}/questions/generate`, {
         method: 'POST',
