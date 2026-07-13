@@ -13,6 +13,17 @@ It creates ~1000 throwaway accounts, a room, and a question, then hammers them. 
 deploy that mirrors production — ideally with **Redis running and the backend in cluster mode**
 (`npm run start:cluster`), since that's the configuration you're validating.
 
+## ⚠️ Raise the rate limits on the server under test
+Rate limits are **per IP**, and this whole test comes from **one IP** — so it will hit the caps almost
+immediately (you'll see `429 Too many requests`) unless you raise them on the staging server first:
+
+```bash
+export API_RATE_LIMIT_MAX=1000000 AUTH_RATE_LIMIT_MAX=1000000 \
+       RESPONSE_RATE_LIMIT_MAX=1000000 LEADERBOARD_RATE_LIMIT_MAX=1000000
+npm run start:cluster
+```
+(Real students come from many IPs, so production doesn't hit this — but a single-IP load generator does.)
+
 ## Setup
 
 ```bash

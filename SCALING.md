@@ -46,10 +46,14 @@ MONGODB_URI=...            # your Mongo
 REDIS_URL=redis://localhost:6379   # REQUIRED for cluster mode
 JWT_SECRET=...
 # optional tuning:
-# AUTH_RATE_LIMIT_MAX=5000        # per-IP auth attempts / hour
 # LEADERBOARD_TTL_MS=1500         # leaderboard cache window
 # WEB_CONCURRENCY=max             # worker count (default: one per core)
 # UV_THREADPOOL_SIZE=16           # bcrypt hashing threads per worker
+# --- rate limits are PER IP; raise them if a whole class shares one campus NAT IP, or for load tests:
+# API_RATE_LIMIT_MAX=60000        # general /api/ requests / 15 min / IP   (default 60000)
+# AUTH_RATE_LIMIT_MAX=20000       # login/register attempts / hour / IP    (default 20000)
+# RESPONSE_RATE_LIMIT_MAX=30000   # answer submissions / 15 min / IP       (default 30000)
+# LEADERBOARD_RATE_LIMIT_MAX=100000  # leaderboard reads / 15 min / IP     (default 100000)
 
 # 3. Start the backend cluster
 npm run start:cluster       # pm2 start ecosystem.config.cjs

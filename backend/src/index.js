@@ -101,33 +101,33 @@ const rateStore = () => redisClient
   ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) })
   : undefined
 
+// All limits are PER IP. A whole classroom often shares one public IP (campus NAT), so the caps must
+// account for ~1000 students behind a single IP or the class gets 429'd — a direct "can't join"
+// failure. All maxes are env-tunable (raise them for large shared-NAT deployments or load testing).
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 2000, // limit each IP to 2000 requests per windowMs (increased for real-time classroom use)
+  max: Number(process.env.API_RATE_LIMIT_MAX || 60000), // ~1000 students × dozens of requests / 15 min
   message: { error: 'Too many requests, please try again later' },
   store: rateStore()
 })
 
 const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  // A whole classroom often shares one public IP (campus NAT), so a low per-IP cap locks everyone
-  // out during a login surge — a direct "can't join" failure. Keep it high enough for ~1000 students
-  // to log in (with retries) from one IP, while still bounding abuse.
-  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 5000),
+  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 20000), // ~1000 students logging in (with retries) / IP
   message: { error: 'Too many authentication attempts, please try again later' },
   store: rateStore()
 })
 
 const responseLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  max: Number(process.env.RESPONSE_RATE_LIMIT_MAX || 30000), // 1000 students × many answers / 15 min
   message: { error: 'Too many response submissions, please try again later' },
   store: rateStore()
 })
 
 const leaderboardLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
+  max: Number(process.env.LEADERBOARD_RATE_LIMIT_MAX || 100000), // refreshes on every points update
   message: { error: 'Too many requests, please try again later' },
   store: rateStore()
 })
