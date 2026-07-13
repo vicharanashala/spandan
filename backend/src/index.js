@@ -7,6 +7,9 @@ import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
+import { createAdapter } from '@socket.io/redis-adapter'
+import Redis from 'ioredis'
+import { RedisStore } from 'rate-limit-redis'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -66,32 +69,67 @@ const io = new Server(httpServer, {
 // Make io accessible to routes
 app.set('io', io)
 
+// ---- Horizontal scaling: Redis-backed Socket.IO adapter + rate-limit store ----
+// When REDIS_URL is set, broadcasts (io.to(room).emit) propagate across every worker/instance,
+// which is REQUIRED for PM2 cluster mode or multiple servers — without it, a message emitted by
+// one worker never reaches clients connected to another. When REDIS_URL is absent (local dev,
+// single process), everything falls back to in-memory and behaves exactly as before.
+const REDIS_URL = process.env.REDIS_URL
+let redisClient = null
+if (REDIS_URL) {
+  try {
+    const pubClient = new Redis(REDIS_URL)
+    const subClient = pubClient.duplicate()
+    io.adapter(createAdapter(pubClient, subClient))
+    redisClient = new Redis(REDIS_URL) // separate connection for the rate limiter
+    pubClient.on('error', (e) => console.error('Redis pub error:', e.message))
+    subClient.on('error', (e) => console.error('Redis sub error:', e.message))
+    console.log('Socket.IO Redis adapter enabled (cluster-ready)')
+  } catch (e) {
+    console.error('Failed to init Redis adapter, falling back to in-memory:', e.message)
+  }
+} else {
+  console.warn('REDIS_URL not set — running single-instance (in-memory Socket.IO). Do NOT run in cluster mode without Redis.')
+}
+
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
 
-// Rate limiting
+// Rate limiting. Use a shared Redis store when available so limits are consistent across all
+// workers (with per-process in-memory stores, N workers = N× looser limits and inconsistent counts).
+const rateStore = () => redisClient
+  ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) })
+  : undefined
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 2000, // limit each IP to 2000 requests per windowMs (increased for real-time classroom use)
-  message: { error: 'Too many requests, please try again later' }
+  message: { error: 'Too many requests, please try again later' },
+  store: rateStore()
 })
 
 const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 300, // limit each IP to 300 auth requests per hour (increased for live classroom use)
-  message: { error: 'Too many authentication attempts, please try again later' }
+  // A whole classroom often shares one public IP (campus NAT), so a low per-IP cap locks everyone
+  // out during a login surge — a direct "can't join" failure. Keep it high enough for ~1000 students
+  // to log in (with retries) from one IP, while still bounding abuse.
+  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 5000),
+  message: { error: 'Too many authentication attempts, please try again later' },
+  store: rateStore()
 })
 
 const responseLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
-  message: { error: 'Too many response submissions, please try again later' }
+  message: { error: 'Too many response submissions, please try again later' },
+  store: rateStore()
 })
 
 const leaderboardLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
-  message: { error: 'Too many requests, please try again later' }
+  message: { error: 'Too many requests, please try again later' },
+  store: rateStore()
 })
 
 // Middleware
@@ -130,6 +168,35 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
+// Coalesce bursty per-room broadcasts into at most one emit per room per interval.
+// A 1000-student join/answer storm otherwise triggers O(N²) work: N joins each doing a
+// countDocuments + a broadcast to all N sockets. With this, each room flushes at most once
+// per interval regardless of how many events arrived, collapsing the storm to O(N).
+function makeRoomThrottler(intervalMs) {
+  const pending = new Map() // roomCode -> latest run fn (a timer is scheduled while an entry exists)
+  return (roomCode, run) => {
+    const alreadyScheduled = pending.has(roomCode)
+    pending.set(roomCode, run) // keep only the most recent run
+    if (alreadyScheduled) return
+    setTimeout(async () => {
+      const fn = pending.get(roomCode)
+      pending.delete(roomCode)
+      try { await fn() } catch (e) { console.error(`throttled emit (${roomCode}):`, e.message) }
+    }, intervalMs)
+  }
+}
+const throttleParticipants = makeRoomThrottler(1000) // room:joined / room:left participant count
+const throttlePoints = makeRoomThrottler(1500)       // points:updated leaderboard-refresh signal
+
+// Broadcast the current participant count for a room (single countDocuments per flush).
+async function broadcastParticipantCount(roomCode, event) {
+  const Room = (await import('./models/Room.js')).default
+  const RoomMember = (await import('./models/RoomMember.js')).default
+  const room = await Room.findByCode(roomCode)
+  const participants = room ? await RoomMember.countDocuments({ roomId: room._id }) : 0
+  io.to(roomCode).emit(event, { roomCode, participants })
+}
+
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
 
@@ -158,45 +225,27 @@ io.on('connection', (socket) => {
       const Room = (await import('./models/Room.js')).default
       const User = (await import('./models/User.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
-      
+
       socket.join(roomCode)
-      console.log(`Client ${socket.id} (user: ${userId}) joining room ${roomCode}`)
-      
-      // Find user and room
+
+      // Record membership (students only). This is the one write we must do per join; it's an
+      // indexed upsert on (roomId, studentId), so it's cheap even under a join storm.
       const user = await User.findById(userId)
       const room = await Room.findByCode(roomCode)
-      
-      let participantCount = 0
-      
-      if (user && room) {
-        // Only students get added to RoomMember (not teachers)
-        if (user.role === 'student') {
-          // Upsert: add student to room members if not already there
-          await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: user._id },
-            { roomId: room._id, studentId: user._id, joinedAt: new Date() },
-            { upsert: true, new: true }
-          )
-          console.log(`Student ${userId} added to room members for room ${roomCode}`)
-        }
-        
-        // Count participants from RoomMember (excludes teacher)
-        const memberCount = await RoomMember.countDocuments({ roomId: room._id })
-        participantCount = memberCount
+      if (user && room && user.role === 'student') {
+        await RoomMember.findOneAndUpdate(
+          { roomId: room._id, studentId: user._id },
+          { roomId: room._id, studentId: user._id, joinedAt: new Date() },
+          { upsert: true, new: true }
+        )
       }
-      
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: participantCount 
-      })
+
+      // The participant count no longer runs a countDocuments + whole-room broadcast on EVERY join
+      // (that was the O(N²) join-storm killer). Instead we coalesce: one count + one broadcast per
+      // room per second, no matter how many students join in that window.
+      throttleParticipants(roomCode, () => broadcastParticipantCount(roomCode, 'room:joined'))
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: 0 
-      })
     }
   })
 
@@ -246,13 +295,15 @@ io.on('connection', (socket) => {
     })
   })
 
-  // Points update event (emitted after response is saved with calculated points)
+  // Points update event (emitted after response is saved with calculated points).
+  // This is a refresh signal — the Leaderboard component just refetches when it arrives; it does
+  // not read the payload. Under load, 1000 answers would fire 1000 whole-room broadcasts, each
+  // triggering every client to refetch (O(N²)). We coalesce to one signal per room per 1.5s; the
+  // leaderboard endpoint's short-TTL cache then absorbs the concurrent refetches.
   socket.on('points:update', (data) => {
-    io.to(data.roomCode).emit('points:updated', {
-      questionId: data.questionId,
-      studentId: data.studentId,
-      points: data.points,
-      isCorrect: data.isCorrect
+    if (!data?.roomCode) return
+    throttlePoints(data.roomCode, () => {
+      io.to(data.roomCode).emit('points:updated', { roomCode: data.roomCode })
     })
   })
 

@@ -12,16 +12,19 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "@xenova/transformers": "^2.17.2",
-    "bcryptjs": "^2.4.3",
+    "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.2.0",
     "helmet": "^7.1.0",
+    "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.3.4",
     "nodemailer": "^8.0.7",
+    "rate-limit-redis": "^4.2.0",
     "socket.io": "^4.7.5",
     "zod": "^3.23.8"
   },

@@ -1,5 +1,8 @@
 import mongoose from 'mongoose'
-import bcrypt from 'bcryptjs'
+// Native bcrypt: hashing runs on libuv's threadpool instead of blocking the JS event loop,
+// so a burst of concurrent logins no longer serializes on one core. Hash format is
+// interoperable with the previous bcryptjs hashes, so existing passwords keep working.
+import bcrypt from 'bcrypt'
 
 const userSchema = new mongoose.Schema({
   name: {
