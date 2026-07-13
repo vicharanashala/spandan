@@ -316,6 +316,56 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </p>
         </div>
 
+        {/* Copy Protection Mode */}
+        <div style={{ marginBottom: '24px', padding: '16px', border: '1px solid var(--border-color)', borderRadius: '12px', background: 'var(--bg-primary)' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '12px',
+            fontSize: '14px',
+            fontWeight: '600',
+            color: 'var(--text-primary)'
+          }}>
+            Copy Protection Mode
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Enable copy protection during live polls</span>
+            <button
+              onClick={() => setLocalSettings(prev => ({ ...prev, copyProtectionEnabled: !prev.copyProtectionEnabled }))}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '999px',
+                border: '1px solid var(--border-color)',
+                background: localSettings.copyProtectionEnabled ? '#dcfce7' : 'transparent',
+                color: localSettings.copyProtectionEnabled ? '#166534' : 'var(--text-primary)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: '600'
+              }}
+            >
+              {localSettings.copyProtectionEnabled ? 'Enabled' : 'Disabled'}
+            </button>
+          </div>
+          <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>On copy attempt</label>
+          <select
+            value={localSettings.copyProtectionAction || 'close-poll-only'}
+            onChange={(e) => setLocalSettings(prev => ({ ...prev, copyProtectionAction: e.target.value }))}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="auto-submit">Auto Submit</option>
+            <option value="mark-not-submitted">Mark as Not Submitted</option>
+            <option value="close-poll-only">Close Poll Only</option>
+          </select>
+        </div>
+
         {/* Time to Answer (TTA) */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{
