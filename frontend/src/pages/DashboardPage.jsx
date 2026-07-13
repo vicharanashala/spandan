@@ -7,6 +7,7 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import PollyPanel from '../components/PollyPanel'
 
 function DashboardPage() {
   const navigate = useNavigate()
@@ -272,6 +273,9 @@ function DashboardPage() {
               </button>
             </div>
           </div>
+
+          {/* Polly — admin-only meeting bot panel */}
+          <PollyPanel />
 
           {/* Active Rooms List */}
           <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>

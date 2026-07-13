@@ -10,9 +10,11 @@ jobs:
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
-    
-    working-directory: backend
-    
+
+    defaults:
+      run:
+        working-directory: backend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,6 +39,7 @@ jobs:
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
         if: success()
+        continue-on-error: true
         with:
           files: ./backend/coverage/lcov.info
           flags: backend
@@ -44,9 +47,11 @@ jobs:
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
-    
-    working-directory: frontend
-    
+
+    defaults:
+      run:
+        working-directory: frontend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -67,6 +72,7 @@ jobs:
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
         if: success()
+        continue-on-error: true
         with:
           files: ./frontend/coverage/lcov.info
           flags: frontend
