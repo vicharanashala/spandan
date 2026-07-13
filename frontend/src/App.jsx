@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
@@ -16,11 +16,84 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import { API_URL } from './config.js'
 
 function App() {
   const { isDark } = useThemeStore()
-  const { token, isAuthenticated } = useAuthStore()
+  const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
+  const [samagamaChecked, setSamagamaChecked] = useState(false)
+
+  // Check for Samagama session on app load
+  useEffect(() => {
+    if (isAuthenticated || samagamaChecked) return
+
+    const checkSamagamaSession = async () => {
+      try {
+        const samagamaToken = localStorage.getItem('samagama_auth_token')
+        console.log('[Spandan] Samagama token found:', !!samagamaToken)
+
+        if (!samagamaToken) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const response = await fetch('https://samagama.in/api/auth/me', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${samagamaToken}`,
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (!response.ok) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const data = await response.json()
+        const samagamaUser = data.user
+        console.log('[Spandan] Samagama user:', samagamaUser?.email)
+
+        if (!samagamaUser || !samagamaUser.email) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        // Send to Spandan backend for auto-provisioning
+        const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: samagamaUser.email,
+            name: samagamaUser.name,
+            isAdmin: samagamaUser.isAdmin || false,
+            isSuperAdmin: samagamaUser.isSuperAdmin || false
+          })
+        })
+
+        if (!spandanResponse.ok) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const spandanData = await spandanResponse.json()
+        setAuth(spandanData.user, spandanData.token)
+
+        // Open dashboard in new tab
+        const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
+        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
+        console.log('[Spandan] Opening dashboard:', redirectUrl)
+        window.open(redirectUrl, '_blank')
+      } catch (error) {
+        console.error('[Spandan] Samagama session check failed:', error)
+      } finally {
+        setSamagamaChecked(true)
+      }
+    }
+
+    checkSamagamaSession()
+  }, [isAuthenticated, samagamaChecked, setAuth])
 
   // Connect socket when user is authenticated with valid token
   useEffect(() => {
