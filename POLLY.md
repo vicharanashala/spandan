@@ -30,9 +30,29 @@ The panel exposes a "Meeting settings" section the teacher can adjust before and
   include "how to pause or end" guidance in that nudge.
 - **Breaks** - whether to schedule breaks, how often, and how long.
 
-Settings are stored per bot for the life of the session. Manual polls, notifications, and speaker nudges
-work today over the meeting chat. The fully automatic scheduling, the on-camera meeting timer, and live
-transcription need the full Polly bot runtime and are on the roadmap.
+Settings are stored per bot for the life of the session.
+
+## Automatic mode
+
+Set **Trigger** and/or **Notify mode** to *Automatic* and Polly runs the session on a timeline by itself:
+
+- At each configured poll minute it (optionally) counts down and posts a poll.
+- Ahead of each poll (by the heads-up lead time) it broadcasts a "poll coming soon" heads-up and privately
+  nudges the current speaker to wrap up.
+- It announces scheduled breaks.
+
+The automatic engine (`backend/src/services/pollyOrchestrator.js`) is a plain timeline and is unit-tested.
+
+**Live transcription + speaker targeting.** For the speaker nudge to reach the *current* speaker, and for
+automatic polls to be based on what was actually said, the bot streams transcript + active-speaker events
+back to Spandan. Set `POLLY_PUBLIC_URL` (the public https base of your Spandan API) so Polly registers the
+webhook `POLLY_PUBLIC_URL/api/polly/webhook` when it joins; Attendee then posts `transcript.update` and
+`participant_events.speech_start_stop` there. Without a public URL, automatic polls fall back to a topic you
+provide, and nudges go to everyone (no speaker targeting).
+
+**One visual piece is not on-camera yet.** The always-on meeting timer and poll countdown are delivered as
+chat messages, not rendered onto the bot's camera. A true on-camera timer needs an image-rendering step
+(headless-browser or canvas) that is best validated against a live meeting; it is the one remaining item.
 
 ## Who can use it
 
@@ -117,8 +137,11 @@ request body per call and are never stored or logged.
 | POST   | `/api/polly/status`      | `botId, attendeeApiKey, attendeeBaseUrl?`                   | Get the bot's current state. |
 | POST   | `/api/polly/participants`| `botId, attendeeApiKey, attendeeBaseUrl?`                   | List participants (to target the speaker for a nudge). |
 | POST   | `/api/polly/notify`      | `botId, kind (headsup\|wrapup), speakerUuid?, attendeeApiKey, ...` | Send a heads-up or speaker wrap-up nudge per settings. |
+| POST   | `/api/polly/auto/start`  | `botId`                                                    | Start the automatic timeline for the session. |
+| POST   | `/api/polly/auto/stop`   | `botId`                                                    | Stop the automatic timeline. |
 | POST   | `/api/polly/poll`        | `botId, topic\|transcript, provider, attendeeApiKey, ...`  | Generate a poll with the chosen AI and post it to chat. |
-| POST   | `/api/polly/leave`       | `botId, attendeeApiKey, attendeeBaseUrl?`                   | Remove the bot from the meeting. |
+| POST   | `/api/polly/leave`       | `botId, attendeeApiKey, attendeeBaseUrl?`                   | Remove the bot; stops the auto timeline. |
+| POST   | `/api/polly/webhook`     | Attendee event envelope (`trigger`, `data`)                | **Public** (no auth) - Attendee posts transcript/speaker events here. |
 
 ## Notes and limitations
 

@@ -33,11 +33,18 @@ function client({ apiKey, baseUrl }) {
   }
 }
 
-/** Send a bot into a meeting. Returns { id, state, ... }. */
-export async function createBot({ meetingUrl, botName = 'Polly', apiKey, baseUrl }) {
+/**
+ * Send a bot into a meeting. Returns { id, state, ... }.
+ * If `webhookUrl` (https) is given, subscribes the bot to transcript + active-speaker events so the
+ * automatic engine can track the current speaker and generate transcript-aware polls.
+ */
+export async function createBot({ meetingUrl, botName = 'Polly', webhookUrl, apiKey, baseUrl }) {
   if (!meetingUrl) throw new Error('meetingUrl is required')
-  const req = client({ apiKey, baseUrl })
-  return req('POST', '/bots', { meeting_url: meetingUrl, bot_name: botName })
+  const payload = { meeting_url: meetingUrl, bot_name: botName }
+  if (webhookUrl && /^https:\/\//i.test(webhookUrl)) {
+    payload.webhooks = [{ url: webhookUrl, triggers: ['transcript.update', 'participant_events.speech_start_stop'] }]
+  }
+  return client({ apiKey, baseUrl })('POST', '/bots', payload)
 }
 
 /** Current bot state ({ id, state, transcription_state, ... }). */

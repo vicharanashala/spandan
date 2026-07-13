@@ -67,6 +67,8 @@ function PollyPanel() {
   const [participants, setParticipants] = useState([])
   const [speaker, setSpeaker] = useState('')
   const [topic, setTopic] = useState('')
+  const [auto, setAuto] = useState(false)
+  const [transcription, setTranscription] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
@@ -105,11 +107,12 @@ function PollyPanel() {
   const handleJoin = () => run(async () => {
     if (!form.meetingUrl.trim()) throw new Error('Enter the meeting URL')
     if (!form.attendeeApiKey.trim()) throw new Error('Enter your Attendee API key')
-    const d = await api('join', { meetingUrl: form.meetingUrl.trim(), botName: form.botName, settings, ...creds() })
-    setBot(d.bot); if (d.settings) setSettings(d.settings); setMsg(`Polly joined the meeting (state: ${d.bot.state}).`)
+    const d = await api('join', { meetingUrl: form.meetingUrl.trim(), botName: form.botName, settings, provider: form.provider, topic, ...creds() })
+    setBot(d.bot); if (d.settings) setSettings(d.settings); setAuto(!!d.auto); setTranscription(!!d.transcription)
+    setMsg(`Polly joined the meeting${d.auto ? ' - automatic mode is running' : ''}.`)
     loadParticipants()
   })
-  const handleSaveSettings = () => run(async () => { await api('config', { botId: bot.id, settings }); setMsg('Settings saved for this session.') })
+  const handleSaveSettings = () => run(async () => { const d = await api('config', { botId: bot.id, settings, topic, provider: form.provider }); setAuto(!!d.auto); setMsg(`Settings saved.${d.auto ? ' Automatic mode is running.' : ''}`) })
   const handleStatus = () => run(async () => { const d = await api('status', { botId: bot.id, ...creds() }); setBot(d.bot); setMsg(`State: ${d.bot.state}`) })
   const loadParticipants = async () => {
     try { const d = await api('participants', { botId: bot?.id, ...creds() }); const list = d.participants || []; setParticipants(Array.isArray(list) ? list : (list.participants || [])) } catch { /* ignore */ }
@@ -261,8 +264,10 @@ function PollyPanel() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
                 <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: 600, background: 'rgba(59,130,246,.15)', color: '#3b82f6' }}>In meeting · {bot.state}</span>
+                <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: 600, background: auto ? 'rgba(16,163,74,.15)' : 'var(--input-bg)', color: auto ? '#16a34a' : 'var(--text-secondary)' }}>{auto ? 'Automatic: on' : 'Manual'}</span>
+                <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: 600, background: 'var(--input-bg)', color: 'var(--text-secondary)' }}>{transcription ? 'Transcription: on' : 'Transcription: off'}</span>
                 <button onClick={handleStatus} disabled={busy} style={{ ...btnStyle(!busy), padding: '6px 14px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>Refresh</button>
                 <button onClick={handleSaveSettings} disabled={busy} style={{ ...btnStyle(!busy), padding: '6px 14px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>Save settings</button>
               </div>
