@@ -51,7 +51,7 @@ JWT_SECRET=...
 # UV_THREADPOOL_SIZE=16           # bcrypt hashing threads per worker
 # --- rate limits are PER IP; raise them if a whole class shares one campus NAT IP, or for load tests:
 # API_RATE_LIMIT_MAX=60000        # general /api/ requests / 15 min / IP   (default 60000)
-# AUTH_RATE_LIMIT_MAX=20000       # login/register attempts / hour / IP    (default 20000)
+# AUTH_RATE_LIMIT_MAX=5000        # FAILED login attempts / hour / IP      (default 5000; successful logins are not counted)
 # RESPONSE_RATE_LIMIT_MAX=30000   # answer submissions / 15 min / IP       (default 30000)
 # LEADERBOARD_RATE_LIMIT_MAX=100000  # leaderboard reads / 15 min / IP     (default 100000)
 
