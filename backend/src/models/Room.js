@@ -16,6 +16,10 @@ const roomSchema = new mongoose.Schema({
     type: String,
     unique: true
   },
+  sessionIndex: {
+    type: Number,
+    default: 1
+  },
   isActive: {
     type: Boolean,
     default: true

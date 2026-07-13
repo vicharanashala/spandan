@@ -129,12 +129,16 @@ function StudentRoomPage() {
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
+    socket.on('room:session-ended', (data) => {
+      navigate(`/student/room/${room?._id}/results?sessionIndex=${data.sessionIndex}`)
+    })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('room:ended')
+      socket.off('room:session-ended')
     }
   }, [socket, navigate, room?._id])
 
