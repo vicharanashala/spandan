@@ -106,14 +106,21 @@ const rateStore = () => redisClient
 // failure. All maxes are env-tunable (raise them for large shared-NAT deployments or load testing).
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: Number(process.env.API_RATE_LIMIT_MAX || 60000), // ~1000 students × dozens of requests / 15 min
+  // Per IP. Hundreds of students at a live event usually share ONE public IP (venue/campus NAT), so this
+  // limit is effectively shared across the whole room - sized for that, env-tunable, and stored in Redis
+  // when available so the count is consistent across cluster workers.
+  max: Number(process.env.API_RATE_LIMIT_MAX || 60000),
   message: { error: 'Too many requests, please try again later' },
   store: rateStore()
 })
 
 const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 20000), // ~1000 students logging in (with retries) / IP
+  // Only count FAILED auth attempts (maintainer's fix): students behind one NAT share this bucket, so
+  // counting successful logins would trip a 429 mid-event. Failures still throttle brute-force.
+  // Env-tunable + Redis store so the count is consistent across cluster workers.
+  skipSuccessfulRequests: true,
+  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 5000),
   message: { error: 'Too many authentication attempts, please try again later' },
   store: rateStore()
 })
