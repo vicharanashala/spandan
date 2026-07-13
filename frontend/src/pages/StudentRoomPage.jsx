@@ -21,6 +21,7 @@ function StudentRoomPage() {
   const [error, setError] = useState('')
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
+  const [confidenceLevel, setConfidenceLevel] = useState(null)
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
@@ -48,6 +49,7 @@ function StudentRoomPage() {
     const handleQuestionStarted = (data) => {
       setCurrentQuestion(data)
       setSelectedOptions([])
+      setConfidenceLevel(null)
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
       
@@ -103,6 +105,7 @@ function StudentRoomPage() {
       
       setCurrentQuestion(question)
       setSelectedOptions([])
+      setConfidenceLevel(null)
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
       
@@ -203,7 +206,7 @@ function StudentRoomPage() {
   }
 
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    if (selectedOptions.length === 0 || !confidenceLevel || submitted || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -216,7 +219,8 @@ function StudentRoomPage() {
       selectedOptions,
       timeToAnswer: tta,
       timeLeft,
-      responseTime
+      responseTime,
+      confidenceLevel
     })
 
     // Save to MongoDB - wait for it to complete before fetching past responses
@@ -232,7 +236,8 @@ function StudentRoomPage() {
           questionId,
           studentId: user._id,
           selectedOptions,
-          responseTime
+          responseTime,
+          confidenceLevel
         })
       })
       const saveData = await saveResponse.json()
@@ -258,7 +263,8 @@ function StudentRoomPage() {
       questionId,
       studentId: user._id,
       selectedOptions,
-      responseTime
+      responseTime,
+      confidenceLevel
     })
     
     // Set submitted immediately and fetch past responses without delay
@@ -530,6 +536,42 @@ function StudentRoomPage() {
                 })}
               </div>
 
+              {/* Confidence Levels */}
+              {!submitted && (
+                <div style={{ marginBottom: '24px' }}>
+                  <p style={{ textAlign: 'center', fontSize: '16px', fontWeight: '600', marginBottom: '12px' }}>How confident are you?</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                    {['low', 'medium', 'high'].map((level) => (
+                      <button
+                        key={level}
+                        onClick={() => setConfidenceLevel(level)}
+                        style={{
+                          padding: '12px',
+                          background: confidenceLevel === level ? (level === 'high' ? '#059669' : level === 'medium' ? '#d97706' : '#dc2626') : 'rgba(255,255,255,0.1)',
+                          border: `2px solid ${confidenceLevel === level ? 'transparent' : 'rgba(255,255,255,0.2)'}`,
+                          borderRadius: '8px',
+                          color: 'white',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '4px',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        <span style={{ fontSize: '24px' }}>
+                          {level === 'high' ? '😎' : level === 'medium' ? '😐' : '😕'}
+                        </span>
+                        <span style={{ fontSize: '12px', textTransform: 'capitalize' }}>
+                          {level === 'high' ? 'Highly Confident' : level === 'medium' ? 'Unsure' : 'Guessing'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Submit Button */}
               {submitted ? (
                 <div style={{
@@ -546,17 +588,17 @@ function StudentRoomPage() {
               ) : (
                 <button
                   onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
+                  disabled={selectedOptions.length === 0 || !confidenceLevel}
                   style={{
                     width: '100%',
                     padding: '16px',
-                    background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
-                    color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
+                    background: (selectedOptions.length > 0 && confidenceLevel) ? '#ffd700' : 'rgba(255,255,255,0.2)',
+                    color: (selectedOptions.length > 0 && confidenceLevel) ? '#1f2937' : 'rgba(255,255,255,0.5)',
                     border: 'none',
                     borderRadius: '12px',
                     fontSize: '16px',
                     fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    cursor: (selectedOptions.length > 0 && confidenceLevel) ? 'pointer' : 'not-allowed'
                   }}
                 >
                   Submit Answer
