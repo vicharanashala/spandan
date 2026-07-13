@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import AnalyticsDashboard from './pages/AnalyticsDashboard'
 import { API_URL } from './config.js'
 
 function App() {
@@ -161,6 +162,11 @@ function App() {
             <RoomResultsPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/analytics" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <AnalyticsDashboard />
+          </ProtectedRoute>
+        } />
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
@@ -174,6 +180,11 @@ function App() {
         <Route path="/student/room-history" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/analytics" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <AnalyticsDashboard />
           </ProtectedRoute>
         } />
         <Route path="/student/profile" element={
