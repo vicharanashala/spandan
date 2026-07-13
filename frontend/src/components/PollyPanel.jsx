@@ -130,12 +130,19 @@ function PollyPanel() {
               How to run Polly in your meeting
             </summary>
             <ol style={{ margin: '12px 0 0', paddingLeft: '20px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-              <li>Set up Attendee (the meeting-bot service Polly uses): sign up at app.attendee.dev or self-host it.</li>
-              <li>In Attendee's Settings, add your Zoom Meeting SDK credentials and a Deepgram key, then create an API key.</li>
-              <li>Start your Zoom or Google Meet meeting and copy its join link.</li>
-              <li>Below, paste the meeting link and your Attendee API key, choose your AI provider, and click "Add to the meeting".</li>
-              <li>If the bot lands in the waiting room, admit it like any participant.</li>
-              <li>Enter a topic or paste transcript text and click "Generate poll" - Polly posts the poll into the meeting chat for students to answer.</li>
+              <li>
+                Get Zoom credentials (one-time). At marketplace.zoom.us, sign in, then:
+                <ul style={{ margin: '4px 0', paddingLeft: '18px' }}>
+                  <li>Click Develop, then Build App, and choose "General App".</li>
+                  <li>Copy the Client ID and Client Secret from the App Credentials section.</li>
+                  <li>Open Features, then Embed, and turn on the "Meeting SDK" toggle.</li>
+                </ul>
+              </li>
+              <li>Set up Attendee (the service that runs the bot): sign up at app.attendee.dev (or self-host it). In its Settings, paste the Zoom Client ID and Secret, then create an Attendee API key.</li>
+              <li>Start your Zoom meeting and copy its invite/join link.</li>
+              <li>Below, paste the meeting link and your Attendee API key, pick your AI provider, and click "Add to the meeting".</li>
+              <li>If the bot lands in the waiting room, admit it like any other participant.</li>
+              <li>Enter a topic or paste transcript text and click "Generate poll" - Polly writes a question with your AI and posts it into the meeting chat for students to answer.</li>
               <li>Click "Remove from meeting" when you are done.</li>
             </ol>
           </details>
@@ -167,13 +174,17 @@ function PollyPanel() {
                   </div>
                   <div>
                     <label style={labelStyle}>AI provider (for polls)</label>
-                    <select style={inputStyle} value={form.provider} onChange={set('provider')}>
-                      {Object.entries(providers).map(([key, p]) => (
-                        <option key={key} value={key} disabled={!p.enabled}>
-                          {p.name}{p.enabled ? '' : ' (not configured)'}
-                        </option>
-                      ))}
-                    </select>
+                    {Object.values(providers).some((p) => p.enabled) ? (
+                      <select style={inputStyle} value={form.provider} onChange={set('provider')}>
+                        {Object.entries(providers).filter(([, p]) => p.enabled).map(([key, p]) => (
+                          <option key={key} value={key}>{p.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        No AI provider is set up on the server yet. Add an AI key in the backend to enable poll generation.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div>
