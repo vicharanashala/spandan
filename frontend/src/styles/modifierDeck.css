@@ -1,0 +1,161 @@
+.modifier-deck__toggle {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(124, 58, 237, 0.35);
+  transition: transform 120ms ease;
+}
+
+.modifier-deck__toggle:hover {
+  transform: translateY(-1px);
+}
+
+.modifier-deck {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(540px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(20, 20, 28, 0.92);
+  color: #f4f4f5;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  z-index: 60;
+}
+
+.modifier-deck__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modifier-deck__title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.modifier-deck__close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.modifier-deck__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.modifier-deck__hint {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.modifier-deck__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.modifier-deck__item {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.modifier-deck__card-icon {
+  font-size: 22px;
+  text-align: center;
+}
+
+.modifier-deck__card-label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.modifier-deck__card-desc {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.modifier-deck__card-status {
+  font-size: 11px;
+  margin-top: 4px;
+  color: #fde68a;
+}
+
+.modifier-deck__fire {
+  background: linear-gradient(135deg, #f97316, #f59e0b);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.modifier-deck__fire:disabled {
+  background: rgba(255, 255, 255, 0.12);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.modifier-deck__charges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.modifier-deck__footer {
+  font-size: 11px;
+  opacity: 0.5;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modifier-deck__toggle {
+    transition: none;
+  }
+}

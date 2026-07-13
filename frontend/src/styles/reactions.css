@@ -1,0 +1,163 @@
+﻿/* =========================================================================
+   reactions.css
+   Phase 5 — Emoji Reaction Streams
+   ========================================================================= */
+
+:root {
+  --reaction-lifetime-ms: 2500ms;
+  --reaction-lane-count: 5;
+  --reaction-bar-bottom: 96px;
+  --reaction-floater-size: 44px;
+}
+
+/* --- Reaction layer (full-viewport overlay, pointer-events: none) ----- */
+
+.reaction-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 90; /* below modals (200), above deck (60) */
+}
+
+/* --- Reaction bar (emoji picker at bottom) --------------------------- */
+
+.reaction-bar {
+  position: fixed;
+  left: 50%;
+  bottom: var(--reaction-bar-bottom);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(20, 20, 28, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(8px);
+  z-index: 95;
+  pointer-events: auto;
+}
+
+.reaction-bar__emoji {
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.reaction-bar__emoji:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  transform: translateY(-1px);
+}
+
+.reaction-bar__emoji:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.reaction-bar__emoji--disabled,
+.reaction-bar__emoji:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.reaction-bar__emoji-glyph {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.reaction-bar__mute {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-left: 4px;
+}
+
+.reaction-bar__mute--on {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.reaction-bar__mute--muted {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.reaction-bar__cooldown {
+  font-size: 11px;
+  color: #fde68a;
+  margin-left: 6px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+/* --- Reaction floater (single animated emoji) ------------------------ */
+
+.reaction-floater {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: var(--reaction-floater-size);
+  height: var(--reaction-floater-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--reaction-floater-size);
+  line-height: 1;
+  pointer-events: none;
+  /* Lane-based horizontal offset: --reaction-lane is 0..4.
+     We spread across the viewport by mapping to 10%..90%. */
+  --lane-x: calc(10% + (var(--reaction-lane, 0) * 20%));
+  transform: translate(var(--lane-x), 0);
+  animation: reaction-float-up var(--reaction-lifetime-ms) ease-out forwards;
+  will-change: transform, opacity;
+}
+
+.reaction-floater__glyph {
+  display: inline-block;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+}
+
+@keyframes reaction-float-up {
+  0% {
+    transform: translate(var(--lane-x), 0) scale(0.85);
+    opacity: 0;
+  }
+  10% {
+    transform: translate(var(--lane-x), -40px) scale(1);
+    opacity: 1;
+  }
+  70% {
+    transform: translate(var(--lane-x), -55vh) scale(1);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate(var(--lane-x), -85vh) scale(1.05);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reaction-floater {
+    animation-duration: 1ms !important;
+  }
+}
+
+@media (max-width: 540px) {
+  .reaction-bar {
+    bottom: 12px;
+    padding: 6px 10px;
+  }
+  .reaction-bar__emoji-glyph {
+    font-size: 20px;
+  }
+}

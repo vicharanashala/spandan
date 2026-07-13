@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import GhostRunnerTrack from '../components/GhostRunnerTrack.jsx'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -447,6 +448,9 @@ function StudentRoomPage() {
               <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
                 {currentQuestion.question}
               </h2>
+
+              {/* Ghost Runner — secondary visual timer */}
+              <GhostRunnerTrack question={currentQuestion} />
 
               {/* Options */}
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
