@@ -238,6 +238,10 @@ io.on('connection', (socket) => {
           { roomId: room._id, studentId: user._id, joinedAt: new Date() },
           { upsert: true, new: true }
         )
+      } else if (user && room && user.role === 'teacher') {
+        // Put the teacher in a per-room channel so live per-answer events (response:new) go only to
+        // them, not fanned out to all N students who ignore them (that was an O(N²) broadcast).
+        socket.join(`teacher:${roomCode}`)
       }
 
       // The participant count no longer runs a countDocuments + whole-room broadcast on EVERY join
@@ -285,9 +289,11 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Submit response (real-time)
+  // Submit response (real-time). Only the teacher's dashboard consumes per-answer events (to update
+  // live answer counts), so send them to the teacher channel instead of broadcasting to the whole
+  // room — 1000 answers no longer produce 1000×N socket messages.
   socket.on('response:submit', (data) => {
-    io.to(data.roomCode).emit('response:new', {
+    io.to(`teacher:${data.roomCode}`).emit('response:new', {
       questionId: data.questionId,
       studentId: data.studentId,
       selectedOption: data.selectedOption,
