@@ -27,6 +27,8 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  // TAWM-Alternative: Live Pulse state
+  const [pulseCount, setPulseCount] = useState({ like: 0, confused: 0, lost: 0 })
   const timerIntervalRef = useRef(null)
 
   useEffect(() => {
@@ -130,11 +132,22 @@ function StudentRoomPage() {
       navigate(`/student/room/${room?._id}/results`)
     })
 
+
+    // TAWM-Alternative: Listen for live pulse updates
+    socket.on('pulse:update', (data) => {
+      setPulseCount({
+        like: data.like || 0,
+        confused: data.confused || 0,
+        lost: data.lost || 0
+      })
+    })
+
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('room:ended')
+    socket.off('pulse:update')
     }
   }, [socket, navigate, room?._id])
 
@@ -769,6 +782,51 @@ function StudentRoomPage() {
           )}
         </div>
       </div>
+
+      {/* TAWM-Alternative: Live Pulse Widget (floating) */}
+      <div style={{
+        position: 'fixed',
+        bottom: '20px',
+        right: '20px',
+        background: 'var(--bg-card)',
+        padding: '16px',
+        borderRadius: '12px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+        border: '1px solid var(--border-color)',
+        zIndex: 100,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        alignItems: 'center'
+      }}>
+        <p style={{ margin: 0, fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+          How are you doing?
+        </p>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button
+            aria-label="I understand"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'like' })}
+            style={{ padding: '8px 10px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
+            title="I understand"
+          >👍</button>
+          <button
+            aria-label="I'm confused"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'confused' })}
+            style={{ padding: '8px 10px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
+            title="I'm confused"
+          >🤔</button>
+          <button
+            aria-label="I'm lost"
+            onClick={() => socket && room?.code && socket.emit('pulse:submit', { roomCode: room.code, studentId: user?._id || 'anon', pulse: 'lost' })}
+            style={{ padding: '8px 10px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '16px' }}
+            title="I'm lost"
+          >😕</button>
+        </div>
+        <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-secondary)' }}>
+          👍 {pulseCount.like}  🤔 {pulseCount.confused}  😕 {pulseCount.lost}
+        </p>
+      </div>
+
     </div>
   )
 }

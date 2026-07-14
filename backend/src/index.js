@@ -135,6 +135,11 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
+// TAWM-Alternative: Live Pulse - In-memory counters (no DB writes)
+const pulseCounters = new Map() // roomCode -> { like, confused, lost, lastUpdate }
+// TAWM-Alternative: rate limit map
+const pulseThrottle = new Map() // `${roomCode}:${studentId}` -> timestamp
+
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
 
@@ -240,8 +245,60 @@ io.on('connection', (socket) => {
       })
     }
   })
+  // TAWM-Alternative: Live Pulse - Student sends engagement signal
+  socket.on('pulse:submit', (data) => {
+    try {
+      const { roomCode, studentId, pulse } = data
+      if (!roomCode || !studentId || !pulse) return
+      // Senior: validate + throttle
+      if (!['like','confused','lost'].includes(pulse)) return
+      const now = Date.now()
+      const throttleKey = `${roomCode}:${studentId}`
+      const last = pulseThrottle.get(throttleKey) || 0
+      if (now - last < 2000) return // 2s rate limit
+      pulseThrottle.set(throttleKey, now)
+      
+      if (!pulseCounters.has(roomCode)) {
+        pulseCounters.set(roomCode, { like: 0, confused: 0, lost: 0, lastUpdate: Date.now() })
+      }
+      const counters = pulseCounters.get(roomCode)
+      
+      if (pulse in counters) {
+        counters[pulse]++
+        counters.lastUpdate = Date.now()
+      }
+      
+      io.to(roomCode).emit('pulse:update', {
+        roomCode,
+        like: counters.like,
+        confused: counters.confused,
+        lost: counters.lost,
+        timestamp: counters.lastUpdate,
+      })
+    } catch (error) {
+      console.error('Error in pulse:submit:', error)
+    }
+  })
+  
+  // TAWM-Alternative: Teacher resets pulse when starting new question
+  socket.on('pulse:reset', (data) => {
+    try {
+      const { roomCode } = data
+      if (!roomCode) return
+      
+      pulseCounters.set(roomCode, { like: 0, confused: 0, lost: 0, lastUpdate: Date.now() })
+      
+      io.to(roomCode).emit('pulse:update', {
+        roomCode,
+        like: 0, confused: 0, lost: 0,
+        timestamp: Date.now()
+      })
+    } catch (error) {
+      console.error('Error in pulse:reset:', error)
+    }
+  })
 
-  // Submit response (real-time)
+    // Submit response (real-time)
   socket.on('response:submit', (data) => {
     io.to(data.roomCode).emit('response:new', {
       questionId: data.questionId,
