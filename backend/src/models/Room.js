@@ -24,6 +24,19 @@ const roomSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  meetingUrl: {
+    type: String,
+    default: null
+  },
+  meetingPlatform: {
+    type: String,
+    enum: ['zoom', 'teams', null],
+    default: null
+  },
+  teamsWebhookUrl: {
+    type: String,
+    default: null
+  },
   currentQuestion: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'

@@ -23,6 +23,7 @@ export const loginSchema = z.object({
 // Room validation schemas
 export const createRoomSchema = z.object({
   name: z.string().min(1, 'Room name is required').max(200),
+  teamsWebhookUrl: z.string().url('Must be a valid URL').optional().or(z.literal('')),
   settings: z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),

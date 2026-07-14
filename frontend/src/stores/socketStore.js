@@ -5,6 +5,8 @@ import { SOCKET_URL } from '../config.js'
 export const useSocketStore = create((set, get) => ({
   socket: null,
   isConnected: false,
+  status: 'disconnected',
+  retryCount: 0,
   currentRoom: null,
   participants: 0,
 
@@ -18,18 +20,31 @@ export const useSocketStore = create((set, get) => ({
     const socket = io(SOCKET_URL, {
       auth: { token },
       path: '/spandan/socket.io',
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 15000,
+      randomizationFactor: 0
     })
 
     socket.on('connect', () => {
       console.log('Socket connected')
-      set({ isConnected: true })
+      set({ isConnected: true, status: 'connected', retryCount: 0 })
       socket.emit('authenticate', { token })
     })
 
     socket.on('disconnect', () => {
       console.log('Socket disconnected')
-      set({ isConnected: false, currentRoom: null })
+      set({ isConnected: false, status: 'disconnected', currentRoom: null })
+    })
+
+    // Listen to socket.io manager reconnection events
+    socket.io.on('reconnect_attempt', (attempt) => {
+      set({ status: 'reconnecting', retryCount: attempt })
+    })
+
+    socket.io.on('reconnect_failed', () => {
+      set({ status: 'disconnected', isConnected: false })
     })
 
     socket.on('authenticated', (data) => {
@@ -118,6 +133,13 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('question:end', data)
+    }
+  },
+
+  signalConfusion: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('confusion:signal', data)
     }
   }
 }))

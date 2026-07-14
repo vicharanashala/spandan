@@ -3,10 +3,11 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 
-export const createRoom = async (name, teacherId, settings = {}) => {
+export const createRoom = async (name, teacherId, teamsWebhookUrl, settings = {}) => {
   const room = new Room({
     name,
     teacher: teacherId,
+    teamsWebhookUrl,
     settings
   })
 

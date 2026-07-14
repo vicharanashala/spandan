@@ -87,7 +87,7 @@ export const useRoomStore = create((set, get) => ({
     }
   },
 
-  createRoom: async (name, settings = {}) => {
+  createRoom: async (name, teamsWebhookUrl = '', settings = {}) => {
     const { authToken } = get()
     if (!authToken) throw new Error('Not authenticated')
 
@@ -99,7 +99,7 @@ export const useRoomStore = create((set, get) => ({
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ name, settings })
+        body: JSON.stringify({ name, teamsWebhookUrl, settings })
       })
 
       const data = await response.json()

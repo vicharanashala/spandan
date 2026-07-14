@@ -44,6 +44,10 @@ const questionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  doubtEvents: [{
+    timestamp: { type: Date, default: Date.now },
+    count: Number
+  }],
   createdAt: {
     type: Date,
     default: Date.now
