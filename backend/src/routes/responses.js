@@ -507,9 +507,14 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       { $sort: { totalPoints: -1 } }
     ])
 
+    // Batch-resolve all referenced users in a single query
+    const studentIds = leaderboardData.map((entry) => entry._id)
+    const users = await User.find({ _id: { $in: studentIds } }).select('_id name email').lean()
+    const userMap = new Map(users.map((u) => [u._id.toString(), u]))
+
     // Resolve student names and build ranked response
-    const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
-      const user = await User.findById(entry._id).lean()
+    const leaderboard = leaderboardData.map((entry, index) => {
+      const user = userMap.get(entry._id.toString())
       return {
         rank: index + 1,
         studentId: entry._id.toHexString(),
@@ -518,7 +523,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
         correctCount: entry.correctCount,
         totalAnswered: entry.totalAnswered
       }
-    }))
+    })
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
