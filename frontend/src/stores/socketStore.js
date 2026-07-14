@@ -16,9 +16,9 @@ export const useSocketStore = create((set, get) => ({
     }
 
     const socket = io(SOCKET_URL, {
-      auth: { token },
-      path: '/spandan/socket.io',
-      transports: ['websocket', 'polling']
+      auth: { token, serverOffset: null },
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
     })
 
     socket.on('connect', () => {

@@ -76,8 +76,10 @@ function StudentRoomPage() {
           return prev - 1
         })
       }, 1000)
-    }
 
+      socket.auth.serverOffset = data.questionId;
+    }
+    
     const handleQuestionEnded = (data) => {
       // Clear timer if running
       if (timerIntervalRef.current) {
@@ -92,7 +94,7 @@ function StudentRoomPage() {
       setResults(data?.results || null)
       setCurrentQuestion(null)
     }
-
+    
     const handleNewQuestion = (question) => {
       // Handle manually created questions from teacher
       // Clear any existing timer
@@ -105,6 +107,8 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
+      
+      
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
@@ -121,8 +125,10 @@ function StudentRoomPage() {
           return prev - 1
         })
       }, 1000)
-    }
 
+      socket.auth.serverOffset = question._id;
+    }
+    
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)

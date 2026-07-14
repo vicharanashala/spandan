@@ -135,7 +135,7 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log('Client connected:', socket.id)
 
   // Authenticate socket
@@ -262,7 +262,11 @@ io.on('connection', (socket) => {
   })
 
   // Question events
-  socket.on('question:start', (data) => {
+  socket.on('question:start', async (data) => {
+    const Question = (await import('./models/Question.js')).default
+
+    await Question.findByIdAndUpdate(data.questionId, {startTime: Date.now()})
+
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
@@ -270,7 +274,7 @@ io.on('connection', (socket) => {
       startTime: Date.now()
     })
   })
-
+  
   socket.on('question:end', (data) => {
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
@@ -279,11 +283,14 @@ io.on('connection', (socket) => {
   })
 
   // New question from teacher (manually created)
-  socket.on('new_question', (data) => {
+  socket.on('new_question', async (data) => {
     console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
     const roomCode = data.roomCode
     const question = data.question
     if (roomCode && question) {
+      const Question = (await import('./models/Question.js')).default
+    
+      await Question.findByIdAndUpdate(question._id, {startTime: Date.now()})
       io.to(roomCode).emit('new_question', question)
     } else {
       console.error('new_question event missing roomCode or question:', data)
@@ -300,6 +307,31 @@ io.on('connection', (socket) => {
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
+
+  // recovere the last question missed by student due to socket disconnection.
+  if (!socket.recovered) {
+    try {
+      const  Question = (await import('./models/Question.js')).default
+
+      const lastRecivedQuesionId = socket.handshake.auth.serverOffset
+
+      if(lastRecivedQuesionId){
+        const lastRecivedQuesion = await Question.findById(lastRecivedQuesionId).select("startTime");
+
+        const unrecivedQuesion = await Question.findOne({
+          startTime: { $gt: lastRecivedQuesion?.startTime }
+        })
+        .sort({ startTime: -1 });
+
+        socket.emit("new_question", unrecivedQuesion)
+      }
+
+
+    } catch (e) {
+      // something went wrong
+      console.error("[error]", e.message)
+    }
+  }
 })
 
 // Error handling middleware
