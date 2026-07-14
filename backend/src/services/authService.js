@@ -29,12 +29,12 @@ export const register = async (name, email, password, role) => {
 export const login = async (email, password) => {
   const user = await User.findOne({ email: email.toLowerCase() })
   if (!user) {
-    throw new Error('Invalid email or password')
+    throw new Error('Email not found') // more specific error message
   }
 
   const isMatch = await user.comparePassword(password)
   if (!isMatch) {
-    throw new Error('Invalid email or password')
+    throw new Error('Invalid password') // more specific error message
   }
 
   return user
@@ -104,7 +104,7 @@ export const updateProfile = async (userId, profileData) => {
   // Allowed fields to update
   const allowedFields = [
     'name', 'profileImage', 'phone', 'bio', 'dateOfBirth', 'gender',
-    'address', 'socialLinks', 'enrollmentNumber', 'class',
+    'enrollmentNumber', 'class', // remove 'address' & 'socialLinks'
     'department', 'employeeId', 'qualifications'
   ]
 

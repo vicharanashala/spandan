@@ -16,9 +16,12 @@ export const useSocketStore = create((set, get) => ({
     }
 
     const socket = io(SOCKET_URL, {
-      auth: { token },
-      path: '/spandan/socket.io',
-      transports: ['websocket', 'polling']
+      auth: { token, serverOffset: null },
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+      // TODO: Must remove in porduction.
+      reconnectionDelay: 30000, 
+      reconnectionDelayMax: 30000 
     })
 
     socket.on('connect', () => {
@@ -75,6 +78,19 @@ export const useSocketStore = create((set, get) => ({
     })
 
     set({ socket })
+  },
+  
+  // TODO: Must remove in porduction.
+  // Implement forceDisconnect function to demonstrate recovery of lost event due to socket disconnect.
+  forceDisconnect: ()=>{
+    const { socket } = get()
+    if (socket.io.engine) {
+      // close the low-level connection and trigger a reconnection
+      socket.io.engine.close();
+      console.log("socket connection is forcefull closed.")
+    } else {
+      console.log("failed to close socket connection forcefull.")
+    }
   },
 
   disconnect: () => {

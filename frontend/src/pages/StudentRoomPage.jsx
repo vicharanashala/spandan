@@ -13,7 +13,7 @@ function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, forceDisconnect } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   
   const [room, setRoom] = useState(null)
@@ -76,8 +76,10 @@ function StudentRoomPage() {
           return prev - 1
         })
       }, 1000)
-    }
 
+      socket.auth.serverOffset = data.questionId;
+    }
+    
     const handleQuestionEnded = (data) => {
       // Clear timer if running
       if (timerIntervalRef.current) {
@@ -92,7 +94,7 @@ function StudentRoomPage() {
       setResults(data?.results || null)
       setCurrentQuestion(null)
     }
-
+    
     const handleNewQuestion = (question) => {
       // Handle manually created questions from teacher
       // Clear any existing timer
@@ -105,6 +107,8 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
+      
+      
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
@@ -121,8 +125,10 @@ function StudentRoomPage() {
           return prev - 1
         })
       }, 1000)
-    }
 
+      socket.auth.serverOffset = question._id;
+    }
+    
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -415,6 +421,25 @@ function StudentRoomPage() {
             >
               Leave
             </button>
+            {/* TODO: Must remove in porduction. */}
+            <button
+              onClick={forceDisconnect}
+              disabled={!isConnected}
+              style={{
+                padding: '8px 16px',
+                background: !isConnected ? 'var(--border-color)' : '#ef4444',
+                color: !isConnected ? 'var(--text-secondary)' : 'white',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: !isConnected ? 'not-allowed' : 'pointer',
+                opacity: !isConnected ? 0.6 : 1
+              }}
+            >
+              Disconnect
+            </button>
+            
           </div>
 
           {/* Live Question */}
