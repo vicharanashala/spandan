@@ -80,6 +80,11 @@ jobs:
 
             cd ..
 
+            echo "==> Installing backend dependencies..."
+            cd backend
+            npm install
+            cd ..
+
             echo "==> Restarting backend..."
             sudo systemctl restart spandan-backend.service
             

@@ -13,7 +13,10 @@
     "dev:backend": "npm run dev --workspace=backend",
     "build": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
-    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
+    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend",
+    "start:cluster": "pm2 start ecosystem.config.cjs",
+    "reload:cluster": "pm2 reload spandan-backend",
+    "stop:cluster": "pm2 delete ecosystem.config.cjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

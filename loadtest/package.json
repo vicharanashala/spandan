@@ -1,0 +1,17 @@
+{
+  "name": "spandan-loadtest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Load test harness for Spandan — simulates a 1000-student login + join + answer + leaderboard surge",
+  "scripts": {
+    "seed": "node seed.mjs",
+    "run": "node run.mjs"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -2,6 +2,53 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 const router = express.Router()
 
+// ---- Leaderboard: single aggregate + short-TTL cache ----
+// The old path ran one User.findById per participant (N+1), and the client refetches on every
+// answer, so a live 1000-student room produced ~N² queries. This computes the full ranked list in
+// a single aggregate (names resolved via $lookup) and caches it per room for a beat, so a burst of
+// concurrent refetches shares one computation. Per-user views (student top-10 / rank) are sliced
+// from this cached list by the route. Result is at most ~1.5s stale — fine for a live leaderboard.
+const leaderboardCache = new Map() // roomId(str) -> { at, data }
+const LEADERBOARD_TTL_MS = Number(process.env.LEADERBOARD_TTL_MS || 1500)
+
+async function computeRoomLeaderboard(roomIdStr) {
+  const cached = leaderboardCache.get(roomIdStr)
+  if (cached && Date.now() - cached.at < LEADERBOARD_TTL_MS) return cached.data
+
+  const mongoose = (await import('mongoose')).default
+  const Response = (await import('../models/Response.js')).default
+  const User = (await import('../models/User.js')).default
+  if (!mongoose.Types.ObjectId.isValid(roomIdStr)) return []
+
+  const rows = await Response.aggregate([
+    { $match: { roomId: new mongoose.Types.ObjectId(roomIdStr) } },
+    { $group: {
+      _id: '$studentId',
+      totalPoints: { $sum: '$points' },
+      correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+      totalAnswered: { $sum: 1 }
+    }},
+    { $sort: { totalPoints: -1 } },
+    { $lookup: { from: User.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
+    { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+    { $project: {
+      totalPoints: 1, correctCount: 1, totalAnswered: 1,
+      studentName: { $ifNull: ['$user.name', { $ifNull: ['$user.email', 'Unknown Student'] }] }
+    }}
+  ])
+
+  const data = rows.map((r, i) => ({
+    rank: i + 1,
+    studentId: r._id.toString(),
+    studentName: r.studentName,
+    totalPoints: r.totalPoints,
+    correctCount: r.correctCount,
+    totalAnswered: r.totalAnswered
+  }))
+  leaderboardCache.set(roomIdStr, { at: Date.now(), data })
+  return data
+}
+
 // Apply authentication to all routes
 router.use(authenticate)
 
@@ -495,30 +542,9 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
-    // Aggregate points per student
-    const leaderboardData = await Response.aggregate([
-      { $match: { roomId: toObjectId(roomId) } },
-      { $group: {
-        _id: '$studentId',
-        totalPoints: { $sum: '$points' },
-        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-        totalAnswered: { $sum: 1 }
-      }},
-      { $sort: { totalPoints: -1 } }
-    ])
-
-    // Resolve student names and build ranked response
-    const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
-      const user = await User.findById(entry._id).lean()
-      return {
-        rank: index + 1,
-        studentId: entry._id.toHexString(),
-        studentName: user?.name || user?.email || 'Unknown Student',
-        totalPoints: entry.totalPoints,
-        correctCount: entry.correctCount,
-        totalAnswered: entry.totalAnswered
-      }
-    }))
+    // Ranked list, computed once per room per ~1.5s (single aggregate + $lookup) and shared across
+    // the burst of concurrent refetches. Per-user slicing happens below.
+    const leaderboard = await computeRoomLeaderboard(String(roomId))
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
