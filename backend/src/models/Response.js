@@ -24,6 +24,10 @@ const responseSchema = new mongoose.Schema({
     type: [Number], // Array for MSQ - stores all selected option indices
     default: []
   },
+  textResponse: {
+    type: String, // For short answer / fill in the blanks
+    default: ''
+  },
   isCorrect: {
     type: Boolean,
     default: false

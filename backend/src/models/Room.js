@@ -39,6 +39,7 @@ const roomSchema = new mongoose.Schema({
     questionsPerSegment: { type: Number, default: 2 },
     difficulty: { type: String, default: 'medium' },
     questionProvider: { type: String, default: 'minimax' },
+    grokModel: { type: String, default: 'grok-4' },
     questionTypeMix: {
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },

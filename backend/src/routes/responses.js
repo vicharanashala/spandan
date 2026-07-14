@@ -98,6 +98,27 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+    // Auto-end poll when all students have answered
+    try {
+      const RoomMember = (await import('../models/RoomMember.js')).default
+      const Room = (await import('../models/Room.js')).default
+      const totalStudents = await RoomMember.countDocuments({ roomId })
+      const totalResponses = await Response.countDocuments({ questionId })
+
+      if (totalStudents > 0 && totalResponses >= totalStudents) {
+        const room = await Room.findById(roomId)
+        const ioInstance = req.app.get('io')
+        const { generateAndSavePollSummary } = await import('../services/pollSummaryService.js')
+
+        if (room && !question.pollSummary) {
+          console.log(`Auto-ending poll for question ${questionId} - all students answered`)
+          await generateAndSavePollSummary(questionId, ioInstance)
+        }
+      }
+    } catch (autoEndError) {
+      console.error('Auto-end poll failed (non-fatal):', autoEndError)
+    }
+
     res.status(201).json({
       success: true,
       response: {

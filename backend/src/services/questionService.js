@@ -4,6 +4,9 @@ import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
 import { config, AI_PROVIDERS } from '../config.js'
+import { generateWithGrok } from './grokService.js'
+import { generateWithGroq } from './groqService.js'
+import { aiService } from './aiService.js'
 
 // Re-export for convenience
 export { AI_PROVIDERS }
@@ -462,8 +465,11 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
+async function generateWithGoogle(prompt, model = 'gemini-2.0-flash', apiKey) {
+  const key = apiKey || config.googleApiKey
+  if (!key) throw new Error('Gemini API key not configured. Enter your API key in room settings or set GOOGLE_API_KEY in .env.')
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -486,17 +492,41 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   })
 
   if (!response.ok) {
-    const errorData = await response.text()
-    throw new Error(`Google API error: ${response.status} - ${errorData}`)
+    let errorMessage
+    try {
+      const errorData = await response.json()
+      errorMessage = errorData.error?.message || errorData.error || JSON.stringify(errorData)
+    } catch {
+      errorMessage = await response.text().catch(() => 'Unknown error')
+    }
+
+    if (response.status === 403 || response.status === 400) {
+      throw new Error('Invalid Gemini API key. Get a free key at https://aistudio.google.com/apikey.')
+    }
+    if (response.status === 429) {
+      throw new Error('Gemini API rate limit exceeded. Please wait a moment and try again.')
+    }
+
+    throw new Error(`Gemini API error (${response.status}): ${errorMessage}`)
   }
 
   const data = await response.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+
+  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+    throw new Error('Gemini API returned an empty response. Please try again.')
+  }
+
+  return data.candidates[0].content.parts[0].text || ''
 }
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const {
+    numQuestions = 2, difficulty = 'medium', provider = 'auto', questionTypeMix = null,
+    grokApiKey = null, grokModel = null,
+    geminiApiKey = null, geminiModel = null,
+    groqApiKey = null, groqModel = null
+  } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -508,8 +538,65 @@ export async function generateQuestions(transcript, cfg) {
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  // ─── Auto-detect provider with fallback ───────────────────────────────
+  if (provider === 'auto' || provider === 'minimax') {
+    const { selectProvider, generateWithFallback } = await import('./providerSelector.js')
+    const { generateQuestionsLocally } = await import('./localQuestionGenerator.js')
 
+    const selected = selectProvider()
+
+    if (selected.id === 'local') {
+      console.log(`[QuestionGen] No AI provider available — using local generator`)
+      return generateQuestionsLocally(transcript, numQuestions)
+    }
+
+    console.log(`[QuestionGen] Auto-selected: ${selected.name}`)
+
+    // Try each provider in priority order with automatic fallback
+    const result = await generateWithFallback(transcript, questionTypes, difficulty, async (providerId, apiKey, txt, types, diff) => {
+      switch (providerId) {
+        case 'google': {
+          const typeStr = types.includes('TF') && types.includes('MCQ') ? 'Mixed Questions (Multiple Choice, True/False)' : 
+                          types.includes('TF') ? 'True/False Questions' : 'Multiple Choice Questions';
+          const aiResult = await aiService.generateQuestionsFromNotes(txt, numQuestions, diff, cfg.bloomLevel || 'Understand', typeStr);
+          return aiResult.questions.map((q, index) => ({
+            id: `q_${Date.now()}_${index}`,
+            type: q.type === 'True/False Questions' ? 'TF' : (q.type || types[index] || 'MCQ'),
+            question: q.question || 'Question text missing',
+            options: q.options || [],
+            explanation: q.explanation || '',
+            segmentIndex: 0,
+            createdAt: new Date().toISOString()
+          }));
+        }
+        case 'grok': {
+          const txt2 = await generateWithGrok(prompt, apiKey, grokModel)
+          return parseQuestions(txt2, types)
+        }
+        case 'openrouter': {
+          // OpenRouter falls through to local for now (can be added later)
+          throw new Error('OpenRouter not yet implemented as inline provider')
+        }
+        case 'groq': {
+          const txt3 = await generateWithGroq(prompt, apiKey, groqModel)
+          return parseQuestions(txt3, types)
+        }
+        default:
+          throw new Error(`Unknown fallback provider: ${providerId}`)
+      }
+    })
+
+    if (result.questions) {
+      return result.questions
+    }
+
+    // All AI providers failed — use local generator
+    console.log(`[QuestionGen] All AI providers failed — falling back to local generator`)
+    return generateQuestionsLocally(transcript, numQuestions)
+  }
+
+  // ─── Legacy explicit provider (non-auto) ──────────────────────────────
+  console.log(`Generating ${numQuestions} questions with ${provider}...`)
   let responseText
 
   switch (provider) {
@@ -526,9 +613,31 @@ export async function generateQuestions(transcript, cfg) {
       responseText = await generateWithAnthropic(prompt)
       break
     case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
+      const typeStr = questionTypes.includes('TF') && questionTypes.includes('MCQ') ? 'Mixed Questions (Multiple Choice, True/False)' : 
+                      questionTypes.includes('TF') ? 'True/False Questions' : 'Multiple Choice Questions';
+      const aiResult = await aiService.generateQuestionsFromNotes(transcript, numQuestions, difficulty, cfg.bloomLevel || 'Understand', typeStr);
+      console.log(`Generated ${aiResult.questions.length} questions successfully via aiService`);
+      return aiResult.questions.map((q, index) => ({
+        id: `q_${Date.now()}_${index}`,
+        type: q.type === 'True/False Questions' ? 'TF' : (q.type || questionTypes[index] || 'MCQ'),
+        question: q.question || 'Question text missing',
+        options: q.options || [],
+        explanation: q.explanation || '',
+        segmentIndex: 0,
+        createdAt: new Date().toISOString()
+      }));
+    case 'grok': {
+      const key = grokApiKey || config.grokApiKey
+      if (!key) throw new Error('Grok API key not configured. Enter your API key in room settings.')
+      responseText = await generateWithGrok(prompt, key, grokModel)
       break
+    }
+    case 'groq': {
+      const key = groqApiKey || config.groqApiKey
+      if (!key) throw new Error('Groq API key not configured. Enter your API key in room settings.')
+      responseText = await generateWithGroq(prompt, key, groqModel)
+      break
+    }
     default:
       throw new Error(`Unknown provider: ${provider}`)
   }
@@ -537,4 +646,19 @@ export async function generateQuestions(transcript, cfg) {
   console.log(`Generated ${questions.length} questions successfully`)
 
   return questions
+}
+
+export default {
+  createQuestion,
+  getQuestionById,
+  getQuestionsByRoom,
+  updateQuestion,
+  deleteQuestion,
+  setActiveQuestion,
+  submitResponse,
+  getResponsesByQuestion,
+  getResponsesByRoom,
+  getQuestionResults,
+  generateQuestions,
+  AI_PROVIDERS
 }
