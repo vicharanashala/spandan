@@ -1,8 +1,15 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 
-function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false }) {
-  const [text, setText] = useState('')
+function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false, initialText = '' }) {
+  const [text, setText] = useState(initialText || '')
   const [mode, setMode] = useState('MIXED') // 'TF' or 'MIXED'
+  const [bloomLevel, setBloomLevel] = useState('Understand')
+
+  useEffect(() => {
+    if (isOpen && initialText) {
+      setText(initialText)
+    }
+  }, [isOpen, initialText])
 
   if (!isOpen) return null
 
@@ -12,8 +19,8 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
       return
     }
 
-    // Just call onGenerate - parent handles loading state via isGenerating prop
-    await onGenerate(text.trim(), mode)
+    // Call onGenerate with bloomLevel included
+    await onGenerate(text.trim(), mode, bloomLevel)
   }
 
   const getTypeMixDisplay = () => {
@@ -178,6 +185,40 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
               📋 Mixed (MCQ + TF + MSQ)
             </button>
           </div>
+        </div>
+
+        {/* Bloom's Taxonomy Selector */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            fontSize: '13px',
+            fontWeight: '500',
+            color: 'var(--text-primary)',
+            display: 'block',
+            marginBottom: '8px'
+          }}>
+            Bloom's Taxonomy Level:
+          </label>
+          <select
+            value={bloomLevel}
+            onChange={(e) => setBloomLevel(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '10px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="Remember">Remember (Recall facts)</option>
+            <option value="Understand">Understand (Explain ideas)</option>
+            <option value="Apply">Apply (Use information)</option>
+            <option value="Analyze">Analyze (Draw connections)</option>
+            <option value="Evaluate">Evaluate (Justify a stand)</option>
+            <option value="Create">Create (Produce new work)</option>
+          </select>
         </div>
 
         {/* Room Settings Display */}

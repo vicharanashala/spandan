@@ -10,8 +10,15 @@ import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
+import UploadContentPopup from '../components/UploadContentPopup'
+import TeacherInsights from '../components/TeacherInsights'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import AISummaryCard from '../components/AISummaryCard'
+import QuestionReportNotification from '../components/QuestionReportNotification'
+import QuestionReportReviewModal from '../components/QuestionReportReviewModal'
+import QuestionReportsPanel from '../components/QuestionReportsPanel'
+import { getGrokApiKey, getGeminiApiKey, getGroqApiKey } from '../services/questionService'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -74,7 +81,10 @@ function RoomDetailPage() {
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
+  const [generatingProgress, setGeneratingProgress] = useState(0)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [showUploadPopup, setShowUploadPopup] = useState(false)
+  const [uploadedContent, setUploadedContent] = useState('')
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
@@ -96,6 +106,18 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [currentPollQuestionId, setCurrentPollQuestionId] = useState(null)
+  const [pollSummary, setPollSummary] = useState(null)
+  const [summaryQuestionText, setSummaryQuestionText] = useState('')
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
+  const pollEndedRef = useRef(new Set())
+
+  // Question report state
+  const [reportNotification, setReportNotification] = useState(null)
+  const [reviewReport, setReviewReport] = useState(null)
+  const [reviewQuestion, setReviewQuestion] = useState(null)
+  const [pendingReportCount, setPendingReportCount] = useState(0)
+  const [reportsRefresh, setReportsRefresh] = useState(0)
 
   useEffect(() => {
     if (token) {
@@ -162,34 +184,38 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const handleQuestionLaunched = (data) => {
+      const question = data?.question || data
+      if (!question?._id) return
+      console.log('[QUESTION LAUNCHED]', question._id)
+      pollEndedRef.current.delete(question._id)
+      setCurrentPollQuestionId(question._id)
+      setPollSummary(null)
+      setSummaryQuestionText(question.question || '')
+      setActiveQuestion(question)
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+      setQuestionTimeLeft(timeToAnswer)
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+            if (!pollEndedRef.current.has(question._id)) {
+              pollEndedRef.current.add(question._id)
+              handleEndPollRef.current?.(question._id)
+            }
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
-
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -199,6 +225,88 @@ function RoomDetailPage() {
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
+
+  const handleEndPollRef = useRef(null)
+
+  const handleEndPoll = useCallback(async (questionId) => {
+    if (!questionId || !token) return
+    if (pollEndedRef.current.has(`loading-${questionId}`)) return
+    pollEndedRef.current.add(`loading-${questionId}`)
+
+    setIsGeneratingSummary(true)
+    try {
+      const response = await fetch(`${API_URL}/questions/${questionId}/end-poll`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await response.json()
+      if (data.success) {
+        setPollSummary(data)
+        setCurrentPollQuestionId(questionId)
+        setActiveQuestion(null)
+        if (questionTimerRef.current) {
+          clearInterval(questionTimerRef.current)
+          questionTimerRef.current = null
+        }
+      } else {
+        console.error('End poll failed:', data.error)
+      }
+    } catch (err) {
+      console.error('End poll error:', err)
+    } finally {
+      setIsGeneratingSummary(false)
+      pollEndedRef.current.delete(`loading-${questionId}`)
+    }
+  }, [token])
+
+  handleEndPollRef.current = handleEndPoll
+
+  // Listen for poll_summary socket events
+  useEffect(() => {
+    if (!socket) return
+
+    const handlePollSummary = (data) => {
+      console.log('[POLL SUMMARY]', data)
+      if (data?.success) {
+        setPollSummary(data)
+        setIsGeneratingSummary(false)
+        const q = generatedQuestions.find(gq => gq._id === data.questionId)
+        if (q) setSummaryQuestionText(q.question)
+      }
+    }
+
+    socket.on('poll_summary', handlePollSummary)
+    return () => socket.off('poll_summary', handlePollSummary)
+  }, [socket, generatedQuestions])
+
+  // Auto-end when all students have answered
+  useEffect(() => {
+    if (!currentPollQuestionId || !totalParticipants || pollSummary || isGeneratingSummary) return
+    const count = answerCounts[currentPollQuestionId] || 0
+    if (count >= totalParticipants && totalParticipants > 0 && !pollEndedRef.current.has(currentPollQuestionId)) {
+      pollEndedRef.current.add(currentPollQuestionId)
+      handleEndPoll(currentPollQuestionId)
+    }
+  }, [answerCounts, currentPollQuestionId, totalParticipants, pollSummary, isGeneratingSummary, handleEndPoll])
+
+  // Question report notifications
+  useEffect(() => {
+    if (!socket) return
+
+    const handleQuestionReported = (data) => {
+      setReportNotification(data)
+      setPendingReportCount(prev => prev + 1)
+      setReportsRefresh(prev => prev + 1)
+      try {
+        const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGWi77+efTRAMUKfj8LZjHAY4kdfyzHksBSR3x/DdkEAKFF606euoVRQKRp/g8r5sIQUrgc7y2Yk2CBlou+/nn00QDFCn4/C2YxwGOJHX8sx5LAUkd8fw3ZBAC')
+        audio.volume = 0.3
+        audio.play().catch(() => {})
+      } catch (_) { /* optional sound */ }
+    }
+
+    socket.on('question_reported', handleQuestionReported)
+    return () => socket.off('question_reported', handleQuestionReported)
+  }, [socket])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -426,9 +534,66 @@ function RoomDetailPage() {
     })
   }
 
+  const buildGenerationConfig = (overrides = {}) => {
+    const provider = roomSettings.questionProvider || 'minimax'
+    const config = {
+      numQuestions: roomSettings.questionsPerSegment,
+      difficulty: roomSettings.difficulty,
+      provider,
+      ...overrides
+    }
+    if (provider === 'grok') {
+      config.grokApiKey = getGrokApiKey() || undefined
+      config.grokModel = localStorage.getItem('grok_model') || 'grok-4'
+    } else if (provider === 'google') {
+      config.geminiApiKey = getGeminiApiKey() || undefined
+      config.geminiModel = localStorage.getItem('gemini_model') || 'gemini-2.0-flash'
+    } else if (provider === 'groq') {
+      config.groqApiKey = getGroqApiKey() || undefined
+      config.groqModel = localStorage.getItem('groq_model') || 'llama-3.3-70b-versatile'
+    }
+    return config
+  }
+
+  const handleUploadContentExtracted = (text) => {
+    setUploadedContent(text)
+    setShowUploadPopup(false)
+    setShowTextToQuestions(true)
+  }
+
+  const handleReviewReport = async (notification) => {
+    setReportNotification(null)
+    try {
+      const response = await fetch(`${API_URL}/questions?roomId=${room._id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await response.json()
+      const question = data.questions?.find(q => q._id === notification.questionId)
+      setReviewReport(notification)
+      setReviewQuestion(question || { _id: notification.questionId, question: notification.questionText, options: [] })
+    } catch (err) {
+      console.error('Failed to load question for review:', err)
+      setReviewReport(notification)
+      setReviewQuestion({ _id: notification.questionId, question: notification.questionText, options: [] })
+    }
+  }
+
+  const handleReportResolved = () => {
+    setReviewReport(null)
+    setReviewQuestion(null)
+    setPendingReportCount(prev => Math.max(0, prev - 1))
+    setReportsRefresh(prev => prev + 1)
+  }
+
   // Handle question generation from pasted text (TextToQuestionsPopup)
-  const handleTextToQuestionsGenerate = async (text, mode) => {
+  const handleTextToQuestionsGenerate = async (text, mode, bloomLevel) => {
+    if (!text || text.trim() === '') {
+      window.alert('No readable text was extracted from the uploaded document.')
+      return
+    }
+
     setShowTextToQuestions(false) // Close the text popup
+    setUploadedContent('')
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
 
@@ -436,6 +601,11 @@ function RoomDetailPage() {
       const typeMix = mode === 'TF'
         ? { MCQ: 0, TF: 100, MSQ: 0 }
         : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
+
+      const config = buildGenerationConfig({ 
+        questionTypeMix: typeMix,
+        bloomLevel: bloomLevel || 'Understand'
+      })
 
       const response = await fetch(`${API_URL}/questions/generate`, {
         method: 'POST',
@@ -445,12 +615,7 @@ function RoomDetailPage() {
         },
         body: JSON.stringify({
           transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: typeMix
-          }
+          config
         })
       })
 
@@ -468,13 +633,16 @@ function RoomDetailPage() {
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
       } else {
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        window.alert(`Generation failed: ${data.error || 'Gemini API returned an error.'}`)
       }
     } catch (error) {
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      const errorMsg = error.message.includes('Failed to fetch') 
+        ? 'Network request failed. Please check your connection.'
+        : `Generation failed: ${error.message || 'An unexpected error occurred.'}`
+      window.alert(errorMsg)
     }
   }
 
@@ -510,6 +678,12 @@ function RoomDetailPage() {
         const data = await response.json()
         if (data.questions) {
           setGeneratedQuestions(data.questions)
+          const withSummary = data.questions.find(q => q.pollSummary?.success)
+          if (withSummary && !pollSummary) {
+            setPollSummary(withSummary.pollSummary)
+            setSummaryQuestionText(withSummary.question)
+            setCurrentPollQuestionId(withSummary._id)
+          }
         }
       }
       // Also load answer counts
@@ -670,6 +844,12 @@ function RoomDetailPage() {
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
+    // Ensure previous stream is closed to prevent duplicated audio streams and permission locks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+
     try {
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -823,6 +1003,11 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        pollEndedRef.current.delete(data.question._id)
+        setCurrentPollQuestionId(data.question._id)
+        setPollSummary(null)
+        setSummaryQuestionText(data.question.question || '')
+        setActiveQuestion(data.question)
 
         // Emit to students via socket
         if (socket && isConnected) {
@@ -866,6 +1051,11 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        pollEndedRef.current.delete(data.question._id)
+        setCurrentPollQuestionId(data.question._id)
+        setPollSummary(null)
+        setSummaryQuestionText(data.question.question || '')
+        setActiveQuestion(data.question)
 
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -910,6 +1100,11 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+        pollEndedRef.current.delete(data.question._id)
+        setCurrentPollQuestionId(data.question._id)
+        setPollSummary(null)
+        setSummaryQuestionText(data.question.question || '')
+        setActiveQuestion(data.question)
 
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
@@ -1126,10 +1321,32 @@ function RoomDetailPage() {
               </div>
             )}
 
+            {/* Upload & Generate Button */}
+            {!isEnded && (
+              <button
+                onClick={() => setShowUploadPopup(true)}
+                style={{
+                  padding: '8px 16px',
+                  background: '#8b5cf6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                📎 Upload & Generate
+              </button>
+            )}
+
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
-                onClick={() => setShowTextToQuestions(true)}
+                onClick={() => { setUploadedContent(''); setShowTextToQuestions(true) }}
                 style={{
                   padding: '8px 16px',
                   background: '#10b981',
@@ -1231,6 +1448,36 @@ function RoomDetailPage() {
               </button>
             )}
           </div>
+
+          {/* AI Poll Summary */}
+          {(pollSummary || isGeneratingSummary) && (
+            <AISummaryCard
+              summary={pollSummary}
+              isLoading={isGeneratingSummary}
+              questionText={summaryQuestionText}
+            />
+          )}
+
+          {/* End Poll button when question is active */}
+          {currentPollQuestionId && activeQuestion && !pollSummary && !isGeneratingSummary && (
+            <div style={{ marginBottom: '16px', textAlign: 'right' }}>
+              <button
+                onClick={() => handleEndPoll(currentPollQuestionId)}
+                style={{
+                  padding: '10px 20px',
+                  background: '#f59e0b',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                ⏹ End Poll & Generate Summary
+              </button>
+            </div>
+          )}
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
@@ -1591,9 +1838,55 @@ function RoomDetailPage() {
               </div>
               <Leaderboard roomId={room?._id} token={token} socket={socket} />
             </div>
+            {/* Teacher Insights Panel */}
+            <div style={{ flex: '1 1 100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', marginTop: '0' }}>
+              <TeacherInsights roomId={room?._id} />
+            </div>
+
+            {/* Question Reports Panel */}
+            <div style={{ flex: '1 1 100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', marginTop: '0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>🚩</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Question Reports
+                </span>
+                {pendingReportCount > 0 && (
+                  <span style={{
+                    padding: '2px 8px',
+                    background: '#ef4444',
+                    color: 'white',
+                    borderRadius: '10px',
+                    fontSize: '11px',
+                    fontWeight: '700'
+                  }}>
+                    {pendingReportCount}
+                  </span>
+                )}
+              </div>
+              <QuestionReportsPanel roomId={room?._id} refreshTrigger={reportsRefresh} />
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Question Report Notification */}
+      <QuestionReportNotification
+        notification={reportNotification}
+        onReview={handleReviewReport}
+        onDismiss={() => setReportNotification(null)}
+      />
+
+      {/* Question Report Review Modal */}
+      {reviewReport && reviewQuestion && (
+        <QuestionReportReviewModal
+          report={reviewReport}
+          question={reviewQuestion}
+          roomCode={room?.code}
+          socket={socket}
+          onClose={() => { setReviewReport(null); setReviewQuestion(null) }}
+          onResolved={handleReportResolved}
+        />
+      )}
 
       {/* Question Approval Popup */}
       {showQuestionPopup && pendingQuestions.length > 0 && (
@@ -1649,14 +1942,24 @@ function RoomDetailPage() {
         />
       )}
 
+      {/* Upload Content Popup */}
+      {showUploadPopup && (
+        <UploadContentPopup
+          isOpen={showUploadPopup}
+          onClose={() => setShowUploadPopup(false)}
+          onContentExtracted={handleUploadContentExtracted}
+        />
+      )}
+
       {/* Text to Questions Popup */}
       {showTextToQuestions && (
         <TextToQuestionsPopup
           isOpen={showTextToQuestions}
-          onClose={() => setShowTextToQuestions(false)}
+          onClose={() => { setShowTextToQuestions(false); setUploadedContent('') }}
           onGenerate={handleTextToQuestionsGenerate}
           roomSettings={roomSettings}
           isGenerating={isGeneratingFromText}
+          initialText={uploadedContent}
         />
       )}
 

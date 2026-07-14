@@ -8,7 +8,7 @@ const questionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['MCQ', 'TF', 'MSQ'],
+    enum: ['MCQ', 'TF', 'MSQ', 'FILL_IN_BLANKS', 'ONE_WORD', 'SHORT_ANSWER', 'POLL'],
     required: true
   },
   question: {
@@ -22,6 +22,14 @@ const questionSchema = new mongoose.Schema({
   explanation: {
     type: String,
     default: ''
+  },
+  bloomLevel: {
+    type: String,
+    default: 'Understand'
+  },
+  aiGenerated: {
+    type: Boolean,
+    default: false
   },
   segmentIndex: {
     type: Number,
@@ -39,6 +47,10 @@ const questionSchema = new mongoose.Schema({
   points: {
     type: Number,
     default: 10
+  },
+  pollSummary: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

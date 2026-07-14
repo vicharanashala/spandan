@@ -9,8 +9,14 @@ const router = express.Router()
 router.use(authenticate)
 
 // Get available AI providers - accessible by authenticated users
-router.get('/providers', (req, res) => {
-  const providers = Object.entries(AI_PROVIDERS).map(([key, value]) => ({
+router.get('/providers', async (req, res) => {
+  const { detectAvailableProviders, selectProvider } = await import('../services/providerSelector.js')
+  
+  const available = detectAvailableProviders()
+  const active = selectProvider()
+  
+  // Legacy AI_PROVIDERS for backward compat
+  const legacyProviders = Object.entries(AI_PROVIDERS).map(([key, value]) => ({
     id: key,
     name: value.name,
     icon: value.icon,
@@ -19,20 +25,30 @@ router.get('/providers', (req, res) => {
   
   res.json({
     success: true,
-    providers
+    providers: legacyProviders,
+    availableProviders: available,
+    activeProvider: active,
+    usingLocal: active.id === 'local'
   })
 })
 
 // POST /api/questions/generate - Generate questions from transcript
 // Authorization: teacher only
+// Uses automatic provider detection with fallback by default
 router.post('/generate', authorize('teacher'), async (req, res) => {
   try {
     const { transcript, config } = req.body
     const { 
       numQuestions = 2, 
       difficulty = 'medium',
-      provider = 'minimax',
-      questionTypeMix = null
+      provider = 'auto',
+      questionTypeMix = null,
+      grokApiKey = null,
+      grokModel = null,
+      geminiApiKey = null,
+      geminiModel = null,
+      groqApiKey = null,
+      groqModel = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -42,26 +58,44 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       })
     }
 
-    console.log(`Generating ${numQuestions} questions with ${provider}...`)
+    console.log(`Generating ${numQuestions} questions with provider="${provider}"...`)
+
+    const { selectProvider, getSelectedProvider } = await import('../services/providerSelector.js')
+
+    // Detect active provider (for logging/response)
+    let activeProvider
+    try {
+      activeProvider = selectProvider()
+    } catch {
+      activeProvider = { id: 'local', name: 'Local Question Generator', icon: '🖥️' }
+    }
 
     const questions = await generateQuestions(transcript, {
       numQuestions,
       difficulty,
-      provider,
-      questionTypeMix
+      provider: provider === 'auto' ? 'auto' : provider,
+      questionTypeMix,
+      grokApiKey,
+      grokModel,
+      geminiApiKey,
+      geminiModel,
+      groqApiKey,
+      groqModel
     })
 
-    console.log(`Generated ${questions.length} questions successfully`)
+    console.log(`Generated ${questions.length} questions successfully using ${activeProvider?.name || provider}`)
 
     res.json({
       success: true,
-      questions
+      questions,
+      provider: activeProvider
     })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to generate questions'
+      error: error.message || 'Failed to generate questions',
+      provider: null
     })
   }
 })
@@ -153,6 +187,49 @@ router.get('/', async (req, res) => {
       success: false,
       error: 'Failed to fetch questions'
     })
+  }
+})
+
+// POST /api/questions/:questionId/end-poll - End a poll, calculate stats and generate AI summary
+router.post('/:questionId/end-poll', authorize('teacher'), async (req, res) => {
+  try {
+    const { questionId } = req.params
+    const { generateAndSavePollSummary } = await import('../services/pollSummaryService.js')
+    const ioInstance = req.app.get('io')
+
+    const pollSummary = await generateAndSavePollSummary(questionId, ioInstance)
+
+    // Also trigger misconception analysis + revision sheet generation (async, non-blocking)
+    try {
+      const { analyzeMisconceptions } = await import('../services/misconceptionService.js')
+      const { generateRevisionSheet } = await import('../services/revisionService.js')
+      const Question = (await import('../models/Question.js')).default
+      const Response = (await import('../models/Response.js')).default
+
+      const question = await Question.findById(questionId)
+      if (question) {
+        const responses = await Response.find({ questionId })
+        const analysis = await analyzeMisconceptions(question, responses, question.roomId)
+        const revisionSheet = await generateRevisionSheet(question.roomId, question, responses)
+
+        if (ioInstance) {
+          ioInstance.to(question.roomId.toString()).emit('misconception_updated', {
+            analysis: analysis?.toObject?.() || analysis,
+            questionId
+          })
+          if (revisionSheet) {
+            ioInstance.to(question.roomId.toString()).emit('revision_sheet_generated', { sheet: revisionSheet?.toObject?.() || revisionSheet })
+          }
+        }
+      }
+    } catch (postError) {
+      console.error('Post-poll analysis error (non-blocking):', postError.message)
+    }
+
+    res.json(pollSummary)
+  } catch (error) {
+    console.error('Error ending poll:', error)
+    res.status(500).json({ success: false, error: error.message || 'Failed to end poll and generate summary' })
   }
 })
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
@@ -7,6 +8,8 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import ReportQuestionModal from '../components/ReportQuestionModal'
+import RevisionSheet from '../components/RevisionSheet'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -28,6 +31,13 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
+  const currentQuestionRef = useRef(null)
+  const [showReportModal, setShowReportModal] = useState(false)
+  const [reportQuestion, setReportQuestion] = useState(null)
+  // Track which questions this student has reported (questionId -> true)
+  const [reportedQuestions, setReportedQuestions] = useState({})
+  // Track report rejection notifications
+  const [reportNotification, setReportNotification] = useState(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -47,6 +57,7 @@ function StudentRoomPage() {
 
     const handleQuestionStarted = (data) => {
       setCurrentQuestion(data)
+      currentQuestionRef.current = data
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
@@ -91,6 +102,7 @@ function StudentRoomPage() {
       }
       setResults(data?.results || null)
       setCurrentQuestion(null)
+      currentQuestionRef.current = null
     }
 
     const handleNewQuestion = (question) => {
@@ -102,6 +114,7 @@ function StudentRoomPage() {
       }
       
       setCurrentQuestion(question)
+      currentQuestionRef.current = question
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
@@ -123,9 +136,26 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    const handleQuestionCorrected = (data) => {
+      // Teacher corrected the question - reload if it's the current one
+      const cur = currentQuestionRef.current
+      if (cur && (cur._id === data.questionId || cur.question?._id === data.questionId)) {
+        setCurrentQuestion(data.question)
+        currentQuestionRef.current = data.question
+      }
+      fetchPastResponses(room?._id, user?._id)
+    }
+
+    const handleReportRejected = (data) => {
+      setReportNotification(data)
+      setTimeout(() => setReportNotification(null), 5000)
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('question_corrected', handleQuestionCorrected)
+    socket.on('report_rejected', handleReportRejected)
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
@@ -134,6 +164,8 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('question_corrected', handleQuestionCorrected)
+      socket.off('report_rejected', handleReportRejected)
       socket.off('room:ended')
     }
   }, [socket, navigate, room?._id])
@@ -418,14 +450,21 @@ function StudentRoomPage() {
           </div>
 
           {/* Live Question */}
-          {currentQuestion ? (
-            <div style={{
-              background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-              borderRadius: '16px',
-              padding: '32px',
-              color: 'white',
-              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
-            }}>
+          <AnimatePresence mode="wait">
+            {currentQuestion ? (
+              <motion.div 
+                key="live-question"
+                initial={{ opacity: 0, y: 50, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9, y: -50 }}
+                transition={{ duration: 0.5, type: 'spring' }}
+                style={{
+                  background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+                  borderRadius: '16px',
+                  padding: '32px',
+                  color: 'white',
+                  boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
+                }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -562,10 +601,40 @@ function StudentRoomPage() {
                   Submit Answer
                 </button>
               )}
-            </div>
-          ) : (
-            /* Waiting State - Show Passed Questions */
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+              {/* Report Question Button - Always visible on live question */}
+              <div style={{ textAlign: 'right', marginTop: '12px' }}>
+                <button
+                  onClick={() => { setReportQuestion(currentQuestion); setShowReportModal(true) }}
+                  disabled={!!reportedQuestions[currentQuestion._id || currentQuestion.question?._id]}
+                  style={{
+                    padding: '8px 16px',
+                    background: reportedQuestions[currentQuestion._id || currentQuestion.question?._id]
+                      ? 'rgba(16,185,129,0.2)' : 'rgba(255,255,255,0.15)',
+                    color: 'white',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    cursor: reportedQuestions[currentQuestion._id || currentQuestion.question?._id] ? 'default' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    opacity: reportedQuestions[currentQuestion._id || currentQuestion.question?._id] ? 0.7 : 1
+                  }}
+                >
+                  {reportedQuestions[currentQuestion._id || currentQuestion.question?._id] ? '✔ Report Submitted' : '🚩 Report Question'}
+                </button>
+              </div>
+              </motion.div>
+            ) : (
+              /* Waiting State - Show Passed Questions */
+              <motion.div 
+                key="waiting-state"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {/* Active question area placeholder */}
               <div style={{
                 background: 'var(--bg-card)',
@@ -752,6 +821,30 @@ function StudentRoomPage() {
                             ⚠️ You did not answer this question
                           </p>
                         )}
+
+                        {/* Report Question Button for Past Questions */}
+                        <div style={{ textAlign: 'right', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                          <button
+                            onClick={() => { setReportQuestion(q); setShowReportModal(true) }}
+                            disabled={!!reportedQuestions[q._id]}
+                            style={{
+                              padding: '6px 14px',
+                              background: reportedQuestions[q._id]
+                                ? 'rgba(16,185,129,0.15)' : 'transparent',
+                              color: reportedQuestions[q._id] ? '#10b981' : 'var(--text-secondary)',
+                              border: `1px solid ${reportedQuestions[q._id] ? '#10b981' : 'var(--border-color)'}`,
+                              borderRadius: '8px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              cursor: reportedQuestions[q._id] ? 'default' : 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            {reportedQuestions[q._id] ? '✔ Report Submitted' : '🚩 Report Question'}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -765,10 +858,43 @@ function StudentRoomPage() {
                   <Leaderboard roomId={room?._id} token={token} socket={socket} />
                 </div>
               </div>
+              </motion.div>
+            )}
+
+            {/* Student Revision Sheets */}
+            <div style={{ width: '100%', boxSizing: 'border-box', marginTop: '12px' }}>
+              <RevisionSheet roomId={room?._id} />
             </div>
-          )}
+          </AnimatePresence>
         </div>
       </div>
+
+      {/* Report Question Modal */}
+      <ReportQuestionModal
+        isOpen={showReportModal}
+        onClose={() => { setShowReportModal(false); setReportQuestion(null) }}
+        question={reportQuestion}
+        roomId={room?._id}
+        onSubmitted={(questionId) => {
+          setReportedQuestions(prev => ({ ...prev, [questionId]: true }))
+        }}
+      />
+
+      {/* Report Rejected Notification */}
+      {reportNotification && (
+        <div style={{
+          position: 'fixed', bottom: '24px', right: '24px',
+          background: 'var(--bg-card)', borderRadius: '12px',
+          padding: '16px 20px', zIndex: 5000,
+          border: '1px solid var(--border-color)',
+          boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
+          maxWidth: '400px'
+        }}>
+          <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-primary)' }}>
+            {reportNotification.message}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
