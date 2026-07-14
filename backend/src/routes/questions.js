@@ -1,7 +1,7 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
-import { sanitizeObject } from '../utils/sanitize.js'
+import { stripObject } from '../utils/sanitize.js'
 
 const router = express.Router()
 
@@ -86,8 +86,11 @@ router.post('/', authorize('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
-    // Sanitize user input to prevent XSS
-    const sanitizedData = sanitizeObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
+    // The frontend renders these as React text nodes, which auto-escape at
+    // render time, so entity-encoding here is unnecessary and would show
+    // literally (e.g. &quot;) on the student side.
+    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
 
     const newQuestion = new Question(sanitizedData)
 

@@ -92,6 +92,7 @@ function RoomDetailPage() {
     questionsPerSegment: 2,
     difficulty: 'medium',
     questionProvider: 'minimax',
+    questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
     points: 100
   })
@@ -409,7 +410,8 @@ function RoomDetailPage() {
           config: {
             numQuestions: roomSettings.questionsPerSegment,
             difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
+            provider: roomSettings.questionProvider || 'minimax',
+            questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
           }
         })
       })
@@ -445,7 +447,7 @@ function RoomDetailPage() {
     try {
       const typeMix = mode === 'TF'
         ? { MCQ: 0, TF: 100, MSQ: 0 }
-        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
+        : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
 
       const response = await fetch(`${API_URL}/questions/generate`, {
         method: 'POST',
