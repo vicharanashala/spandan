@@ -13,7 +13,7 @@ function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom, forceDisconnect } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   
   const [room, setRoom] = useState(null)
@@ -421,25 +421,6 @@ function StudentRoomPage() {
             >
               Leave
             </button>
-            {/* TODO: Must remove in porduction. */}
-            <button
-              onClick={forceDisconnect}
-              disabled={!isConnected}
-              style={{
-                padding: '8px 16px',
-                background: !isConnected ? 'var(--border-color)' : '#ef4444',
-                color: !isConnected ? 'var(--text-secondary)' : 'white',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: '600',
-                cursor: !isConnected ? 'not-allowed' : 'pointer',
-                opacity: !isConnected ? 0.6 : 1
-              }}
-            >
-              Disconnect
-            </button>
-            
           </div>
 
           {/* Live Question */}
