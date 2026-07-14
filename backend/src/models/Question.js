@@ -36,6 +36,10 @@ const questionSchema = new mongoose.Schema({
     type: Number,
     default: 30
   },
+  launchedAt: {
+    type: Date,
+    default: null
+  },
   points: {
     type: Number,
     default: 10

@@ -427,34 +427,53 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 
     console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
 
-    // Merge questions with response data
-    const questionsWithResponses = questions.map(q => {
-      const qIdStr = toIdString(q._id)
-      const studentResponse = responseMap[qIdStr]
-      
-      if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
-      }
-      
-      return {
-        _id: qIdStr,
-        question: q.question,
-        type: q.type,
-        options: q.options,
-        segmentIndex: q.segmentIndex,
-        maxPoints: q.points,
-        timeToAnswer: q.timeToAnswer,
-        answered: !!studentResponse,
-        ...(studentResponse && {
-          selectedOption: studentResponse.selectedOption,
-          selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
-          isCorrect: studentResponse.isCorrect,
-          responseTime: studentResponse.responseTime,
-          pointsEarned: studentResponse.points
-        }),
-        createdAt: q.createdAt
-      }
+    // DIAGNOSTIC LOG — shows real DB values for each question before liveness filter
+    questions.forEach(q => {
+      const deadline = q.launchedAt
+        ? new Date(q.launchedAt).getTime() + (q.timeToAnswer || 30) * 1000
+        : null
+      console.log(`[DIAG] qId=${q._id} status=${q.status} launchedAt=${q.launchedAt || 'NULL'} timeToAnswer=${q.timeToAnswer} deadline=${deadline ? new Date(deadline).toISOString() : 'N/A'} now=${new Date().toISOString()} isLive=${deadline ? deadline > Date.now() : false}`)
     })
+
+    // Build the response: exclude any question whose answer window is still open.
+    // A question is "still live" when: launchedAt exists AND (launchedAt + timeToAnswer*1000) > now.
+    // Questions without launchedAt are legacy records — treat as expired so they remain visible.
+    const nowMs = Date.now()
+    const questionsWithResponses = questions
+      .filter(q => {
+        if (!q.launchedAt) return true // legacy record: no launch timestamp → treat as past
+        const deadlineMs = new Date(q.launchedAt).getTime() + (q.timeToAnswer || 30) * 1000
+        const isStillLive = deadlineMs > nowMs
+        console.log(`[liveness] qId=${q._id} deadlineMs=${deadlineMs} nowMs=${nowMs} isStillLive=${isStillLive} → ${isStillLive ? 'EXCLUDED' : 'included'}`)
+        return !isStillLive // only include questions whose timer has EXPIRED
+      })
+      .map(q => {
+        const qIdStr = toIdString(q._id)
+        const studentResponse = responseMap[qIdStr]
+
+        if (studentResponse) {
+          console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
+        }
+
+        return {
+          _id: qIdStr,
+          question: q.question,
+          type: q.type,
+          options: q.options,
+          segmentIndex: q.segmentIndex,
+          maxPoints: q.points,
+          timeToAnswer: q.timeToAnswer,
+          answered: !!studentResponse,
+          ...(studentResponse && {
+            selectedOption: studentResponse.selectedOption,
+            selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
+            isCorrect: studentResponse.isCorrect,
+            responseTime: studentResponse.responseTime,
+            pointsEarned: studentResponse.points
+          }),
+          createdAt: q.createdAt
+        }
+      })
 
     res.json({
       success: true,
