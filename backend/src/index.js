@@ -35,14 +35,19 @@ app.use(express.urlencoded({ extended: true }))
 
 // Rate limiting
 const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 100,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  // Note: hundreds of students at a live event usually share ONE public IP (venue/campus NAT),
+  // so this per-IP limit is effectively shared across the whole room. Sized for that.
+  max: 50000, // limit each IP to 50000 requests per windowMs (shared across a NATed classroom)
   message: { error: 'Too many requests, please try again later' }
 })
 const authLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20,
-  message: { error: 'Too many auth attempts, please try again later' }
+  windowMs: 60 * 60 * 1000, // 1 hour
+  // Only count FAILED auth attempts: 700 students behind one NAT share this bucket, so counting
+  // successful logins would trip a 429 mid-event (seen at ~250 logins). Failures still throttle brute-force.
+  skipSuccessfulRequests: true,
+  max: 5000, // limit each IP to 5000 FAILED auth attempts per hour (brute-force backstop)
+  message: { error: 'Too many authentication attempts, please try again later' }
 })
 const responseLimiter = rateLimit({
   windowMs: 60 * 1000,

@@ -396,13 +396,15 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               <div key={type} style={{ flex: 1 }}>
                 <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>{type}</p>
                 <input
-                  type="number" min="0" max="100"
-                  value={localSettings.questionDistribution?.[type] || 
-                    (type === 'MCQ' ? 50 : type === 'TF' ? 30 : 20)}
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={localSettings.questionTypeMix?.[type] ??
+                    (type === 'MCQ' ? 0 : type === 'TF' ? 100 : 0)}
                   onChange={(e) => setLocalSettings(prev => ({
                     ...prev,
-                    questionDistribution: {
-                      ...prev.questionDistribution,
+                    questionTypeMix: {
+                      ...(prev.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }),
                       [type]: parseInt(e.target.value) || 0
                     }
                   }))}
