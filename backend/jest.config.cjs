@@ -9,5 +9,11 @@ module.exports = {
     '!src/index.js'
   ],
   coverageDirectory: 'coverage',
-  verbose: true
+  verbose: true,
+  // Allow extra time for mongod to start on Windows (Defender scans new binary on first launch)
+  globals: {
+    'mongoMS': {
+      startupTimeout: 60000
+    }
+  }
 };

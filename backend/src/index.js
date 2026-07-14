@@ -15,6 +15,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import teamRoutes from './routes/teams.js'
 
 // Import models for reference
 import './models/index.js'
@@ -121,6 +122,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/teams', teamRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -318,18 +320,32 @@ app.use((req, res) => {
 
 // MongoDB connection
 const connectDB = async () => {
+  // Try the configured URI first
+  const mongoUri = process.env.MONGODB_URI
+
+  if (mongoUri) {
+    try {
+      await mongoose.connect(mongoUri, {
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000
+      })
+      console.log('MongoDB connected successfully')
+      return
+    } catch (error) {
+      console.error('MongoDB connection error:', error.message)
+    }
+  }
+
+  // No URI set (or connection failed) — start in-memory MongoDB for development
   try {
-    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
-    await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000
-    })
-    
-    console.log('MongoDB connected successfully')
-  } catch (error) {
-    console.error('MongoDB connection error:', error.message)
-    console.log('Server will continue without database connection')
+    const { MongoMemoryServer } = await import('mongodb-memory-server')
+    const mongod = await MongoMemoryServer.create()
+    const uri = mongod.getUri()
+    await mongoose.connect(uri)
+    console.log('⚠️  Using in-memory MongoDB (data resets on restart). Set MONGODB_URI in .env for persistence.')
+  } catch (memErr) {
+    console.error('Failed to start in-memory MongoDB:', memErr.message)
+    console.log('Server will continue without database connection — registration/login will not work.')
   }
 }
 

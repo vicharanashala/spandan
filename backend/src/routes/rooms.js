@@ -167,4 +167,41 @@ router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   }
 })
 
-export default router
+// GET /api/rooms/:id/members - Return students who have joined this room (teacher only)
+router.get('/:id/members', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const User = (await import('../models/User.js')).default
+
+    const room = await Room.findById(req.params.id)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Only the room's teacher may fetch the member list
+    if (room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to view members of this room' })
+    }
+
+    const memberships = await RoomMember.find({ roomId: req.params.id }).lean()
+    const members = await Promise.all(
+      memberships.map(async (m) => {
+        const user = await User.findById(m.studentId).select('name email').lean()
+        return {
+          _id: m.studentId.toString(),
+          name: user?.name || null,
+          email: user?.email || null,
+          joinedAt: m.joinedAt
+        }
+      })
+    )
+
+    res.json({ success: true, members })
+  } catch (error) {
+    console.error('Error fetching room members:', error)
+    res.status(500).json({ error: 'Failed to fetch room members' })
+  }
+})
+
+export default router

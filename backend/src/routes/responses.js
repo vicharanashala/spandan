@@ -98,6 +98,38 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+    // ── Team Battle Mode: roll up individual points to the student's team ──
+    if (points > 0) {
+      try {
+        const Team = (await import('../models/Team.js')).default
+        const Room = (await import('../models/Room.js')).default
+
+        // Find the team this student belongs to in this room
+        const team = await Team.findOneAndUpdate(
+          { roomId, memberIds: studentId },
+          { $inc: { totalPoints: points } },
+          { new: true }
+        )
+
+        if (team) {
+          // Retrieve room code for Socket.IO room broadcast
+          const room = await Room.findById(roomId).select('code').lean()
+          if (room?.code) {
+            const io = req.app.get('io')
+            io.to(room.code).emit('team:score:update', {
+              teamId: team._id.toHexString(),
+              teamName: team.name,
+              totalPoints: team.totalPoints
+            })
+          }
+        }
+      } catch (teamError) {
+        // Team scoring is non-critical — log but never fail the response save
+        console.error('Error updating team score:', teamError)
+      }
+    }
+    // ── End Team Battle Mode ──
+
     res.status(201).json({
       success: true,
       response: {
@@ -111,6 +143,7 @@ router.post('/', authorize('student'), async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to save response' })
   }
 })
+
 
 // GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
 router.get('/', async (req, res) => {
@@ -394,34 +427,53 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 
     console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
 
-    // Merge questions with response data
-    const questionsWithResponses = questions.map(q => {
-      const qIdStr = toIdString(q._id)
-      const studentResponse = responseMap[qIdStr]
-      
-      if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
-      }
-      
-      return {
-        _id: qIdStr,
-        question: q.question,
-        type: q.type,
-        options: q.options,
-        segmentIndex: q.segmentIndex,
-        maxPoints: q.points,
-        timeToAnswer: q.timeToAnswer,
-        answered: !!studentResponse,
-        ...(studentResponse && {
-          selectedOption: studentResponse.selectedOption,
-          selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
-          isCorrect: studentResponse.isCorrect,
-          responseTime: studentResponse.responseTime,
-          pointsEarned: studentResponse.points
-        }),
-        createdAt: q.createdAt
-      }
+    // DIAGNOSTIC LOG — shows real DB values for each question before liveness filter
+    questions.forEach(q => {
+      const deadline = q.launchedAt
+        ? new Date(q.launchedAt).getTime() + (q.timeToAnswer || 30) * 1000
+        : null
+      console.log(`[DIAG] qId=${q._id} status=${q.status} launchedAt=${q.launchedAt || 'NULL'} timeToAnswer=${q.timeToAnswer} deadline=${deadline ? new Date(deadline).toISOString() : 'N/A'} now=${new Date().toISOString()} isLive=${deadline ? deadline > Date.now() : false}`)
     })
+
+    // Build the response: exclude any question whose answer window is still open.
+    // A question is "still live" when: launchedAt exists AND (launchedAt + timeToAnswer*1000) > now.
+    // Questions without launchedAt are legacy records — treat as expired so they remain visible.
+    const nowMs = Date.now()
+    const questionsWithResponses = questions
+      .filter(q => {
+        if (!q.launchedAt) return true // legacy record: no launch timestamp → treat as past
+        const deadlineMs = new Date(q.launchedAt).getTime() + (q.timeToAnswer || 30) * 1000
+        const isStillLive = deadlineMs > nowMs
+        console.log(`[liveness] qId=${q._id} deadlineMs=${deadlineMs} nowMs=${nowMs} isStillLive=${isStillLive} → ${isStillLive ? 'EXCLUDED' : 'included'}`)
+        return !isStillLive // only include questions whose timer has EXPIRED
+      })
+      .map(q => {
+        const qIdStr = toIdString(q._id)
+        const studentResponse = responseMap[qIdStr]
+
+        if (studentResponse) {
+          console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
+        }
+
+        return {
+          _id: qIdStr,
+          question: q.question,
+          type: q.type,
+          options: q.options,
+          segmentIndex: q.segmentIndex,
+          maxPoints: q.points,
+          timeToAnswer: q.timeToAnswer,
+          answered: !!studentResponse,
+          ...(studentResponse && {
+            selectedOption: studentResponse.selectedOption,
+            selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
+            isCorrect: studentResponse.isCorrect,
+            responseTime: studentResponse.responseTime,
+            pointsEarned: studentResponse.points
+          }),
+          createdAt: q.createdAt
+        }
+      })
 
     res.json({
       success: true,

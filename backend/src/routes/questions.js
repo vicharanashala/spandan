@@ -92,6 +92,12 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // literally (e.g. &quot;) on the student side.
     const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
 
+    // Record the exact moment this question was launched to students so the
+    // backend can later determine whether the answer window is still open.
+    if (sanitizedData.status === 'approved') {
+      sanitizedData.launchedAt = new Date()
+    }
+
     const newQuestion = new Question(sanitizedData)
 
     await newQuestion.save()
