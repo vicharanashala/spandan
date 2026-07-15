@@ -81,22 +81,34 @@ router.post('/', authorize('student'), async (req, res) => {
       points
     })
 
-    // Check if already responded to prevent duplicates
-    const existingResponse = await Response.findOne({ roomId, questionId, studentId })
-    if (existingResponse) {
-      return res.status(409).json({ 
-        success: false, 
-        error: 'Already responded to this question',
-        existingResponse: {
-          selectedOption: existingResponse.selectedOption,
-          selectedOptions: existingResponse.selectedOptions,
-          isCorrect: existingResponse.isCorrect,
-          points: existingResponse.points
-        }
-      })
+    // Rely on the unique index {roomId,questionId,studentId} to reject duplicates instead
+    // of a separate findOne pre-check (which was both an extra query on the hot path and a
+    // check-then-act race). A duplicate insert throws E11000, which we map to 409.
+    try {
+      await response.save()
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const existingResponse = await Response.findOne({ roomId, questionId, studentId })
+        return res.status(409).json({
+          success: false,
+          error: 'Already responded to this question',
+          existingResponse: existingResponse ? {
+            selectedOption: existingResponse.selectedOption,
+            selectedOptions: existingResponse.selectedOptions,
+            isCorrect: existingResponse.isCorrect,
+            points: existingResponse.points
+          } : undefined
+        })
+      }
+      throw saveErr
     }
 
-    await response.save()
+    // Trigger the throttled, server-authoritative live update for this room (leaderboard +
+    // answer counts) and return this student's current rank ("rank on submit"), so clients
+    // never poll the leaderboard endpoint during a live session.
+    const live = req.app.get('liveUpdates')
+    live?.schedule(roomId)
+    const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
     res.status(201).json({
       success: true,
@@ -104,7 +116,9 @@ router.post('/', authorize('student'), async (req, res) => {
         ...response.toObject(),
         isCorrect,
         points
-      }
+      },
+      rank: rankInfo.rank ?? null,
+      totalParticipants: rankInfo.totalParticipants ?? null
     })
   } catch (error) {
     console.error('Error saving response:', error)
@@ -507,9 +521,17 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       { $sort: { totalPoints: -1 } }
     ])
 
-    // Resolve student names and build ranked response
-    const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
-      const user = await User.findById(entry._id).lean()
+    // Resolve student names in a SINGLE batched query instead of one findById per
+    // participant. The old N+1 loop issued up to 1000 user lookups per leaderboard
+    // request, and this endpoint is polled heavily during live sessions.
+    const studentIds = leaderboardData.map(entry => entry._id)
+    const users = await User.find({ _id: { $in: studentIds } })
+      .select('name email')
+      .lean()
+    const userById = new Map(users.map(u => [u._id.toString(), u]))
+
+    const leaderboard = leaderboardData.map((entry, index) => {
+      const user = userById.get(entry._id.toString())
       return {
         rank: index + 1,
         studentId: entry._id.toHexString(),
@@ -518,7 +540,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
         correctCount: entry.correctCount,
         totalAnswered: entry.totalAnswered
       }
-    }))
+    })
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard

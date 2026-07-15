@@ -7,6 +7,9 @@ import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
+import { createAdapter } from '@socket.io/redis-adapter'
+import { RedisStore } from 'rate-limit-redis'
+import { initRedis } from './config/redis.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -26,20 +29,25 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
 
 // Request timeout middleware - defined BEFORE use due to hoisting
 const requestTimeout = (req, res, next) => {
-  // Set a 30-second timeout for all requests
-  req.setTimeout(30000, () => {
+  // Question generation calls an LLM synchronously; for long transcripts (e.g. a
+  // 10- or 30-minute session) that can take minutes, so those routes get a much
+  // longer timeout. Everything else keeps the tight 30s cap.
+  const isGeneration = req.path.startsWith('/api/questions/generate')
+  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+
+  req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Request timeout', message: 'The request took too long to process' })
     }
   })
-  
+
   // Also set server-side timeout for the response
-  res.setTimeout(30000, () => {
+  res.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Response timeout', message: 'The response took too long to generate' })
     }
   })
-  
+
   next()
 }
 
@@ -63,14 +71,153 @@ const io = new Server(httpServer, {
   }
 })
 
+// Phase 2A — connect Redis (optional). When enabled, the socket.io adapter makes
+// io.to(room).emit() reach clients on ALL instances, so the app can run behind a load
+// balancer. Top-level await (ESM entry module) so setup below can branch on redis.enabled.
+const redis = await initRedis()
+const INSTANCE_ID = String(process.pid)
+if (redis.enabled) {
+  io.adapter(createAdapter(redis.pubClient, redis.subClient))
+  console.log('[socket.io] Redis adapter attached (instance ' + INSTANCE_ID + ')')
+}
+
 // Make io accessible to routes
 app.set('io', io)
+
+// --- Throttled, server-authoritative live room updates (Phase 1 + 2A multi-instance) ---
+// A live question can draw ~1000 answers in seconds. Instead of every client re-fetching the
+// leaderboard (~N^2 DB hits), the REST submit handler calls schedule(roomId); a burst coalesces
+// into ONE recompute + broadcast per room per interval, pushing a top-N payload.
+//  - Single instance: an in-memory timer + rank Map.
+//  - Multi-instance (Redis): a SET-NX lock so only ONE instance computes+broadcasts per window
+//    (the adapter fans the broadcast out to all instances), and the rank cache lives in a Redis
+//    hash so any instance can answer "rank on submit".
+const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
+const RANK_CACHE_TTL_S = Math.max(10, Math.ceil((LIVE_THROTTLE_MS * 5) / 1000))
+const roomLive = new Map() // roomId(str) -> { timer, roomCode, rankByStudent: Map, total } (single-instance)
+
+async function computeAndBroadcast(roomId) {
+  try {
+    const Response = (await import('./models/Response.js')).default
+    const User = (await import('./models/User.js')).default
+    const Room = (await import('./models/Room.js')).default
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+
+    // Points per student (ranked) + per-question answer counts, in two aggregations.
+    const [ranked, countAgg] = await Promise.all([
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        { $group: { _id: '$studentId', totalPoints: { $sum: '$points' }, correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }, totalAnswered: { $sum: 1 } } },
+        { $sort: { totalPoints: -1 } }
+      ]),
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        { $group: { _id: '$questionId', count: { $sum: 1 } } }
+      ])
+    ])
+
+    const users = await User.find({ _id: { $in: ranked.map(e => e._id) } }).select('name email').lean()
+    const nameById = new Map(users.map(u => [u._id.toString(), u.name || u.email || 'Unknown Student']))
+
+    const rankByStudent = new Map()
+    const full = ranked.map((e, i) => {
+      const sid = e._id.toString()
+      rankByStudent.set(sid, i + 1)
+      return { rank: i + 1, studentId: sid, studentName: nameById.get(sid) || 'Unknown Student', totalPoints: e.totalPoints, correctCount: e.correctCount, totalAnswered: e.totalAnswered }
+    })
+    const counts = {}
+    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+
+    // Resolve roomCode (needed to target the socket room).
+    let roomCode = roomLive.get(roomId)?.roomCode
+    if (!roomCode) {
+      const room = await Room.findById(roomId).select('code').lean()
+      roomCode = room?.code || null
+    }
+
+    // Cache ranks for "rank on submit".
+    if (redis.enabled) {
+      try {
+        const flat = { _total: String(full.length) }
+        rankByStudent.forEach((rank, sid) => { flat[sid] = String(rank) })
+        const key = `live:ranks:${roomId}`
+        await redis.client.del(key)
+        await redis.client.hSet(key, flat)
+        await redis.client.expire(key, RANK_CACHE_TTL_S)
+      } catch (e) { /* non-fatal: rank-on-submit just returns null */ }
+    } else {
+      const state = roomLive.get(roomId) || {}
+      state.rankByStudent = rankByStudent
+      state.total = full.length
+      state.roomCode = roomCode
+      roomLive.set(roomId, state)
+    }
+
+    if (roomCode) {
+      io.to(roomCode).emit('leaderboard:updated', {
+        leaderboard: full.slice(0, LEADERBOARD_TOP_N),
+        totalParticipants: full.length,
+        counts
+      })
+    }
+  } catch (err) {
+    console.error('computeAndBroadcast error:', err.message)
+  }
+}
+
+async function scheduleRoomLiveUpdate(roomId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    // Only one instance schedules a broadcast per throttle window (global coalescing via SET NX).
+    try {
+      const won = await redis.client.set(`live:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
+      if (won === 'OK') setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
+    } catch (e) {
+      // Redis hiccup — fall back to a local timer so updates still flow on this instance.
+      setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
+    }
+    return
+  }
+  let state = roomLive.get(id)
+  if (!state) { state = { timer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, state) }
+  if (state.timer) return // already scheduled; the trailing run picks up the latest state
+  state.timer = setTimeout(() => {
+    const s = roomLive.get(id)
+    if (s) s.timer = null
+    computeAndBroadcast(id)
+  }, LIVE_THROTTLE_MS)
+}
+
+// Last-computed rank for a student ("rank on submit"); may be up to one interval stale.
+async function getCachedStudentRank(roomId, studentId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    try {
+      const [rank, total] = await redis.client.hmGet(`live:ranks:${id}`, [String(studentId), '_total'])
+      return { rank: rank != null ? Number(rank) : null, totalParticipants: total != null ? Number(total) : null }
+    } catch (e) {
+      return { rank: null, totalParticipants: null }
+    }
+  }
+  const state = roomLive.get(id)
+  if (!state) return { rank: null, totalParticipants: null }
+  return { rank: state.rankByStudent?.get(String(studentId)) ?? null, totalParticipants: state.total ?? null }
+}
+
+app.set('liveUpdates', { schedule: scheduleRoomLiveUpdate, getRank: getCachedStudentRank })
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
 
-// Rate limiting
+// Rate limiting — shared across instances via Redis when enabled, else per-process memory.
+// A shared store is required for multi-instance so limits are global, not N-times looser.
+const rlStore = (prefix) => redis.enabled
+  ? new RedisStore({ prefix, sendCommand: (...args) => redis.client.sendCommand(args) })
+  : undefined
+
 const apiLimiter = rateLimit({
+  store: rlStore('rl:api:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
   // Note: hundreds of students at a live event usually share ONE public IP (venue/campus NAT),
   // so this per-IP limit is effectively shared across the whole room. Sized for that.
@@ -79,6 +226,7 @@ const apiLimiter = rateLimit({
 })
 
 const authLimiter = rateLimit({
+  store: rlStore('rl:auth:'),
   windowMs: 60 * 60 * 1000, // 1 hour
   // Only count FAILED auth attempts: 700 students behind one NAT share this bucket, so counting
   // successful logins would trip a 429 mid-event (seen at ~250 logins). Failures still throttle brute-force.
@@ -88,12 +236,14 @@ const authLimiter = rateLimit({
 })
 
 const responseLimiter = rateLimit({
+  store: rlStore('rl:resp:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
   message: { error: 'Too many response submissions, please try again later' }
 })
 
 const leaderboardLimiter = rateLimit({
+  store: rlStore('rl:lb:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
   message: { error: 'Too many requests, please try again later' }
@@ -135,18 +285,55 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
+const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+
+// Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
+// handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
+// Throws on an invalid/expired token.
+async function authenticateSocket(socket, token) {
+  const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
+  const User = (await import('./models/User.js')).default
+  const u = await User.findById(decoded.userId).select('role').lean()
+  socket.data.userId = decoded.userId
+  socket.data.role = u?.role || null
+  connectedUsers.set(socket.id, decoded.userId)
+  return socket.data
+}
+
+// Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
+async function verifyRoomOwner(socket, roomCode) {
+  if (socket.data?.role !== 'teacher' || !roomCode) return false
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const room = await Room.findByCode(roomCode)
+    return !!room && room.teacher.toString() === String(socket.data.userId)
+  } catch {
+    return false
+  }
+}
+
+// Authenticate at connection time from the handshake token (client already sends auth:{token}),
+// so socket.data is populated BEFORE any event fires (no race). Unauthenticated sockets may still
+// connect, but privileged handlers reject them.
+io.use(async (socket, next) => {
+  const token = socket.handshake?.auth?.token
+  if (token) {
+    try { await authenticateSocket(socket, token) } catch { /* leave unauthenticated */ }
+  }
+  next()
+})
+
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
 
-  // Authenticate socket
-  socket.on('authenticate', (data) => {
+  // Re-authenticate on demand (also covers clients that auth via this event, not the handshake).
+  socket.on('authenticate', async (data) => {
     try {
-      if (!data.token) {
+      if (!data?.token) {
         socket.emit('authenticated', { success: false, error: 'No token provided' })
         return
       }
-      const decoded = jwt.verify(data.token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
-      connectedUsers.set(socket.id, decoded.userId)
+      await authenticateSocket(socket, data.token)
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -157,112 +344,77 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Join room
-  socket.on('room:join', async ({ roomCode, userId }) => {
+  // Join room — identity is taken from the AUTHENTICATED socket, not the client payload
+  // (so a client can't join/register as another user).
+  socket.on('room:join', async ({ roomCode }) => {
+    const userId = socket.data?.userId
+    const role = socket.data?.role
+    if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
+    if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
-      const User = (await import('./models/User.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
-      
+
       socket.join(roomCode)
-      console.log(`Client ${socket.id} (user: ${userId}) joining room ${roomCode}`)
-      
-      // Find user and room
-      const user = await User.findById(userId)
       const room = await Room.findByCode(roomCode)
-      
+
       let participantCount = 0
-      
-      if (user && room) {
-        // Only students get added to RoomMember (not teachers)
-        if (user.role === 'student') {
-          // Upsert: add student to room members if not already there
+      if (room) {
+        // Only students are added to RoomMember (not teachers)
+        if (role === 'student') {
           await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: user._id },
-            { roomId: room._id, studentId: user._id, joinedAt: new Date() },
+            { roomId: room._id, studentId: userId },
+            { roomId: room._id, studentId: userId, joinedAt: new Date() },
             { upsert: true, new: true }
           )
-          console.log(`Student ${userId} added to room members for room ${roomCode}`)
         }
-        
-        // Count participants from RoomMember (excludes teacher)
-        const memberCount = await RoomMember.countDocuments({ roomId: room._id })
-        participantCount = memberCount
-      }
-      
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: participantCount 
-      })
-    } catch (error) {
-      console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: 0 
-      })
-    }
-  })
-
-  // Leave room
-  socket.on('room:leave', async ({ roomCode, userId }) => {
-    try {
-      const Room = (await import('./models/Room.js')).default
-      const User = (await import('./models/User.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
-      
-      socket.leave(roomCode)
-      console.log(`Client ${socket.id} (user: ${userId}) left room ${roomCode}`)
-      
-      const user = await User.findById(userId)
-      const room = await Room.findByCode(roomCode)
-      
-      let participantCount = 0
-      
-      if (user && room && user.role === 'student') {
-        // Remove student from room members
-        await RoomMember.deleteOne({ roomId: room._id, studentId: user._id })
-        
-        // Recount remaining participants
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
-      
-      io.to(roomCode).emit('room:left', { 
-        roomCode,
-        participants: participantCount 
-      })
+
+      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
     } catch (error) {
-      console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { 
-        roomCode,
-        participants: 0 
-      })
+      console.error('Error in room:join:', error)
+      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
     }
   })
 
-  // Submit response (real-time)
-  socket.on('response:submit', (data) => {
-    io.to(data.roomCode).emit('response:new', {
-      questionId: data.questionId,
-      studentId: data.studentId,
-      selectedOption: data.selectedOption,
-      responseTime: data.responseTime
-    })
+  // Leave room — identity from the authenticated socket.
+  socket.on('room:leave', async ({ roomCode }) => {
+    const userId = socket.data?.userId
+    const role = socket.data?.role
+    if (!roomCode) return
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const RoomMember = (await import('./models/RoomMember.js')).default
+
+      socket.leave(roomCode)
+      const room = await Room.findByCode(roomCode)
+
+      let participantCount = 0
+      if (room) {
+        if (role === 'student' && userId) {
+          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
+        }
+        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      }
+
+      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+    } catch (error) {
+      console.error('Error in room:leave:', error)
+      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
+    }
   })
 
-  // Points update event (emitted after response is saved with calculated points)
-  socket.on('points:update', (data) => {
-    io.to(data.roomCode).emit('points:updated', {
-      questionId: data.questionId,
-      studentId: data.studentId,
-      points: data.points,
-      isCorrect: data.isCorrect
-    })
-  })
+  // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
+  // handlers were removed in Phase 1. They let clients forge points/answers and caused a
+  // ~N^2 leaderboard-refetch storm. Live leaderboard/answer-count updates are now emitted
+  // server-side (throttled) from the authenticated REST submit handler — see the
+  // scheduleRoomLiveUpdate() broadcaster above and routes/responses.js.
 
-  // Question events
-  socket.on('question:start', (data) => {
+  // Question events — teacher-only and restricted to the room's OWNER (server-verified),
+  // so a student can no longer forge question start/end or push a fake question to the room.
+  socket.on('question:start', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
@@ -271,28 +423,23 @@ io.on('connection', (socket) => {
     })
   })
 
-  socket.on('question:end', (data) => {
+  socket.on('question:end', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
   })
 
-  // New question from teacher (manually created)
-  socket.on('new_question', (data) => {
-    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
-    const roomCode = data.roomCode
-    const question = data.question
-    if (roomCode && question) {
-      io.to(roomCode).emit('new_question', question)
-    } else {
-      console.error('new_question event missing roomCode or question:', data)
+  // New question pushed by the teacher (manually created)
+  socket.on('new_question', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
+      console.warn('new_question rejected — not the room owner:', socket.id)
+      return
     }
-  })
-
-  // Leaderboard update
-  socket.on('leaderboard:update', (data) => {
-    io.to(data.roomCode).emit('leaderboard:updated', data)
+    if (data.question) {
+      io.to(data.roomCode).emit('new_question', data.question)
+    }
   })
 
   socket.on('disconnect', () => {
@@ -323,7 +470,12 @@ const connectDB = async () => {
     
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000
+      socketTimeoutMS: 45000,
+      // Ceiling on concurrent in-flight queries. Default is 100; a live event with
+      // hundreds of students bursting responses/leaderboard reads can exhaust it and
+      // queue requests until they time out. Size to the Mongo server's capacity.
+      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
+      minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
     
     console.log('MongoDB connected successfully')

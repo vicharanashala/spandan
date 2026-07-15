@@ -23,6 +23,7 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
+  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
@@ -237,30 +238,18 @@ function StudentRoomPage() {
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-      
-      // Emit points:update for leaderboard broadcast
-      if (saveData.success && saveData.response) {
-        socket.emit('points:update', {
-          roomCode: room.code,
-          questionId,
-          studentId: user._id,
-          points: saveData.response.points,
-          isCorrect: saveData.response.isCorrect
-        })
+
+      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
+      // (from this authenticated POST) — the client no longer emits points:update /
+      // response:submit. The POST returns this student's current rank; surface it so the
+      // leaderboard's "you" pill updates even when outside the broadcast top-N.
+      if (saveData.success && saveData.rank != null) {
+        setMyRank(saveData.rank)
       }
     } catch (err) {
       console.error('Failed to save response:', err)
     }
 
-    // Emit via socket
-    socket.emit('response:submit', {
-      roomCode: room.code,
-      questionId,
-      studentId: user._id,
-      selectedOptions,
-      responseTime
-    })
-    
     // Set submitted immediately and fetch past responses without delay
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
@@ -762,7 +751,7 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
                 </div>
               </div>
             </div>
