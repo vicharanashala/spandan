@@ -2,6 +2,8 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
+import { resolveAdaptiveDifficulty } from '../services/adaptiveDifficultyService.js'
+import { setRoomDifficulty } from '../services/roomService.js'
 import { stripObject } from '../utils/sanitize.js'
 
 const router = express.Router()
@@ -28,9 +30,9 @@ router.get('/providers', (req, res) => {
 // Authorization: teacher only
 router.post('/generate', authorize('teacher'), async (req, res) => {
   try {
-    const { transcript, config } = req.body
-    const { 
-      numQuestions = 2, 
+    const { transcript, config, roomId } = req.body
+    const {
+      numQuestions = 2,
       difficulty = 'medium',
       provider = 'minimax',
       questionTypeMix = null
@@ -43,7 +45,30 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       })
     }
 
-    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
+    let resolvedDifficulty = null
+    let effectiveDifficulty = difficulty
+
+    if (roomId) {
+      const Room = (await import('../models/Room.js')).default
+      const room = await Room.findById(roomId)
+      if (!room) {
+        return res.status(404).json({ success: false, error: 'Room not found' })
+      }
+      if (room.teacher.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ success: false, error: 'Not authorized to generate questions for this room' })
+      }
+
+      if (room.settings?.adaptiveDifficulty) {
+        const result = await resolveAdaptiveDifficulty(roomId, room.settings.difficulty || 'medium')
+        effectiveDifficulty = result.difficulty
+        resolvedDifficulty = result.difficulty
+        if (result.difficulty !== room.settings.difficulty) {
+          await setRoomDifficulty(roomId, result.difficulty)
+        }
+      }
+    }
+
+    const jobConfig = { numQuestions, difficulty: effectiveDifficulty, provider, questionTypeMix }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
     // The client polls GET /questions/jobs/:jobId for the result.
@@ -59,14 +84,14 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
           removeOnFail: { age: 900 }
         }
       )
-      return res.status(202).json({ success: true, async: true, jobId: job.id })
+      return res.status(202).json({ success: true, async: true, jobId: job.id, resolvedDifficulty })
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
     console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-    res.json({ success: true, questions })
+    res.json({ success: true, questions, resolvedDifficulty })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({
