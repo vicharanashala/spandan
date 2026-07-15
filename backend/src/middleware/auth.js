@@ -20,7 +20,10 @@ export const authenticate = async (req, res, next) => {
     
     const decoded = jwt.verify(token, JWT_SECRET)
     
-    const user = await User.findById(decoded.userId).select('-password')
+    // .lean() skips Mongoose document hydration (change tracking, getters/setters, etc.)
+    // req.user is never mutated/saved directly in this codebase, so a plain object is safe
+    // and meaningfully cheaper under high concurrency (this middleware runs on every request).
+    const user = await User.findById(decoded.userId).select('-password').lean()
     
     if (!user) {
       return res.status(401).json({ 

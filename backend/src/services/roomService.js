@@ -2,6 +2,13 @@ import Room from '../models/Room.js'
 import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
+import { TTLCache } from '../realtime/ttlCache.js'
+
+// A room's code/teacher rarely change after creation, and this lookup sits
+// directly on the student "join" hot path. When a class of 3000 all hit
+// "Join" within the same few seconds, without this cache that's 3000
+// identical `findOne + populate` queries landing on Mongo at once.
+const roomByCodeCache = new TTLCache(Number(process.env.ROOM_DOC_CACHE_TTL_MS || 15_000))
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -23,10 +30,15 @@ export const getRoomById = async (id) => {
 }
 
 export const getRoomByCode = async (code) => {
-  const room = await Room.findOne({ code: code.toUpperCase() }).populate('teacher', 'name email')
+  const normalized = code.toUpperCase()
+  const cached = roomByCodeCache.get(normalized)
+  if (cached) return cached
+
+  const room = await Room.findOne({ code: normalized }).populate('teacher', 'name email')
   if (!room) {
     throw new Error('Room not found')
   }
+  roomByCodeCache.set(normalized, room)
   return room
 }
 
@@ -64,6 +76,7 @@ export const updateRoom = async (roomId, updates) => {
     throw new Error('Room not found')
   }
   
+  roomByCodeCache.delete(room.code)
   return room
 }
 
@@ -72,6 +85,7 @@ export const deleteRoom = async (roomId) => {
   if (!room) {
     throw new Error('Room not found')
   }
+  roomByCodeCache.delete(room.code)
   return room
 }
 
@@ -100,6 +114,7 @@ export const deactivateRoom = async (roomId) => {
     throw new Error('Room not found')
   }
   
+  roomByCodeCache.delete(room.code)
   return room
 }
 

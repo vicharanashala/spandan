@@ -3,6 +3,8 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import Room from '../models/Room.js'
+import RoomMember from '../models/RoomMember.js'
 
 const router = express.Router()
 
@@ -30,13 +32,10 @@ router.get('/', authenticate, async (req, res) => {
     const skip = (pageNum - 1) * limitNum
 
     if (req.user.role === 'teacher') {
-      const [rooms, total] = await Promise.all([
+      const [rooms, totalCount] = await Promise.all([
         getRoomsByTeacher(req.user._id, { skip, limit: limitNum }),
-        req.user.model || Promise.resolve(null)
+        Room.countDocuments({ teacher: req.user._id })
       ])
-      // Count total rooms for teacher
-      const Room = (await import('../models/Room.js')).default
-      const totalCount = await Room.countDocuments({ teacher: req.user._id })
       res.json({ 
         rooms,
         pagination: {
@@ -58,11 +57,10 @@ router.get('/', authenticate, async (req, res) => {
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
-    const RoomMember = (await import('../models/RoomMember.js')).default
     
     // Check if user is the room teacher (owner) or a student member
     const isOwner = room.teacher._id.toString() === req.user._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
+    const isStudentMember = isOwner ? true : await RoomMember.exists({ roomId: req.params.id, studentId: req.user._id })
     
     // Only the room owner OR room members can access
     if (!isOwner && !isStudentMember) {
@@ -79,7 +77,6 @@ router.get('/:id', authenticate, async (req, res) => {
 // Join room by code (for students)
 router.get('/join/:code', authenticate, authorize('student'), async (req, res) => {
   try {
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const room = await getRoomByCode(req.params.code)
     
     // Check if room has ended
@@ -87,11 +84,14 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
     
-    // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
-    await RoomMember.findOneAndUpdate(
+    // Ensure student is added to RoomMember (idempotent - safe to call multiple times).
+    // $setOnInsert avoids rewriting joinedAt/roomId/studentId on every repeat
+    // call from a student who is already a member (e.g. page refresh), which
+    // is the common case during a live session.
+    await RoomMember.updateOne(
       { roomId: room._id, studentId: req.user._id },
-      { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
-      { upsert: true, new: true }
+      { $setOnInsert: { roomId: room._id, studentId: req.user._id, joinedAt: new Date() } },
+      { upsert: true }
     )
     
     res.json({ room })

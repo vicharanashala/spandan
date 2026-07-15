@@ -37,13 +37,24 @@ const Leaderboard = ({ roomId, token, socket }) => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Listen for points:updated events
+    // Listen for points:updated events. The server already throttles these
+    // per room, but debouncing here too means a client that's briefly
+    // backlogged (e.g. a slow device) never queues up multiple overlapping
+    // fetches for the same leaderboard.
     if (socket) {
-      socket.on('points:updated', () => {
-        console.log('[Leaderboard] Points updated, refreshing...')
-        fetchLeaderboard()
-      })
-      return () => socket.off('points:updated')
+      let debounceTimer = null
+      const handlePointsUpdated = () => {
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          console.log('[Leaderboard] Points updated, refreshing...')
+          fetchLeaderboard()
+        }, 150)
+      }
+      socket.on('points:updated', handlePointsUpdated)
+      return () => {
+        clearTimeout(debounceTimer)
+        socket.off('points:updated', handlePointsUpdated)
+      }
     }
   }, [roomId, socket])
 

@@ -1,6 +1,33 @@
 import express from 'express'
+import mongoose from 'mongoose'
 import { authenticate, authorize } from '../middleware/auth.js'
+import Response from '../models/Response.js'
+import Question from '../models/Question.js'
+import RoomMember from '../models/RoomMember.js'
+import User from '../models/User.js'
+import Room from '../models/Room.js'
+import { TTLCache } from '../realtime/ttlCache.js'
+
 const router = express.Router()
+
+// A question is immutable while students are answering it, so caching it
+// for a few seconds turns "3000 students answering the same question at
+// once" from 3000 identical Mongo reads into effectively 1.
+const questionCache = new TTLCache(Number(process.env.QUESTION_CACHE_TTL_MS || 10_000))
+
+// Leaderboard snapshots are cheap to serve slightly stale during a live
+// session (a 1-2s lag is imperceptible to students watching a leaderboard),
+// but caching them absorbs simultaneous refreshes from an entire class
+// hitting this endpoint within the same second.
+const leaderboardCache = new TTLCache(Number(process.env.LEADERBOARD_CACHE_TTL_MS || 1500))
+
+async function getQuestionCached(questionId) {
+  const cached = questionCache.get(questionId)
+  if (cached) return cached
+  const question = await Question.findById(questionId).lean()
+  if (question) questionCache.set(questionId, question)
+  return question
+}
 
 // Apply authentication to all routes
 router.use(authenticate)
@@ -9,25 +36,21 @@ router.use(authenticate)
 // Authorization: student only, and studentId must match authenticated user
 router.post('/', authorize('student'), async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    
     const { roomId, questionId, selectedOptions, responseTime } = req.body
     const studentId = req.user._id // Must be authenticated user
-
-    // Verify student is in the room (member of RoomMember)
-    const isMember = await RoomMember.findOne({ roomId, studentId })
-    if (!isMember) {
-      return res.status(403).json({ error: 'You have not joined this room' })
-    }
 
     if (!roomId || !questionId || !selectedOptions || !Array.isArray(selectedOptions)) {
       return res.status(400).json({ error: 'Missing required fields: roomId, questionId, and selectedOptions (array)' })
     }
 
-    // Get the question to check correct answer and points
-    const question = await Question.findById(questionId)
+    // Verify student is in the room (member of RoomMember)
+    const isMember = await RoomMember.findOne({ roomId, studentId }).lean()
+    if (!isMember) {
+      return res.status(403).json({ error: 'You have not joined this room' })
+    }
+
+    // Get the question to check correct answer and points (cached - see above)
+    const question = await getQuestionCached(questionId)
     if (!question) {
       return res.status(404).json({ error: 'Question not found' })
     }
@@ -70,33 +93,43 @@ router.post('/', authorize('student'), async (req, res) => {
     }
     // Incorrect answers get 0 points
 
-    const response = new Response({
-      roomId,
-      questionId,
-      studentId,
-      selectedOption: selectedOptions[0], // Store first selection for MCQ compatibility
-      selectedOptions, // Store all selections for MSQ
-      isCorrect,
-      responseTime: respTime,
-      points
-    })
-
-    // Check if already responded to prevent duplicates
-    const existingResponse = await Response.findOne({ roomId, questionId, studentId })
-    if (existingResponse) {
-      return res.status(409).json({ 
-        success: false, 
-        error: 'Already responded to this question',
-        existingResponse: {
-          selectedOption: existingResponse.selectedOption,
-          selectedOptions: existingResponse.selectedOptions,
-          isCorrect: existingResponse.isCorrect,
-          points: existingResponse.points
-        }
+    // The unique index on { roomId, questionId, studentId } already
+    // guarantees one response per student per question. Doing a
+    // find-then-save here (as before) is both an extra query on every
+    // single submission (3000 students -> 3000 extra reads) *and* still
+    // racy - two rapid double-clicks/retries from the same client could
+    // both pass the findOne check before either save() lands. Insert
+    // directly and let Mongo's index reject the duplicate atomically.
+    let response
+    try {
+      response = await Response.create({
+        roomId,
+        questionId,
+        studentId,
+        selectedOption: selectedOptions[0], // Store first selection for MCQ compatibility
+        selectedOptions, // Store all selections for MSQ
+        isCorrect,
+        responseTime: respTime,
+        points
       })
+    } catch (error) {
+      if (error.code === 11000) {
+        const existingResponse = await Response.findOne({ roomId, questionId, studentId }).lean()
+        return res.status(409).json({
+          success: false,
+          error: 'Already responded to this question',
+          existingResponse: existingResponse ? {
+            selectedOption: existingResponse.selectedOption,
+            selectedOptions: existingResponse.selectedOptions,
+            isCorrect: existingResponse.isCorrect,
+            points: existingResponse.points
+          } : undefined
+        })
+      }
+      throw error
     }
 
-    await response.save()
+    leaderboardCache.delete(roomId)
 
     res.status(201).json({
       success: true,
@@ -115,9 +148,6 @@ router.post('/', authorize('student'), async (req, res) => {
 // GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
 router.get('/', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId, studentId, page = 1, limit = 50 } = req.query
     const currentUser = req.user
 
@@ -176,10 +206,6 @@ router.get('/', async (req, res) => {
 // GET /api/responses/stats/student/:studentId - Get student stats
 router.get('/stats/student/:studentId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     
     const { studentId } = req.params
     const currentUser = req.user
@@ -246,9 +272,6 @@ router.get('/stats/student/:studentId', async (req, res) => {
 // GET /api/responses/stats/room/:roomId - Get room stats for teacher
 router.get('/stats/room/:roomId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
     
     const { roomId } = req.params
     const currentUser = req.user
@@ -317,11 +340,6 @@ router.get('/stats/room/:roomId', async (req, res) => {
 // GET /api/responses/room/:roomId/student/:studentId - Get all questions with student's responses
 router.get('/room/:roomId/student/:studentId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const mongoose = (await import('mongoose')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     
     const { roomId, studentId } = req.params
     const currentUser = req.user
@@ -436,8 +454,6 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 // GET /api/responses/counts/:roomId - Get per-question answer counts
 router.get('/counts/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
     const { roomId } = req.params
 
     const toObjectId = (id) => {
@@ -469,11 +485,6 @@ router.get('/counts/:roomId', async (req, res) => {
 // Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
 router.get('/leaderboard/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
-    const User = (await import('../models/User.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId } = req.params
     const currentUser = req.user
 
@@ -484,68 +495,91 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     }
 
     // Check if teacher owns the room
-    const room = await Room.findById(roomId)
+    const room = await Room.findById(roomId).select('teacher').lean()
     const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
-    
+
     // Check if student is a member of the room
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-    
+    const isStudentMember = isTeacher
+      ? true
+      : await RoomMember.exists({ roomId, studentId: currentUser._id })
+
     // Deny access if neither
     if (!isTeacher && !isStudentMember) {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
-    // Aggregate points per student
-    const leaderboardData = await Response.aggregate([
-      { $match: { roomId: toObjectId(roomId) } },
-      { $group: {
-        _id: '$studentId',
-        totalPoints: { $sum: '$points' },
-        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-        totalAnswered: { $sum: 1 }
-      }},
-      { $sort: { totalPoints: -1 } }
-    ])
+    // The full leaderboard (aggregation + name resolution) is identical for
+    // every viewer of a given room. During a live question, every student
+    // and the teacher can all poll this endpoint within the same second -
+    // previously that meant N full aggregations *and* N x (participants)
+    // individual User.findById calls hitting Mongo simultaneously (a room
+    // of 3000 answering one question could mean millions of user lookups
+    // for a single leaderboard refresh cycle). Caching the computed result
+    // for a short TTL collapses that whole burst into one computation, and
+    // fixing the per-row lookup below removes the N+1 within that one
+    // computation too.
+    let leaderboard = leaderboardCache.get(roomId)
+    if (!leaderboard) {
+      // Aggregate points per student
+      const leaderboardData = await Response.aggregate([
+        { $match: { roomId: toObjectId(roomId) } },
+        { $group: {
+          _id: '$studentId',
+          totalPoints: { $sum: '$points' },
+          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+          totalAnswered: { $sum: 1 }
+        }},
+        { $sort: { totalPoints: -1 } }
+      ])
 
-    // Resolve student names and build ranked response
-    const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
-      const user = await User.findById(entry._id).lean()
-      return {
-        rank: index + 1,
-        studentId: entry._id.toHexString(),
-        studentName: user?.name || user?.email || 'Unknown Student',
-        totalPoints: entry.totalPoints,
-        correctCount: entry.correctCount,
-        totalAnswered: entry.totalAnswered
-      }
-    }))
+      // Resolve all student names in a single query instead of one
+      // findById per leaderboard row (that was the N+1: a 3000-student
+      // room turned every leaderboard fetch into 3000 extra DB round trips).
+      const studentIds = leaderboardData.map(e => e._id)
+      const users = await User.find({ _id: { $in: studentIds } }).select('name email').lean()
+      const userMap = new Map(users.map(u => [u._id.toString(), u]))
+
+      leaderboard = leaderboardData.map((entry, index) => {
+        const user = userMap.get(entry._id.toString())
+        return {
+          rank: index + 1,
+          studentId: entry._id.toHexString(),
+          studentName: user?.name || user?.email || 'Unknown Student',
+          totalPoints: entry.totalPoints,
+          correctCount: entry.correctCount,
+          totalAnswered: entry.totalAnswered
+        }
+      })
+
+      leaderboardCache.set(roomId, leaderboard)
+    }
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
     let userRank = null
-    
+
     if (!isTeacher) {
       // Find current user's rank
       const userEntry = leaderboard.find(e => e.studentId === currentUser._id.toString())
       userRank = userEntry?.rank || null
-      
+
       // Get top 10 + user's entry if not in top 10
       visibleLeaderboard = leaderboard.slice(0, 10)
-      
+
       // If user is beyond top 10, add them in the middle
       if (userEntry && userEntry.rank > 10) {
         // Check if user is already in top 10 (shouldn't be, but safety check)
         const alreadyInTop10 = visibleLeaderboard.some(e => e.studentId === userEntry.studentId)
         if (!alreadyInTop10) {
-          visibleLeaderboard.push({ ...userEntry, isCurrentUser: true })
+          visibleLeaderboard = [...visibleLeaderboard, { ...userEntry, isCurrentUser: true }]
           visibleLeaderboard.sort((a, b) => a.rank - b.rank)
         }
       }
     }
 
-    res.json({ 
-      success: true, 
-      leaderboard: visibleLeaderboard, 
+    res.json({
+      success: true,
+      leaderboard: visibleLeaderboard,
       isTeacher,
       userRank,
       totalParticipants: leaderboard.length

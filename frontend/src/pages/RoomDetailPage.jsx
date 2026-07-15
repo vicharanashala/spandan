@@ -134,18 +134,25 @@ function RoomDetailPage() {
     }
   }, [socket])
 
-  // Listen for response:new events to update answer counts
+  // Listen for response:batch events to update answer counts.
+  // The backend batches individual student submissions (previously one
+  // 'response:new' broadcast per answer, sent to the *entire room* - with
+  // 3000 students answering that meant millions of socket messages for a
+  // single question). It now sends periodic batches to the teacher only.
   useEffect(() => {
     if (!socket) return
-    const handleNewResponse = (data) => {
-      console.log('[DEBUG] New response received:', data)
-      setAnswerCounts(prev => ({
-        ...prev,
-        [data.questionId]: (prev[data.questionId] || 0) + 1
-      }))
+    const handleResponseBatch = (batch) => {
+      if (!Array.isArray(batch) || batch.length === 0) return
+      setAnswerCounts(prev => {
+        const next = { ...prev }
+        for (const item of batch) {
+          next[item.questionId] = (next[item.questionId] || 0) + 1
+        }
+        return next
+      })
     }
-    socket.on('response:new', handleNewResponse)
-    return () => socket.off('response:new', handleNewResponse)
+    socket.on('response:batch', handleResponseBatch)
+    return () => socket.off('response:batch', handleResponseBatch)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher

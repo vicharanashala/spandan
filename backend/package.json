@@ -25,6 +25,10 @@
     "socket.io": "^4.7.5",
     "zod": "^3.23.8"
   },
+  "optionalDependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "redis": "^4.7.0"
+  },
   "devDependencies": {
     "@shelf/jest-mongodb": "^6.0.2",
     "jest": "^30.4.2",

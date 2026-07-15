@@ -62,8 +62,8 @@ export const useSocketStore = create((set, get) => ({
       console.log('Question ended:', data)
     })
 
-    socket.on('response:new', (data) => {
-      console.log('New response:', data)
+    socket.on('response:batch', (data) => {
+      console.log('New response batch:', data)
     })
 
     socket.on('leaderboard:updated', (data) => {

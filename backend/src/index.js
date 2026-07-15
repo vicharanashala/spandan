@@ -4,7 +4,6 @@ import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
-import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 
@@ -18,6 +17,11 @@ import responseRoutes from './routes/responses.js'
 
 // Import models for reference
 import './models/index.js'
+
+// Socket.IO connection/event handling lives in its own module now - see
+// backend/src/sockets/socketHandlers.js for the rationale behind the changes
+// there (presence tracking, throttled broadcasts, teacher-only targeting).
+import { registerSocketHandlers } from './sockets/socketHandlers.js'
 
 dotenv.config()
 
@@ -60,11 +64,56 @@ const io = new Server(httpServer, {
     },
     methods: ['GET', 'POST'],
     credentials: true
+  },
+  // Must match the frontend client's `path` option and the proxy target in
+  // the root server.js (which forwards BASE_PATH/socket.io -> this backend's
+  // /spandan/socket.io). Without this the default '/socket.io/' path would
+  // silently mismatch behind the proxy.
+  path: process.env.SOCKET_IO_PATH || '/spandan/socket.io',
+  // Under classroom-scale load, slow-transport upgrades and flaky wifi
+  // clients can pile up. These keep dead connections from lingering and
+  // cap payload size so a misbehaving client can't send oversized frames.
+  pingTimeout: 20000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 1e6, // 1MB is plenty for JSON events
+  // Lets a client that briefly drops (flaky classroom wifi) resume its
+  // session instead of doing a full reconnect + rejoin - which is exactly
+  // the kind of thundering-herd re-join storm we're trying to avoid.
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 60 * 1000,
+    skipMiddlewares: true
   }
 })
 
 // Make io accessible to routes
 app.set('io', io)
+
+// --- Optional horizontal scaling ---------------------------------------
+// A single Node process tops out well before 3000 concurrent sockets once
+// you add CPU-bound JSON work on top of it. The fixes in this codebase
+// (presence tracking, throttled broadcasts, batched DB writes) push that
+// ceiling much higher on one process - but if you outgrow a single instance,
+// set REDIS_URL and run multiple instances behind a load balancer. The Redis
+// adapter makes io.to(room).emit() work correctly across processes. This is
+// intentionally best-effort so the app keeps working unmodified for anyone
+// running a single instance without the optional packages installed.
+if (process.env.REDIS_URL) {
+  try {
+    const { createAdapter } = await import('@socket.io/redis-adapter')
+    const { createClient } = await import('redis')
+    const pubClient = createClient({ url: process.env.REDIS_URL })
+    const subClient = pubClient.duplicate()
+    await Promise.all([pubClient.connect(), subClient.connect()])
+    io.adapter(createAdapter(pubClient, subClient))
+    console.log('Socket.IO Redis adapter connected - horizontal scaling enabled')
+  } catch (error) {
+    console.error(
+      'REDIS_URL is set but the Redis adapter could not be initialized ' +
+      '(run `npm install @socket.io/redis-adapter redis`). Continuing in single-instance mode:',
+      error.message
+    )
+  }
+}
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
@@ -127,175 +176,8 @@ app.get('/api/health', (req, res) => {
   })
 })
 
-// Socket.IO connection handling
-const connectedUsers = new Map() // socket.id -> userId
-
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id)
-
-  // Authenticate socket
-  socket.on('authenticate', (data) => {
-    try {
-      if (!data.token) {
-        socket.emit('authenticated', { success: false, error: 'No token provided' })
-        return
-      }
-      const decoded = jwt.verify(data.token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
-      connectedUsers.set(socket.id, decoded.userId)
-      socket.emit('authenticated', { success: true })
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
-      } else {
-        socket.emit('authenticated', { success: false, error: 'Invalid token' })
-      }
-    }
-  })
-
-  // Join room
-  socket.on('room:join', async ({ roomCode, userId }) => {
-    try {
-      const Room = (await import('./models/Room.js')).default
-      const User = (await import('./models/User.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
-      
-      socket.join(roomCode)
-      console.log(`Client ${socket.id} (user: ${userId}) joining room ${roomCode}`)
-      
-      // Find user and room
-      const user = await User.findById(userId)
-      const room = await Room.findByCode(roomCode)
-      
-      let participantCount = 0
-      
-      if (user && room) {
-        // Only students get added to RoomMember (not teachers)
-        if (user.role === 'student') {
-          // Upsert: add student to room members if not already there
-          await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: user._id },
-            { roomId: room._id, studentId: user._id, joinedAt: new Date() },
-            { upsert: true, new: true }
-          )
-          console.log(`Student ${userId} added to room members for room ${roomCode}`)
-        }
-        
-        // Count participants from RoomMember (excludes teacher)
-        const memberCount = await RoomMember.countDocuments({ roomId: room._id })
-        participantCount = memberCount
-      }
-      
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: participantCount 
-      })
-    } catch (error) {
-      console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { 
-        roomCode, 
-        userId,
-        participants: 0 
-      })
-    }
-  })
-
-  // Leave room
-  socket.on('room:leave', async ({ roomCode, userId }) => {
-    try {
-      const Room = (await import('./models/Room.js')).default
-      const User = (await import('./models/User.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
-      
-      socket.leave(roomCode)
-      console.log(`Client ${socket.id} (user: ${userId}) left room ${roomCode}`)
-      
-      const user = await User.findById(userId)
-      const room = await Room.findByCode(roomCode)
-      
-      let participantCount = 0
-      
-      if (user && room && user.role === 'student') {
-        // Remove student from room members
-        await RoomMember.deleteOne({ roomId: room._id, studentId: user._id })
-        
-        // Recount remaining participants
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
-      }
-      
-      io.to(roomCode).emit('room:left', { 
-        roomCode,
-        participants: participantCount 
-      })
-    } catch (error) {
-      console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { 
-        roomCode,
-        participants: 0 
-      })
-    }
-  })
-
-  // Submit response (real-time)
-  socket.on('response:submit', (data) => {
-    io.to(data.roomCode).emit('response:new', {
-      questionId: data.questionId,
-      studentId: data.studentId,
-      selectedOption: data.selectedOption,
-      responseTime: data.responseTime
-    })
-  })
-
-  // Points update event (emitted after response is saved with calculated points)
-  socket.on('points:update', (data) => {
-    io.to(data.roomCode).emit('points:updated', {
-      questionId: data.questionId,
-      studentId: data.studentId,
-      points: data.points,
-      isCorrect: data.isCorrect
-    })
-  })
-
-  // Question events
-  socket.on('question:start', (data) => {
-    io.to(data.roomCode).emit('question:started', {
-      questionId: data.questionId,
-      question: data.question,
-      timer: data.timer,
-      startTime: Date.now()
-    })
-  })
-
-  socket.on('question:end', (data) => {
-    io.to(data.roomCode).emit('question:ended', {
-      questionId: data.questionId,
-      results: data.results
-    })
-  })
-
-  // New question from teacher (manually created)
-  socket.on('new_question', (data) => {
-    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
-    const roomCode = data.roomCode
-    const question = data.question
-    if (roomCode && question) {
-      io.to(roomCode).emit('new_question', question)
-    } else {
-      console.error('new_question event missing roomCode or question:', data)
-    }
-  })
-
-  // Leaderboard update
-  socket.on('leaderboard:update', (data) => {
-    io.to(data.roomCode).emit('leaderboard:updated', data)
-  })
-
-  socket.on('disconnect', () => {
-    const userId = connectedUsers.get(socket.id)
-    connectedUsers.delete(socket.id)
-    console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
-  })
-})
+// Socket.IO connection handling - see backend/src/sockets/socketHandlers.js
+registerSocketHandlers(io)
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -315,12 +197,24 @@ app.use((req, res) => {
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
+
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000
+      socketTimeoutMS: 45000,
+      // Mongoose's default maxPoolSize is 100. Under a join/response burst
+      // from 3000 concurrent students, 100 sockets to Mongo becomes the
+      // bottleneck long before the DB itself is actually overloaded -
+      // requests just queue up waiting for a free connection, timeouts
+      // cascade, and socket handlers start throwing. Combined with the
+      // query-reduction fixes elsewhere (room cache, presence tracking,
+      // batched leaderboard lookups) a larger pool lets the remaining,
+      // much smaller number of real queries run in parallel instead of
+      // serializing behind 100 slots.
+      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE || 300),
+      minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE || 10),
+      maxIdleTimeMS: 30000
     })
-    
+
     console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
