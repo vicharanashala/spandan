@@ -3,6 +3,7 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import rosterRoutes from './roster.js'
 
 const router = express.Router()
 
@@ -86,6 +87,19 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
     if (room.endedAt) {
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
+
+    // Roster restriction check (additive — only runs when explicitly enabled)
+    if (room.settings && room.settings.restrictToRoster) {
+      const RoomRoster = (await import('../models/RoomRoster.js')).default
+      const roster = await RoomRoster.findOne({ roomId: room._id })
+      const studentEmail = req.user.email ? req.user.email.toLowerCase() : ''
+      const isOnRoster = roster && roster.entries.some(
+        entry => entry.email.toLowerCase() === studentEmail
+      )
+      if (!isOnRoster) {
+        return res.status(403).json({ error: 'Access restricted: your email is not on the room roster' })
+      }
+    }
     
     // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
     await RoomMember.findOneAndUpdate(
@@ -166,5 +180,8 @@ router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
     res.status(status).json({ error: error.message })
   }
 })
+
+// Mount roster sub-router (all roster endpoints require :roomId in parent path)
+router.use('/:roomId/roster', rosterRoutes)
 
 export default router
