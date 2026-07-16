@@ -23,8 +23,10 @@ function RoomHistoryPage() {
     }
   }, [token, user?.role])
 
-  // Filter ended rooms for teacher view
-  const endedRooms = rooms?.filter(r => r.endedAt) || []
+  // Teacher: only ended rooms. Student: all rooms they participated in
+  const displayRooms = user?.role === 'student'
+    ? (rooms || [])
+    : (rooms?.filter(r => r.endedAt) || [])
 
   return (
     <div style={{
@@ -64,9 +66,9 @@ function RoomHistoryPage() {
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
               Loading rooms...
             </div>
-          ) : endedRooms.length > 0 ? (
+          ) : displayRooms.length > 0 ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-              {endedRooms.map((room) => (
+              {displayRooms.map((room) => (
                 <div
                   key={room._id}
                   style={{
@@ -112,7 +114,7 @@ function RoomHistoryPage() {
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>📜</div>
               <p>No ended rooms yet.</p>
-              <p style={{ fontSize: '12px', marginTop: '8px' }}>Rooms you end will appear here for review.</p>
+              <p style={{ fontSize: '12px', marginTop: '8px' }}>Rooms you join will appear here.</p>
             </div>
           )}
         </div>

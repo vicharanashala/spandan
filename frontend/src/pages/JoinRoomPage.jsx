@@ -10,7 +10,7 @@ import ProfileDropdown from '../components/ProfileDropdown'
 function JoinRoomPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { joinRoom, leaveRoom } = useSocketStore()
+  const { leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   
   const [roomCode, setRoomCode] = useState('')
@@ -36,7 +36,7 @@ function JoinRoomPage() {
     try {
       const room = await joinRoomByCode(roomCode.trim().toUpperCase())
       setJoinedRoom(room)
-      joinRoom(room.code, user._id)
+      // Socket join is handled by StudentRoomPage after navigation
       navigate(`/student/session/${room.code}`)
     } catch (err) {
       setError(err.message || 'Failed to join room. Please check the code and try again.')

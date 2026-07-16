@@ -24,12 +24,12 @@ function StudentDashboard() {
   })
 
   useEffect(() => {
-    if (token) {
+    if (token && user?._id) {
       setAuthToken(token)
       fetchStudentStats()
       fetchActiveRooms()
     }
-  }, [token])
+  }, [token, user?._id])
 
   const fetchStudentStats = async () => {
     try {

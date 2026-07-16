@@ -6,27 +6,36 @@ export const useSocketStore = create((set, get) => ({
   socket: null,
   isConnected: false,
   currentRoom: null,
+  userId: null,
   participants: 0,
   // The room we should belong to. Kept across reconnects (unlike currentRoom, which is cleared
   // on disconnect) so the 'connect' handler can auto-rejoin after a dropped socket. Cleared only
   // on an explicit leaveRoom()/disconnect().
   joinedRoom: null,
 
-  connect: (token) => {
+  connect: (token, userId) => {
     const { socket: existingSocket } = get()
     if (existingSocket?.connected) {
-      console.log('Socket already connected, skipping')
       return
+    }
+
+    // Clean up old socket if it exists but is disconnected
+    if (existingSocket) {
+      existingSocket.removeAllListeners()
+      existingSocket.disconnect()
     }
 
     const socket = io(SOCKET_URL, {
       auth: { token },
       path: '/spandan/socket.io',
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
     })
 
     socket.on('connect', () => {
-      console.log('Socket connected')
       set({ isConnected: true })
       socket.emit('authenticate', { token })
       // On a (re)connect, socket.io gives us a NEW underlying connection that is a member of NO
@@ -40,8 +49,7 @@ export const useSocketStore = create((set, get) => ({
     })
 
     socket.on('disconnect', () => {
-      console.log('Socket disconnected')
-      set({ isConnected: false, currentRoom: null })
+      set({ isConnected: false })
     })
 
     socket.on('authenticated', (data) => {
@@ -51,7 +59,6 @@ export const useSocketStore = create((set, get) => ({
     })
 
     socket.on('room:joined', (data) => {
-      console.log('Joined room:', data)
       set({ 
         currentRoom: data.roomCode,
         participants: data.participants || 0
@@ -59,39 +66,19 @@ export const useSocketStore = create((set, get) => ({
     })
 
     socket.on('room:left', (data) => {
-      console.log('Left room:', data)
       set({ 
         currentRoom: null,
         participants: 0
       })
     })
 
-    socket.on('question:started', (data) => {
-      console.log('Question started:', data)
-    })
-
-    socket.on('question:ended', (data) => {
-      console.log('Question ended:', data)
-    })
-
-    socket.on('response:new', (data) => {
-      console.log('New response:', data)
-    })
-
-    socket.on('leaderboard:updated', (data) => {
-      console.log('Leaderboard updated:', data)
-    })
-
-    socket.on('new_question', (data) => {
-      console.log('New question received:', data)
-    })
-
-    set({ socket })
+    set({ socket, userId })
   },
 
   disconnect: () => {
     const { socket } = get()
     if (socket) {
+      socket.removeAllListeners()
       socket.disconnect()
       set({ socket: null, isConnected: false, currentRoom: null, joinedRoom: null })
     }
@@ -102,6 +89,7 @@ export const useSocketStore = create((set, get) => ({
     // Remember the room so the socket auto-rejoins after a reconnect (see the 'connect' handler).
     set({ joinedRoom: { roomCode, userId } })
     if (socket) {
+      set({ currentRoom: roomCode, userId })
       socket.emit('room:join', { roomCode, userId })
     }
   },

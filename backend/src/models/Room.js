@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import crypto from 'crypto'
 
 const roomSchema = new mongoose.Schema({
   name: {
@@ -43,7 +44,9 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    notificationSound: { type: String, default: 'beep' },
+    customSoundUrl: { type: String, default: '' }
   }
 }, {
   timestamps: true
@@ -59,9 +62,10 @@ roomSchema.pre('save', function(next) {
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const bytes = crypto.randomBytes(6)
   let code = ''
   for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length))
+    code += chars.charAt(bytes[i] % chars.length)
   }
   return code
 }

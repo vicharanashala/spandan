@@ -73,7 +73,7 @@ jobs:
 
             echo "==> Installing frontend dependencies..."
             cd frontend
-            npm install
+            npm ci
 
             echo "==> Building frontend..."
             npm run build
@@ -98,9 +98,37 @@ jobs:
             echo "==> Restarting spandan service..."
             sudo systemctl restart spandan.service
 
+            echo "==> Using PM2 for zero-downtime reload..."
+
+            # Install pm2 globally if not present
+            command -v pm2 >/dev/null 2>&1 || npm install -g pm2
+
+            # Start or reload with PM2 (zero-downtime)
+            if pm2 describe spandan-backend > /dev/null 2>&1; then
+              echo "==> Reloading backend (zero-downtime)..."
+              pm2 reload ecosystem.config.js --only spandan-backend
+              echo "==> Reloading proxy (zero-downtime)..."
+              pm2 reload ecosystem.config.js --only spandan-proxy
+            else
+              echo "==> Starting services with PM2..."
+              pm2 start ecosystem.config.js
+              pm2 save
+            fi
+
             echo "==> Reloading nginx..."
-            sudo systemctl reload nginx
+            sudo nginx -t && sudo systemctl reload nginx
+
+            echo "==> Waiting for services to be healthy..."
+            sleep 5
+
+            # Health check
+            if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+              echo "==> Backend is healthy"
+            else
+              echo "==> WARNING: Backend health check failed"
+            fi
 
             echo "==> Deployment complete."
+            pm2 status
 
           DEPLOY

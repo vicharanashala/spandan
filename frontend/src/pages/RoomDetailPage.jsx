@@ -10,6 +10,8 @@ import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
+import QuestionBankPanel from '../components/QuestionBankPanel'
+import CategorySelectPopup from '../components/CategorySelectPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
@@ -59,6 +61,13 @@ function RoomDetailPage() {
   const pendingSequenceRef = useRef(0)
   const isProcessingQueueRef = useRef(false)
 
+  // Refs for values used inside interval callbacks (avoid stale closures)
+  const roomIdRef = useRef(null)
+  const segmentTimeRef = useRef(2)
+  const transcriptTextRef = useRef('')
+  const currentSegmentRef = useRef(0)
+  const roomRef = useRef(null)
+
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
   const [segmentTranscript, setSegmentTranscript] = useState('')
@@ -96,10 +105,38 @@ function RoomDetailPage() {
     questionProvider: 'minimax',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    notificationSound: 'beep'
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [correctCounts, setCorrectCounts] = useState({}) // questionId -> correct count
+  const [showParticipants, setShowParticipants] = useState(false)
+  const [participants, setParticipants] = useState([])
+  const [totalResponses, setTotalResponses] = useState(0)
+  const [savedToBank, setSavedToBank] = useState(new Set())
+  const [showQuestionBank, setShowQuestionBank] = useState(false)
+  const [selectedCategory, setSelectedCategory] = useState(null)
+  const [showCategoryPopup, setShowCategoryPopup] = useState(false)
+  const [categoryPopupQuestion, setCategoryPopupQuestion] = useState(null) // null = save all
+  const [categoryPopupCount, setCategoryPopupCount] = useState(1)
+
+  useEffect(() => {
+    roomIdRef.current = room?._id
+    roomRef.current = room
+  }, [room])
+
+  useEffect(() => {
+    segmentTimeRef.current = roomSettings.segmentTime
+  }, [roomSettings.segmentTime])
+
+  useEffect(() => {
+    transcriptTextRef.current = transcript
+  }, [transcript])
+
+  useEffect(() => {
+    currentSegmentRef.current = currentSegment
+  }, [currentSegment])
 
   useEffect(() => {
     if (token) {
@@ -109,8 +146,9 @@ function RoomDetailPage() {
     }
 
     return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user?._id)
+      const currentRoom = roomRef.current
+      if (currentRoom?.code) {
+        leaveRoom(currentRoom.code, user?._id)
       }
       stopRecording()
       if (segmentTimerRef.current) {
@@ -140,24 +178,40 @@ function RoomDetailPage() {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
 
+    const handleParticipantsUpdated = (data) => {
+      if (data?.participants !== undefined) setTotalParticipants(data.participants)
+    }
+
     socket.on('room:joined', handleRoomJoined)
     socket.on('room:left', handleRoomLeft)
+    socket.on('participants:updated', handleParticipantsUpdated)
 
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
+      socket.off('participants:updated', handleParticipantsUpdated)
     }
   }, [socket])
 
-  // Phase 1: answer counts now arrive (absolute, server-computed) inside the throttled
-  // 'leaderboard:updated' payload, instead of a per-response 'response:new' increment.
+  // Listen for response:count events to update total responses
   useEffect(() => {
     if (!socket) return
-    const handleLiveUpdate = (payload) => {
-      if (payload?.counts) setAnswerCounts(payload.counts)
+    const handleResponseCount = (data) => {
+      if (data?.totalResponses != null) {
+        setTotalResponses(data.totalResponses)
+      }
+      if (data?.uniqueStudents != null) {
+        setTotalParticipants(data.uniqueStudents)
+      }
+      if (data?.questionCounts) {
+        setAnswerCounts(data.questionCounts)
+      }
+      if (data?.questionCorrect) {
+        setCorrectCounts(data.questionCorrect)
+      }
     }
-    socket.on('leaderboard:updated', handleLiveUpdate)
-    return () => socket.off('leaderboard:updated', handleLiveUpdate)
+    socket.on('response:count', handleResponseCount)
+    return () => socket.off('response:count', handleResponseCount)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -191,6 +245,7 @@ function RoomDetailPage() {
 
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    startQuestionTimer(data)
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -327,8 +382,9 @@ function RoomDetailPage() {
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
-    // Capture transcript
-    const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
+    // Capture transcript (use refs to avoid stale closure values)
+    const currentSegmentVal = currentSegmentRef.current
+    const textToUse = segmentTranscriptRef.current.trim() || transcriptTextRef.current.trim()
 
     if (!textToUse || textToUse.length < 50) {
       console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
@@ -350,7 +406,7 @@ function RoomDetailPage() {
 
     // Save transcript to database before generating questions.
     try {
-      await saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+      await saveTranscript(roomIdRef.current, currentSegmentVal, textToUse, segmentTimeRef.current * 60)
       console.log('[SEGMENT] Transcript saved to DB')
     } catch (err) {
       console.error('[SEGMENT] Failed to save transcript:', err)
@@ -362,7 +418,7 @@ function RoomDetailPage() {
     // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
-      const questions = await generateQuestionsFromText(textToUse, currentSegment)
+      const questions = await generateQuestionsFromText(textToUse, currentSegmentVal)
       if (questions && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
@@ -373,7 +429,7 @@ function RoomDetailPage() {
       // Auto-retry once
       try {
         console.log('[SEGMENT] Retrying question generation...')
-        const questions = await generateQuestionsFromText(textToUse, currentSegment)
+        const questions = await generateQuestionsFromText(textToUse, currentSegmentVal)
         if (questions && questions.length > 0) {
           setPendingQuestions(questions)
           setShowQuestionPopup(true)
@@ -506,6 +562,113 @@ function RoomDetailPage() {
       }
     } catch (err) {
       console.error('Failed to load questions:', err)
+    }
+  }
+
+  const handleSaveToBank = async (question) => {
+    setCategoryPopupQuestion(question)
+    setCategoryPopupCount(1)
+    setShowCategoryPopup(true)
+  }
+
+  const handleSaveAllToBank = async () => {
+    setCategoryPopupQuestion(null)
+    setCategoryPopupCount(generatedQuestions.length)
+    setShowCategoryPopup(true)
+  }
+
+  const handleConfirmSaveToBank = async (category) => {
+    if (categoryPopupQuestion) {
+      // Single question save
+      try {
+        const res = await fetch(`${API_URL}/question-bank`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            question: categoryPopupQuestion.question,
+            type: categoryPopupQuestion.type,
+            options: categoryPopupQuestion.options,
+            explanation: categoryPopupQuestion.explanation || '',
+            points: categoryPopupQuestion.points || 100,
+            timeToAnswer: categoryPopupQuestion.timeToAnswer || 30,
+            sourceRoomId: room?._id,
+            category
+          })
+        })
+        if (res.ok) {
+          setSavedToBank(prev => new Set([...prev, categoryPopupQuestion._id]))
+        }
+      } catch (err) {
+        console.error('Failed to save to bank:', err)
+      }
+    } else {
+      // Save all questions
+      try {
+        const res = await fetch(`${API_URL}/question-bank/bulk`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            questions: generatedQuestions.map(q => ({
+              question: q.question,
+              type: q.type,
+              options: q.options,
+              explanation: q.explanation || '',
+              points: q.points || 100,
+              timeToAnswer: q.timeToAnswer || 30,
+              category
+            })),
+            sourceRoomId: room?._id
+          })
+        })
+        if (res.ok) {
+          const allIds = generatedQuestions.map(q => q._id)
+          setSavedToBank(new Set(allIds))
+        }
+      } catch (err) {
+        console.error('Failed to save all to bank:', err)
+      }
+    }
+  }
+
+  const handleInsertFromBank = async (bankQuestions) => {
+    for (const q of bankQuestions) {
+      try {
+        const response = await fetch(`${API_URL}/questions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            roomId: room._id,
+            type: q.type,
+            question: q.question,
+            options: q.options,
+            explanation: q.explanation || '',
+            timeToAnswer: q.timeToAnswer || 30,
+            points: q.points || 100,
+            status: 'approved'
+          })
+        })
+        if (response.ok) {
+          const data = await response.json()
+          setGeneratedQuestions(prev => [data.question, ...prev])
+          if (socket && isConnected) {
+            socket.emit('new_question', {
+              roomCode: room.code,
+              question: data.question
+            })
+          }
+        }
+      } catch (err) {
+        console.error('Failed to insert question from bank:', err)
+      }
     }
   }
 
@@ -781,7 +944,8 @@ function RoomDetailPage() {
     setIsGeneratingQuestions(false)
   }
 
-  const handleApproveQuestion = async (question) => {
+  const handleApproveQuestion = async (question, retryCount = 0) => {
+    const maxRetries = 2
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -798,7 +962,8 @@ function RoomDetailPage() {
           segmentIndex: question.segmentIndex,
           timeToAnswer: question.timeToAnswer || roomSettings.timeToAnswer || 30,
           points: question.points || roomSettings.points || 100,
-          status: 'approved'
+          status: 'approved',
+          category: selectedCategory || undefined
         })
       })
 
@@ -813,9 +978,24 @@ function RoomDetailPage() {
             question: data.question
           })
         }
+      } else {
+        const errData = await response.json().catch(() => ({ error: 'Save failed' }))
+        console.error(`Failed to save question (attempt ${retryCount + 1}):`, errData.error)
+        if (retryCount < maxRetries) {
+          console.log(`Retrying save... (${retryCount + 2}/${maxRetries + 1})`)
+          await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
+          return handleApproveQuestion(question, retryCount + 1)
+        }
+        window.alert(`Failed to save question: ${errData.error || 'Server error'}. Please try generating again.`)
       }
     } catch (error) {
-      console.error('Failed to save question:', error)
+      console.error(`Failed to save question (attempt ${retryCount + 1}):`, error)
+      if (retryCount < maxRetries) {
+        console.log(`Retrying save... (${retryCount + 2}/${maxRetries + 1})`)
+        await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
+        return handleApproveQuestion(question, retryCount + 1)
+      }
+      window.alert('Failed to save question due to network error. Please try generating again.')
     }
   }
 
@@ -824,7 +1004,8 @@ function RoomDetailPage() {
   }
 
   // Handle approve from TextQuestionApprovalPopup (text-based questions)
-  const handleTextQuestionApprove = async (question) => {
+  const handleTextQuestionApprove = async (question, retryCount = 0) => {
+    const maxRetries = 2
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -841,7 +1022,8 @@ function RoomDetailPage() {
           segmentIndex: question.segmentIndex,
           timeToAnswer: question.timeToAnswer || roomSettings.timeToAnswer || 30,
           points: question.points || roomSettings.points || 100,
-          status: 'approved'
+          status: 'approved',
+          category: selectedCategory || undefined
         })
       })
 
@@ -855,9 +1037,22 @@ function RoomDetailPage() {
             question: data.question
           })
         }
+      } else {
+        const errData = await response.json().catch(() => ({ error: 'Save failed' }))
+        console.error(`Failed to save text question (attempt ${retryCount + 1}):`, errData.error)
+        if (retryCount < maxRetries) {
+          await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
+          return handleTextQuestionApprove(question, retryCount + 1)
+        }
+        window.alert(`Failed to save question: ${errData.error || 'Server error'}. Please try generating again.`)
       }
     } catch (error) {
-      console.error('Failed to save text question:', error)
+      console.error(`Failed to save text question (attempt ${retryCount + 1}):`, error)
+      if (retryCount < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)))
+        return handleTextQuestionApprove(question, retryCount + 1)
+      }
+      window.alert('Failed to save question due to network error. Please try generating again.')
     }
   }
 
@@ -885,7 +1080,8 @@ function RoomDetailPage() {
           options: questionData.options,
           timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
           points: questionData.points || roomSettings.points || 100,
-          status: 'approved'
+          status: 'approved',
+          category: selectedCategory || undefined
         })
       })
 
@@ -1108,6 +1304,80 @@ function RoomDetailPage() {
               </div>
             )}
 
+            {/* Live Answer Counter — shown when a question is active */}
+            {activeQuestion && questionTimeLeft > 0 && (() => {
+              const qid = activeQuestion?._id || activeQuestion?.question?._id
+              const answered = answerCounts[qid] || 0
+              const correct = correctCounts[qid] || 0
+              const wrong = answered - correct
+              return (
+                <div style={{
+                  padding: '8px 16px',
+                  background: 'rgba(59, 130, 246, 0.1)',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  border: '2px solid #3b82f6',
+                  flexWrap: 'wrap'
+                }}>
+                  <span style={{ fontSize: '14px', color: '#3b82f6', fontWeight: '600' }}>
+                    📊
+                  </span>
+                  <span style={{ fontSize: '18px', color: '#3b82f6', fontWeight: '700' }}>
+                    {answered}/{totalParticipants}
+                  </span>
+                  <span style={{ fontSize: '12px', color: '#3b82f6' }}>answered</span>
+                  {answered > 0 && (
+                    <>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 2px' }}>|</span>
+                      <span style={{ fontSize: '14px', color: '#10b981', fontWeight: '700' }}>
+                        ✓ {correct}
+                      </span>
+                      <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '700' }}>
+                        ✗ {wrong}
+                      </span>
+                      <span style={{ fontSize: '12px', color: '#10b981' }}>
+                        {Math.round((correct / answered) * 100)}%
+                      </span>
+                    </>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Participant List Toggle */}
+            <button
+              onClick={async () => {
+                const show = !showParticipants
+                setShowParticipants(show)
+                if (show && room?._id) {
+                  try {
+                    const res = await fetch(`${API_URL}/rooms/${room._id}/members`, {
+                      headers: { 'Authorization': `Bearer ${token}` }
+                    })
+                    const data = await res.json()
+                    if (data.success) setParticipants(data.members || [])
+                  } catch {}
+                }
+              }}
+              style={{
+                padding: '8px 16px',
+                background: showParticipants ? '#3b82f6' : 'var(--bg-card)',
+                color: showParticipants ? 'white' : 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+            >
+              👥 {totalParticipants}
+            </button>
+
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
@@ -1149,6 +1419,28 @@ function RoomDetailPage() {
                 }}
               >
                 ✍️ Create Q
+              </button>
+            )}
+
+            {/* Load from Bank Button */}
+            {!isEnded && (
+              <button
+                onClick={() => setShowQuestionBank(true)}
+                style={{
+                  padding: '8px 16px',
+                  background: '#8b5cf6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                📚 Bank
               </button>
             )}
 
@@ -1213,6 +1505,56 @@ function RoomDetailPage() {
               </button>
             )}
           </div>
+
+          {/* Participant List Panel */}
+          {showParticipants && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '12px',
+              padding: '16px 20px',
+              marginBottom: '20px',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--card-shadow)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  👥 Participants ({participants.length})
+                </h3>
+                <button onClick={() => setShowParticipants(false)} style={{
+                  background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-secondary)'
+                }}>✕</button>
+              </div>
+              {participants.length === 0 ? (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>No students have joined yet.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '8px' }}>
+                  {participants.map((p) => (
+                    <div key={p._id} style={{
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      padding: '8px 12px', background: 'var(--bg-primary)', borderRadius: '8px',
+                      border: '1px solid var(--border-color)'
+                    }}>
+                      <div style={{
+                        width: '28px', height: '28px', borderRadius: '50%',
+                        background: '#3b82f6', color: 'white', display: 'flex',
+                        alignItems: 'center', justifyContent: 'center', fontWeight: '600', fontSize: '12px', flexShrink: 0
+                      }}>
+                        {(p.name || '?')[0].toUpperCase()}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {p.name}
+                        </p>
+                        <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)' }}>
+                          {p.enrollmentNumber || p.email}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
@@ -1423,7 +1765,7 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
             <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '20px' }}>📝</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
@@ -1439,6 +1781,25 @@ function RoomDetailPage() {
                 }}>
                   {generatedQuestions.length}
                 </span>
+              )}
+              {generatedQuestions.length > 0 && (
+                <button
+                  onClick={handleSaveAllToBank}
+                  disabled={savedToBank.size === generatedQuestions.length}
+                  style={{
+                    padding: '4px 12px',
+                    background: savedToBank.size === generatedQuestions.length ? '#9ca3af' : '#8b5cf6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: '600',
+                    cursor: savedToBank.size === generatedQuestions.length ? 'not-allowed' : 'pointer',
+                    marginLeft: 'auto'
+                  }}
+                >
+                  {savedToBank.size === generatedQuestions.length ? '✓ Saved' : '💾 Save All to Bank'}
+                </button>
               )}
             </div>
 
@@ -1535,6 +1896,22 @@ function RoomDetailPage() {
                           )
                         })}
                       </div>
+                      {q.explanation && (
+                        <div style={{
+                          marginTop: '10px',
+                          padding: '10px 12px',
+                          background: '#eff6ff',
+                          borderRadius: '6px',
+                          border: '1px solid #bfdbfe'
+                        }}>
+                          <p style={{ fontSize: '11px', fontWeight: '600', color: '#1d4ed8', margin: '0 0 4px 0' }}>
+                            💡 Explanation
+                          </p>
+                          <p style={{ fontSize: '13px', color: '#1e40af', margin: 0, lineHeight: '1.5' }}>
+                            {q.explanation}
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
                       <span style={{
@@ -1547,7 +1924,43 @@ function RoomDetailPage() {
                       }}>
                         {answerCounts[q._id] || 0}/{totalParticipants}
                       </span>
+                      {(answerCounts[q._id] || 0) > 0 && (
+                        <div style={{ display: 'flex', gap: '6px', fontSize: '10px', fontWeight: '600' }}>
+                          <span style={{ color: '#10b981' }}>✓ {correctCounts[q._id] || 0}</span>
+                          <span style={{ color: '#ef4444' }}>✗ {(answerCounts[q._id] || 0) - (correctCounts[q._id] || 0)}</span>
+                        </div>
+                      )}
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                      {!savedToBank.has(q._id) ? (
+                        <button
+                          onClick={() => handleSaveToBank(q)}
+                          style={{
+                            marginTop: '4px',
+                            padding: '3px 8px',
+                            background: '#8b5cf620',
+                            color: '#8b5cf6',
+                            border: '1px solid #8b5cf640',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          💾 Save
+                        </button>
+                      ) : (
+                        <span style={{
+                          marginTop: '4px',
+                          padding: '3px 8px',
+                          background: '#d1fae5',
+                          color: '#059669',
+                          borderRadius: '4px',
+                          fontSize: '10px',
+                          fontWeight: '600'
+                        }}>
+                          ✓ Saved
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1571,7 +1984,7 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} />
             </div>
           </div>
         </div>
@@ -1694,6 +2107,28 @@ function RoomDetailPage() {
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
           isLast={true}
+        />
+      )}
+
+      {/* Question Bank Panel */}
+      {showQuestionBank && (
+        <QuestionBankPanel
+          token={token}
+          onClose={() => setShowQuestionBank(false)}
+          onInsertQuestions={handleInsertFromBank}
+        />
+      )}
+
+      {/* Category Select Popup for Saving to Bank */}
+      {showCategoryPopup && (
+        <CategorySelectPopup
+          token={token}
+          questionCount={categoryPopupCount}
+          onSave={(category) => handleConfirmSaveToBank(category)}
+          onClose={() => {
+            setShowCategoryPopup(false)
+            setCategoryPopupQuestion(null)
+          }}
         />
       )}
 

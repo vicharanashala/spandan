@@ -1,6 +1,6 @@
 {
   "name": "spandan",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Spandan - Poll Question Generator",
   "workspaces": [
@@ -13,12 +13,18 @@
     "dev:backend": "npm run dev --workspace=backend",
     "build": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
-    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
+    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend",
+    "start": "pm2 start ecosystem.config.js",
+    "stop": "pm2 stop all",
+    "reload": "pm2 reload ecosystem.config.js",
+    "status": "pm2 status"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
   },
   "dependencies": {
-    "pm2": "^7.0.1"
+    "compression": "^1.8.1",
+    "multer": "^2.2.0",
+    "pm2": "^5.3.0"
   }
 }

@@ -19,6 +19,9 @@ export const saveTranscript = async (roomId, segmentIndex, text, duration = 0) =
       wordCount: text.split(/\s+/).length
     })
   })
+  if (!response.ok) {
+    throw new Error(`Failed to save transcript: ${response.statusText}`)
+  }
   return response.json()
 }
 
@@ -30,6 +33,9 @@ export const getTranscripts = async (roomId) => {
       'Authorization': `Bearer ${token}`
     }
   })
+  if (!response.ok) {
+    throw new Error(`Failed to fetch transcripts: ${response.statusText}`)
+  }
   return response.json()
 }
 
@@ -41,5 +47,8 @@ export const getSegmentTranscript = async (roomId, segmentIndex) => {
       'Authorization': `Bearer ${token}`
     }
   })
+  if (!response.ok) {
+    throw new Error(`Failed to fetch segment transcript: ${response.statusText}`)
+  }
   return response.json()
 }

@@ -185,7 +185,13 @@ router.put('/password', authenticate, async (req, res) => {
 
 router.post('/samagama-auto-login', async (req, res) => {
   try {
-    const { email, name, isAdmin, isSuperAdmin } = req.body
+    const { email, name, isAdmin, isSuperAdmin, sharedSecret } = req.body
+
+    // Verify shared secret — only Samagama server knows this
+    const expectedSecret = process.env.SAMAGAMA_SHARED_SECRET
+    if (expectedSecret && sharedSecret !== expectedSecret) {
+      return res.status(403).json({ error: 'Invalid request origin' })
+    }
 
     if (!email || !name) {
       return res.status(400).json({ error: 'Missing required user data from Samagama' })

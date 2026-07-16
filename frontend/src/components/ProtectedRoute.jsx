@@ -37,12 +37,34 @@ function ProtectedRoute({ children, allowedRoles }) {
   }
   
   // Not authenticated - redirect to login
-  if (!token || !isAuthenticated) {
+  if (!token) {
     return <Navigate to="/" replace />
   }
   
+  // Token exists but user not loaded yet - show loading (wait for auth rehydration)
+  if (!user) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)'
+      }}>
+        <div style={{
+          width: '40px',
+          height: '40px',
+          border: '3px solid var(--border-color)',
+          borderTopColor: '#3b82f6',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite'
+        }} />
+      </div>
+    )
+  }
+  
   // Check role if specified
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
     return <Navigate to="/" replace />
   }
   

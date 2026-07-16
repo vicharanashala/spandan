@@ -71,7 +71,7 @@ export const deleteQuestion = async (questionId, userId) => {
   await Question.findByIdAndDelete(questionId)
   
   // Also delete related responses
-  await Response.deleteMany({ question: questionId })
+  await Response.deleteMany({ questionId: questionId })
   
   return true
 }
@@ -113,7 +113,7 @@ export const submitResponse = async (data, studentId) => {
   const isCorrect = selectedOption === question.correctOptionIndex
   
   const response = new Response({
-    question: questionId,
+    questionId: questionId,
     roomId: question.roomId,
     studentId: studentId,
     selectedOption,
@@ -127,8 +127,8 @@ export const submitResponse = async (data, studentId) => {
 }
 
 export const getResponsesByQuestion = async (questionId) => {
-  return Response.find({ question: questionId })
-    .populate('student', 'name email')
+  return Response.find({ questionId })
+    .populate('studentId', 'name email')
     .sort({ createdAt: -1 })
 }
 
@@ -139,30 +139,31 @@ export const getResponsesByRoom = async (roomId) => {
 }
 
 export const getQuestionResults = async (questionId) => {
-  const responses = await Response.find({ question: questionId })
-  
-  const totalResponses = responses.length
-  
-  if (totalResponses === 0) {
-    return {
-      totalResponses: 0,
-      results: {},
-      correctPercentage: 0
+  const aggregation = await Response.aggregate([
+    { $match: { questionId: new (await import('mongoose')).default.Types.ObjectId(questionId) } },
+    {
+      $group: {
+        _id: '$selectedOption',
+        count: { $sum: 1 },
+        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }
+      }
     }
+  ])
+
+  if (aggregation.length === 0) {
+    return { totalResponses: 0, results: {}, correctPercentage: 0 }
   }
-  
+
   const results = {}
+  let totalResponses = 0
   let correctCount = 0
-  
-  responses.forEach(response => {
-    const option = response.selectedOption
-    results[option] = (results[option] || 0) + 1
-    
-    if (response.isCorrect) {
-      correctCount++
-    }
+
+  aggregation.forEach(bucket => {
+    results[bucket._id] = bucket.count
+    totalResponses += bucket.count
+    correctCount += bucket.correctCount
   })
-  
+
   return {
     totalResponses,
     results,
@@ -298,36 +299,71 @@ IMPORTANT:
 - Write each question as if directly testing the concept itself, not a document`
 }
 
+// Fix common JSON issues from AI responses (trailing commas, etc.)
+function fixJsonString(str) {
+  // Remove trailing commas before ] or }
+  let fixed = str.replace(/,\s*([}\]])/g, '$1')
+  // Remove any control characters except newlines/tabs
+  fixed = fixed.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  return fixed
+}
+
 // Parse questions from AI response
 function parseQuestions(responseText, expectedTypes) {
   try {
     let jsonStr = responseText
     
+    // Try extracting from markdown code blocks
     const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
     if (jsonMatch) {
       jsonStr = jsonMatch[1]
     }
     
+    // Find the JSON object
     const objMatch = jsonStr.match(/\{[\s\S]*\}/)
     if (!objMatch) {
       throw new Error('No JSON found in response')
     }
     
-    const parsed = JSON.parse(objMatch[0])
+    let jsonCandidate = objMatch[0]
+    
+    // Try parsing as-is first
+    let parsed
+    try {
+      parsed = JSON.parse(jsonCandidate)
+    } catch (e) {
+      // If it fails, try fixing common issues
+      console.log('Initial JSON parse failed, attempting to fix...')
+      jsonCandidate = fixJsonString(jsonCandidate)
+      parsed = JSON.parse(jsonCandidate)
+    }
+    
     const questions = parsed.questions || []
     
+    if (questions.length === 0) {
+      console.warn('AI returned empty questions array. Raw response:', responseText.slice(0, 500))
+    }
+    
+    // Normalize AI type variants to valid enum values
+    const normalizeType = (t) => {
+      if (!t) return null
+      const upper = t.toUpperCase().trim()
+      if (upper === 'MCQ' || upper === 'MULTIPLE CHOICE' || upper === 'MULTIPLE-CHOICE') return 'MCQ'
+      if (upper === 'TF' || upper === 'T/F' || upper === 'TRUE/FALSE' || upper === 'TRUE FALSE' || upper === 'BOOLEAN') return 'TF'
+      if (upper === 'MSQ' || upper === 'MULTIPLE SELECT' || upper === 'MULTIPLE-SELECT' || upper === 'MULTI-SELECT') return 'MSQ'
+      return t // return as-is if unknown, will be caught by enum validation
+    }
+
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
-      type: q.type || expectedTypes[index] || 'MCQ',
+      type: normalizeType(q.type) || expectedTypes[index] || 'MCQ',
       question: q.question || 'Question text missing',
-      options: parseOptions(q.options || [], q.type),
+      options: parseOptions(q.options || [], normalizeType(q.type) || expectedTypes[index]),
       explanation: q.explanation || '',
       segmentIndex: 0,
       createdAt: new Date().toISOString()
     }))
   } catch (error) {
-    // Log the RAW model text so a failure is diagnosable instead of a silent []. Truncate huge
-    // responses (keep head + tail) so logs stay readable.
     const raw = typeof responseText === 'string' ? responseText : String(responseText ?? '')
     const shown = raw.length > 2000
       ? raw.slice(0, 1000) + `\n…[${raw.length - 2000} chars truncated]…\n` + raw.slice(-1000)
@@ -485,7 +521,8 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+export async function generateWithGoogle(prompt) {
+  const model = config.googleModel || 'gemini-2.0-flash'
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -517,7 +554,56 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
-// Main question generation function
+// Generic provider dispatch — used by both question generation and knowledge engine
+export async function generateWithProvider(provider, prompt) {
+  switch (provider) {
+    case 'minimax':
+      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+      return await generateWithMiniMax(prompt)
+    case 'openai':
+      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+      return await generateWithOpenAI(prompt)
+    case 'anthropic':
+      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+      return await generateWithAnthropic(prompt)
+    case 'google':
+      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      return await generateWithGoogle(prompt)
+    default:
+      throw new Error(`Unknown AI provider: ${provider}`)
+  }
+}
+
+// Split transcript into chunks that fit within LLM context
+// Each chunk ~3000 chars (~500 words) to stay well under token limits
+const MAX_CHUNK_CHARS = 3000
+
+function splitTranscript(transcript) {
+  if (transcript.length <= MAX_CHUNK_CHARS) {
+    return [transcript]
+  }
+
+  const chunks = []
+  const sentences = transcript.split(/(?<=[.!?])\s+/)
+  let currentChunk = ''
+
+  for (const sentence of sentences) {
+    if ((currentChunk + ' ' + sentence).length > MAX_CHUNK_CHARS && currentChunk.length > 0) {
+      chunks.push(currentChunk.trim())
+      currentChunk = sentence
+    } else {
+      currentChunk = currentChunk ? currentChunk + ' ' + sentence : sentence
+    }
+  }
+
+  if (currentChunk.trim().length > 0) {
+    chunks.push(currentChunk.trim())
+  }
+
+  return chunks
+}
+
+// Main question generation function with transcript chunking
 export async function generateQuestions(transcript, cfg) {
   const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
 
@@ -525,10 +611,57 @@ export async function generateQuestions(transcript, cfg) {
     throw new Error('Transcript is required')
   }
 
-  // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  // Hard limit: max 15000 chars (~2500 words) to prevent API abuse
+  const trimmedTranscript = transcript.trim().slice(0, 15000)
+  if (trimmedTranscript.length < transcript.trim().length) {
+    console.log(`Transcript truncated from ${transcript.trim().length} to ${trimmedTranscript.length} chars`)
+  }
+
+  const chunks = splitTranscript(trimmedTranscript)
+  console.log(`Transcript split into ${chunks.length} chunk(s) for question generation`)
+
+  // If only 1 chunk, generate all questions from it (fast path)
+  if (chunks.length === 1) {
+    return generateFromChunk(trimmedTranscript, numQuestions, difficulty, provider, questionTypeMix)
+  }
+
+  // Multi-chunk: distribute questions across chunks
+  const allQuestions = []
+  const questionsPerChunk = Math.ceil(numQuestions / chunks.length)
+
+  for (let i = 0; i < chunks.length; i++) {
+    const remaining = numQuestions - allQuestions.length
+    if (remaining <= 0) break
+
+    const count = Math.min(questionsPerChunk, remaining)
+    const chunkTypes = questionTypeMix
+      ? generateFromMix(questionTypeMix, count)
+      : getQuestionTypeMix(count)
+
+    let questions = []
+    const maxRetries = 2
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        questions = await generateFromChunk(chunks[i], count, difficulty, provider, null, chunkTypes)
+        if (questions.length >= count || attempt === maxRetries) break
+        console.log(`Chunk ${i + 1} returned ${questions.length}/${count}, retrying... (attempt ${attempt + 2})`)
+      } catch (err) {
+        console.error(`Chunk ${i + 1} generation failed (attempt ${attempt + 1}):`, err.message)
+        if (attempt === maxRetries) break
+      }
+    }
+    allQuestions.push(...questions)
+  }
+
+  console.log(`Total questions generated: ${allQuestions.length}/${numQuestions}`)
+  return allQuestions.slice(0, numQuestions)
+}
+
+// Generate questions from a single chunk
+async function generateFromChunk(transcript, numQuestions, difficulty, provider, questionTypeMix = null, fixedTypes = null) {
+  const questionTypes = fixedTypes || (questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
-    : getQuestionTypeMix(numQuestions)
+    : getQuestionTypeMix(numQuestions))
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
   console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)

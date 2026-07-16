@@ -12,6 +12,7 @@ function RoomResultsPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
+  const [exporting, setExporting] = useState(null)
   
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
@@ -25,11 +26,11 @@ function RoomResultsPage() {
   })
 
   useEffect(() => {
-    if (token) {
+    if (token && user) {
       setAuthToken(token)
       fetchRoomData()
     }
-  }, [token, roomId])
+  }, [token, roomId, user])
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -146,6 +147,40 @@ function RoomResultsPage() {
     }
   }
 
+  const handleExport = async (format) => {
+    setExporting(format)
+    try {
+      const response = await fetch(`${API_URL}/export/room/${roomId}?format=${format}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        alert(err.error || 'Export failed')
+        return
+      }
+      if (format === 'csv') {
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `spandan-${room?.code || roomId}-${new Date().toISOString().slice(0, 10)}.csv`
+        a.click()
+        URL.revokeObjectURL(url)
+      } else {
+        // PDF opens as printable HTML in new tab
+        const html = await response.text()
+        const w = window.open('', '_blank')
+        w.document.write(html)
+        w.document.close()
+      }
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert('Export failed. Please try again.')
+    } finally {
+      setExporting(null)
+    }
+  }
+
   if (isLoading) {
     return (
       <div style={{
@@ -199,6 +234,48 @@ function RoomResultsPage() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {user?.role === 'teacher' && (
+                <>
+                  <button
+                    onClick={() => handleExport('csv')}
+                    disabled={exporting}
+                    style={{
+                      padding: '8px 16px',
+                      background: exporting === 'csv' ? '#94a3b8' : '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: exporting ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    {exporting === 'csv' ? '⏳' : '📥'} CSV
+                  </button>
+                  <button
+                    onClick={() => handleExport('pdf')}
+                    disabled={exporting}
+                    style={{
+                      padding: '8px 16px',
+                      background: exporting === 'pdf' ? '#94a3b8' : '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: exporting ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    {exporting === 'pdf' ? '⏳' : '📄'} PDF
+                  </button>
+                </>
+              )}
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -372,7 +449,7 @@ function RoomResultsPage() {
                           <div style={{ display: 'grid', gap: '8px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
-                              const isSelected = q.selectedOption === optIdx
+                              const isSelected = q.selectedOptions?.includes(optIdx)
                               
                               // For student: highlight their selection. For teacher: highlight correct answer
                               const showAsSelected = isTeacher ? isCorrect : isSelected

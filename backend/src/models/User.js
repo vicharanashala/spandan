@@ -113,7 +113,7 @@ userSchema.pre('save', async function(next) {
   }
 })
 
-// Compare password method
+// Compare password method — @node-rs/bcrypt runs on libuv thread pool, non-blocking
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return compare(candidatePassword, this.password)
 }

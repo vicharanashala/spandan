@@ -20,47 +20,53 @@ import { API_URL } from './config.js'
 
 function App() {
   const { isDark } = useThemeStore()
-  const { token, isAuthenticated, setAuth } = useAuthStore()
+  const { token, user, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
   const [samagamaChecked, setSamagamaChecked] = useState(false)
 
-  // Check for Samagama session on app load
+  // Check for Samagama session on app load (non-blocking)
   useEffect(() => {
-    if (isAuthenticated || samagamaChecked) return
+    if (token || samagamaChecked) return
+
+    let cancelled = false
 
     const checkSamagamaSession = async () => {
       try {
         const samagamaToken = localStorage.getItem('samagama_auth_token')
-        console.log('[Spandan] Samagama token found:', !!samagamaToken)
 
         if (!samagamaToken) {
           setSamagamaChecked(true)
           return
         }
 
+        // Use AbortController with 2s timeout so Samagama doesn't block the app
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 2000)
+
         const response = await fetch('https://samagama.in/api/auth/me', {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${samagamaToken}`,
             'Content-Type': 'application/json'
-          }
+          },
+          signal: controller.signal
         })
 
-        if (!response.ok) {
+        clearTimeout(timeout)
+
+        if (!response.ok || cancelled) {
           setSamagamaChecked(true)
           return
         }
 
         const data = await response.json()
         const samagamaUser = data.user
-        console.log('[Spandan] Samagama user:', samagamaUser?.email)
 
-        if (!samagamaUser || !samagamaUser.email) {
+        if (!samagamaUser || !samagamaUser.email || cancelled) {
           setSamagamaChecked(true)
           return
         }
 
-        // Send to Spandan backend for auto-provisioning
         const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -72,7 +78,7 @@ function App() {
           })
         })
 
-        if (!spandanResponse.ok) {
+        if (!spandanResponse.ok || cancelled) {
           setSamagamaChecked(true)
           return
         }
@@ -80,31 +86,31 @@ function App() {
         const spandanData = await spandanResponse.json()
         setAuth(spandanData.user, spandanData.token)
 
-        // Open dashboard in new tab
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
         const redirectUrl = `${window.location.origin}/spandan${dashboard}`
-        console.log('[Spandan] Opening dashboard:', redirectUrl)
-        window.open(redirectUrl, '_blank')
+        window.location.href = redirectUrl
       } catch (error) {
-        console.error('[Spandan] Samagama session check failed:', error)
+        // Silently handle — Samagama is optional
       } finally {
-        setSamagamaChecked(true)
+        if (!cancelled) {
+          setSamagamaChecked(true)
+        }
       }
     }
 
     checkSamagamaSession()
-  }, [isAuthenticated, samagamaChecked, setAuth])
+
+    return () => { cancelled = true }
+  }, [token, samagamaChecked, setAuth])
 
   // Connect socket when user is authenticated with valid token
   useEffect(() => {
-    if (token && isAuthenticated) {
-      console.log('App: connecting socket with token')
-      connect(token)
+    if (token && user) {
+      connect(token, user._id)
     } else {
-      console.log('App: disconnecting socket')
       disconnect()
     }
-  }, [token, isAuthenticated, connect, disconnect])
+  }, [token, user?._id, connect, disconnect])
 
   // Cleanup socket on unmount
   useEffect(() => {

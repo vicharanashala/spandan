@@ -1,81 +1,93 @@
 import express from 'express'
+import mongoose from 'mongoose'
 import { authenticate, authorize } from '../middleware/auth.js'
+import Response from '../models/Response.js'
+import Question from '../models/Question.js'
+import Room from '../models/Room.js'
+import RoomMember from '../models/RoomMember.js'
+import User from '../models/User.js'
+import { getLeaderboard, getTopN, updateLeaderboard } from '../services/leaderboardService.js'
+
 const router = express.Router()
+
+// Module-level Maps for broadcast throttling (not on io object)
+const lastLeaderboardBroadcast = new Map()
+const lastCountBroadcast = new Map()
 
 // Apply authentication to all routes
 router.use(authenticate)
 
 // POST /api/responses - Save a student's answer
 // Authorization: student only, and studentId must match authenticated user
+// Also updates Redis leaderboard and pushes via Socket.IO — single source of truth
 router.post('/', authorize('student'), async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    
     const { roomId, questionId, selectedOptions, responseTime } = req.body
-    const studentId = req.user._id // Must be authenticated user
+    const studentId = req.user._id
 
-    // Verify student is in the room (member of RoomMember)
+    // Verify student is in the room
     const isMember = await RoomMember.findOne({ roomId, studentId })
     if (!isMember) {
       return res.status(403).json({ error: 'You have not joined this room' })
+    }
+
+    // Reject responses to ended rooms
+    const roomDoc = await Room.findById(roomId).select('isActive endedAt').lean()
+    if (!roomDoc || roomDoc.isActive === false) {
+      return res.status(400).json({ error: 'This room has ended' })
     }
 
     if (!roomId || !questionId || !selectedOptions || !Array.isArray(selectedOptions)) {
       return res.status(400).json({ error: 'Missing required fields: roomId, questionId, and selectedOptions (array)' })
     }
 
-    // Get the question to check correct answer and points
     const question = await Question.findById(questionId)
     if (!question) {
       return res.status(404).json({ error: 'Question not found' })
     }
 
-    // Check if answer is correct based on question type
     let isCorrect = false
-    
+
     if (question.type === 'MSQ') {
-      // MSQ: ALL correct options must be selected AND NO incorrect options selected
       const correctIndices = question.options
         .map((opt, idx) => opt.isCorrect ? idx : -1)
         .filter(idx => idx !== -1)
-      
       const selectedSet = new Set(selectedOptions)
       const correctSet = new Set(correctIndices)
-      
-      // Check all correct are selected AND no incorrect selected
       const allCorrectSelected = correctIndices.every(idx => selectedSet.has(idx))
       const noIncorrectSelected = selectedOptions.every(idx => correctSet.has(idx))
-      
       isCorrect = allCorrectSelected && noIncorrectSelected
     } else {
-      // MCQ/TF: Single correct answer
       const selectedOptionData = question.options[selectedOptions[0]]
       isCorrect = selectedOptionData?.isCorrect || false
     }
-    
-    // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
-    // Minimum 10% of max points for correct answers (even if time runs out)
+
     const maxPoints = question.points || 100
     const tta = question.timeToAnswer || 30
     const respTime = responseTime || 0
     let points = 0
-    
+
     if (isCorrect) {
       const timeRemaining = Math.max(0, tta - respTime)
-      const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
+      const timeDecayFactor = Math.max(0.1, timeRemaining / tta)
       points = Math.round(maxPoints * timeDecayFactor)
     }
-    // Incorrect answers get 0 points
 
+    // Look up room code once (needed for both DB save and Socket.IO)
+    const room = await Room.findById(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+    const roomCode = room.code
+
+    // Save response — compound unique index {roomId, questionId, studentId}
+    // prevents duplicates at DB level. If race occurs, catch error 11000.
     const response = new Response({
       roomId,
       questionId,
       studentId,
-      selectedOption: selectedOptions[0], // Store first selection for MCQ compatibility
-      selectedOptions, // Store all selections for MSQ
+      selectedOption: selectedOptions[0],
+      selectedOptions,
       isCorrect,
       responseTime: respTime,
       points
@@ -110,6 +122,70 @@ router.post('/', authorize('student'), async (req, res) => {
     live?.schedule(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
+    // Also emit real-time updates via Socket.IO for backward compatibility
+    const io = req.app.get('io')
+    if (io && roomCode) {
+      // 1. Update Redis leaderboard (O(log N))
+      await updateLeaderboard(roomId, studentId, points, isCorrect, req.user.name)
+
+      // 2. Send confirmation to THIS student only — O(1) via reverse index
+      const studentSocketId = io._studentSocketIndex?.get(studentId.toString())
+      if (studentSocketId) {
+        const studentSocket = io.sockets.sockets.get(studentSocketId)
+        if (studentSocket && studentSocket.data.roomCode === roomCode) {
+          studentSocket.emit('response:saved', {
+            questionId,
+            studentId,
+            selectedOption: selectedOptions[0],
+            selectedOptions,
+            responseTime: respTime,
+            points,
+            isCorrect
+          })
+        }
+      }
+
+      // 3. Debounced leaderboard broadcast — max 1 per 3 seconds per room
+      const now = Date.now()
+      const lastLB = lastLeaderboardBroadcast.get(roomCode) || 0
+      if (now - lastLB >= 3000) {
+        lastLeaderboardBroadcast.set(roomCode, now)
+        const topStudents = await getTopN(roomId, 50)
+        io.to(roomCode).emit('leaderboard:updated', { leaderboard: topStudents })
+      }
+
+      // 4. Broadcast response count to teacher (throttled per room)
+      const lastCnt = lastCountBroadcast.get(roomCode) || 0
+      if (now - lastCnt >= 2000) {
+        lastCountBroadcast.set(roomCode, now)
+        const totalResponses = await Response.countDocuments({ roomId })
+        const uniqueStudents = await Response.distinct('studentId', { roomId })
+
+        // Per-question breakdown for live teacher view
+        const questionBreakdown = await Response.aggregate([
+          { $match: { roomId: new mongoose.Types.ObjectId(roomId) } },
+          { $group: {
+            _id: '$questionId',
+            count: { $sum: 1 },
+            correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }
+          }}
+        ])
+        const questionCounts = {}
+        const questionCorrect = {}
+        questionBreakdown.forEach(qb => {
+          questionCounts[qb._id.toString()] = qb.count
+          questionCorrect[qb._id.toString()] = qb.correctCount
+        })
+
+        io.to(roomCode).emit('response:count', {
+          totalResponses,
+          uniqueStudents: uniqueStudents.length,
+          questionCounts,
+          questionCorrect
+        })
+      }
+    }
+
     res.status(201).json({
       success: true,
       response: {
@@ -129,9 +205,6 @@ router.post('/', authorize('student'), async (req, res) => {
 // GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
 router.get('/', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId, studentId, page = 1, limit = 50 } = req.query
     const currentUser = req.user
 
@@ -190,11 +263,6 @@ router.get('/', async (req, res) => {
 // GET /api/responses/stats/student/:studentId - Get student stats
 router.get('/stats/student/:studentId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    
     const { studentId } = req.params
     const currentUser = req.user
 
@@ -260,10 +328,6 @@ router.get('/stats/student/:studentId', async (req, res) => {
 // GET /api/responses/stats/room/:roomId - Get room stats for teacher
 router.get('/stats/room/:roomId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
-    
     const { roomId } = req.params
     const currentUser = req.user
 
@@ -287,31 +351,44 @@ router.get('/stats/room/:roomId', async (req, res) => {
     // Get total questions in this room
     const totalQuestions = await Question.countDocuments({ roomId })
 
-    // Get question-level breakdown
+    // Get question-level breakdown using single aggregation (no N+1)
     const questionStats = await Question.find({ roomId }).lean()
-    const stats = await Promise.all(questionStats.map(async (q) => {
-      const responses = await Response.find({ roomId, questionId: q._id })
-      const answerCounts = {}
-      let correctCount = 0
-      
-      q.options.forEach((opt, idx) => {
-        const countForOption = responses.filter(r => r.selectedOption === idx).length
-        answerCounts[idx] = countForOption
-        // If this option is correct, add to correctCount
-        if (opt.isCorrect) {
-          correctCount += countForOption
-        }
-      })
-      
+    
+    // Single aggregation to get all response counts per question
+    const allResponseCounts = await Response.aggregate([
+      { $match: { roomId: new mongoose.Types.ObjectId(roomId) } },
+      { $group: {
+        _id: { questionId: '$questionId', selectedOption: '$selectedOption' },
+        count: { $sum: 1 },
+        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }
+      }}
+    ])
+    
+    // Build a map: questionId -> { optionCounts: {idx: count}, totalResponses, correctCount }
+    const responseMap = new Map()
+    for (const bucket of allResponseCounts) {
+      const qId = bucket._id.questionId.toString()
+      if (!responseMap.has(qId)) {
+        responseMap.set(qId, { optionCounts: {}, totalResponses: 0, correctCount: 0 })
+      }
+      const entry = responseMap.get(qId)
+      entry.optionCounts[bucket._id.selectedOption] = bucket.count
+      entry.totalResponses += bucket.count
+      entry.correctCount += bucket.correctCount
+    }
+    
+    const stats = questionStats.map(q => {
+      const qId = q._id.toString()
+      const data = responseMap.get(qId) || { optionCounts: {}, totalResponses: 0, correctCount: 0 }
       return {
         questionId: q._id,
         question: q.question,
         type: q.type,
-        totalResponses: responses.length,
-        correctCount,
-        answerCounts
+        totalResponses: data.totalResponses,
+        correctCount: data.correctCount,
+        answerCounts: data.optionCounts
       }
-    }))
+    })
 
     res.json({
       success: true,
@@ -331,12 +408,6 @@ router.get('/stats/room/:roomId', async (req, res) => {
 // GET /api/responses/room/:roomId/student/:studentId - Get all questions with student's responses
 router.get('/room/:roomId/student/:studentId', async (req, res) => {
   try {
-    const Response = (await import('../models/Response.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const mongoose = (await import('mongoose')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    
     const { roomId, studentId } = req.params
     const currentUser = req.user
 
@@ -355,10 +426,11 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to view this student\'s responses' })
     }
     
-    // If student, verify they are a member of this room
+    // If student, verify they are a member of this room (or have existing responses)
     if (!isTeacher && isSelf) {
       const isMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-      if (!isMember) {
+      const hasExistingResponses = await Response.findOne({ roomId, studentId: currentUser._id })
+      if (!isMember && !hasExistingResponses) {
         return res.status(403).json({ error: 'Not a member of this room' })
       }
     }
@@ -380,9 +452,6 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       studentId: studentObjectId 
     }).lean()
     
-    // Debug log
-    console.log(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
-    
     // Create a map of questionId -> response for quick lookup
     // Use a helper to safely convert any ID to string
     const toIdString = (id) => {
@@ -396,7 +465,6 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const responseMap = {}
     responses.forEach(r => {
       const qId = toIdString(r.questionId)
-      console.log(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
       responseMap[qId] = r
     })
 
@@ -404,24 +472,19 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const questions = await Question.find({ 
       roomId: roomObjectId, 
       status: 'approved'
-    }).sort({ createdAt: -1 }).lean()  // Sort by newest first (latest asked question on top)
-
-    console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
+    }).sort({ createdAt: -1 }).lean()
 
     // Merge questions with response data
     const questionsWithResponses = questions.map(q => {
       const qIdStr = toIdString(q._id)
       const studentResponse = responseMap[qIdStr]
       
-      if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
-      }
-      
       return {
         _id: qIdStr,
         question: q.question,
         type: q.type,
         options: q.options,
+        explanation: q.explanation,
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
@@ -450,8 +513,6 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 // GET /api/responses/counts/:roomId - Get per-question answer counts
 router.get('/counts/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
     const { roomId } = req.params
 
     const toObjectId = (id) => {
@@ -480,38 +541,54 @@ router.get('/counts/:roomId', async (req, res) => {
 })
 
 // GET /api/responses/leaderboard/:roomId - Get ranked leaderboard for a room
-// Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
+// Uses Redis sorted sets when available for O(1) reads, falls back to MongoDB aggregation
 router.get('/leaderboard/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
-    const User = (await import('../models/User.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId } = req.params
     const currentUser = req.user
 
-    const toObjectId = (id) => {
-      if (!id) return null
-      if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
-      return new mongoose.Types.ObjectId(id)
-    }
-
-    // Check if teacher owns the room
+    // Check access
     const room = await Room.findById(roomId)
     const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
-    
-    // Check if student is a member of the room
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-    
-    // Deny access if neither
+
     if (!isTeacher && !isStudentMember) {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
-    // Aggregate points per student
+    // Try Redis leaderboard first (O(1) read)
+    const redisResult = await getLeaderboard(roomId, {
+      studentId: currentUser._id.toString()
+    })
+
+    if (redisResult && redisResult.leaderboard.length > 0) {
+      let visibleLeaderboard = redisResult.leaderboard
+      let userRank = redisResult.userRank
+
+      if (!isTeacher) {
+        visibleLeaderboard = redisResult.leaderboard.slice(0, 10)
+        if (userRank && userRank > 10) {
+          const userEntry = redisResult.leaderboard.find(e => e.studentId === currentUser._id.toString())
+          if (userEntry && !visibleLeaderboard.some(e => e.studentId === userEntry.studentId)) {
+            visibleLeaderboard.push({ ...userEntry, isCurrentUser: true })
+            visibleLeaderboard.sort((a, b) => a.rank - b.rank)
+          }
+        }
+      }
+
+      return res.json({
+        success: true,
+        leaderboard: visibleLeaderboard,
+        isTeacher,
+        userRank,
+        totalParticipants: redisResult.totalParticipants,
+        source: 'redis'
+      })
+    }
+
+    // Fallback to MongoDB aggregation
     const leaderboardData = await Response.aggregate([
-      { $match: { roomId: toObjectId(roomId) } },
+      { $match: { roomId: new mongoose.Types.ObjectId(roomId) } },
       { $group: {
         _id: '$studentId',
         totalPoints: { $sum: '$points' },
@@ -542,21 +619,14 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       }
     })
 
-    // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
     let userRank = null
-    
+
     if (!isTeacher) {
-      // Find current user's rank
       const userEntry = leaderboard.find(e => e.studentId === currentUser._id.toString())
       userRank = userEntry?.rank || null
-      
-      // Get top 10 + user's entry if not in top 10
       visibleLeaderboard = leaderboard.slice(0, 10)
-      
-      // If user is beyond top 10, add them in the middle
       if (userEntry && userEntry.rank > 10) {
-        // Check if user is already in top 10 (shouldn't be, but safety check)
         const alreadyInTop10 = visibleLeaderboard.some(e => e.studentId === userEntry.studentId)
         if (!alreadyInTop10) {
           visibleLeaderboard.push({ ...userEntry, isCurrentUser: true })
@@ -565,12 +635,13 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       }
     }
 
-    res.json({ 
-      success: true, 
-      leaderboard: visibleLeaderboard, 
+    res.json({
+      success: true,
+      leaderboard: visibleLeaderboard,
       isTeacher,
       userRank,
-      totalParticipants: leaderboard.length
+      totalParticipants: leaderboard.length,
+      source: 'mongodb'
     })
   } catch (error) {
     console.error('Error fetching leaderboard:', error)
@@ -579,3 +650,9 @@ router.get('/leaderboard/:roomId', async (req, res) => {
 })
 
 export default router
+
+// Cleanup function for room-related throttle maps (call on room end/shutdown)
+export function cleanupRoomThrottles(roomCode) {
+  lastLeaderboardBroadcast.delete(roomCode)
+  lastCountBroadcast.delete(roomCode)
+}

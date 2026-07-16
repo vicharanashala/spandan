@@ -2,12 +2,12 @@ import express from 'express'
 import Transcript from '../models/Transcript.js'
 import Room from '../models/Room.js'
 import RoomMember from '../models/RoomMember.js'
-import { authenticate } from '../middleware/auth.js'
+import { authenticate, authorize } from '../middleware/auth.js'
 
 const router = express.Router()
 
 // Create a new transcript entry
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const { roomId, segmentIndex, text, duration, wordCount } = req.body
 

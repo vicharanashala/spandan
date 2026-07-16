@@ -1,7 +1,9 @@
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
+import compression from 'compression'
 import rateLimit from 'express-rate-limit'
+import { spawn } from 'child_process'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
@@ -10,6 +12,11 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -17,17 +24,32 @@ import roomRoutes from './routes/rooms.js'
 import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
-import responseRoutes from './routes/responses.js'
+import responseRoutes, { cleanupRoomThrottles } from './routes/responses.js'
+import exportRoutes from './routes/export.js'
+import questionBankRoutes from './routes/questionBank.js'
+import categoryRoutes from './routes/categories.js'
+import soundRoutes from './routes/sounds.js'
 
-// Import models for reference
-import './models/index.js'
+// Import models once at startup
+import User from './models/User.js'
+import Room from './models/Room.js'
+import RoomMember from './models/RoomMember.js'
+
+// Import services
+import { initLeaderboardRedis, getTopN } from './services/leaderboardService.js'
+import { throttledParticipantBroadcast, broadcastToStudent, cleanupRoomTimers } from './services/broadcastThrottleService.js'
+import { flushAllBatches } from './services/responseBatchService.js'
 
 dotenv.config()
 
-const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
 
-// Request timeout middleware - defined BEFORE use due to hoisting
+// ============================================
+// Redis adapter + Leaderboard Redis
+// ============================================
+const REDIS_URL = process.env.REDIS_URL
+
+// Request timeout middleware
 const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
   // 10- or 30-minute session) that can take minutes, so those routes get a much
@@ -56,11 +78,8 @@ const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
       if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
       if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
       if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
         return callback(null, true)
       }
@@ -68,7 +87,14 @@ const io = new Server(httpServer, {
     },
     methods: ['GET', 'POST'],
     credentials: true
-  }
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  httpCompression: true,
+  // Max 100K concurrent connections per process
+  maxHttpBufferSize: 1e6, // 1MB max payload
+  allowUpgrades: true,
+  perMessageDeflate: true
 })
 
 // Phase 2A — connect Redis (optional). When enabled, the socket.io adapter makes
@@ -79,6 +105,8 @@ const INSTANCE_ID = String(process.pid)
 if (redis.enabled) {
   io.adapter(createAdapter(redis.pubClient, redis.subClient))
   console.log('[socket.io] Redis adapter attached (instance ' + INSTANCE_ID + ')')
+  // Init leaderboard Redis (sorted sets) with the same connection
+  await initLeaderboardRedis(process.env.REDIS_URL)
 }
 
 // Make io accessible to routes
@@ -219,19 +247,18 @@ const rlStore = (prefix) => redis.enabled
 const apiLimiter = rateLimit({
   store: rlStore('rl:api:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  // Note: hundreds of students at a live event usually share ONE public IP (venue/campus NAT),
-  // so this per-IP limit is effectively shared across the whole room. Sized for that.
-  max: 50000, // limit each IP to 50000 requests per windowMs (shared across a NATed classroom)
+  // Per-IP but very high — shared NAT scenario (10K students = one IP)
+  // Each student makes ~5 requests per 15 min → 50K per IP needed
+  max: 500000,
   message: { error: 'Too many requests, please try again later' }
 })
 
 const authLimiter = rateLimit({
   store: rlStore('rl:auth:'),
   windowMs: 60 * 60 * 1000, // 1 hour
-  // Only count FAILED auth attempts: 700 students behind one NAT share this bucket, so counting
-  // successful logins would trip a 429 mid-event (seen at ~250 logins). Failures still throttle brute-force.
+  // Only count FAILED auth attempts per IP — shared NAT is fine here
   skipSuccessfulRequests: true,
-  max: 5000, // limit each IP to 5000 FAILED auth attempts per hour (brute-force backstop)
+  max: 5000,
   message: { error: 'Too many authentication attempts, please try again later' }
 })
 
@@ -255,13 +282,12 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }))
+app.use(compression()) // Compress all responses — critical for 10K+ users
 app.use(express.json({ limit: '10mb' }))
-app.use('/api/', apiLimiter)           // general /api/ routes
-app.use('/api/auth/', authLimiter)     // auth routes
-app.use('/api/responses/', responseLimiter)  // response submission routes
-app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
-
-// Apply timeout middleware before routes
+app.use('/api/', apiLimiter)
+app.use('/api/auth/', authLimiter)
+app.use('/api/responses/', responseLimiter)
+app.use('/api/responses/leaderboard/', leaderboardLimiter)
 app.use(requestTimeout)
 
 // API Routes
@@ -271,21 +297,81 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/export', exportRoutes)
+app.use('/api/question-bank', questionBankRoutes)
+app.use('/api/categories', categoryRoutes)
+app.use('/api/sounds', soundRoutes)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    version: '0.5.0',
+  res.json({
+    status: 'ok',
+    version: '0.9.0',
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    redis: REDIS_URL ? 'configured' : 'not configured'
   })
 })
 
-// Socket.IO connection handling
-const connectedUsers = new Map() // socket.id -> userId
+// ============================================
+// In-memory caches
+// ============================================
+const roomCodeCache = new Map()
+const ROOM_CACHE_MAX = 10000
 
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+function setRoomCache(code, roomId) {
+  if (roomCodeCache.size >= ROOM_CACHE_MAX) {
+    // Evict oldest half
+    const keys = [...roomCodeCache.keys()]
+    for (let i = 0; i < keys.length / 2; i++) {
+      roomCodeCache.delete(keys[i])
+    }
+  }
+  roomCodeCache.set(code, roomId)
+}
+
+
+// Room-level broadcast rate limiting (in-memory, per-process)
+const roomLastBroadcast = new Map()
+const BROADCAST_COOLDOWN_MS = 2000
+
+// Reverse socket index: studentId → socketId for O(1) student lookup
+const studentSocketIndex = new Map()
+io._studentSocketIndex = studentSocketIndex
+
+function canBroadcast(roomCode) {
+  const last = roomLastBroadcast.get(roomCode) || 0
+  if (Date.now() - last < BROADCAST_COOLDOWN_MS) return false
+  roomLastBroadcast.set(roomCode, Date.now())
+  return true
+}
+
+async function getRoomIdByCode(roomCode) {
+  const cached = roomCodeCache.get(roomCode)
+  if (cached) return cached
+  const room = await Room.findByCode(roomCode)
+  if (!room) return null
+  setRoomCache(roomCode, room._id)
+  return room._id
+}
+
+function getActualParticipantCount(roomCode) {
+  const room = io.sockets.adapter.rooms.get(roomCode)
+  if (!room) return 0
+  let count = 0
+  for (const socketId of room) {
+    const s = io.sockets.sockets.get(socketId)
+    if (s && s.data.role === 'student') count++
+  }
+  return count
+}
+
+// ============================================
+// Socket.IO — Unlimited single-room handling
+// ============================================
+
+const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'dev-only-insecure-fallback-do-not-use-in-production'
 
 // Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
 // handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
@@ -296,7 +382,7 @@ async function authenticateSocket(socket, token) {
   const u = await User.findById(decoded.userId).select('role').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
-  connectedUsers.set(socket.id, decoded.userId)
+  socket.data.authenticated = true
   return socket.data
 }
 
@@ -336,11 +422,10 @@ io.on('connection', (socket) => {
       await authenticateSocket(socket, data.token)
       socket.emit('authenticated', { success: true })
     } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
-      } else {
-        socket.emit('authenticated', { success: false, error: 'Invalid token' })
-      }
+      socket.emit('authenticated', {
+        success: false,
+        error: error.name === 'TokenExpiredError' ? 'Token expired' : 'Invalid token'
+      })
     }
   })
 
@@ -356,7 +441,14 @@ io.on('connection', (socket) => {
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       socket.join(roomCode)
+      // Store roomCode on socket for disconnect cleanup
+      socket.data.roomCode = roomCode
       const room = await Room.findByCode(roomCode)
+
+      // Register in reverse socket index for O(1) student lookup
+      if (role === 'student') {
+        studentSocketIndex.set(userId.toString(), socket.id)
+      }
 
       let participantCount = 0
       if (room) {
@@ -368,13 +460,17 @@ io.on('connection', (socket) => {
             { upsert: true, new: true }
           )
         }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        // Count actual connected student sockets (not drift-prone counter)
+        participantCount = getActualParticipantCount(roomCode)
       }
 
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+      // Throttled participant broadcast (not every join floods the room)
+      throttledParticipantBroadcast(io, roomCode, participantCount)
+
+      // Send join confirmation only to the joining socket (not broadcast)
+      socket.emit('room:joined', { roomCode, userId, participants: participantCount })
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
     }
   })
 
@@ -390,18 +486,22 @@ io.on('connection', (socket) => {
       socket.leave(roomCode)
       const room = await Room.findByCode(roomCode)
 
+      // Clean up reverse socket index
+      studentSocketIndex.delete(userId.toString())
+
       let participantCount = 0
       if (room) {
         if (role === 'student' && userId) {
           await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
         }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        // Count remaining actual connected sockets
+        participantCount = getActualParticipantCount(roomCode)
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      throttledParticipantBroadcast(io, roomCode, participantCount)
+      socket.emit('room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
     }
   })
 
@@ -411,14 +511,18 @@ io.on('connection', (socket) => {
   // server-side (throttled) from the authenticated REST submit handler — see the
   // scheduleRoomLiveUpdate() broadcaster above and routes/responses.js.
 
+  // Kept as no-op for backward compatibility with older frontend versions
+  socket.on('response:submit', () => {})
+
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    if (!data?.questionId || !data?.question) return
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
-      timer: data.timer,
+      timer: Math.min(Number(data.timer) || 30, 300), // cap at 5 min
       startTime: Date.now()
     })
   })
@@ -429,6 +533,13 @@ io.on('connection', (socket) => {
       questionId: data.questionId,
       results: data.results
     })
+
+    // Resolve roomCode → roomId for getTopN
+    const roomId = await getRoomIdByCode(data.roomCode)
+    if (roomId) {
+      const topStudents = await getTopN(roomId.toString(), 50)
+      io.to(data.roomCode).emit('leaderboard:updated', { leaderboard: topStudents })
+    }
   })
 
   // New question pushed by the teacher (manually created)
@@ -442,32 +553,59 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('disconnect', () => {
-    const userId = connectedUsers.get(socket.id)
-    connectedUsers.delete(socket.id)
-    console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
+  // Teacher: manual leaderboard broadcast
+  socket.on('leaderboard:broadcast', async (data) => {
+    if (!socket.data.authenticated || socket.data.role !== 'teacher') return
+    if (data.roomCode !== socket.data.roomCode) return
+    const roomId = await getRoomIdByCode(data.roomCode)
+    if (roomId) {
+      const topStudents = await getTopN(roomId.toString(), 50)
+      io.to(data.roomCode).emit('leaderboard:updated', { leaderboard: topStudents })
+    }
+  })
+
+  socket.on('disconnect', async () => {
+    // Clean up reverse socket index
+    if (socket.data.userId) {
+      studentSocketIndex.delete(socket.data.userId.toString())
+    }
+
+    // Broadcast updated count if student was in a room
+    // socket.data.roomCode is set via room:join below
+    const roomCode = socket.data.roomCode
+    if (roomCode && socket.data.userId && socket.data.role === 'student') {
+      const roomId = await getRoomIdByCode(roomCode)
+      if (roomId) {
+        const RoomMember = (await import('./models/RoomMember.js')).default
+        await RoomMember.deleteOne({ roomId, studentId: socket.data.userId })
+        const participantCount = getActualParticipantCount(roomCode)
+        throttledParticipantBroadcast(io, roomCode, participantCount)
+      }
+    }
   })
 })
 
-// Error handling middleware
+// ============================================
+// Error handling
+// ============================================
 app.use((err, req, res, next) => {
   console.error('Error:', err)
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
   })
 })
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' })
 })
 
+// ============================================
 // MongoDB connection
+// ============================================
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -477,7 +615,6 @@ const connectDB = async () => {
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
       minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
-    
     console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
@@ -485,15 +622,77 @@ const connectDB = async () => {
   }
 }
 
-const PORT = process.env.PORT || 3001
+// ============================================
+// Graceful shutdown
+// ============================================
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received. Shutting down gracefully...`)
 
+  // Stop auth cache cleanup interval
+  const { stopCacheCleanup } = await import('./middleware/auth.js')
+  stopCacheCleanup()
+
+  // Flush any pending response batches
+  await flushAllBatches()
+
+  // Clear all caches
+  roomCodeCache.clear()
+  roomLastBroadcast.clear()
+  studentSocketIndex.clear()
+
+  // Clear roomLive timers
+  for (const [id, state] of roomLive) {
+    if (state.timer) clearTimeout(state.timer)
+  }
+  roomLive.clear()
+
+  // Clear broadcast throttle timers
+  cleanupRoomTimers()
+
+  httpServer.close(() => {
+    mongoose.connection.close(false, () => {
+      console.log('Server shut down.')
+      process.exit(0)
+    })
+  })
+
+  setTimeout(() => {
+    console.error('Forced shutdown after timeout')
+    process.exit(1)
+  }, 10000)
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// ============================================
 // Start server
+// ============================================
 const startServer = async () => {
   await connectDB()
-  
-  httpServer.listen(PORT, () => {
-    console.log(`Spandan backend v0.5 running on port ${PORT}`)
+
+  // Start transcription server (Python faster-whisper) as a child process
+  if (!process.env.TRANSCRIPTION_SERVICE_URL) {
+    const transcriptionScript = path.join(__dirname, '..', 'transcription_server.py')
+    try {
+      const py = spawn('python', [transcriptionScript], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false
+      })
+      py.stdout.on('data', (d) => process.stdout.write('[whisper] ' + d))
+      py.stderr.on('data', (d) => process.stderr.write('[whisper] ' + d))
+      py.on('error', (e) => console.error('Whisper spawn failed:', e.message))
+      py.on('exit', (code) => console.log('Whisper process exited with code', code))
+      console.log('Transcription server (faster-whisper) started as child process')
+    } catch (e) {
+      console.error('Failed to start transcription server:', e.message)
+    }
+  }
+
+  httpServer.listen(process.env.PORT || 3001, () => {
+    console.log(`Spandan backend v0.9.0 running on port ${process.env.PORT || 3001}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
+    console.log(`Redis: ${REDIS_URL ? 'enabled' : 'disabled (single process mode)'}`)
   })
 }
 

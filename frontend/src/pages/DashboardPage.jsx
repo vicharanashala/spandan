@@ -45,22 +45,35 @@ function DashboardPage() {
       const allRooms = roomsData.rooms || []
       const activeRooms = allRooms.filter(r => !r.endedAt)
       
-      // Fetch all questions for teacher's rooms
+      // Fetch all questions and responses in parallel (avoid N+1 sequential calls)
+      const results = await Promise.all(
+        allRooms.map(async (room) => {
+          try {
+            const [qRes, rRes] = await Promise.all([
+              fetch(`${API_URL}/questions?roomId=${room._id}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+              }),
+              fetch(`${API_URL}/responses/stats/room/${room._id}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+              })
+            ])
+            const qData = await qRes.json()
+            const rData = await rRes.json()
+            return {
+              polls: (qData.questions || []).length,
+              responses: rData.stats?.totalResponses || 0
+            }
+          } catch {
+            return { polls: 0, responses: 0 }
+          }
+        })
+      )
+      
       let totalPolls = 0
       let totalResponses = 0
-      
-      for (const room of allRooms) {
-        const qRes = await fetch(`${API_URL}/questions?roomId=${room._id}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-        const qData = await qRes.json()
-        totalPolls += (qData.questions || []).length
-        
-        const rRes = await fetch(`${API_URL}/responses/stats/room/${room._id}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-        const rData = await rRes.json()
-        totalResponses += (rData.stats?.totalResponses || 0)
+      for (const r of results) {
+        totalPolls += r.polls
+        totalResponses += r.responses
       }
       
       setStats({

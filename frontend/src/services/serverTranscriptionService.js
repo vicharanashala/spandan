@@ -41,6 +41,9 @@ export const blobToBase64 = (blob) => {
 // Check transcription service status
 export const getTranscriptionStatus = async () => {
   const response = await fetch(`${API_URL}/transcription/status`)
+  if (!response.ok) {
+    throw new Error(`Failed to check transcription status: ${response.statusText}`)
+  }
   return response.json()
 }
 

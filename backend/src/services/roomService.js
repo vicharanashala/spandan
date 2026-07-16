@@ -110,7 +110,9 @@ export const getRoomsByStudent = async (studentId) => {
   
   // Also get rooms from Response (where student answered) - includes rooms student left
   const responseRooms = await Response.find({ studentId }).populate('roomId')
-  const uniqueResponseRoomIds = [...new Set(responseRooms.map(r => r.roomId._id.toString()))]
+  // Filter out null roomId (deleted rooms) to prevent crash
+  const validResponseRooms = responseRooms.filter(r => r.roomId)
+  const uniqueResponseRoomIds = [...new Set(validResponseRooms.map(r => r.roomId._id.toString()))]
   
   // Get full room objects for Response rooms that aren't in RoomMember
   const responseRoomIds = uniqueResponseRoomIds.filter(id => !memberRooms.some(r => r._id.toString() === id))

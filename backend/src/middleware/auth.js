@@ -2,7 +2,16 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import User from '../models/User.js'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+const JWT_SECRET = process.env.JWT_SECRET
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('FATAL: JWT_SECRET environment variable is not set. Refusing to start in production without a secure secret.')
+    process.exit(1)
+  } else {
+    console.warn('WARNING: JWT_SECRET not set — using insecure dev fallback. Do NOT deploy to production without setting JWT_SECRET.')
+  }
+}
+const SECRET = JWT_SECRET || 'dev-only-insecure-fallback-do-not-use-in-production'
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '7d'
 
 // Short-TTL in-memory cache of authenticated users. Every protected request used to
@@ -18,6 +27,23 @@ const USER_CACHE_MAX = Number(process.env.AUTH_CACHE_MAX) || 20000
 const userCache = new Map() // userId -> { user, expires }
 
 export const clearUserCache = () => userCache.clear()
+
+// Periodic cleanup every 5 minutes (prevents unbounded memory growth)
+const cacheCleanupInterval = setInterval(() => {
+  const now = Date.now()
+  for (const [key, val] of userCache) {
+    if (now >= val.expires) userCache.delete(key)
+  }
+}, 300000)
+
+// Allow cleanup on server shutdown
+export function stopCacheCleanup() {
+  clearInterval(cacheCleanupInterval)
+}
+
+export function invalidateUserCache(userId) {
+  userCache.delete(userId)
+}
 
 export const authenticate = async (req, res, next) => {
   try {
@@ -96,7 +122,7 @@ export const authorize = (...roles) => {
 export const generateToken = (userId) => {
   return jwt.sign(
     { userId },
-    JWT_SECRET,
+    SECRET,
     { expiresIn: JWT_EXPIRY }
   )
 }

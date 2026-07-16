@@ -89,13 +89,8 @@ function AuthPage() {
 
     if (isLogin) {
       try {
-        const data = await login(formData.email, formData.password)
-        // Navigate based on actual role from backend response, not local user state
-        if (data.user?.role === 'teacher') {
-          navigate('/teacher')
-        } else {
-          navigate('/student')
-        }
+        await login(formData.email, formData.password)
+        // Navigation handled by useEffect watching isAuthenticated
       } catch (err) {
         setValidationError(err.message || 'Login failed')
       }

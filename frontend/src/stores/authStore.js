@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { API_URL } from '../config.js'
+import { useSocketStore } from './socketStore.js'
 
 export const useAuthStore = create(
   persist(
@@ -79,6 +80,8 @@ export const useAuthStore = create(
       },
 
       logout: () => {
+        // Disconnect socket on logout to stop receiving events
+        useSocketStore.getState().disconnect()
         set({ 
           user: null, 
           token: null, 
@@ -99,15 +102,22 @@ export const useAuthStore = create(
             }
           })
           
+          // Only logout on actual auth failure (401/403), not on network errors or 5xx
+          if (response.status === 401 || response.status === 403) {
+            get().logout()
+            return null
+          }
+          
           if (!response.ok) {
-            throw new Error('Session expired')
+            // Server error or rate limit — don't logout, just return null
+            return null
           }
           
           const data = await response.json()
           set({ user: data.user })
           return data.user
         } catch (error) {
-          get().logout()
+          // Network error — don't logout, just return null
           return null
         }
       },
@@ -128,9 +138,15 @@ export const useAuthStore = create(
       name: 'spandan-auth',
       partialize: (state) => ({ 
         user: state.user, 
-        token: state.token,
-        isAuthenticated: state.isAuthenticated
-      })
+        token: state.token
+      }),
+      onRehydrateStorage: (state) => {
+        return (state) => {
+          if (state && state.user && state.token) {
+            useAuthStore.setState({ isAuthenticated: true })
+          }
+        }
+      }
     }
   )
 )

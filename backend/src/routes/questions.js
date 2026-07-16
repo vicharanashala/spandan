@@ -115,13 +115,16 @@ router.post('/', authorize('teacher'), async (req, res) => {
       type, 
       question, 
       options, 
+      explanation,
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
-      segmentIndex = 0
+      segmentIndex = 0,
+      category = null
     } = req.body
 
     if (!roomId || !type || !question || !options) {
+      console.error('Question save validation failed:', { roomId: !!roomId, type, question: !!question, optionsCount: options?.length })
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
@@ -129,7 +132,13 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // The frontend renders these as React text nodes, which auto-escape at
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
-    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = stripObject({ roomId, type, question, options, explanation, timeToAnswer, points, status, segmentIndex })
+
+    // Add category if provided
+    if (category) {
+      sanitizedData.category = category
+    }
+    sanitizedData.createdBy = req.user._id
 
     const newQuestion = new Question(sanitizedData)
 
@@ -140,10 +149,13 @@ router.post('/', authorize('teacher'), async (req, res) => {
       question: newQuestion
     })
   } catch (error) {
-    console.error('Error creating question:', error)
+    console.error('Error creating question:', error.message || error)
+    if (error.errors) {
+      console.error('Validation errors:', Object.entries(error.errors).map(([k, v]) => `${k}: ${v.message}`).join(', '))
+    }
     res.status(500).json({
       success: false,
-      error: 'Failed to create question'
+      error: error.message || 'Failed to create question'
     })
   }
 })
@@ -159,14 +171,18 @@ router.get('/', async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const Room = (await import('../models/Room.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
+    const Response = (await import('../models/Response.js')).default
     const currentUser = req.user
 
-    // Check access: teacher owns room OR student is member
+    // Check access: teacher owns room OR student is member OR student has responses
     const room = await Room.findById(roomId)
     const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
+    const hasResponses = !isTeacher && !isStudentMember && currentUser.role === 'student'
+      ? await Response.findOne({ roomId, studentId: currentUser._id })
+      : null
 
-    if (!isTeacher && !isStudentMember) {
+    if (!isTeacher && !isStudentMember && !hasResponses) {
       return res.status(403).json({ error: 'Not authorized to access questions for this room' })
     }
 

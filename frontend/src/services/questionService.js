@@ -8,6 +8,9 @@ export const getAIProviders = async () => {
   const response = await fetch(`${API_URL}/questions/providers`, {
     headers: token ? { 'Authorization': `Bearer ${token}` } : {}
   })
+  if (!response.ok) {
+    throw new Error(`Failed to fetch AI providers: ${response.statusText}`)
+  }
   const data = await response.json()
   return data
 }

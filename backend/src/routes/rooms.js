@@ -3,6 +3,7 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import { cleanupRoomThrottles } from './responses.js'
 
 const router = express.Router()
 
@@ -59,13 +60,17 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     const RoomMember = (await import('../models/RoomMember.js')).default
+    const Response = (await import('../models/Response.js')).default
     
     // Check if user is the room teacher (owner) or a student member
     const isOwner = room.teacher._id.toString() === req.user._id.toString()
     const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
+    const hasResponses = !isOwner && !isStudentMember && req.user.role === 'student'
+      ? await Response.findOne({ roomId: req.params.id, studentId: req.user._id })
+      : null
     
-    // Only the room owner OR room members can access
-    if (!isOwner && !isStudentMember) {
+    // Only the room owner OR room members OR students with responses can access
+    if (!isOwner && !isStudentMember && !hasResponses) {
       return res.status(403).json({ error: 'Access denied' })
     }
     
@@ -141,6 +146,8 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      // Cleanup throttle maps
+      cleanupRoomThrottles(room.code)
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })
@@ -164,6 +171,37 @@ router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
+  }
+})
+
+// Get room members (teacher only)
+router.get('/:id/members', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const room = await getRoomById(req.params.id)
+    if (room.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only room owner can view members' })
+    }
+
+    const RoomMember = (await import('../models/RoomMember.js')).default
+
+    const members = await RoomMember.find({ roomId: req.params.id })
+      .populate('studentId', 'name email enrollmentNumber role')
+      .lean()
+
+    // Filter out null studentIds (deleted users) and teachers
+    const students = members
+      .filter(m => m.studentId && m.studentId.role === 'student')
+      .map(m => ({
+        _id: m.studentId._id,
+        name: m.studentId.name,
+        email: m.studentId.email,
+        enrollmentNumber: m.studentId.enrollmentNumber,
+        joinedAt: m.joinedAt
+      }))
+
+    res.json({ success: true, members: students })
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch members' })
   }
 })
 

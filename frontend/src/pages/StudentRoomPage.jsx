@@ -8,6 +8,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
+import { playNotificationSound } from '../utils/sounds'
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
@@ -28,15 +29,41 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [submitResult, setSubmitResult] = useState(null) // {isCorrect, points, responseTime, questionId}
+  const [showFeedback, setShowFeedback] = useState(false) // Only reveal after question ends
   const timerIntervalRef = useRef(null)
+  const submittedRef = useRef(false) // Block double-submits immediately
+  const roomRef = useRef(null)
+
+  // Keep roomRef in sync with room state
+  useEffect(() => {
+    roomRef.current = room
+  }, [room])
+
+  // Auto-dismiss result banner after 3 seconds
+  useEffect(() => {
+    if (showFeedback && submitResult) {
+      const timer = setTimeout(() => {
+        setSubmitResult(null)
+        setShowFeedback(false)
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [showFeedback, submitResult])
 
   useEffect(() => {
     if (!token || !socket) return
     setAuthToken(token)
     joinSession()
     return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user._id)
+      // Clear any running timer on unmount
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+        timerIntervalRef.current = null
+      }
+      const currentRoom = roomRef.current
+      if (currentRoom?.code) {
+        leaveRoom(currentRoom.code, user._id)
       }
     }
   }, [token, socket])
@@ -50,7 +77,18 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      submittedRef.current = false
+      setSubmitResult(null)
+      setShowFeedback(false)
       setTimeLeft(data.timer || 30)
+      const r = roomRef.current
+      const soundId = r?.settings?.notificationSound || 'beep'
+      const customUrl = r?.settings?.customSoundUrl
+      if (soundId === 'custom' && customUrl) {
+        try { new Audio(customUrl).play().catch(() => {}) } catch {}
+      } else {
+        playNotificationSound(soundId)
+      }
       
       if (data.question && data.question.timeToAnswer) {
         setTimeLeft(data.question.timeToAnswer)
@@ -67,9 +105,10 @@ function StudentRoomPage() {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            setShowFeedback(true)
+            const r = roomRef.current
+            if (r?._id && user?._id) {
+              fetchPastResponses(r._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -86,17 +125,18 @@ function StudentRoomPage() {
         timerIntervalRef.current = null
       }
       
-      // Only fetch if room and user are available
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      // Reveal the answer feedback now that question is over
+      setShowFeedback(true)
+      
+      const r = roomRef.current
+      if (r?._id && user?._id) {
+        fetchPastResponses(r._id, user._id)
       }
       setResults(data?.results || null)
       setCurrentQuestion(null)
     }
 
     const handleNewQuestion = (question) => {
-      // Handle manually created questions from teacher
-      // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
@@ -105,16 +145,28 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      submittedRef.current = false
+      setSubmitResult(null)
+      setShowFeedback(false)
       setTimeLeft(question.timeToAnswer || 30)
+      const r = roomRef.current
+      const soundId = r?.settings?.notificationSound || 'beep'
+      const customUrl = r?.settings?.customSoundUrl
+      if (soundId === 'custom' && customUrl) {
+        try { new Audio(customUrl).play().catch(() => {}) } catch {}
+      } else {
+        playNotificationSound(soundId)
+      }
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            setShowFeedback(true)
+            const r = roomRef.current
+            if (r?._id && user?._id) {
+              fetchPastResponses(r._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -124,31 +176,35 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    const handleRoomEnded = () => {
+      const r = roomRef.current
+      navigate(`/student/room/${r?._id}/results`)
+    }
+
     // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
     // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
     // room's questions so any missed one surfaces without the student manually refreshing.
     const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      const r = roomRef.current
+      if (r?._id && user?._id) {
+        fetchPastResponses(r._id, user._id)
       }
     }
 
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('room:ended', handleRoomEnded)
     socket.on('connect', handleReconnect)
-    socket.on('room:ended', () => {
-      navigate(`/student/room/${room?._id}/results`)
-    })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('room:ended', handleRoomEnded)
       socket.off('connect', handleReconnect)
-      socket.off('room:ended')
     }
-  }, [socket, navigate, room?._id])
+  }, [socket, navigate])
 
   const joinSession = async () => {
     setIsLoading(true)
@@ -215,7 +271,8 @@ function StudentRoomPage() {
   }
 
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    if (selectedOptions.length === 0 || submittedRef.current || !currentQuestion) return
+    submittedRef.current = true
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -249,13 +306,22 @@ function StudentRoomPage() {
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-
       // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
       // (from this authenticated POST) — the client no longer emits points:update /
       // response:submit. The POST returns this student's current rank; surface it so the
       // leaderboard's "you" pill updates even when outside the broadcast top-N.
       if (saveData.success && saveData.rank != null) {
         setMyRank(saveData.rank)
+      }
+
+      // Store result for instant feedback display
+      if (saveData.success && saveData.response) {
+        setSubmitResult({
+          isCorrect: saveData.response.isCorrect,
+          points: saveData.response.points,
+          responseTime: saveData.response.responseTime,
+          questionId
+        })
       }
     } catch (err) {
       console.error('Failed to save response:', err)
@@ -534,14 +600,40 @@ function StudentRoomPage() {
               {submitted ? (
                 <div style={{
                   textAlign: 'center',
-                  padding: '20px',
-                  background: 'rgba(255,255,255,0.1)',
-                  borderRadius: '12px'
+                  padding: '24px',
+                  background: showFeedback && submitResult
+                    ? (submitResult.isCorrect ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)')
+                    : 'rgba(255,255,255,0.1)',
+                  borderRadius: '12px',
+                  border: showFeedback && submitResult
+                    ? `2px solid ${submitResult.isCorrect ? '#10b981' : '#ef4444'}`
+                    : 'none'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
-                  <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
-                    Waiting for next question...
-                  </p>
+                  {showFeedback && submitResult ? (
+                    <>
+                      <p style={{
+                        fontSize: '28px',
+                        fontWeight: '700',
+                        color: submitResult.isCorrect ? '#10b981' : '#ef4444',
+                        marginBottom: '8px'
+                      }}>
+                        {submitResult.isCorrect ? '✓ Correct!' : '✗ Incorrect'}
+                      </p>
+                      <p style={{ fontSize: '18px', fontWeight: '600', color: 'white', marginBottom: '4px' }}>
+                        +{submitResult.points} points
+                      </p>
+                      <p style={{ fontSize: '13px', opacity: 0.8, color: 'rgba(255,255,255,0.8)' }}>
+                        Answered in {submitResult.responseTime}s
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p style={{ fontSize: '18px', fontWeight: '600', color: 'white' }}>✓ Answer Submitted</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px', color: 'rgba(255,255,255,0.8)' }}>
+                        {timeLeft > 0 ? `Result reveals in ${timeLeft}s` : 'Revealing results...'}
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <button
@@ -566,6 +658,29 @@ function StudentRoomPage() {
           ) : (
             /* Waiting State - Show Passed Questions */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              {/* Result reveal banner — shows briefly after question ends */}
+              {showFeedback && submitResult && (
+                <div style={{
+                  background: submitResult.isCorrect
+                    ? 'linear-gradient(135deg, #059669, #10b981)'
+                    : 'linear-gradient(135deg, #dc2626, #ef4444)',
+                  borderRadius: '16px',
+                  padding: '24px 32px',
+                  color: 'white',
+                  textAlign: 'center',
+                  boxShadow: submitResult.isCorrect
+                    ? '0 10px 40px rgba(16,185,129,0.3)'
+                    : '0 10px 40px rgba(239,68,68,0.3)'
+                }}>
+                  <p style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>
+                    {submitResult.isCorrect ? '✓ Correct!' : '✗ Incorrect'}
+                  </p>
+                  <p style={{ fontSize: '18px', fontWeight: '600', opacity: 0.9 }}>
+                    +{submitResult.points} points · {submitResult.responseTime}s
+                  </p>
+                </div>
+              )}
+
               {/* Active question area placeholder */}
               <div style={{
                 background: 'var(--bg-card)',
@@ -609,7 +724,16 @@ function StudentRoomPage() {
                   </p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    {pastResponses.map((q, index) => (
+                    {pastResponses
+                      .filter(q => {
+                        // Hide current question from past list while timer is running (anti-cheat)
+                        if (!showFeedback && currentQuestion) {
+                          const currentQId = currentQuestion._id || currentQuestion.question?._id
+                          return q._id !== currentQId
+                        }
+                        return true
+                      })
+                      .map((q, index) => (
                       <div key={`past-${index}`} style={{
                         padding: '20px',
                         background: 'var(--bg-primary)',
@@ -650,6 +774,18 @@ function StudentRoomPage() {
                             }}>
                               {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
                             </span>
+                            {q.answered && q.responseTime != null && q.responseTime > 0 && (
+                              <span style={{
+                                padding: '2px 10px',
+                                background: '#f0f9ff',
+                                color: '#0369a1',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                ⏱ {q.responseTime}s
+                              </span>
+                            )}
                           </div>
                           {q.answered && q.isCorrect && (
                             <span style={{
@@ -751,6 +887,24 @@ function StudentRoomPage() {
                           <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
                             ⚠️ You did not answer this question
                           </p>
+                        )}
+                        
+                        {/* AI Explanation */}
+                        {q.answered && q.explanation && (
+                          <div style={{
+                            marginTop: '12px',
+                            padding: '12px 16px',
+                            background: '#eff6ff',
+                            borderRadius: '8px',
+                            border: '1px solid #bfdbfe'
+                          }}>
+                            <p style={{ fontSize: '12px', fontWeight: '600', color: '#1d4ed8', margin: '0 0 4px 0' }}>
+                              💡 Explanation
+                            </p>
+                            <p style={{ fontSize: '13px', color: '#1e40af', margin: 0, lineHeight: '1.5' }}>
+                              {q.explanation}
+                            </p>
+                          </div>
                         )}
                       </div>
                     ))}
