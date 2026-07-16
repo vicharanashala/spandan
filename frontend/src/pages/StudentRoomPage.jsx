@@ -30,6 +30,21 @@ function StudentRoomPage() {
   const [pastResponses, setPastResponses] = useState([])
   const timerIntervalRef = useRef(null)
 
+  // Confused button state
+  const [isConfused, setIsConfused] = useState(false)
+  const [confusedCount, setConfusedCount] = useState(0)
+
+  // Instant feedback state
+  const [feedback, setFeedback] = useState(null)
+
+  // Emoji reactions state
+  const [floatingReactions, setFloatingReactions] = useState([])
+  const reactionIdRef = useRef(0)
+
+  // Badge notification state
+  const [newBadges, setNewBadges] = useState([])
+  const [earnedBadges, setEarnedBadges] = useState([])
+
   useEffect(() => {
     if (!token || !socket) return
     setAuthToken(token)
@@ -50,6 +65,8 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      setFeedback(null)
+      setIsConfused(false)
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -105,6 +122,8 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      setFeedback(null)
+      setIsConfused(false)
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -141,12 +160,29 @@ function StudentRoomPage() {
       navigate(`/student/room/${room?._id}/results`)
     })
 
+    // Confusion meter updates
+    socket.on('confusion:updated', (data) => {
+      setConfusedCount(data.confusedCount || 0)
+    })
+
+    // Live emoji reactions
+    socket.on('reaction:new', (data) => {
+      const id = ++reactionIdRef.current
+      const reaction = { id, emoji: data.emoji, x: Math.random() * 80 + 10 }
+      setFloatingReactions(prev => [...prev, reaction])
+      setTimeout(() => {
+        setFloatingReactions(prev => prev.filter(r => r.id !== id))
+      }, 3000)
+    })
+
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      socket.off('confusion:updated')
+      socket.off('reaction:new')
     }
   }, [socket, navigate, room?._id])
 
@@ -170,6 +206,7 @@ function StudentRoomPage() {
               clearTimeout(timeout)
               socket.off('room:joined', handleRoomJoined)
               fetchPastResponses(roomData._id, user._id)
+              fetchEarnedBadges()
               resolve()
             }
           }
@@ -211,6 +248,21 @@ function StudentRoomPage() {
       }
     } catch (err) {
       console.error('Failed to fetch past responses:', err)
+    }
+  }
+
+  const fetchEarnedBadges = async () => {
+    if (!user?._id) return
+    try {
+      const res = await fetch(`${API_URL}/responses/badges/${user._id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success && data.badges) {
+        setEarnedBadges(data.badges)
+      }
+    } catch (err) {
+      console.error('Failed to fetch badges:', err)
     }
   }
 
@@ -257,6 +309,23 @@ function StudentRoomPage() {
       if (saveData.success && saveData.rank != null) {
         setMyRank(saveData.rank)
       }
+
+      // Instant feedback
+      if (saveData.feedback) {
+        setFeedback(saveData.feedback)
+      }
+
+      // Check for new badges from response header
+      const badgeHeader = saveResponse.headers.get('X-New-Badges')
+      if (badgeHeader) {
+        try {
+          const badges = JSON.parse(badgeHeader)
+          if (badges.length > 0) {
+            setNewBadges(badges)
+            setTimeout(() => setNewBadges([]), 5000)
+          }
+        } catch {}
+      }
     } catch (err) {
       console.error('Failed to save response:', err)
     }
@@ -266,6 +335,7 @@ function StudentRoomPage() {
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
     if (room?._id && user?._id) {
       fetchPastResponses(room._id, user._id)
+      fetchEarnedBadges()
     }
   }
 
@@ -274,6 +344,22 @@ function StudentRoomPage() {
       leaveRoom(room.code, user._id)
     }
     navigate('/student')
+  }
+
+  const toggleConfused = () => {
+    if (!room?.code || !socket) return
+    if (isConfused) {
+      socket.emit('student:unconfused', { roomCode: room.code })
+      setIsConfused(false)
+    } else {
+      socket.emit('student:confused', { roomCode: room.code })
+      setIsConfused(true)
+    }
+  }
+
+  const sendReaction = (emoji) => {
+    if (!room?.code || !socket) return
+    socket.emit('reaction:send', { roomCode: room.code, emoji })
   }
 
   if (isLoading) {
@@ -349,8 +435,58 @@ function StudentRoomPage() {
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
       width: '100vw',
       maxWidth: '100vw',
-      overflowX: 'hidden'
+      overflowX: 'hidden',
+      position: 'relative'
     }}>
+      {/* Floating Emoji Reactions */}
+      {floatingReactions.map(r => (
+        <div key={r.id} style={{
+          position: 'fixed',
+          bottom: '100px',
+          left: `${r.x}%`,
+          fontSize: '32px',
+          animation: 'floatUp 3s ease-out forwards',
+          pointerEvents: 'none',
+          zIndex: 9999
+        }}>
+          {r.emoji}
+        </div>
+      ))}
+
+      {/* Badge Notification Toast */}
+      {newBadges.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          zIndex: 10000,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }}>
+          {newBadges.map((badge, i) => (
+            <div key={i} style={{
+              background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
+              color: '#1f2937',
+              padding: '12px 20px',
+              borderRadius: '12px',
+              boxShadow: '0 8px 30px rgba(245, 158, 11, 0.4)',
+              animation: 'slideIn 0.5s ease-out',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              fontWeight: '600',
+              fontSize: '14px'
+            }}>
+              <span style={{ fontSize: '24px' }}>🏆</span>
+              <div>
+                <div style={{ fontWeight: '700' }}>{badge.name}</div>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>{badge.description}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
@@ -533,35 +669,112 @@ function StudentRoomPage() {
               {/* Submit Button */}
               {submitted ? (
                 <div style={{
-                  textAlign: 'center',
-                  padding: '20px',
-                  background: 'rgba(255,255,255,0.1)',
-                  borderRadius: '12px'
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
-                  <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
-                    Waiting for next question...
-                  </p>
+                  {/* Instant Feedback */}
+                  {feedback && (
+                    <div style={{
+                      padding: '20px',
+                      background: feedback.isCorrect ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      borderRadius: '12px',
+                      border: `2px solid ${feedback.isCorrect ? '#10b981' : '#ef4444'}`
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '24px' }}>{feedback.isCorrect ? '✅' : '❌'}</span>
+                        <span style={{ fontSize: '18px', fontWeight: '700', color: feedback.isCorrect ? '#10b981' : '#ef4444' }}>
+                          {feedback.isCorrect ? 'Correct!' : 'Incorrect'}
+                        </span>
+                      </div>
+                      {feedback.correctOptions && feedback.correctOptions.length > 0 && (
+                        <p style={{ margin: '4px 0', fontSize: '14px', color: 'rgba(255,255,255,0.9)' }}>
+                          Correct answer: {feedback.correctOptions.map(i => String.fromCharCode(65 + i)).join(', ')}
+                        </p>
+                      )}
+                      {feedback.explanation && (
+                        <p style={{ margin: '8px 0 0', fontSize: '13px', color: 'rgba(255,255,255,0.8)', fontStyle: 'italic' }}>
+                          💡 {feedback.explanation}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {!feedback && (
+                    <div style={{
+                      textAlign: 'center',
+                      padding: '20px',
+                      background: 'rgba(255,255,255,0.1)',
+                      borderRadius: '12px'
+                    }}>
+                      <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                      <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
+                        Waiting for next question...
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <button
+                    onClick={handleSubmitAnswer}
+                    disabled={selectedOptions.length === 0}
+                    style={{
+                      width: '100%',
+                      padding: '16px',
+                      background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
+                      color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
+                      border: 'none',
+                      borderRadius: '12px',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    }}
+                  >
+                    Submit Answer
+                  </button>
+                </div>
+              )}
+
+              {/* Confused Button + Reaction Bar */}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
                 <button
-                  onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
+                  onClick={toggleConfused}
                   style={{
-                    width: '100%',
-                    padding: '16px',
-                    background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
-                    color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
-                    border: 'none',
-                    borderRadius: '12px',
-                    fontSize: '16px',
+                    padding: '10px 20px',
+                    background: isConfused ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255,255,255,0.1)',
+                    border: `2px solid ${isConfused ? '#ef4444' : 'rgba(255,255,255,0.2)'}`,
+                    borderRadius: '10px',
+                    color: 'white',
+                    fontSize: '14px',
                     fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
                   }}
                 >
-                  Submit Answer
+                  🤔 Confused {confusedCount > 0 && `(${confusedCount})`}
                 </button>
-              )}
+                {['👍', '🔥', '💯', '❤️', '🎉'].map(emoji => (
+                  <button
+                    key={emoji}
+                    onClick={() => sendReaction(emoji)}
+                    style={{
+                      padding: '8px 12px',
+                      background: 'rgba(255,255,255,0.1)',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      borderRadius: '10px',
+                      fontSize: '18px',
+                      cursor: 'pointer',
+                      transition: 'transform 0.15s'
+                    }}
+                    onMouseEnter={e => e.target.style.transform = 'scale(1.2)'}
+                    onMouseLeave={e => e.target.style.transform = 'scale(1)'}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             /* Waiting State - Show Passed Questions */
@@ -765,10 +978,57 @@ function StudentRoomPage() {
                   <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
                 </div>
               </div>
+
+              {/* Earned Badges */}
+              {earnedBadges.length > 0 && (
+                <div style={{
+                  background: 'var(--bg-card)',
+                  borderRadius: '16px',
+                  padding: '24px',
+                  boxShadow: 'var(--card-shadow)',
+                  border: '1px solid var(--border-color)',
+                  marginTop: '24px'
+                }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
+                    🏅 My Badges ({earnedBadges.length})
+                  </h3>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                    {earnedBadges.map((badge, i) => (
+                      <div key={i} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '10px 14px',
+                        background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                        borderRadius: '10px',
+                        border: '1px solid #f59e0b'
+                      }}>
+                        <span style={{ fontSize: '20px' }}>{badge.icon || '🏆'}</span>
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: '700', color: '#92400e' }}>{badge.name}</div>
+                          <div style={{ fontSize: '10px', color: '#a16207' }}>{badge.description}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
+
+      <style>{`
+        @keyframes floatUp {
+          0% { opacity: 1; transform: translateY(0) scale(1); }
+          50% { opacity: 1; transform: translateY(-200px) scale(1.3); }
+          100% { opacity: 0; transform: translateY(-400px) scale(0.8); }
+        }
+        @keyframes slideIn {
+          0% { opacity: 0; transform: translateX(100px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+      `}</style>
     </div>
   )
 }

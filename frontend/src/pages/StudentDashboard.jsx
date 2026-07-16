@@ -22,14 +22,30 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+  const [badges, setBadges] = useState([])
 
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchStudentStats()
       fetchActiveRooms()
+      fetchBadges()
     }
   }, [token])
+
+  const fetchBadges = async () => {
+    try {
+      const res = await fetch(`${API_URL}/responses/badges/${user._id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success && data.badges) {
+        setBadges(data.badges)
+      }
+    } catch (err) {
+      console.error('Failed to fetch badges:', err)
+    }
+  }
 
   const fetchStudentStats = async () => {
     try {
@@ -165,6 +181,45 @@ function StudentDashboard() {
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.average}%</div>
               <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
             </div>
+          </div>
+
+          {/* Achievements Section */}
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            padding: '24px',
+            boxShadow: 'var(--card-shadow)',
+            border: '1px solid var(--border-color)',
+            marginBottom: '32px'
+          }}>
+            <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              🏆 Achievements {badges.length > 0 && `(${badges.length})`}
+            </h2>
+            {badges.length === 0 ? (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
+                No badges yet. Answer questions and participate in sessions to earn achievements!
+              </p>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
+                {badges.map((badge, i) => (
+                  <div key={i} style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '14px 16px',
+                    background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                    borderRadius: '12px',
+                    border: '2px solid #f59e0b'
+                  }}>
+                    <span style={{ fontSize: '28px' }}>{badge.icon || '🏆'}</span>
+                    <div>
+                      <div style={{ fontSize: '14px', fontWeight: '700', color: '#92400e' }}>{badge.name}</div>
+                      <div style={{ fontSize: '11px', color: '#a16207', marginTop: '2px' }}>{badge.description}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Quick Join Section */}

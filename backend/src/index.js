@@ -284,6 +284,7 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const roomConfused = new Map() // roomCode -> Set of socketIds who are confused
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -383,6 +384,12 @@ io.on('connection', (socket) => {
     const userId = socket.data?.userId
     const role = socket.data?.role
     if (!roomCode) return
+    // Clean up confused tracking
+    const confusedSet = roomConfused.get(roomCode)
+    if (confusedSet) {
+      confusedSet.delete(socket.id)
+      if (confusedSet.size === 0) roomConfused.delete(roomCode)
+    }
     try {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
@@ -442,9 +449,46 @@ io.on('connection', (socket) => {
     }
   })
 
+  // Confused button — students toggle confusion, teacher sees count
+  socket.on('student:confused', ({ roomCode }) => {
+    if (!roomCode || !socket.data?.userId) return
+    if (!roomConfused.has(roomCode)) roomConfused.set(roomCode, new Set())
+    roomConfused.get(roomCode).add(socket.id)
+    const confusedCount = roomConfused.get(roomCode).size
+    io.to(roomCode).emit('confusion:updated', { confusedCount })
+  })
+
+  socket.on('student:unconfused', ({ roomCode }) => {
+    if (!roomCode || !socket.data?.userId) return
+    const set = roomConfused.get(roomCode)
+    if (set) {
+      set.delete(socket.id)
+      const confusedCount = set.size
+      io.to(roomCode).emit('confusion:updated', { confusedCount })
+    }
+  })
+
+  // Live emoji reactions
+  socket.on('reaction:send', ({ roomCode, emoji }) => {
+    if (!roomCode || !socket.data?.userId) return
+    if (!roomCode) return
+    io.to(roomCode).emit('reaction:new', {
+      emoji,
+      userId: socket.data.userId,
+      timestamp: Date.now()
+    })
+  })
+
+  // Clean up confused tracking on disconnect
   socket.on('disconnect', () => {
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
+    // Remove from all confused sets
+    for (const [code, set] of roomConfused.entries()) {
+      if (set.delete(socket.id) && set.size === 0) {
+        roomConfused.delete(code)
+      }
+    }
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
 })
