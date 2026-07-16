@@ -89,6 +89,13 @@ function RoomDetailPage() {
   // Pending review state - when timer hits zero and questions auto-generated
   const [isPendingReview, setIsPendingReview] = useState(false)
   const [generateQEnabled, setGenerateQEnabled] = useState(true) // fail-safe button
+
+  // Confusion meter state
+  const [confusedCount, setConfusedCount] = useState(0)
+
+  // Floating emoji reactions state
+  const [floatingReactions, setFloatingReactions] = useState([])
+  const reactionIdRef = useRef(0)
   const [roomSettings, setRoomSettings] = useState({
     segmentTime: 2,
     questionsPerSegment: 2,
@@ -158,6 +165,29 @@ function RoomDetailPage() {
     }
     socket.on('leaderboard:updated', handleLiveUpdate)
     return () => socket.off('leaderboard:updated', handleLiveUpdate)
+  }, [socket])
+
+  // Confusion meter updates
+  useEffect(() => {
+    if (!socket) return
+    socket.on('confusion:updated', (data) => {
+      setConfusedCount(data.confusedCount || 0)
+    })
+    return () => socket.off('confusion:updated')
+  }, [socket])
+
+  // Live emoji reactions
+  useEffect(() => {
+    if (!socket) return
+    socket.on('reaction:new', (data) => {
+      const id = ++reactionIdRef.current
+      const reaction = { id, emoji: data.emoji, x: Math.random() * 80 + 10 }
+      setFloatingReactions(prev => [...prev, reaction])
+      setTimeout(() => {
+        setFloatingReactions(prev => prev.filter(r => r.id !== id))
+      }, 3000)
+    })
+    return () => socket.off('reaction:new')
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -971,7 +1001,22 @@ function RoomDetailPage() {
   const isEnded = !!room.endedAt
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden', position: 'relative' }}>
+      {/* Floating Emoji Reactions */}
+      {floatingReactions.map(r => (
+        <div key={r.id} style={{
+          position: 'fixed',
+          bottom: '100px',
+          left: `${r.x}%`,
+          fontSize: '32px',
+          animation: 'floatUp 3s ease-out forwards',
+          pointerEvents: 'none',
+          zIndex: 9999
+        }}>
+          {r.emoji}
+        </div>
+      ))}
+
       <Sidebar user={user} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
@@ -1196,6 +1241,29 @@ function RoomDetailPage() {
                 }}
               />
             </div>
+
+            {/* Confusion Meter */}
+            {confusedCount > 0 && (
+              <div style={{
+                padding: '8px 16px',
+                background: confusedCount > 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.1)',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                border: `2px solid ${confusedCount > 5 ? '#ef4444' : '#f59e0b'}`,
+                animation: confusedCount > 5 ? 'pulse 1s infinite' : 'none'
+              }}>
+                <span style={{ fontSize: '18px' }}>🤔</span>
+                <span style={{
+                  fontSize: '14px',
+                  fontWeight: '700',
+                  color: confusedCount > 5 ? '#ef4444' : '#f59e0b'
+                }}>
+                  {confusedCount} confused
+                </span>
+              </div>
+            )}
 
             {/* End Room Button */}
             {!isEnded && (
@@ -1709,6 +1777,11 @@ function RoomDetailPage() {
         @keyframes pulse {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.1); }
+        }
+        @keyframes floatUp {
+          0% { opacity: 1; transform: translateY(0) scale(1); }
+          50% { opacity: 1; transform: translateY(-200px) scale(1.3); }
+          100% { opacity: 0; transform: translateY(-400px) scale(0.8); }
         }
       `}</style>
     </div>

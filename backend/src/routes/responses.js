@@ -103,6 +103,93 @@ router.post('/', authorize('student'), async (req, res) => {
       throw saveErr
     }
 
+    // Award badges based on performance
+    try {
+      const Badge = (await import('../models/Badge.js')).default
+      const newBadges = []
+
+      // First Answer badge
+      const totalAnswers = await Response.countDocuments({ studentId })
+      if (totalAnswers === 1) {
+        const b = await Badge.findOneAndUpdate(
+          { studentId, badgeType: 'first_answer' },
+          { studentId, badgeType: 'first_answer', roomId },
+          { upsert: true, new: true }
+        )
+        if (b.isNew) newBadges.push({ badgeType: 'first_answer', name: 'First Step', description: 'Answered your first question!' })
+      }
+
+      // Streak badges
+      if (isCorrect) {
+        const recentResponses = await Response.find({ studentId }).sort({ createdAt: -1 }).limit(10).lean()
+        let streak = 0
+        for (const r of recentResponses) {
+          if (r.isCorrect) streak++
+          else break
+        }
+
+        const streakBadges = [
+          { threshold: 3, type: 'streak_3', name: 'Hat Trick', description: '3 correct answers in a row!' },
+          { threshold: 5, type: 'streak_5', name: 'On Fire', description: '5 correct answers in a row!' },
+          { threshold: 10, type: 'streak_10', name: 'Unstoppable', description: '10 correct answers in a row!' }
+        ]
+
+        for (const sb of streakBadges) {
+          if (streak >= sb.threshold) {
+            const b = await Badge.findOneAndUpdate(
+              { studentId, badgeType: sb.type },
+              { studentId, badgeType: sb.type, roomId },
+              { upsert: true, new: true }
+            )
+            if (b.isNew) newBadges.push({ badgeType: sb.type, name: sb.name, description: sb.description })
+          }
+        }
+
+        // Speed Demon - answered in under 3 seconds
+        if (respTime < 3) {
+          const b = await Badge.findOneAndUpdate(
+            { studentId, badgeType: 'speed_demon' },
+            { studentId, badgeType: 'speed_demon', roomId },
+            { upsert: true, new: true }
+          )
+          if (b.isNew) newBadges.push({ badgeType: 'speed_demon', name: 'Speed Demon', description: 'Answered correctly in under 3 seconds!' })
+        }
+      }
+
+      // Century Club - 100 total points
+      const totalPointsAgg = await Response.aggregate([
+        { $match: { studentId } },
+        { $group: { _id: null, total: { $sum: '$points' } } }
+      ])
+      const totalPts = totalPointsAgg[0]?.total || 0
+      if (totalPts >= 100) {
+        const b = await Badge.findOneAndUpdate(
+          { studentId, badgeType: 'century_club' },
+          { studentId, badgeType: 'century_club', roomId },
+          { upsert: true, new: true }
+        )
+        if (b.isNew) newBadges.push({ badgeType: 'century_club', name: 'Century Club', description: 'Earned 100 total points!' })
+      }
+
+      // Active Learner - joined 5+ rooms
+      const RoomMember = (await import('../models/RoomMember.js')).default
+      const roomsJoined = await RoomMember.countDocuments({ studentId })
+      if (roomsJoined >= 5) {
+        const b = await Badge.findOneAndUpdate(
+          { studentId, badgeType: 'active_learner' },
+          { studentId, badgeType: 'active_learner', roomId },
+          { upsert: true, new: true }
+        )
+        if (b.isNew) newBadges.push({ badgeType: 'active_learner', name: 'Active Learner', description: 'Joined 5 or more sessions!' })
+      }
+
+      if (newBadges.length > 0) {
+        res.setHeader('X-New-Badges', JSON.stringify(newBadges))
+      }
+    } catch (badgeErr) {
+      console.error('Badge awarding error (non-fatal):', badgeErr.message)
+    }
+
     // Trigger the throttled, server-authoritative live update for this room (leaderboard +
     // answer counts) and return this student's current rank ("rank on submit"), so clients
     // never poll the leaderboard endpoint during a live session.
@@ -118,7 +205,14 @@ router.post('/', authorize('student'), async (req, res) => {
         points
       },
       rank: rankInfo.rank ?? null,
-      totalParticipants: rankInfo.totalParticipants ?? null
+      totalParticipants: rankInfo.totalParticipants ?? null,
+      feedback: {
+        isCorrect,
+        correctOptions: question.options
+          .map((opt, idx) => opt.isCorrect ? idx : -1)
+          .filter(idx => idx !== -1),
+        explanation: question.explanation || ''
+      }
     })
   } catch (error) {
     console.error('Error saving response:', error)
@@ -476,6 +570,44 @@ router.get('/counts/:roomId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching answer counts:', error)
     res.status(500).json({ error: 'Failed to fetch counts' })
+  }
+})
+
+// GET /api/responses/badges/:studentId - Get student badges
+router.get('/badges/:studentId', async (req, res) => {
+  try {
+    const Badge = (await import('../models/Badge.js')).default
+    const { studentId } = req.params
+    const currentUser = req.user
+
+    if (currentUser.role === 'student' && currentUser._id.toString() !== studentId) {
+      return res.status(403).json({ error: 'Not authorized to view other students\' badges' })
+    }
+
+    const badges = await Badge.find({ studentId }).sort({ awardedAt: -1 }).lean()
+
+    const badgeInfo = {
+      first_answer: { name: 'First Step', icon: '🎯', description: 'Answered your first question!' },
+      streak_3: { name: 'Hat Trick', icon: '🔥', description: '3 correct in a row!' },
+      streak_5: { name: 'On Fire', icon: '🔥', description: '5 correct in a row!' },
+      streak_10: { name: 'Unstoppable', icon: '💎', description: '10 correct in a row!' },
+      perfect_session: { name: 'Perfect Session', icon: '⭐', description: 'Got every question right!' },
+      speed_demon: { name: 'Speed Demon', icon: '⚡', description: 'Answered correctly in under 3s!' },
+      century_club: { name: 'Century Club', icon: '💯', description: 'Earned 100 total points!' },
+      active_learner: { name: 'Active Learner', icon: '📚', description: 'Joined 5+ sessions!' },
+      comeback_kid: { name: 'Comeback Kid', icon: '🔄', description: 'Improved score after a wrong answer!' },
+      quiz_master: { name: 'Quiz Master', icon: '🏆', description: 'Completed 50 questions!' }
+    }
+
+    const enriched = badges.map(b => ({
+      ...b,
+      ...(badgeInfo[b.badgeType] || {})
+    }))
+
+    res.json({ success: true, badges: enriched })
+  } catch (error) {
+    console.error('Error fetching badges:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch badges' })
   }
 })
 
