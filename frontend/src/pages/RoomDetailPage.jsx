@@ -14,6 +14,7 @@ import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
+import { requestQuestionGeneration } from '../services/questionService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -45,6 +46,8 @@ function RoomDetailPage() {
   const transcriptionIntervalRef = useRef(null)
   const finalTranscriptRef = useRef('')
   const accumulatedTranscriptRef = useRef('')
+  // Aborts any in-flight generation poll (Phase 2D) when the page unmounts.
+  const genAbortRef = useRef(null)
   const segmentTranscriptRef = useRef('')
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
@@ -91,6 +94,7 @@ function RoomDetailPage() {
     questionsPerSegment: 2,
     difficulty: 'medium',
     questionProvider: 'minimax',
+    questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
     points: 100
   })
@@ -112,6 +116,7 @@ function RoomDetailPage() {
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
+      genAbortRef.current?.abort() // stop any in-flight generation poll
     }
   }, [roomId])
 
@@ -144,18 +149,15 @@ function RoomDetailPage() {
     }
   }, [socket])
 
-  // Listen for response:new events to update answer counts
+  // Phase 1: answer counts now arrive (absolute, server-computed) inside the throttled
+  // 'leaderboard:updated' payload, instead of a per-response 'response:new' increment.
   useEffect(() => {
     if (!socket) return
-    const handleNewResponse = (data) => {
-      console.log('[DEBUG] New response received:', data)
-      setAnswerCounts(prev => ({
-        ...prev,
-        [data.questionId]: (prev[data.questionId] || 0) + 1
-      }))
+    const handleLiveUpdate = (payload) => {
+      if (payload?.counts) setAnswerCounts(payload.counts)
     }
-    socket.on('response:new', handleNewResponse)
-    return () => socket.off('response:new', handleNewResponse)
+    socket.on('leaderboard:updated', handleLiveUpdate)
+    return () => socket.off('leaderboard:updated', handleLiveUpdate)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -386,44 +388,33 @@ function RoomDetailPage() {
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
-    return new Promise((resolve, reject) => {
-      setIsGeneratingQuestions(true)
-      fetch(`${API_URL}/questions/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
-          }
-        })
-      })
-      .then(response => response.json())
-      .then(data => {
-        setIsGeneratingQuestions(false)
+    setIsGeneratingQuestions(true)
+    // New controller per generation; aborted on unmount (see the [roomId] effect cleanup).
+    genAbortRef.current = new AbortController()
+    try {
+      // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
+      // job internally and returns the same { success, questions } shape either way.
+      const data = await requestQuestionGeneration(text, {
+        numQuestions: roomSettings.questionsPerSegment,
+        difficulty: roomSettings.difficulty,
+        provider: roomSettings.questionProvider || 'minimax',
+        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
+      }, { signal: genAbortRef.current.signal })
 
-        if (data.success && data.questions && data.questions.length > 0) {
-          const markedQuestions = data.questions.map(q => ({
-            ...q,
-            timeToAnswer: roomSettings.timeToAnswer,
-            points: roomSettings.points,
-            segmentIndex: segmentIndex
-          }))
-          resolve(markedQuestions) // Return questions for popup handling
-        } else {
-          reject(new Error(data.error || 'No questions generated'))
-        }
-      })
-      .catch(error => {
-        setIsGeneratingQuestions(false)
-        reject(error)
-      })
-    })
+      setIsGeneratingQuestions(false)
+      if (data.success && data.questions && data.questions.length > 0) {
+        return data.questions.map(q => ({
+          ...q,
+          timeToAnswer: roomSettings.timeToAnswer,
+          points: roomSettings.points,
+          segmentIndex
+        }))
+      }
+      throw new Error(data.error || 'No questions generated')
+    } catch (error) {
+      setIsGeneratingQuestions(false)
+      throw error
+    }
   }
 
   // Handle question generation from pasted text (TextToQuestionsPopup)
@@ -435,26 +426,17 @@ function RoomDetailPage() {
     try {
       const typeMix = mode === 'TF'
         ? { MCQ: 0, TF: 100, MSQ: 0 }
-        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
+        : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
 
-      const response = await fetch(`${API_URL}/questions/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: typeMix
-          }
-        })
-      })
+      genAbortRef.current = new AbortController()
+      // Helper handles both the sync response and the async (jobId → poll) path.
+      const data = await requestQuestionGeneration(text, {
+        numQuestions: roomSettings.questionsPerSegment,
+        difficulty: roomSettings.difficulty,
+        provider: roomSettings.questionProvider || 'minimax',
+        questionTypeMix: typeMix
+      }, { signal: genAbortRef.current.signal })
 
-      const data = await response.json()
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
 

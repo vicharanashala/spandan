@@ -24,7 +24,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
         </span>
       )
     }
-    const mix = roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 }
+    const mix = roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
     return (
       <>
         <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ}%</span>

@@ -7,6 +7,10 @@ export const useSocketStore = create((set, get) => ({
   isConnected: false,
   currentRoom: null,
   participants: 0,
+  // The room we should belong to. Kept across reconnects (unlike currentRoom, which is cleared
+  // on disconnect) so the 'connect' handler can auto-rejoin after a dropped socket. Cleared only
+  // on an explicit leaveRoom()/disconnect().
+  joinedRoom: null,
 
   connect: (token) => {
     const { socket: existingSocket } = get()
@@ -25,6 +29,14 @@ export const useSocketStore = create((set, get) => ({
       console.log('Socket connected')
       set({ isConnected: true })
       socket.emit('authenticate', { token })
+      // On a (re)connect, socket.io gives us a NEW underlying connection that is a member of NO
+      // rooms — even if we had joined one before the drop. Without this, a student whose socket
+      // briefly reconnects silently stops receiving room broadcasts (new_question, leaderboard…)
+      // until they manually refresh the page. Re-join the room we were in so delivery self-heals.
+      const { joinedRoom } = get()
+      if (joinedRoom?.roomCode) {
+        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId })
+      }
     })
 
     socket.on('disconnect', () => {
@@ -81,12 +93,14 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.disconnect()
-      set({ socket: null, isConnected: false, currentRoom: null })
+      set({ socket: null, isConnected: false, currentRoom: null, joinedRoom: null })
     }
   },
 
   joinRoom: (roomCode, userId) => {
     const { socket } = get()
+    // Remember the room so the socket auto-rejoins after a reconnect (see the 'connect' handler).
+    set({ joinedRoom: { roomCode, userId } })
     if (socket) {
       socket.emit('room:join', { roomCode, userId })
     }
@@ -94,6 +108,8 @@ export const useSocketStore = create((set, get) => ({
 
   leaveRoom: (roomCode, userId) => {
     const { socket } = get()
+    // Deliberate leave — stop auto-rejoining on future reconnects.
+    set({ joinedRoom: null })
     if (socket) {
       socket.emit('room:leave', { roomCode, userId })
       set({ currentRoom: null, participants: 0 })
