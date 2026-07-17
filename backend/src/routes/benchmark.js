@@ -5,7 +5,6 @@ import Question from '../models/Question.js'
 import Transcript from '../models/Transcript.js'
 import BenchmarkAttempt from '../models/BenchmarkAttempt.js'
 import FrozenLeaderboard from '../models/FrozenLeaderboard.js'
-import { generateSummary } from '../services/summaryService.js'
 
 const router = express.Router()
 
@@ -65,16 +64,9 @@ router.get('/session/:roomId', authorize('student'), async (req, res) => {
       }
     }
 
-    const segments = await Promise.all(segmentsData.map(async (seg) => {
-      let topicSummary = `Summary for Topic ${seg.segmentIndex + 1}`
-      if (seg.rawText) {
-        topicSummary = await generateSummary(seg.rawText)
-      }
-      return {
-        segmentIndex: seg.segmentIndex,
-        topicSummary,
-        polls: seg.polls
-      }
+    const segments = segmentsData.map((seg) => ({
+      segmentIndex: seg.segmentIndex,
+      polls: seg.polls
     }))
 
     res.json({

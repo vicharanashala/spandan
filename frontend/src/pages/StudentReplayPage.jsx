@@ -96,49 +96,47 @@ function StudentReplayPage() {
       setRoomCode(sessionData.roomCode)
       setSegments(sessionData.segments || [])
 
-      // 3. Determine where to resume if attempt exists
-      if (attemptData.hasAttempt && attemptData.attempt.responses) {
-        const respondedIds = new Set(attemptData.attempt.responses.map(r => r.questionId.toString()))
+      // Determine where to resume or start
+      const respondedIds = (attemptData.hasAttempt && attemptData.attempt.responses)
+        ? new Set(attemptData.attempt.responses.map(r => r.questionId.toString()))
+        : new Set()
+      
+      let foundResume = false
+      // Loop through segments and find the first unanswered question
+      for (let sIdx = 0; sIdx < sessionData.segments.length; sIdx++) {
+        const seg = sessionData.segments[sIdx]
+        const firstUnansweredQIdx = seg.polls.findIndex(q => !respondedIds.has(q._id.toString()))
         
-        let foundResume = false
-        // Loop through segments and find the first unanswered question
-        for (let sIdx = 0; sIdx < sessionData.segments.length; sIdx++) {
-          const seg = sessionData.segments[sIdx]
-          const firstUnansweredQIdx = seg.polls.findIndex(q => !respondedIds.has(q._id.toString()))
+        if (firstUnansweredQIdx !== -1) {
+          setCurrentSegmentIndex(sIdx)
           
-          if (firstUnansweredQIdx !== -1) {
-            setCurrentSegmentIndex(sIdx)
-            // Check if timer is active for this question
-            const timerState = attemptData.attempt.timerState
-            if (timerState && timerState.questionId && timerState.startTime) {
-              const activeQ = seg.polls[firstUnansweredQIdx]
-              if (activeQ._id.toString() === timerState.questionId.toString()) {
-                const elapsed = (Date.now() - new Date(timerState.startTime).getTime()) / 1000
-                const tta = activeQ.timeToAnswer || 30
-                if (elapsed < tta) {
-                  setCurrentQuestionIndex(firstUnansweredQIdx)
-                  setTimeLeft(Math.max(1, Math.round(tta - elapsed)))
-                  foundResume = true
-                  break
-                }
+          // Check if timer is active for this question
+          const timerState = attemptData.attempt?.timerState
+          if (timerState && timerState.questionId && timerState.startTime) {
+            const activeQ = seg.polls[firstUnansweredQIdx]
+            if (activeQ._id.toString() === timerState.questionId.toString()) {
+              const elapsed = (Date.now() - new Date(timerState.startTime).getTime()) / 1000
+              const tta = activeQ.timeToAnswer || 30
+              if (elapsed < tta) {
+                setCurrentQuestionIndex(firstUnansweredQIdx)
+                setTimeLeft(Math.max(1, Math.round(tta - elapsed)))
+                foundResume = true
+                break
               }
             }
-            
-            // Otherwise, we show the segment summary first
-            setCurrentQuestionIndex(-1)
-            foundResume = true
-            break
           }
+          
+          // Otherwise, start the first unanswered question of this segment
+          setCurrentQuestionIndex(firstUnansweredQIdx)
+          startQuestion(firstUnansweredQIdx, seg)
+          foundResume = true
+          break
         }
+      }
 
-        if (!foundResume) {
-          // All questions answered, but not marked complete
-          completeAttempt()
-        }
-      } else {
-        // Fresh start
-        setCurrentSegmentIndex(0)
-        setCurrentQuestionIndex(-1)
+      if (!foundResume) {
+        // All questions answered, but not marked complete
+        completeAttempt()
       }
 
     } catch (err) {
@@ -155,8 +153,11 @@ function StudentReplayPage() {
     startQuestion(0)
   }
 
-  const startQuestion = async (qIdx) => {
-    const question = segments[currentSegmentIndex].polls[qIdx]
+  const startQuestion = async (qIdx, segmentObj = null) => {
+    const activeSegment = segmentObj || segments[currentSegmentIndex]
+    const question = activeSegment?.polls?.[qIdx]
+    if (!question) return
+
     setSelectedOptions([])
     setSubmitted(false)
     setFeedback(null)
@@ -264,10 +265,24 @@ function StudentReplayPage() {
       // End of this segment's polls
       const nextSegIdx = currentSegmentIndex + 1
       if (nextSegIdx < segments.length) {
-        setCurrentSegmentIndex(nextSegIdx)
-        setCurrentQuestionIndex(-1) // Show summary of next segment
-        setSubmitted(false)
-        setFeedback(null)
+        // Find next segment with polls
+        let foundNextSeg = false
+        for (let sIdx = nextSegIdx; sIdx < segments.length; sIdx++) {
+          const nextSeg = segments[sIdx]
+          if (nextSeg.polls && nextSeg.polls.length > 0) {
+            setCurrentSegmentIndex(sIdx)
+            setCurrentQuestionIndex(0)
+            setSubmitted(false)
+            setFeedback(null)
+            startQuestion(0, nextSeg)
+            foundNextSeg = true
+            break
+          }
+        }
+        
+        if (!foundNextSeg) {
+          completeAttempt()
+        }
       } else {
         // Complete the benchmark
         completeAttempt()
@@ -284,7 +299,16 @@ function StudentReplayPage() {
       })
       const data = await res.json()
       if (res.ok) {
-        setAttempt(data)
+        // Fetch the fully completed attempt data with rank details
+        const attemptRes = await fetch(`${API_URL}/benchmark/attempt/${roomId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        const attemptData = await attemptRes.json()
+        if (attemptRes.ok && attemptData.hasAttempt) {
+          setAttempt(attemptData.attempt)
+        } else {
+          throw new Error('Failed to fetch completed attempt details')
+        }
       } else {
         throw new Error(data.error || 'Failed to complete benchmark')
       }
@@ -408,7 +432,7 @@ function StudentReplayPage() {
               </h3>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {attempt.responses.map((resp, rIdx) => {
+                {attempt.responses?.map((resp, rIdx) => {
                   const isCorrect = resp.isCorrect
                   return (
                     <div key={rIdx} style={{
@@ -432,7 +456,7 @@ function StudentReplayPage() {
                           {isCorrect ? 'Correct' : 'Incorrect'}
                         </span>
                         <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                          Speed: {resp.responseTime.toFixed(1)}s • Points: {resp.points || 0}
+                          Speed: {resp.responseTime?.toFixed(1) || '0.0'}s • Points: {resp.points || 0}
                         </span>
                       </div>
                       <p style={{ margin: 0, fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -450,88 +474,21 @@ function StudentReplayPage() {
     )
   }
 
-  // --- REPLAY PLAYBACK: SUMMARY / TOPIC SUMMARY VIEW ---
-  if (currentQuestionIndex === -1) {
-    const currentSegment = segments[currentSegmentIndex]
-    
+  // --- REPLAY PLAYBACK: TIMED POLL VIEW ---
+  const currentSegment = segments[currentSegmentIndex]
+  const currentQuestion = currentSegment?.polls?.[currentQuestionIndex]
+  const isMSQ = currentQuestion?.type === 'MSQ'
+
+  if (!currentQuestion) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", sans-serif' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', flexDirection: 'column' }}>
-          
-          <header style={{ background: 'var(--header-bg)', color: 'white', padding: '24px 32px' }}>
-            <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Replay: {roomName || 'Classroom Session'}</h1>
-            <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Topic Summary & Timed Quizzes</p>
-          </header>
-
-          <div style={{ flex: 1, padding: '32px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '32px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              maxWidth: '650px',
-              width: '100%'
-            }}>
-              <span style={{
-                background: '#eff6ff',
-                color: '#3b82f6',
-                padding: '4px 10px',
-                borderRadius: '6px',
-                fontSize: '12px',
-                fontWeight: '600'
-              }}>
-                Topic {currentSegmentIndex + 1} of {segments.length}
-              </span>
-              
-              <h2 style={{ fontSize: '22px', fontWeight: '700', color: 'var(--text-primary)', margin: '16px 0 12px 0' }}>
-                Summary transcript
-              </h2>
-              
-              <div style={{
-                background: 'var(--bg-primary)',
-                padding: '20px',
-                borderRadius: '12px',
-                color: 'var(--text-primary)',
-                fontSize: '15px',
-                lineHeight: '1.6',
-                border: '1px solid var(--border-color)',
-                marginBottom: '24px',
-                maxHeight: '300px',
-                overflowY: 'auto'
-              }}>
-                {currentSegment?.topicSummary}
-              </div>
-
-              <button
-                onClick={startSegmentQuiz}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  background: '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  boxShadow: '0 4px 12px rgba(59,130,246,0.2)'
-                }}
-              >
-                Start Timed Quiz ({currentSegment?.polls?.length || 0} Questions) →
-              </button>
-            </div>
-          </div>
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ color: 'var(--text-secondary)' }}>No questions available.</p>
         </div>
       </div>
     )
   }
-
-  // --- REPLAY PLAYBACK: TIMED POLL VIEW ---
-  const currentSegment = segments[currentSegmentIndex]
-  const currentQuestion = currentSegment.polls[currentQuestionIndex]
-  const isMSQ = currentQuestion?.type === 'MSQ'
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", sans-serif' }}>
