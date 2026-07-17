@@ -56,10 +56,12 @@ function StudentDashboard() {
     try {
       // First validate the room exists via API
       const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      // Then join via socket
-      joinRoom(room.code, user._id)
-      // Then navigate to session
-      navigate(`/student/session/${room.code}`)
+      if (room.endedAt) {
+        navigate(`/student/room/${room._id}/replay`)
+      } else {
+        joinRoom(room.code, user._id)
+        navigate(`/student/session/${room.code}`)
+      }
     } catch (err) {
       console.error('Failed to join room:', err)
     } finally {
