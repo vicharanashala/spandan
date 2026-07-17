@@ -1,0 +1,77 @@
+// Polly service — thin client over the self-hosted/hosted Attendee meeting-bot API.
+// Lets an admin send a bot into a Zoom/Meet meeting from the Spandan dashboard, post chat, and leave.
+// Credentials (Attendee API key + base URL) are supplied per request by the admin, not stored here.
+//
+// Attendee API: create bot POST /api/v1/bots ; chat POST /api/v1/bots/{id}/send_chat_message ;
+// status GET /api/v1/bots/{id} ; leave POST /api/v1/bots/{id}/leave. Auth: `Authorization: Token <key>`.
+
+const DEFAULT_BASE_URL = 'https://app.attendee.dev'
+
+// Attendee chat rejects non-BMP characters (most emoji) with a 400 - strip them.
+export function sanitizeChat(text = '') {
+  return [...String(text)]
+    .filter((ch) => ch.codePointAt(0) <= 0xffff)
+    .join('')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function client({ apiKey, baseUrl }) {
+  if (!apiKey) throw new Error('Attendee API key is required')
+  const base = `${(baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '')}/api/v1`
+  const headers = { Authorization: `Token ${apiKey}`, 'Content-Type': 'application/json' }
+  return async (method, path, body) => {
+    const res = await fetch(`${base}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
+    const text = await res.text()
+    let data = null
+    try { data = text ? JSON.parse(text) : null } catch { /* non-JSON */ }
+    if (!res.ok) {
+      const msg = data?.error || data?.detail || text || `HTTP ${res.status}`
+      throw new Error(`Attendee ${method} ${path} → ${res.status}: ${msg}`)
+    }
+    return data
+  }
+}
+
+/**
+ * Send a bot into a meeting. Returns { id, state, ... }.
+ * If `webhookUrl` (https) is given, subscribes the bot to transcript + active-speaker events so the
+ * automatic engine can track the current speaker and generate transcript-aware polls.
+ */
+export async function createBot({ meetingUrl, botName = 'Polly', webhookUrl, apiKey, baseUrl }) {
+  if (!meetingUrl) throw new Error('meetingUrl is required')
+  const payload = { meeting_url: meetingUrl, bot_name: botName }
+  if (webhookUrl && /^https:\/\//i.test(webhookUrl)) {
+    payload.webhooks = [{ url: webhookUrl, triggers: ['transcript.update', 'participant_events.speech_start_stop'] }]
+  }
+  return client({ apiKey, baseUrl })('POST', '/bots', payload)
+}
+
+/** Current bot state ({ id, state, transcription_state, ... }). */
+export async function getBotStatus({ botId, apiKey, baseUrl }) {
+  if (!botId) throw new Error('botId is required')
+  return client({ apiKey, baseUrl })('GET', `/bots/${botId}`)
+}
+
+/**
+ * Post a chat message. Defaults to everyone; pass to='specific_user' + toUserUuid to DM one
+ * participant (e.g. the current speaker). Emoji are stripped.
+ */
+export async function sendChat({ botId, message, to = 'everyone', toUserUuid, apiKey, baseUrl }) {
+  if (!botId) throw new Error('botId is required')
+  const body = { to, message: sanitizeChat(message) }
+  if (to === 'specific_user') body.to_user_uuid = toUserUuid
+  return client({ apiKey, baseUrl })('POST', `/bots/${botId}/send_chat_message`, body)
+}
+
+/** List meeting participants (used to target the current speaker for a private nudge). */
+export async function getParticipants({ botId, apiKey, baseUrl }) {
+  if (!botId) throw new Error('botId is required')
+  return client({ apiKey, baseUrl })('GET', `/bots/${botId}/participants`)
+}
+
+/** Make the bot leave the meeting. */
+export async function leaveBot({ botId, apiKey, baseUrl }) {
+  if (!botId) throw new Error('botId is required')
+  return client({ apiKey, baseUrl })('POST', `/bots/${botId}/leave`, {})
+}

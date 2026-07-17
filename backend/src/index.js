@@ -18,6 +18,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import pollyRoutes, { webhookRouter as pollyWebhookRouter } from './routes/polly.js'
 
 // Import models for reference
 import './models/index.js'
@@ -353,6 +354,8 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/polly/webhook', pollyWebhookRouter) // public: Attendee posts transcript/speaker events
+app.use('/api/polly', pollyRoutes)                // teacher-only
 
 // Health check
 app.get('/api/health', (req, res) => {
