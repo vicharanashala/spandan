@@ -23,6 +23,7 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
+  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
@@ -123,9 +124,19 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
+    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
+    // room's questions so any missed one surfaces without the student manually refreshing.
+    const handleReconnect = () => {
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
+      }
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
@@ -134,6 +145,7 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('connect', handleReconnect)
       socket.off('room:ended')
     }
   }, [socket, navigate, room?._id])
@@ -207,19 +219,30 @@ function StudentRoomPage() {
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
+    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
+    // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
-    
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
-      selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
-      responseTime
+    const roomId = room?._id
+    const studentId = user?._id
+
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
+    // even though the network POST itself is deferred by a small random delay.
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
+    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
+    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
+    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    const jitterMs = Math.floor(Math.random() * 2000)
+
+    console.log('[StudentRoom] Submitting answer:', {
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
     })
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
+    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
+
+    // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -228,44 +251,29 @@ function StudentRoomPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          roomId: room._id,
+          roomId,
           questionId,
-          studentId: user._id,
+          studentId,
           selectedOptions,
           responseTime
         })
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-      
-      // Emit points:update for leaderboard broadcast
-      if (saveData.success && saveData.response) {
-        socket.emit('points:update', {
-          roomCode: room.code,
-          questionId,
-          studentId: user._id,
-          points: saveData.response.points,
-          isCorrect: saveData.response.isCorrect
-        })
+
+      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
+      // (from this authenticated POST) — the client no longer emits points:update /
+      // response:submit. The POST returns this student's current rank; surface it so the
+      // leaderboard's "you" pill updates even when outside the broadcast top-N.
+      if (saveData.success && saveData.rank != null) {
+        setMyRank(saveData.rank)
       }
     } catch (err) {
       console.error('Failed to save response:', err)
     }
 
-    // Emit via socket
-    socket.emit('response:submit', {
-      roomCode: room.code,
-      questionId,
-      studentId: user._id,
-      selectedOptions,
-      responseTime
-    })
-    
-    // Set submitted immediately and fetch past responses without delay
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-    if (room?._id && user?._id) {
-      fetchPastResponses(room._id, user._id)
+    if (roomId && studentId) {
+      fetchPastResponses(roomId, studentId)
     }
   }
 
@@ -762,7 +770,7 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
                 </div>
               </div>
             </div>

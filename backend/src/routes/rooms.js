@@ -141,6 +141,9 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
+      // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
+      req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })
