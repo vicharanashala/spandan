@@ -195,9 +195,14 @@ function getQuestionTypeMix(numQuestions) {
 
 // Generate question types from provided mix percentages
 function generateFromMix(questionTypeMix, numQuestions) {
-  const { MCQ = 50, TF = 30, MSQ = 20 } = questionTypeMix
+  const { MCQ = 0, TF = 100, MSQ = 0 } = questionTypeMix
   const total = MCQ + TF + MSQ
-  
+
+  // Guard against an all-zero mix (avoids divide-by-zero → NaN counts)
+  if (total <= 0) {
+    return getQuestionTypeMix(numQuestions)
+  }
+
   const mcqCount = Math.round((MCQ / total) * numQuestions)
   const tfCount = Math.round((TF / total) * numQuestions)
   const msqCount = numQuestions - mcqCount - tfCount
@@ -231,9 +236,9 @@ function buildQuestionPrompt(transcript, questionTypes, difficulty) {
     }
   }).join('\n')
 
-  return `You are an expert quiz question generator. Based on the following transcription, generate ${questionTypes.length} quiz questions.
+  return `You are an expert quiz question generator. Using the source material below, generate ${questionTypes.length} quiz questions.
 
-TRANSCRIPTION:
+SOURCE MATERIAL:
 ${transcript}
 
 DIFFICULTY: ${difficulty.toUpperCase()}
@@ -281,9 +286,16 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
 IMPORTANT:
 - Respond ONLY with valid JSON, no markdown or additional text
 - Make questions clear and unambiguous
+- Match the questions to the specified DIFFICULTY level
 - Ensure wrong options for MCQ are plausible but clearly wrong
 - For MSQ, ensure at least 2 options are correct
-- Questions should be based ONLY on the transcription content`
+- Ensure all options are distinct and that ONLY the marked option(s) are correct; every unmarked option must be a plausible but genuinely incorrect distractor, with no option that could be argued as an alternative correct answer
+- For True/False questions, balance the correct answers across the set — roughly half should be correct "True" and half correct "False"; do not make most statements True (or most False)
+- Base questions ONLY on the source material provided
+- Rely solely on the material given, do not use any outside knowledge
+- Questions and options MUST be self-contained and stand on their own as direct subject-knowledge questions
+- NEVER refer to the source in the wording. Do NOT use words like "transcript", "transcription", "passage", "text", "excerpt", "recording", "lecture", "session", "audio", or "context", and do NOT use phrases such as "According to the transcript", "As per the transcript", "Based on the passage", "In the text", "the speaker said", or "mentioned above"
+- Write each question as if directly testing the concept itself, not a document`
 }
 
 // Parse questions from AI response
