@@ -19,7 +19,6 @@ import ProfilePage from './pages/ProfilePage'
 
 import TeacherNotesPage from './pages/TeacherNotesPage'
 import StudentNotesPage from './pages/StudentNotesPage'
-import { BASE_PATH } from './config.js'
 import { API_URL } from './config.js'
 
 

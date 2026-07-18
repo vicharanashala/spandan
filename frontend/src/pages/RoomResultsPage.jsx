@@ -9,6 +9,7 @@ import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 
 import { Link } from 'react-router-dom'
+import RevisionSuggestions from '../components/RevisionSuggestions'
 
 function MyRevisionSummary({ roomId, token, userId }) {
   const [weakTopics, setWeakTopics] = useState([])

@@ -363,47 +363,24 @@ function RoomDetailPage() {
     // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
-      const questions = await generateQuestionsFromText(textToUse, currentSegment)
+      let questions = null;
+      try {
+        questions = await generateQuestionsFromText(textToUse, currentSegment)
+      } catch (error) {
+        console.error('[SEGMENT] First generation attempt failed:', error)
+        console.log('[SEGMENT] Retrying question generation...')
+        questions = await generateQuestionsFromText(textToUse, currentSegment)
+      }
+      
       if (questions && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
+      } else {
+        throw new Error('No questions returned');
       }
     } catch (error) {
-      console.error('[SEGMENT] First generation attempt failed:', error)
-      // Auto-retry once
-
-      try {
-        const questions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (questions && questions.length > 0) return questions
-      } catch (err) {
-        console.error('[SEGMENT] First question generation attempt failed:', err)
-        console.log('[SEGMENT] Retrying question generation...')
-        const retryQuestions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (retryQuestions && retryQuestions.length > 0) return retryQuestions
-      }
-      return null
-    })()
-
-    const [notesResult, questionsResult] = await Promise.allSettled([
-      generateNotesPromise,
-      generateQuestionsPromise
-    ])
-
-    // Handle Notes generation result silently
-    if (notesResult.status === 'rejected') {
-      console.error('[SEGMENT] Silent note generation failed:', notesResult.reason)
-    } else {
-      console.log('[SEGMENT] Auto-generated notes successfully sent to review queue.')
-    }
-
-    // Handle Questions generation result
-    if (questionsResult.status === 'fulfilled' && questionsResult.value) {
-      setPendingQuestions(questionsResult.value)
-      setShowQuestionPopup(true)
-      setIsPopupOpen(true)
-    } else {
-      console.error('[SEGMENT] Question generation failed after retry:', questionsResult.reason)
+      console.error('[SEGMENT] Question generation failed after retry:', error)
       window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
       setGenerateQEnabled(true) // Enable fail-safe manual button
     }

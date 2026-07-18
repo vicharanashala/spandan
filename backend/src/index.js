@@ -18,11 +18,9 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
-<<<<<<< Updated upstream
-=======
 import revisionSuggestionsRoutes from './routes/revisionSuggestions.js'
 import notesRoutes from './routes/notes.js'
->>>>>>> Stashed changes
+
 
 // Import models for reference
 import './models/index.js'
@@ -358,11 +356,9 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
-<<<<<<< Updated upstream
-=======
 app.use('/api/revision-suggestions', revisionSuggestionsRoutes)
 app.use('/api/notes', notesRoutes)
->>>>>>> Stashed changes
+
 
 // Health check
 app.get('/api/health', (req, res) => {
