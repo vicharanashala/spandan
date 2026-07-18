@@ -12,7 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
-import { saveTranscript } from '../services/transcriptService'
+import { saveTranscript, getTranscripts, updateTranscriptSegment } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
@@ -62,6 +62,11 @@ function RoomDetailPage() {
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
   const [segmentTranscript, setSegmentTranscript] = useState('')
+  const [savedTranscripts, setSavedTranscripts] = useState([])
+  const [editingSegmentId, setEditingSegmentId] = useState(null)
+  const [draftTranscriptText, setDraftTranscriptText] = useState('')
+  const [transcriptError, setTranscriptError] = useState('')
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false)
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
@@ -107,6 +112,7 @@ function RoomDetailPage() {
       setAuthToken(token)
       loadRoom()
       checkServerTranscription()
+      loadSavedTranscripts()
     }
 
     return () => {
@@ -250,6 +256,19 @@ function RoomDetailPage() {
     } catch (error) {
       console.error('Failed to check transcription status:', error)
       setModelStatus('Server Error')
+    }
+  }
+
+  const loadSavedTranscripts = async () => {
+    if (!roomId) return
+
+    try {
+      const response = await getTranscripts(roomId)
+      if (response.success) {
+        setSavedTranscripts(response.transcripts || [])
+      }
+    } catch (error) {
+      console.error('Failed to load transcripts:', error)
     }
   }
 
@@ -756,6 +775,45 @@ function RoomDetailPage() {
     finalTranscriptRef.current = ''
     setSegmentTranscript('')
     segmentTranscriptRef.current = ''
+  }
+
+  const startEditingSegment = (segment) => {
+    setEditingSegmentId(segment._id)
+    setDraftTranscriptText(segment.text || '')
+    setTranscriptError('')
+  }
+
+  const cancelEditingSegment = () => {
+    setEditingSegmentId(null)
+    setDraftTranscriptText('')
+    setTranscriptError('')
+  }
+
+  const saveEditedSegment = async (segment) => {
+    const trimmedText = draftTranscriptText.trim()
+    if (!trimmedText) {
+      setTranscriptError('Transcript text cannot be empty')
+      return
+    }
+
+    setIsSavingTranscript(true)
+    setTranscriptError('')
+
+    try {
+      const response = await updateTranscriptSegment(roomId, segment.segmentIndex, trimmedText)
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to update transcript')
+      }
+
+      setSavedTranscripts(prev => prev.map(item => item._id === segment._id ? response.transcript : item))
+      setEditingSegmentId(null)
+      setDraftTranscriptText('')
+    } catch (error) {
+      console.error('Failed to save edited transcript:', error)
+      setTranscriptError(error.message || 'Unable to save transcript changes')
+    } finally {
+      setIsSavingTranscript(false)
+    }
   }
 
   const handleManualGenerateQuestions = async () => {
@@ -1420,7 +1478,62 @@ function RoomDetailPage() {
                 wordBreak: 'break-word',
                 overflowY: 'auto'
               }}>
-                {transcript ? transcript : (
+                {savedTranscripts.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {savedTranscripts.map((segment) => (
+                      <div key={segment._id} style={{ padding: '10px 12px', border: '1px solid var(--border-color)', borderRadius: '10px', background: 'var(--bg-primary)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                            Segment {segment.segmentIndex + 1}
+                          </span>
+                          {editingSegmentId !== segment._id && (
+                            <button
+                              onClick={() => startEditingSegment(segment)}
+                              style={{ background: 'transparent', border: 'none', color: '#3b82f6', cursor: 'pointer', fontSize: '12px' }}
+                            >
+                              ✎ Edit
+                            </button>
+                          )}
+                        </div>
+                        {editingSegmentId === segment._id ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <textarea
+                              value={draftTranscriptText}
+                              onChange={(event) => setDraftTranscriptText(event.target.value)}
+                              rows={4}
+                              style={{ width: '100%', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '8px', resize: 'vertical' }}
+                            />
+                            {transcriptError && <span style={{ color: '#dc2626', fontSize: '12px' }}>{transcriptError}</span>}
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button
+                                onClick={() => saveEditedSegment(segment)}
+                                disabled={isSavingTranscript}
+                                style={{ padding: '6px 10px', borderRadius: '6px', border: 'none', background: '#2563eb', color: 'white', cursor: isSavingTranscript ? 'wait' : 'pointer' }}
+                              >
+                                {isSavingTranscript ? 'Saving...' : 'Save'}
+                              </button>
+                              <button
+                                onClick={cancelEditingSegment}
+                                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer' }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div style={{ color: 'var(--text-primary)' }}>{segment.text}</div>
+                            {segment.isEdited && segment.editedAt && (
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px' }}>
+                                Edited {new Date(segment.editedAt).toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : transcript ? transcript : (
                   <span style={{ fontStyle: 'italic' }}>
                     Click the microphone to start real-time transcription.
                   </span>

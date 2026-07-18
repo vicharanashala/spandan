@@ -44,3 +44,17 @@ export const getSegmentTranscript = async (roomId, segmentIndex) => {
   })
   return response.json()
 }
+
+// Update a transcript segment text
+export const updateTranscriptSegment = async (roomId, segmentIndex, text) => {
+  const token = useAuthStore.getState().token
+  const response = await fetch(`${API_URL}/transcripts/${roomId}/${segmentIndex}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ text })
+  })
+  return response.json()
+}

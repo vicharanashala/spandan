@@ -29,6 +29,18 @@ const transcriptSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  originalText: {
+    type: String,
+    default: null
+  },
+  isEdited: {
+    type: Boolean,
+    default: false
+  },
+  editedAt: {
+    type: Date,
+    default: null
+  },
   duration: {
     type: Number, // in seconds
     default: 0

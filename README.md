@@ -11,6 +11,7 @@
 - ❓ **Question Types** — Multiple choice and open-ended questions with approval workflow
 - 📊 **Real-time Results** — Live response tracking with Socket.IO
 - 🎤 **Transcription** — Whisper-powered audio transcription for question generation
+- ✍️ **Editable transcripts** — Teachers can correct transcript segments inline and persist the updated text to the transcript store; future real-time sync to connected viewers can be broadcast through the existing Socket.IO layer
 - 🌙 **Theme Toggle** — Dark and light mode support
 - 📱 **Responsive** — Works across devices with teacher and student dashboards
 

@@ -3,6 +3,7 @@ import Transcript from '../models/Transcript.js'
 import Room from '../models/Room.js'
 import RoomMember from '../models/RoomMember.js'
 import { authenticate } from '../middleware/auth.js'
+import { validateTranscriptText } from '../utils/transcriptValidation.js'
 
 const router = express.Router()
 
@@ -100,10 +101,6 @@ router.get('/:roomId/:segmentIndex', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Transcript not found' })
     }
 
-    if (!transcript) {
-      return res.status(404).json({ error: 'Transcript not found' })
-    }
-
     res.json({
       success: true,
       transcript
@@ -111,6 +108,56 @@ router.get('/:roomId/:segmentIndex', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch transcript:', error)
     res.status(500).json({ error: 'Failed to fetch transcript' })
+  }
+})
+
+// Update a transcript segment text (editable transcript feature)
+// The edit is persisted to MongoDB here; real-time propagation to other viewers is still a TODO and can be added through the existing Socket.IO layer.
+router.patch('/:roomId/:segmentIndex', authenticate, async (req, res) => {
+  try {
+    const { roomId, segmentIndex } = req.params
+    const { text } = req.body
+    const currentUser = req.user
+
+    const validation = validateTranscriptText(text)
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error })
+    }
+
+    const room = await Room.findById(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    if (!isTeacher) {
+      return res.status(403).json({ error: 'Only the room teacher can edit transcripts' })
+    }
+
+    const transcript = await Transcript.findOne({
+      roomId,
+      segmentIndex: parseInt(segmentIndex)
+    })
+
+    if (!transcript) {
+      return res.status(404).json({ error: 'Transcript not found' })
+    }
+
+    transcript.originalText = transcript.originalText || transcript.text
+    transcript.text = validation.normalizedText
+    transcript.isEdited = true
+    transcript.editedAt = new Date()
+    transcript.wordCount = validation.normalizedText.split(/\s+/).filter(Boolean).length
+
+    await transcript.save()
+
+    res.json({
+      success: true,
+      transcript
+    })
+  } catch (error) {
+    console.error('Failed to update transcript:', error)
+    res.status(500).json({ error: 'Failed to update transcript' })
   }
 })
 
