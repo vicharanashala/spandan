@@ -6,6 +6,8 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import { fetchAllRoomQuestions } from '../services/questionService'
+
 import { Link } from 'react-router-dom'
 
 function MyRevisionSummary({ roomId, token, userId }) {
@@ -100,12 +102,9 @@ function RoomResultsPage() {
         setRoom(roomData.room || roomData)
       }
 
-      // Fetch questions for this room
-      const qRes = await fetch(`${API_URL}/questions?roomId=${roomId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const qData = await qRes.json()
-      const roomQuestions = qData.questions || []
+      // Fetch ALL questions for this room (pages past the API's 50/page cap), so the teacher's
+      // results show the true question count and every question's stats, not just the first 50.
+      const roomQuestions = await fetchAllRoomQuestions(roomId)
 
       if (user?.role === 'student') {
         // Student: fetch their own responses (includes questions with answers)
@@ -192,7 +191,9 @@ function RoomResultsPage() {
           totalResponses,
           totalCorrect,
           averageScore,
-          totalStudents: uniqueStudents,
+          // "Total Students" card = the room roster (joined); fall back to responders if the
+          // backend didn't supply it.
+          totalStudents: rData.stats?.totalJoined ?? uniqueStudents,
           participationRate: Math.min(participationRate, 100)
         })
       }
@@ -285,7 +286,7 @@ function RoomResultsPage() {
           </button>
           
           {/* Overview Stats */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '24px' }}>
             <div style={{
               background: 'var(--bg-card)',
               borderRadius: '16px',
@@ -309,6 +310,29 @@ function RoomResultsPage() {
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>👥</div>
               <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalResponses}</div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Total Responses</div>
+            </div>
+            {/* Role-specific card (3rd): teacher sees total students in the room; student sees their rank */}
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px',
+              boxShadow: 'var(--card-shadow)',
+              border: '1px solid var(--border-color)',
+              textAlign: 'center'
+            }}>
+              {user?.role === 'teacher' ? (
+                <>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>🧑‍🎓</div>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalStudents || 0}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Total Students</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>🏅</div>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: '#f59e0b' }}>{stats.userRank ? `#${stats.userRank}` : '—'}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Your Rank</div>
+                </>
+              )}
             </div>
             <div style={{
               background: 'var(--bg-card)',
@@ -336,8 +360,6 @@ function RoomResultsPage() {
             </div>
           </div>
 
-<<<<<<< Updated upstream
-=======
           {/* Revision Suggestions — Teacher only */}
           {user?.role === 'teacher' && (
             <RevisionSuggestions roomId={roomId} token={token} />
@@ -348,7 +370,6 @@ function RoomResultsPage() {
             <MyRevisionSummary roomId={roomId} token={token} userId={user._id} />
           )}
 
->>>>>>> Stashed changes
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',

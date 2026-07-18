@@ -50,6 +50,10 @@ const questionSchema = new mongoose.Schema({
   }
 })
 
+// Covers the hot query shapes: filter by room (+status) and sort by createdAt.
+// Without this every question read (poll load, stats, history) is a full COLLSCAN.
+questionSchema.index({ roomId: 1, status: 1, createdAt: -1 })
+
 const Question = mongoose.model('Question', questionSchema)
 
 export default Question
