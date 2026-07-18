@@ -588,10 +588,33 @@ function RoomDetailPage() {
         return
       }
 
-      const result = await transcribeAudio(wavBlob)
-      addToTranscriptionQueue(sequence, result.text || '')
+      // Retry with exponential backoff — a single 502 (proxy not yet ready) used to
+      // permanently drop a sequence with no recovery. Now we retry up to 3 times:
+      // attempt 1 immediately, then 500 ms, 1 000 ms, 2 000 ms delays.
+      const MAX_RETRIES = 3
+      const BACKOFF_MS = [0, 500, 1000, 2000]
+      let lastError = null
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+          const delay = BACKOFF_MS[attempt] || 2000
+          console.warn(`[TRANSCRIPTION] Sequence ${sequence} retry ${attempt}/${MAX_RETRIES} in ${delay}ms`)
+          await new Promise(r => setTimeout(r, delay))
+        }
+        try {
+          const result = await transcribeAudio(wavBlob)
+          console.log(`[TRANSCRIPTION] Sequence ${sequence} succeeded on attempt ${attempt + 1}`)
+          addToTranscriptionQueue(sequence, result.text || '')
+          return
+        } catch (err) {
+          lastError = err
+          console.error(`[TRANSCRIPTION] Attempt ${attempt + 1} failed for sequence ${sequence}:`, err.message)
+        }
+      }
+      // All retries exhausted — enqueue empty so the queue doesn't stall on this sequence.
+      console.error(`[TRANSCRIPTION] All ${MAX_RETRIES + 1} attempts failed for sequence ${sequence}. Dropping.`)
+      addToTranscriptionQueue(sequence, '')
     } catch (error) {
-      console.error(`[TRANSCRIPTION] Error for sequence ${sequence}:`, error.message)
+      console.error(`[TRANSCRIPTION] Fatal error for sequence ${sequence}:`, error.message)
       addToTranscriptionQueue(sequence, '')
     }
   }, [room?._id, addToTranscriptionQueue])
@@ -641,9 +664,33 @@ function RoomDetailPage() {
     }, 10000)
   }, [sendForTranscription])
   
+  // Ref used to communicate a "start recording once socket is ready" intent across renders.
+  // When the teacher clicks Start before the socket is ready, we set this to true and the
+  // effect below will call startRecording() as soon as isConnected becomes true.
+  const pendingRecordStartRef = useRef(false)
+
+  // Effect: auto-start recording once the socket is confirmed connected, if a start was
+  // requested while the socket was still establishing. This eliminates the manual reset
+  // requirement — the system self-executes the "wait for socket, then record" sequence.
+  useEffect(() => {
+    if (isConnected && pendingRecordStartRef.current && !recordingActiveRef.current) {
+      console.log('[GATE] Socket now connected — auto-starting pending recording')
+      pendingRecordStartRef.current = false
+      startRecording()
+    }
+  }, [isConnected])
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
+    // Gate: if the socket is not yet connected, queue the start and return.
+    // The effect above will call startRecording() once the connection is established.
+    if (!isConnected) {
+      console.warn('[GATE] Socket not connected yet — deferring recording start until socket is ready')
+      pendingRecordStartRef.current = true
+      setModelStatus('Waiting for connection...')
+      return
+    }
     try {
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
