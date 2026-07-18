@@ -85,27 +85,87 @@ if (redis.enabled) {
 // Make io accessible to routes
 app.set('io', io)
 
-// --- Throttled, server-authoritative live room updates (Phase 1 + 2A multi-instance) ---
-// A live question can draw ~1000 answers in seconds. Instead of every client re-fetching the
-// leaderboard (~N^2 DB hits), the REST submit handler calls schedule(roomId); a burst coalesces
-// into ONE recompute + broadcast per room per interval, pushing a top-N payload.
-//  - Single instance: an in-memory timer + rank Map.
-//  - Multi-instance (Redis): a SET-NX lock so only ONE instance computes+broadcasts per window
-//    (the adapter fans the broadcast out to all instances), and the rank cache lives in a Redis
-//    hash so any instance can answer "rank on submit".
+// --- Live answer-counts + DEFERRED (quiet-debounce) leaderboard broadcasts (Phase 1 + 2A) ---
+// A live question can draw ~1000 answers in seconds. We split the room's live signal in two so
+// the expensive part stays OUT of the answer burst (which otherwise saturates the event loop and
+// starves the next question's broadcast — the root cause of the missed-poll incident):
+//  (1) Answer COUNTS — the teacher needs the live "X answered / total" badge to decide when to
+//      close a poll. Cheap (one count-only aggregation), so it stays LIVE on a short throttle,
+//      coalesced across a burst (multi-instance: SET-NX so only one instance emits per window).
+//  (2) Ranked LEADERBOARD — expensive (per-student aggregation + name resolution) and nobody
+//      studies it mid-burst, so it is DEFERRED: recomputed + broadcast only once the room has
+//      been QUIET for LEADERBOARD_IDLE_MS (i.e. the answer burst has drained), plus a forced
+//      refresh when the room ends. Scoring is UNAFFECTED — points are still computed and saved
+//      per-response in the REST handler; only the read-side leaderboard recompute is deferred,
+//      and Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
+const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
-const RANK_CACHE_TTL_S = Math.max(10, Math.ceil((LIVE_THROTTLE_MS * 5) / 1000))
-const roomLive = new Map() // roomId(str) -> { timer, roomCode, rankByStudent: Map, total } (single-instance)
+// Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
+const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
+const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
 
-async function computeAndBroadcast(roomId) {
+function getRoomState(id) {
+  let s = roomLive.get(id)
+  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  return s
+}
+
+async function resolveRoomCode(roomId) {
+  const s = getRoomState(String(roomId))
+  if (s.roomCode) return s.roomCode
+  const Room = (await import('./models/Room.js')).default
+  const room = await Room.findById(roomId).select('code').lean()
+  s.roomCode = room?.code || null
+  return s.roomCode
+}
+
+// (1) Live answer counts — cheap count-only aggregation, throttled/coalesced per window.
+async function broadcastCounts(roomId) {
+  try {
+    const Response = (await import('./models/Response.js')).default
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+    const countAgg = await Response.aggregate([
+      { $match: { roomId: roomObjId } },
+      { $group: { _id: '$questionId', count: { $sum: 1 }, studentIds: { $push: '$studentId' } } }
+    ])
+    const counts = {}
+    const respondedStudents = {}
+    countAgg.forEach(c => {
+      const qid = c._id.toString()
+      counts[qid] = c.count
+      respondedStudents[qid] = (c.studentIds || []).map(id => id.toString())
+    })
+    const roomCode = await resolveRoomCode(roomId)
+    if (roomCode) io.to(roomCode).emit('counts:updated', { counts, respondedStudents })
+  } catch (err) {
+    console.error('broadcastCounts error:', err.message)
+  }
+}
+
+async function scheduleCountsBroadcast(roomId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    try {
+      const won = await redis.client.set(`live:cnt:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
+      if (won === 'OK') setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+    } catch (e) {
+      setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+    }
+    return
+  }
+  const s = getRoomState(id)
+  if (s.countsTimer) return // already scheduled; the trailing run picks up the latest DB state
+  s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
+}
+
+// (2) Ranked leaderboard — full aggregation + name resolution + rank cache. Deferred/forced only.
+async function broadcastLeaderboard(roomId) {
   try {
     const Response = (await import('./models/Response.js')).default
     const User = (await import('./models/User.js')).default
-    const Room = (await import('./models/Room.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
-    // Points per student (ranked) + per-question answer counts, in two aggregations.
     const [ranked, countAgg] = await Promise.all([
       Response.aggregate([
         { $match: { roomId: roomObjId } },
@@ -135,14 +195,9 @@ async function computeAndBroadcast(roomId) {
       respondedStudents[qid] = (c.studentIds || []).map(id => id.toString())
     })
 
-    // Resolve roomCode (needed to target the socket room).
-    let roomCode = roomLive.get(roomId)?.roomCode
-    if (!roomCode) {
-      const room = await Room.findById(roomId).select('code').lean()
-      roomCode = room?.code || null
-    }
+    const roomCode = await resolveRoomCode(roomId)
 
-    // Cache ranks for "rank on submit".
+    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A).
     if (redis.enabled) {
       try {
         const flat = { _total: String(full.length) }
@@ -153,11 +208,9 @@ async function computeAndBroadcast(roomId) {
         await redis.client.expire(key, RANK_CACHE_TTL_S)
       } catch (e) { /* non-fatal: rank-on-submit just returns null */ }
     } else {
-      const state = roomLive.get(roomId) || {}
-      state.rankByStudent = rankByStudent
-      state.total = full.length
-      state.roomCode = roomCode
-      roomLive.set(roomId, state)
+      const s = getRoomState(String(roomId))
+      s.rankByStudent = rankByStudent
+      s.total = full.length
     }
 
     if (roomCode) {
@@ -169,34 +222,63 @@ async function computeAndBroadcast(roomId) {
       })
     }
   } catch (err) {
-    console.error('computeAndBroadcast error:', err.message)
+    console.error('broadcastLeaderboard error:', err.message)
   }
 }
 
-async function scheduleRoomLiveUpdate(roomId) {
+// Debounce: each answer (re)starts the window; the board fires only after LEADERBOARD_IDLE_MS of
+// no new answers (burst drained). Multi-instance: a shared Redis activity key — refreshed per
+// answer on whichever instance handled it — is the global quiet signal, and an NX lock makes
+// exactly one instance emit (the adapter fans it out to all).
+async function scheduleLeaderboardRefresh(roomId) {
   const id = String(roomId)
   if (redis.enabled) {
-    // Only one instance schedules a broadcast per throttle window (global coalescing via SET NX).
-    try {
-      const won = await redis.client.set(`live:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
-      if (won === 'OK') setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
-    } catch (e) {
-      // Redis hiccup — fall back to a local timer so updates still flow on this instance.
-      setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
-    }
+    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => {})
+    ensureLbChecker(id)
     return
   }
-  let state = roomLive.get(id)
-  if (!state) { state = { timer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, state) }
-  if (state.timer) return // already scheduled; the trailing run picks up the latest state
-  state.timer = setTimeout(() => {
-    const s = roomLive.get(id)
-    if (s) s.timer = null
-    computeAndBroadcast(id)
-  }, LIVE_THROTTLE_MS)
+  const s = getRoomState(id)
+  if (s.lbTimer) clearTimeout(s.lbTimer)
+  s.lbTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.lbTimer = null; broadcastLeaderboard(id) }, LEADERBOARD_IDLE_MS)
 }
 
-// Last-computed rank for a student ("rank on submit"); may be up to one interval stale.
+function ensureLbChecker(id, delayMs = LEADERBOARD_IDLE_MS) {
+  const s = getRoomState(id)
+  if (s.lbCheckTimer) return
+  s.lbCheckTimer = setTimeout(() => runLbCheck(id), delayMs)
+}
+
+async function runLbCheck(id) {
+  const s = getRoomState(id)
+  s.lbCheckTimer = null
+  try {
+    // The activity key's remaining TTL tells us exactly how long since the last answer. If it's
+    // still alive, re-arm for precisely that remainder (so the board fires ~IDLE_MS after the LAST
+    // answer, not up to 2×IDLE later); once it's gone, one instance takes the NX lock and emits.
+    const pttl = await redis.client.pTTL(`live:lb:act:${id}`)
+    if (pttl > 0) { ensureLbChecker(id, pttl + 200); return }
+    const won = await redis.client.set(`live:lb:lock:${id}`, INSTANCE_ID, { NX: true, PX: 3000 })
+    if (won === 'OK') await broadcastLeaderboard(id)
+  } catch (e) {
+    await broadcastLeaderboard(id) // redis hiccup — emit locally rather than stall the board
+  }
+}
+
+// Force an immediate leaderboard recompute + broadcast (e.g. when a room ends) so the final,
+// settled board is complete regardless of where the debounce window happened to be.
+async function refreshLeaderboardNow(roomId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    try { await redis.client.del(`live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
+  } else {
+    const s = roomLive.get(id)
+    if (s?.lbTimer) { clearTimeout(s.lbTimer); s.lbTimer = null }
+  }
+  await broadcastLeaderboard(id)
+}
+
+// Last-computed rank for a student ("rank on submit"); refreshed when the board settles, so it
+// may lag during an active burst (Option A — the student still gets their points immediately).
 async function getCachedStudentRank(roomId, studentId) {
   const id = String(roomId)
   if (redis.enabled) {
@@ -212,7 +294,12 @@ async function getCachedStudentRank(roomId, studentId) {
   return { rank: state.rankByStudent?.get(String(studentId)) ?? null, totalParticipants: state.total ?? null }
 }
 
-app.set('liveUpdates', { schedule: scheduleRoomLiveUpdate, getRank: getCachedStudentRank })
+app.set('liveUpdates', {
+  scheduleCounts: scheduleCountsBroadcast,
+  scheduleLeaderboard: scheduleLeaderboardRefresh,
+  refreshLeaderboardNow,
+  getRank: getCachedStudentRank
+})
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
@@ -438,9 +525,9 @@ io.on('connection', (socket) => {
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
   // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live leaderboard/answer-count updates are now emitted
-  // server-side (throttled) from the authenticated REST submit handler — see the
-  // scheduleRoomLiveUpdate() broadcaster above and routes/responses.js.
+  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) and the deferred
+  // leaderboard are now emitted server-side from the authenticated REST submit handler — see the
+  // scheduleCountsBroadcast()/scheduleLeaderboardRefresh() broadcasters above and routes/responses.js.
 
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.

@@ -229,21 +229,32 @@ function StudentRoomPage() {
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
+    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
+    // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
-    
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
-      selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
-      responseTime
+    const roomId = room?._id
+    const studentId = user?._id
+
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
+    // even though the network POST itself is deferred by a small random delay.
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
+    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
+    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
+    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    const jitterMs = Math.floor(Math.random() * 2000)
+
+    console.log('[StudentRoom] Submitting answer:', {
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
     })
+
+    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
 
     let saveData = null
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
+    // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -252,9 +263,9 @@ function StudentRoomPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          roomId: room._id,
+          roomId,
           questionId,
-          studentId: user._id,
+          studentId,
           selectedOptions,
           responseTime,
           answerSwitches: answerSwitchesRef.current,
@@ -275,11 +286,8 @@ function StudentRoomPage() {
       console.error('Failed to save response:', err)
     }
 
-    // Set submitted immediately and fetch past responses without delay
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-    if (room?._id && user?._id) {
-      fetchPastResponses(room._id, user._id)
+    if (roomId && studentId) {
+      fetchPastResponses(roomId, studentId)
     }
   }
 

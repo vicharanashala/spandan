@@ -59,3 +59,25 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
 
 // Backward-compatible wrapper — now normalizes async↔sync via requestQuestionGeneration.
 export const generateQuestions = async (transcript, config) => requestQuestionGeneration(transcript, config)
+
+// Fetch ALL questions for a room, transparently paging past the API's per-page cap (default 50,
+// max 100). Callers that show a room's full question list / count must use this — a plain
+// `?roomId=` fetch silently returns only the first 50, so a 94-question room shows "50".
+export const fetchAllRoomQuestions = async (roomId) => {
+  const token = useAuthStore.getState().token
+  const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {}
+  const limit = 100 // request the API's max page size to minimize round-trips
+  const getPage = async (page) => {
+    const res = await fetch(`${API_URL}/questions?roomId=${roomId}&limit=${limit}&page=${page}`, { headers: authHeader })
+    if (!res.ok) throw new Error('Failed to load questions')
+    return res.json()
+  }
+  const first = await getPage(1)
+  let all = first.questions || []
+  const pages = first.pagination?.pages || 1
+  for (let p = 2; p <= pages; p++) {
+    const d = await getPage(p)
+    all = all.concat(d.questions || [])
+  }
+  return all
+}
