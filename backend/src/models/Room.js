@@ -71,6 +71,9 @@ roomSchema.statics.findByCode = function(code) {
   return this.findOne({ code: code.toUpperCase() })
 }
 
+// Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
+roomSchema.index({ teacher: 1, createdAt: -1 })
+
 const Room = mongoose.model('Room', roomSchema)
 
 export default Room
