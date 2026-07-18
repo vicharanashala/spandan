@@ -6,6 +6,49 @@ const router = express.Router()
 // Apply authentication to all routes
 router.use(authenticate)
 
+// --- Hot-path read caches (Stage 2, Fix 4 + Fix 3a) --------------------------------------------
+// The POST /responses handler runs on every student answer; under a synchronized burst that is
+// hundreds of concurrent requests. Two of its DB reads are cacheable because their inputs are
+// effectively immutable during a live poll, so we cache them to cut per-response Mongo round-trips
+// WITHOUT changing how/when the response itself is written (dedup, points, durability unchanged).
+
+// Membership: cache ONLY confirmed memberships (never negatives) and always fall through to the DB
+// on a miss — so a student who just joined is never wrongly rejected. Short TTL bounds staleness
+// (a student who left still passes for up to TTL, which is benign).
+const MEMBER_TTL_MS = Number(process.env.MEMBER_CACHE_TTL_MS) || 60000
+const memberCache = new Map() // `${roomId}:${studentId}` -> expiresAt(ms)
+
+async function isRoomMember(RoomMember, roomId, studentId) {
+  const key = `${roomId}:${studentId}`
+  const exp = memberCache.get(key)
+  if (exp && exp > Date.now()) return true
+  const found = await RoomMember.findOne({ roomId, studentId }).select('_id').lean()
+  if (found) {
+    if (memberCache.size > 50000) memberCache.clear() // safe bound: a miss just re-hits the DB
+    memberCache.set(key, Date.now() + MEMBER_TTL_MS)
+    return true
+  }
+  return false
+}
+
+// Question: an approved question is immutable while it is being answered (teacher edits happen
+// pre-launch), so cache the lean doc used for scoring. Short TTL so any change still propagates.
+const QUESTION_TTL_MS = Number(process.env.QUESTION_CACHE_TTL_MS) || 30000
+const questionCache = new Map() // questionId -> { q, expiresAt(ms) }
+
+async function getQuestionCached(Question, questionId) {
+  const id = String(questionId)
+  const hit = questionCache.get(id)
+  if (hit && hit.expiresAt > Date.now()) return hit.q
+  const q = await Question.findById(questionId).lean()
+  if (q) {
+    if (questionCache.size > 50000) questionCache.clear()
+    questionCache.set(id, { q, expiresAt: Date.now() + QUESTION_TTL_MS })
+  }
+  return q
+}
+// ----------------------------------------------------------------------------------------------
+
 // POST /api/responses - Save a student's answer
 // Authorization: student only, and studentId must match authenticated user
 router.post('/', authorize('student'), async (req, res) => {
@@ -29,8 +72,8 @@ router.post('/', authorize('student'), async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: roomId, questionId, and selectedOptions (array)' })
     }
 
-    // Get the question to check correct answer and points
-    const question = await Question.findById(questionId)
+    // Get the question to check correct answer and points — cached (Fix 3a); immutable while live.
+    const question = await getQuestionCached(Question, questionId)
     if (!question) {
       return res.status(404).json({ error: 'Question not found' })
     }
@@ -73,7 +116,7 @@ router.post('/', authorize('student'), async (req, res) => {
     }
     // Incorrect answers get 0 points
 
-    const response = new Response({
+    const responseData = {
       roomId,
       questionId,
       studentId,
@@ -82,24 +125,49 @@ router.post('/', authorize('student'), async (req, res) => {
       isCorrect,
       responseTime: respTime,
       points
-    })
-
-    // Check if already responded to prevent duplicates
-    const existingResponse = await Response.findOne({ roomId, questionId, studentId })
-    if (existingResponse) {
-      return res.status(409).json({ 
-        success: false, 
-        error: 'Already responded to this question',
-        existingResponse: {
-          selectedOption: existingResponse.selectedOption,
-          selectedOptions: existingResponse.selectedOptions,
-          isCorrect: existingResponse.isCorrect,
-          points: existingResponse.points
-        }
-      })
     }
 
-    await response.save()
+    // Persist. DEFAULT path: save() immediately and let the unique index
+    // {roomId,questionId,studentId} reject duplicates as a 409 (no pre-check → no extra query, no
+    // check-then-act race). OPTIONAL path (RESPONSE_BATCH=on, Fix 3b): buffer the doc for a batched
+    // insertMany — the SAME unique index still enforces dedup/no-double-scoring at flush, so a
+    // duplicate is dropped there rather than returned as a 409. Points are already computed above
+    // and returned to the student immediately in BOTH paths.
+    let savedResponse = responseData
+    if (isBatchEnabled()) {
+      await bufferResponse(responseData)
+    } else {
+      const response = new Response(responseData)
+      try {
+        await response.save()
+        savedResponse = response.toObject()
+      } catch (saveErr) {
+        if (saveErr.code === 11000) {
+          const existingResponse = await Response.findOne({ roomId, questionId, studentId })
+          return res.status(409).json({
+            success: false,
+            error: 'Already responded to this question',
+            existingResponse: existingResponse ? {
+              selectedOption: existingResponse.selectedOption,
+              selectedOptions: existingResponse.selectedOptions,
+              isCorrect: existingResponse.isCorrect,
+              points: existingResponse.points
+            } : undefined
+          })
+        }
+        throw saveErr
+      }
+    }
+
+    // Live answer-counts update immediately (throttled) so the teacher's "X/total answered"
+    // badge stays current; the ranked leaderboard is DEFERRED to a quiet-debounce (fires once
+    // the answer burst has drained) so its expensive recompute never competes with the burst.
+    // Return this student's current rank ("rank on submit") from the last settled board — it may
+    // lag during a burst (Option A), but the student still gets their points immediately below.
+    const live = req.app.get('liveUpdates')
+    live?.scheduleCounts(roomId)
+    live?.scheduleLeaderboard(roomId)
+    const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
   // --- Streak Fire: streak multiplier (applied after applyAnswer) ---
   // Multiplier tiers:
@@ -209,7 +277,7 @@ router.post('/', authorize('student'), async (req, res) => {
     res.status(201).json({
       success: true,
       response: {
-        ...response.toObject(),
+        ...savedResponse,
         isCorrect,
         points: response.points,  // reflects multiplier-boosted value if applicable
         basePoints,               // pre-multiplier (for "you got 100 × 3 = 300!" display)
@@ -414,7 +482,8 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const Response = (await import('../models/Response.js')).default
     const Question = (await import('../models/Question.js')).default
     const Room = (await import('../models/Room.js')).default
-    
+    const RoomMember = (await import('../models/RoomMember.js')).default
+
     const { roomId } = req.params
     const currentUser = req.user
 
@@ -423,54 +492,77 @@ router.get('/stats/room/:roomId', async (req, res) => {
     if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
-    
+
     // Only the room owner (teacher) can view detailed stats
     if (room.teacher.toString() !== currentUser._id.toString()) {
       return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
     }
 
-    // Total responses for this room
-    const totalResponses = await Response.countDocuments({ roomId })
-    
-    // Get unique students who responded
-    const uniqueStudents = await Response.distinct('studentId', { roomId })
-    
-    // Get total questions in this room
-    const totalQuestions = await Question.countDocuments({ roomId })
+    // Ended rooms serve stats from the shared snapshot (built once at room end). A miss (live room,
+    // Redis off, cache error) falls through to a direct compute that uses ONE grouped aggregation
+    // for the per-question counts — no per-question N+1 find loop.
+    const ended = !!room?.endedAt
+    const cachedStats = await resultsSnapshot.getStats(roomId, { ended })
+    if (cachedStats) {
+      return res.json({ success: true, stats: cachedStats })
+    }
 
-    // Get question-level breakdown
-    const questionStats = await Question.find({ roomId }).lean()
-    const stats = await Promise.all(questionStats.map(async (q) => {
-      const responses = await Response.find({ roomId, questionId: q._id })
+    const mongoose = (await import('mongoose')).default
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+
+    // One pass for the counts (grouped by question × selected option) plus the light room-wide
+    // totals, all in parallel — replaces the old N+1 (one Response.find per question).
+    const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
+      Response.countDocuments({ roomId }),
+      Response.distinct('studentId', { roomId }),
+      RoomMember.countDocuments({ roomId }),
+      Question.find({ roomId }).lean(),
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        { $group: { _id: { q: '$questionId', opt: '$selectedOption' }, count: { $sum: 1 } } }
+      ])
+    ])
+
+    // Index grouped counts: questionId -> per-option counts, and questionId -> total responses
+    // (all responses for the question, matching the old responses.length).
+    const countsByQuestion = new Map()
+    const totalByQuestion = new Map()
+    for (const g of grouped) {
+      const qid = g._id.q ? g._id.q.toString() : null
+      if (!qid) continue
+      let m = countsByQuestion.get(qid)
+      if (!m) { m = new Map(); countsByQuestion.set(qid, m) }
+      m.set(g._id.opt, g.count)
+      totalByQuestion.set(qid, (totalByQuestion.get(qid) || 0) + g.count)
+    }
+
+    const questionStats = questions.map((q) => {
+      const perOption = countsByQuestion.get(q._id.toString()) || new Map()
       const answerCounts = {}
       let correctCount = 0
-      
       q.options.forEach((opt, idx) => {
-        const countForOption = responses.filter(r => r.selectedOption === idx).length
-        answerCounts[idx] = countForOption
-        // If this option is correct, add to correctCount
-        if (opt.isCorrect) {
-          correctCount += countForOption
-        }
+        const c = perOption.get(idx) || 0
+        answerCounts[idx] = c
+        if (opt.isCorrect) correctCount += c
       })
-      
       return {
         questionId: q._id,
         question: q.question,
         type: q.type,
-        totalResponses: responses.length,
+        totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
         answerCounts
       }
-    }))
+    })
 
     res.json({
       success: true,
       stats: {
         totalResponses,
         totalStudents: uniqueStudents.length,
-        totalQuestions,
-        questionStats: stats
+        totalJoined,
+        totalQuestions: questions.length,
+        questionStats
       }
     })
   } catch (error) {
@@ -512,6 +604,16 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       if (!isMember) {
         return res.status(403).json({ error: 'Not a member of this room' })
       }
+    }
+
+    // Ended rooms serve this student's per-question breakdown from the shared snapshot — an O(1)
+    // hash lookup instead of re-reading their responses + all questions on every results-page load.
+    // A miss (live room, Redis off, or a non-responder not stored in the snapshot) falls through to
+    // the direct compute below, which yields the identical payload.
+    const ended = !!room?.endedAt
+    const snap = await resultsSnapshot.getStudent(roomId, studentId, { ended })
+    if (snap.hit) {
+      return res.json({ success: true, questions: snap.questions })
     }
 
     // Convert to ObjectId if valid format
@@ -662,17 +764,12 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
-    // Aggregate points per student
-    const leaderboardData = await Response.aggregate([
-      { $match: { roomId: toObjectId(roomId) } },
-      { $group: {
-        _id: '$studentId',
-        totalPoints: { $sum: '$points' },
-        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-        totalAnswered: { $sum: 1 }
-      }},
-      { $sort: { totalPoints: -1 } }
-    ])
+    // Ended rooms serve the ranked board from the shared results snapshot, so a stampede of
+    // results-page loads all read one cached board instead of each running this full-room
+    // aggregation. On any miss (live room, Redis off, cache error) this is null and we compute
+    // directly below — identical result, just not cached.
+    const ended = !!room?.endedAt
+    let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
     // Resolve student names and per-room streak fields
     const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {

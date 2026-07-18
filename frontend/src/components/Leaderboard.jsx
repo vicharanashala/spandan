@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket }) => {
+const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // Keep the latest isTeacher available inside the socket listener without rebinding it.
+  const isTeacherRef = useRef(false)
+  useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
 
   const fetchLeaderboard = useCallback(async () => {
     try {

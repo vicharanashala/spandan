@@ -10,6 +10,12 @@ import Leaderboard from '../components/Leaderboard'
 import { useToast } from '../components/Toast'
 import { API_URL } from '../config.js'
 
+// Spread the ~N students' navigation to the results page over this window (ms). When a big room
+// ends, all students receive room:ended at once; without a spread they'd all hit the results
+// endpoints in the same instant (the end-session "results stampede"). Each student waits a random
+// delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
+const RESULTS_NAV_JITTER_MS = 4000
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
@@ -27,11 +33,14 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
+  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
+  const resultsNavTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -127,18 +136,36 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
+    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
+    // room's questions so any missed one surfaces without the student manually refreshing.
+    const handleReconnect = () => {
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
+      }
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
-      navigate(`/student/room/${room?._id}/results`)
+      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
+      // so all students don't hit the results endpoints in the same instant.
+      setSessionEnded(true)
+      const delay = Math.random() * RESULTS_NAV_JITTER_MS
+      resultsNavTimerRef.current = setTimeout(() => {
+        navigate(`/student/room/${room?._id}/results`)
+      }, delay)
     })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -211,19 +238,30 @@ function StudentRoomPage() {
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
+    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
+    // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
-    
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
-      selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
-      responseTime
+    const roomId = room?._id
+    const studentId = user?._id
+
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
+    // even though the network POST itself is deferred by a small random delay.
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
+    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
+    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
+    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    const jitterMs = Math.floor(Math.random() * 2000)
+
+    console.log('[StudentRoom] Submitting answer:', {
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
     })
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
+    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
+
+    // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -232,9 +270,9 @@ function StudentRoomPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          roomId: room._id,
+          roomId,
           questionId,
-          studentId: user._id,
+          studentId,
           selectedOptions,
           responseTime
         })
@@ -323,20 +361,8 @@ function StudentRoomPage() {
       console.error('Failed to save response:', err)
     }
 
-    // Emit via socket
-    socket.emit('response:submit', {
-      roomCode: room.code,
-      questionId,
-      studentId: user._id,
-      selectedOptions,
-      responseTime
-    })
-    
-    // Set submitted immediately and fetch past responses without delay
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-    if (room?._id && user?._id) {
-      fetchPastResponses(room._id, user._id)
+    if (roomId && studentId) {
+      fetchPastResponses(roomId, studentId)
     }
   }
 
@@ -406,6 +432,33 @@ function StudentRoomPage() {
             >
               Back to Dashboard
             </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (sessionEnded) {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              width: '48px',
+              height: '48px',
+              border: '4px solid var(--border-color)',
+              borderTopColor: '#3b82f6',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              margin: '0 auto 16px'
+            }} />
+            <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
           </div>
         </div>
       </div>
@@ -833,7 +886,7 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
                 </div>
               </div>
             </div>
