@@ -3,7 +3,8 @@ import {
   generateWithMiniMax,
   generateWithOpenAI,
   generateWithAnthropic,
-  generateWithGoogle
+  generateWithGoogle,
+  generateWithOllama
 } from './questionService.js'
 
 function buildNotePrompt(transcriptText, topicHint) {
@@ -78,6 +79,9 @@ export async function generateNoteContent({ transcriptText, topicHint, provider 
     case 'google':
       if (!config.googleApiKey) throw new Error('Google API key not configured')
       responseText = await generateWithGoogle(prompt)
+      break
+    case 'ollama':
+      responseText = await generateWithOllama(prompt)
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)

@@ -12,7 +12,6 @@ router.post('/generate', authenticate, authorize('teacher'), async (req, res) =>
   try {
     const { roomId, segmentIndex, topic, transcript, provider } = req.body
 
-    if (!roomId) return res.status(400).json({ error: 'roomId is required' })
     if (!transcript) return res.status(400).json({ error: 'transcript is required' })
 
     const generated = await generateNoteContent({ 
@@ -38,6 +37,19 @@ router.post('/generate', authenticate, authorize('teacher'), async (req, res) =>
   } catch (error) {
     console.error('Error generating notes:', error)
     res.status(500).json({ error: 'Failed to generate notes' })
+  }
+})
+
+// GET /api/notes/pending
+router.get('/pending', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const notes = await Note.find({ teacherId: req.user._id, status: 'pending_review' })
+      .sort({ generatedAt: -1 })
+      .populate('roomId', 'name')
+    res.json({ notes })
+  } catch (error) {
+    console.error('Error fetching pending notes:', error)
+    res.status(500).json({ error: 'Failed to fetch pending notes' })
   }
 })
 
@@ -130,10 +142,19 @@ router.get('/student/history', authenticate, authorize('student'), async (req, r
     const memberships = await RoomMember.find({ studentId: req.user._id }).lean()
     const roomIds = memberships.map(m => m.roomId)
 
-    // Fetch released notes for these rooms
-    const notes = await Note.find({ 
-      roomId: { $in: roomIds }, 
-      status: 'released' 
+    // Also find the teachers of those rooms so we can include their independent notes
+    const rooms = await Room.find({ _id: { $in: roomIds } }).select('teacher').lean()
+    const teacherIds = [...new Set(rooms.map(r => r.teacher?.toString()).filter(Boolean))]
+
+    // Fetch released notes that either:
+    // 1. Belong to a room the student has joined, OR
+    // 2. Are independent notes (no roomId) created by a teacher from one of their rooms
+    const notes = await Note.find({
+      status: 'released',
+      $or: [
+        { roomId: { $in: roomIds } },
+        { roomId: null, teacherId: { $in: teacherIds } }
+      ]
     })
     .sort({ releasedAt: -1 })
     .populate('roomId', 'name code createdAt endedAt')
@@ -143,8 +164,8 @@ router.get('/student/history', authenticate, authorize('student'), async (req, r
     // Format the response to include room details nicely
     const formattedNotes = notes.map(n => ({
       ...n,
-      roomName: n.roomId?.name || 'Unknown Room',
-      roomCode: n.roomId?.code || 'N/A',
+      roomName: n.roomId?.name || 'Independent Notes',
+      roomCode: n.roomId?.code || null,
       roomDate: n.roomId?.endedAt || n.roomId?.createdAt || n.releasedAt
     }))
 

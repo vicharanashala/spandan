@@ -517,6 +517,36 @@ export async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
+// Ollama API call
+export async function generateWithOllama(prompt, model = 'llama3.2') {
+  let response
+  try {
+    response = await fetch('http://127.0.0.1:11434/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt, stream: false })
+    })
+  } catch (err) {
+    throw new Error(`Cannot connect to Ollama at 127.0.0.1:11434. Make sure Ollama is running. (${err.message})`)
+  }
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    // Give a clear message if the model is just not pulled yet
+    if (response.status === 404 || errorData.toLowerCase().includes('not found') || errorData.toLowerCase().includes('pull')) {
+      throw new Error(`Ollama model "${model}" not found. Run: ollama pull ${model}`)
+    }
+    throw new Error(`Ollama API error: ${response.status} - ${errorData}`)
+  }
+
+  const data = await response.json()
+  if (!data.response) {
+    console.error('[gen:ollama] Empty response from Ollama. Full payload:', JSON.stringify(data).slice(0, 500))
+    throw new Error('Ollama returned an empty response. Check that your model is fully loaded.')
+  }
+  return data.response
+}
+
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
   const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
@@ -551,6 +581,9 @@ export async function generateQuestions(transcript, cfg) {
     case 'google':
       if (!config.googleApiKey) throw new Error('Google API key not configured')
       responseText = await generateWithGoogle(prompt)
+      break
+    case 'ollama':
+      responseText = await generateWithOllama(prompt)
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)

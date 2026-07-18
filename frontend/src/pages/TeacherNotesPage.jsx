@@ -16,6 +16,7 @@ export default function TeacherNotesPage() {
   const [selectedRoomId, setSelectedRoomId] = useState(urlRoomId || '')
   const [topic, setTopic] = useState('')
   const [transcript, setTranscript] = useState('') // manual transcript input
+  const [provider, setProvider] = useState('ollama') // Default to ollama
   const [pendingNotes, setPendingNotes] = useState([])
   
   const [selectedNote, setSelectedNote] = useState(null) // note currently being reviewed
@@ -47,9 +48,8 @@ export default function TeacherNotesPage() {
   }, [toastMessage])
 
   const fetchPendingNotes = async () => {
-    if (!selectedRoomId) return
     try {
-      const res = await fetch(`${API_URL}/notes/room/${selectedRoomId}?status=pending_review`, {
+      const res = await fetch(`${API_URL}/notes/pending`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (res.ok) {
@@ -63,7 +63,7 @@ export default function TeacherNotesPage() {
 
   useEffect(() => {
     fetchPendingNotes()
-  }, [selectedRoomId, token])
+  }, [token])
 
   const handleManualGenerate = async () => {
     if (!transcript.trim()) {
@@ -80,10 +80,10 @@ export default function TeacherNotesPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ 
-          roomId: selectedRoomId,
+          ...(selectedRoomId ? { roomId: selectedRoomId } : {}),
           topic, 
           transcript,
-          provider: 'minimax' 
+          provider 
         })
       })
       const data = await response.json()
@@ -209,7 +209,7 @@ export default function TeacherNotesPage() {
                     outline: 'none'
                   }}
                 >
-                  <option value="" disabled>Select a room...</option>
+                  <option value="">No Room (Independent Note)</option>
                   {rooms?.map(r => (
                     <option key={r._id} value={r._id}>{r.name} ({r.code})</option>
                   ))}
@@ -280,6 +280,20 @@ export default function TeacherNotesPage() {
                     placeholder="e.g. Data Structures Intro"
                     style={{ width: '100%', padding: '14px 16px', border: '2px solid var(--border-color)', borderRadius: '10px', fontSize: '14px', outline: 'none', boxSizing: 'border-box', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
                   />
+                </div>
+                
+                <div style={{ marginBottom: '24px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '8px' }}>AI Provider</label>
+                  <select
+                    value={provider} onChange={(e) => setProvider(e.target.value)}
+                    style={{ width: '100%', padding: '14px 16px', border: '2px solid var(--border-color)', borderRadius: '10px', fontSize: '14px', outline: 'none', boxSizing: 'border-box', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                  >
+                    <option value="ollama">Ollama (Local)</option>
+                    <option value="minimax">MiniMax</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic Claude</option>
+                    <option value="google">Google Gemini</option>
+                  </select>
                 </div>
                 
                 <div style={{ marginBottom: '24px' }}>
