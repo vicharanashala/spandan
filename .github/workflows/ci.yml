@@ -1,4 +1,4 @@
-content = """name: CI
+name: CI
 
 on:
   push:
@@ -70,7 +70,3 @@ jobs:
         with:
           files: ./frontend/coverage/lcov.info
           flags: frontend
-"""
-
-open('.github/workflows/ci.yml', 'w', encoding='utf-8').write(content)
-print('File written successfully.')
