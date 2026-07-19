@@ -18,6 +18,7 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const [isExporting, setIsExporting] = useState(false)
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -145,6 +146,33 @@ function RoomResultsPage() {
     }
   }
 
+  const handleExport = async () => {
+    setIsExporting(true)
+    try {
+      const res = await fetch(`${API_URL}/responses/room/${roomId}/export`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to export results')
+      }
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(room?.name || 'room').replace(/[^a-z0-9-_]+/gi, '_')}-results.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Failed to export room results:', err)
+      alert(err.message || 'Failed to export results. Please try again.')
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div style={{
@@ -206,25 +234,48 @@ function RoomResultsPage() {
 
         {/* Content */}
         <div style={{ flex: 1, padding: '32px' }}>
-          {/* Back Button */}
-          <button
-            onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              padding: '8px 12px',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              fontSize: '14px',
-              cursor: 'pointer',
-              marginBottom: '20px'
-            }}
-          >
-            ←
-          </button>
+          {/* Back Button + Export */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <button
+              onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '8px 12px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                fontSize: '14px',
+                cursor: 'pointer'
+              }}
+            >
+              ←
+            </button>
+
+            {user?.role === 'teacher' && (
+              <button
+                onClick={handleExport}
+                disabled={isExporting}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  background: isExporting ? 'var(--border-color)' : '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: isExporting ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {isExporting ? 'Exporting…' : '⬇ Download CSV'}
+              </button>
+            )}
+          </div>
           
           {/* Overview Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '24px' }}>

@@ -410,6 +410,139 @@ router.get('/stats/room/:roomId', async (req, res) => {
   }
 })
 
+// Escape a single CSV cell: wrap in quotes (and double up any internal quotes) whenever
+// the value contains a comma, quote, or newline, so exported text fields (e.g. question
+// text) can't break the column structure.
+function escapeCsvCell(value) {
+  const str = value === null || value === undefined ? '' : String(value)
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+function toCsvRow(cells) {
+  return cells.map(escapeCsvCell).join(',') + '\r\n'
+}
+
+// GET /api/responses/room/:roomId/export - Download room results as CSV (teacher only)
+// Produces one file with three sections: room info, a per-student summary (one column
+// per question, correct/incorrect/no-answer), and a per-question breakdown. All figures
+// are derived directly from Response/Question docs so they match what the results page
+// (stats/room + leaderboard) already shows the teacher.
+router.get('/room/:roomId/export', authorize('teacher'), async (req, res) => {
+  try {
+    const mongoose = (await import('mongoose')).default
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const User = (await import('../models/User.js')).default
+
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    if (!mongoose.Types.ObjectId.isValid(roomId)) {
+      return res.status(400).json({ error: 'Invalid room id' })
+    }
+
+    const room = await Room.findById(roomId).lean()
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Only the room owner (teacher) can export its results — same rule as stats/room.
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to export this room\'s results' })
+    }
+
+    const [questions, allResponses] = await Promise.all([
+      Question.find({ roomId }).sort({ segmentIndex: 1, createdAt: 1 }).lean(),
+      Response.find({ roomId }).lean()
+    ])
+
+    // Group responses by student so we can build one summary row per student.
+    const responsesByStudent = new Map()
+    for (const r of allResponses) {
+      const sid = r.studentId.toString()
+      if (!responsesByStudent.has(sid)) responsesByStudent.set(sid, [])
+      responsesByStudent.get(sid).push(r)
+    }
+
+    const studentIds = [...responsesByStudent.keys()]
+    const users = studentIds.length
+      ? await User.find({ _id: { $in: studentIds } }).select('name email').lean()
+      : []
+    const userById = new Map(users.map(u => [u._id.toString(), u]))
+
+    const studentRows = studentIds.map((sid) => {
+      const studentResponses = responsesByStudent.get(sid)
+      const totalPoints = studentResponses.reduce((sum, r) => sum + (r.points || 0), 0)
+      const correctCount = studentResponses.filter(r => r.isCorrect).length
+      const totalAnswered = studentResponses.length
+      const user = userById.get(sid)
+      return {
+        name: user?.name || 'Unknown Student',
+        email: user?.email || '',
+        totalPoints,
+        correctCount,
+        totalAnswered,
+        accuracy: totalAnswered ? Math.round((correctCount / totalAnswered) * 100) : 0,
+        responseByQuestion: new Map(studentResponses.map(r => [r.questionId.toString(), r]))
+      }
+    }).sort((a, b) => b.totalPoints - a.totalPoints)
+
+    let csv = ''
+
+    // Section 1: room info
+    csv += toCsvRow(['Room', room.name])
+    csv += toCsvRow(['Room Code', room.code])
+    csv += toCsvRow(['Exported At', new Date().toISOString()])
+    csv += '\r\n'
+
+    // Section 2: per-student summary, one column per question
+    csv += toCsvRow([
+      'Rank', 'Student Name', 'Email', 'Total Points', 'Correct', 'Answered', 'Accuracy %',
+      ...questions.map((_, i) => `Q${i + 1}`)
+    ])
+    studentRows.forEach((s, idx) => {
+      const perQuestionCells = questions.map((q) => {
+        const resp = s.responseByQuestion.get(q._id.toString())
+        if (!resp) return 'No Answer'
+        return resp.isCorrect ? 'Correct' : 'Incorrect'
+      })
+      csv += toCsvRow([
+        idx + 1, s.name, s.email, s.totalPoints, s.correctCount, s.totalAnswered, s.accuracy,
+        ...perQuestionCells
+      ])
+    })
+    csv += '\r\n'
+
+    // Section 3: per-question breakdown (question text + accuracy)
+    csv += toCsvRow(['Question #', 'Question', 'Type', 'Total Responses', 'Correct Count', 'Accuracy %'])
+    questions.forEach((q, i) => {
+      const qResponses = allResponses.filter(r => r.questionId.toString() === q._id.toString())
+      const correct = qResponses.filter(r => r.isCorrect).length
+      const total = qResponses.length
+      csv += toCsvRow([
+        `Q${i + 1}`,
+        q.question,
+        q.type,
+        total,
+        correct,
+        total ? Math.round((correct / total) * 100) : 0
+      ])
+    })
+
+    const safeRoomName = (room.name || 'room').replace(/[^a-z0-9-_]+/gi, '_').slice(0, 60)
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${safeRoomName}-results.csv"`)
+    res.status(200).send(csv)
+  } catch (error) {
+    console.error('Error exporting room results:', error)
+    res.status(500).json({ success: false, error: 'Failed to export results' })
+  }
+})
+
 // GET /api/responses/room/:roomId/student/:studentId - Get all questions with student's responses
 router.get('/room/:roomId/student/:studentId', async (req, res) => {
   try {
