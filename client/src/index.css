@@ -1,0 +1,70 @@
+:root {
+  /* Chalkboard palette — grounded in the classroom, not a generic default */
+  --board: #1c3b2c;
+  --board-dark: #12281d;
+  --rail: #274f3a;
+  --rail-hover: #2f5c44;
+  --chalk: #eee7d4;
+  --chalk-dim: #b9c4b9;
+  --chalk-yellow: #e8c34a;
+  --chalk-pink: #e58a86;
+  --chalk-mint: #8fd9b3;
+  --line: rgba(238, 231, 212, 0.14);
+
+  --font-display: "Space Mono", "Courier New", monospace;
+  --font-body: "Inter", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--chalk);
+  background: radial-gradient(circle at 20% 15%, #234a35 0%, var(--board) 45%, var(--board-dark) 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* faint chalk-dust texture */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: radial-gradient(circle, var(--chalk) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--chalk-yellow);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  font-family: var(--font-body);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
