@@ -209,7 +209,7 @@ export default function TeacherNotesPage() {
                     outline: 'none'
                   }}
                 >
-                  <option value="">No Room (Independent Note)</option>
+                  <option value="independent">No Room (Independent Note)</option>
                   {rooms?.map(r => (
                     <option key={r._id} value={r._id}>{r.name} ({r.code})</option>
                   ))}

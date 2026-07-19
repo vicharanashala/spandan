@@ -78,13 +78,13 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
             segment_list = []
             for segment in segments:
                 full_text += segment.text + " "
-                segment_list.append({"text": segment.text, "start": segment.start, "end": segment.end})
+                segment_list.append({"text": segment.text, "start": float(segment.start), "end": float(segment.end)})
 
         return {
             "text": full_text.strip(),
             "segments": segment_list,
             "language": info.language,
-            "language_probability": info.language_probability,
+            "language_probability": float(info.language_probability),
         }
 
     except Exception as e:
@@ -97,10 +97,11 @@ class TranscriptionHandler(BaseHTTPRequestHandler):
         pass  # suppress default per-request logging
 
     def _json(self, status, payload):
+        body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        self.wfile.write(body)
 
     def do_GET(self):
         if self.path == "/health":
