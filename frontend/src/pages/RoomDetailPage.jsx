@@ -1118,6 +1118,35 @@ function RoomDetailPage() {
               </div>
             )}
 
+            {/* Pop Quiz Countdown Button */}
+            {!isEnded && (
+              <button
+                onClick={() => {
+                  if (!socket) {
+                    console.warn('[QuizCountdown] socket not available')
+                    return
+                  }
+                  console.log('[QuizCountdown] emitting quiz:countdown for room:', room?.code)
+                  socket.emit('quiz:countdown', { roomCode: room.code })
+                }}
+                style={{
+                  padding: '8px 16px',
+                  background: '#7c3aed',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                ⏱ Start Quiz
+              </button>
+            )}
+
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button

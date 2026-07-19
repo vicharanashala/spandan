@@ -513,6 +513,16 @@ io.on('connection', (socket) => {
     }
   })
 
+  // Pop quiz countdown — teacher triggers a 15s countdown on all student screens
+  socket.on('quiz:countdown', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
+      console.warn('quiz:countdown rejected — not the room owner:', socket.id)
+      return
+    }
+    console.log('[quiz:countdown] broadcasting to room:', data?.roomCode)
+    io.to(data.roomCode).emit('quiz:countdown', { duration: 15 })
+  })
+
   socket.on('disconnect', () => {
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)

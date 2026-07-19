@@ -37,6 +37,9 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const [showCountdown, setShowCountdown] = useState(false)
+  const [countdownValue, setCountdownValue] = useState(15)
+  const countdownTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -141,6 +144,31 @@ function StudentRoomPage() {
       }
     }
 
+    const handleQuizCountdown = (data) => {
+      console.log('[StudentRoom] quiz:countdown received:', data)
+      const duration = data?.duration || 15
+      setCountdownValue(duration)
+      setShowCountdown(true)
+
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current)
+        countdownTimerRef.current = null
+      }
+
+      countdownTimerRef.current = setInterval(() => {
+        setCountdownValue(prev => {
+          if (prev <= 1) {
+            clearInterval(countdownTimerRef.current)
+            countdownTimerRef.current = null
+            setShowCountdown(false)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+
+    socket.on('quiz:countdown', handleQuizCountdown)
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -158,10 +186,12 @@ function StudentRoomPage() {
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
+      socket.off('quiz:countdown', handleQuizCountdown)
       socket.off('new_question', handleNewQuestion)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -391,6 +421,14 @@ function StudentRoomPage() {
     )
   }
 
+  const handleDismissCountdown = () => {
+    setShowCountdown(false)
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -399,8 +437,83 @@ function StudentRoomPage() {
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
       width: '100vw',
       maxWidth: '100vw',
-      overflowX: 'hidden'
+      overflowX: 'hidden',
+      position: 'relative'
     }}>
+      {showCountdown && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '24px',
+            padding: '48px',
+            textAlign: 'center',
+            maxWidth: '400px',
+            width: '90%',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+          }}>
+            <h2 style={{
+              fontSize: '28px',
+              fontWeight: '700',
+              color: '#1f2937',
+              margin: '0 0 24px 0'
+            }}>
+              Quiz Countdown
+            </h2>
+            <div style={{
+              width: '160px',
+              height: '160px',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 24px'
+            }}>
+              <span style={{
+                fontSize: '64px',
+                fontWeight: '700',
+                color: 'white'
+              }}>
+                {countdownValue}
+              </span>
+            </div>
+            <p style={{
+              fontSize: '18px',
+              color: '#6b7280',
+              margin: '0 0 24px 0'
+            }}>
+              Quiz starts in
+            </p>
+            <button
+              onClick={handleDismissCountdown}
+              style={{
+                padding: '10px 28px',
+                background: '#7c3aed',
+                color: 'white',
+                border: 'none',
+                borderRadius: '10px',
+                fontSize: '15px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>

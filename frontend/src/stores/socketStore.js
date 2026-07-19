@@ -86,6 +86,10 @@ export const useSocketStore = create((set, get) => ({
       console.log('New question received:', data)
     })
 
+    socket.on('quiz:countdown', (data) => {
+      console.log('Quiz countdown:', data)
+    })
+
     set({ socket })
   },
 
@@ -134,6 +138,13 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('question:end', data)
+    }
+  },
+
+  sendQuizCountdown: (roomCode) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('quiz:countdown', { roomCode })
     }
   }
 }))
