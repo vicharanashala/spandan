@@ -15,6 +15,8 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import storeRoutes from './routes/store.js'
+import aiRoutes from './routes/ai.js'
 
 // Import models for reference
 import './models/index.js'
@@ -48,11 +50,8 @@ const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
       if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
       if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
       if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
         return callback(null, true)
       }
@@ -116,6 +115,8 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/store', storeRoutes)
+app.use('/api/ai', aiRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -329,6 +330,19 @@ const connectDB = async () => {
 }
 
 const PORT = process.env.PORT || 3001
+
+// Add error handler to httpServer to handle EADDRINUSE gracefully
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n[ERROR] Port ${PORT} is already in use!`)
+    console.error(`[FIX] Run this command to free the port:`)
+    console.error(`      npx kill-port ${PORT}`)
+    console.error(`Then run npm run dev again.\n`)
+    process.exit(1)
+  } else {
+    throw err
+  }
+})
 
 // Start server
 const startServer = async () => {

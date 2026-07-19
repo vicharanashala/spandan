@@ -3,11 +3,12 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 
-export const createRoom = async (name, teacherId, settings = {}) => {
+export const createRoom = async (name, teacherId, settings = {}, bossOptions = {}) => {
   const room = new Room({
     name,
     teacher: teacherId,
-    settings
+    settings,
+    ...bossOptions
   })
 
   await room.save()

@@ -98,6 +98,33 @@ router.post('/', authorize('student'), async (req, res) => {
 
     await response.save()
 
+    if (isCorrect && points > 0) {
+      // Fire-and-forget to update personal XP without blocking the response
+      const User = (await import('../models/User.js')).default
+      User.updateOne({ _id: studentId }, { $inc: { personalXp: points } }).catch(e => console.error('Error updating personal XP:', e))
+      
+      // Boss Battle Logic
+      if (room.isBossMode && room.bossHealth > 0) {
+        const damage = points
+        // Use findOneAndUpdate to prevent race conditions from concurrent answers
+        const updatedRoom = await room.constructor.findOneAndUpdate(
+          { _id: room._id },
+          { $inc: { bossHealth: -damage } },
+          { new: true }
+        )
+        const newHealth = Math.max(0, updatedRoom.bossHealth)
+        // Ensure it doesn't drop below 0 in DB
+        if (updatedRoom.bossHealth < 0) {
+          await room.constructor.updateOne({ _id: room._id }, { bossHealth: 0 })
+        }
+        // Broadcast boss damage if io is available
+        const io = req.app.get('io')
+        if (io) {
+          io.to(room.code).emit('boss:damage', { damage, newHealth, studentId })
+        }
+      }
+    }
+
     res.status(201).json({
       success: true,
       response: {

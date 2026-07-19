@@ -27,6 +27,13 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  // Gamification States
+  const [bossHealth, setBossHealth] = useState(0)
+  const [classShields, setClassShields] = useState(0)
+  const [socraticMessage, setSocraticMessage] = useState('')
+  const [isTimeFrozen, setIsTimeFrozen] = useState(false)
+  const [eliminatedOptions, setEliminatedOptions] = useState([])
+  
   const timerIntervalRef = useRef(null)
 
   useEffect(() => {
@@ -49,6 +56,9 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      setSocraticMessage('')
+      setEliminatedOptions([])
+      setIsTimeFrozen(false)
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -123,9 +133,15 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    const handleBossDamage = (data) => {
+      setBossHealth(data.newHealth)
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('boss:damage', handleBossDamage)
+
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
@@ -134,6 +150,7 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('boss:damage', handleBossDamage)
       socket.off('room:ended')
     }
   }, [socket, navigate, room?._id])
@@ -149,6 +166,13 @@ function StudentRoomPage() {
           const timeout = setTimeout(() => {
             socket.off('room:joined', handleRoomJoined)
             // Still fetch even if timeout - RoomMember should already exist from HTTP join
+            // Set boss states if active
+            if (roomData.isBossMode) {
+              setBossHealth(roomData.bossHealth || 1000)
+              setClassShields(roomData.classShields || 100)
+            }
+
+            // Initial past responses
             fetchPastResponses(roomData._id, user._id)
             resolve()
           }, 3000)
@@ -247,6 +271,46 @@ function StudentRoomPage() {
           points: saveData.response.points,
           isCorrect: saveData.response.isCorrect
         })
+        
+        // Socratic Tutor: If answer is wrong, get a hint
+        if (!saveData.response.isCorrect && currentQuestion) {
+          try {
+            setSocraticMessage('Thinking of a hint...')
+
+            // Resolve the actual question object (can be nested or flat)
+            const q = currentQuestion.question || currentQuestion
+            const options = currentQuestion.options || q.options || []
+
+            // correctOptionIndex can be on the nested question or top level
+            const correctIdx = q.correctOptionIndex ?? currentQuestion.correctOptionIndex ?? 0
+            
+            // Resolve text from option objects or plain strings
+            const getOptionText = (opt) => (typeof opt === 'string' ? opt : opt?.text || String(opt))
+            
+            const correctAnswer = options[correctIdx] ? getOptionText(options[correctIdx]) : 'the correct answer'
+            const wrongIdx = selectedOptions[0]
+            const wrongAnswer = options[wrongIdx] !== undefined ? getOptionText(options[wrongIdx]) : String(wrongIdx)
+            const questionText = q.question || q.text || 'this question'
+
+            const aiResponse = await fetch(`${API_URL}/ai/socratic`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ questionText, correctAnswer, wrongAnswer })
+            })
+            const aiData = await aiResponse.json()
+            if (aiData.message) {
+              setSocraticMessage(aiData.message)
+            } else {
+              setSocraticMessage('')
+            }
+          } catch (e) {
+            console.error('Socratic tutor error:', e)
+            setSocraticMessage('')
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to save response:', err)
@@ -417,6 +481,45 @@ function StudentRoomPage() {
             </button>
           </div>
 
+          {room?.isBossMode && bossHealth > 0 && (
+            <div style={{
+              background: 'linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)',
+              color: 'white',
+              padding: '12px 24px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              borderRadius: '12px',
+              marginBottom: '24px',
+              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.3)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '24px' }}>🐉</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '14px', opacity: 0.9 }}>Boss Health</h3>
+                  <div style={{ 
+                    width: '200px', 
+                    height: '8px', 
+                    background: 'rgba(0,0,0,0.3)', 
+                    borderRadius: '4px',
+                    marginTop: '4px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      width: `${(bossHealth / (room.bossHealth || 1000)) * 100}%`,
+                      height: '100%',
+                      background: '#ef4444',
+                      transition: 'width 0.5s ease-out'
+                    }} />
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontWeight: '700', fontSize: '18px' }}>
+                {bossHealth} HP
+              </div>
+            </div>
+          )}
+
           {/* Live Question */}
           {currentQuestion ? (
             <div style={{
@@ -524,11 +627,87 @@ function StudentRoomPage() {
                       }}>
                         {optionLabel}
                       </span>
-                      <span>{optionText}</span>
+                      <span style={{
+                        textDecoration: eliminatedOptions.includes(index) ? 'line-through' : 'none',
+                        opacity: eliminatedOptions.includes(index) ? 0.3 : 1
+                      }}>{optionText}</span>
                     </button>
                   )
                 })}
               </div>
+
+              {/* Socratic Tutor Message */}
+              {socraticMessage && (
+                <div style={{
+                  background: 'rgba(59, 130, 246, 0.2)',
+                  border: '1px solid #3b82f6',
+                  borderRadius: '12px',
+                  padding: '16px',
+                  marginBottom: '24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}>
+                  <div style={{ fontSize: '24px' }}>🤖</div>
+                  <div style={{ color: 'white', fontSize: '15px', lineHeight: '1.5' }}>
+                    <strong>Socratic Tutor:</strong> {socraticMessage}
+                  </div>
+                </div>
+              )}
+
+              {/* Power-up Tray */}
+              {!submitted && (
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', justifyContent: 'center' }}>
+                  <button 
+                    onClick={() => {
+                      if (currentQuestion.options && currentQuestion.options.length > 2) {
+                        // Find incorrect options
+                        const correctIndex = currentQuestion.question?.correctOptionIndex || 0
+                        const incorrectIndices = currentQuestion.options
+                          .map((_, i) => i)
+                          .filter(i => i !== correctIndex)
+                        // Eliminate 2 random incorrect options
+                        const shuffled = incorrectIndices.sort(() => 0.5 - Math.random())
+                        setEliminatedOptions(shuffled.slice(0, 2))
+                      }
+                    }}
+                    disabled={eliminatedOptions.length > 0}
+                    style={{
+                      padding: '10px 16px',
+                      background: eliminatedOptions.length > 0 ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                      border: 'none',
+                      borderRadius: '20px',
+                      color: 'white',
+                      fontWeight: '600',
+                      cursor: eliminatedOptions.length > 0 ? 'default' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                    ✂️ 50/50 (Cost: 50 XP)
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsTimeFrozen(true)
+                      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+                    }}
+                    disabled={isTimeFrozen}
+                    style={{
+                      padding: '10px 16px',
+                      background: isTimeFrozen ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                      border: 'none',
+                      borderRadius: '20px',
+                      color: 'white',
+                      fontWeight: '600',
+                      cursor: isTimeFrozen ? 'default' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                    ❄️ Time Freeze (Cost: 100 XP)
+                  </button>
+                </div>
+              )}
 
               {/* Submit Button */}
               {submitted ? (
