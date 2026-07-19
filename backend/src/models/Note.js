@@ -14,6 +14,16 @@ const noteSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  questionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Question',
+    default: null
+  },
+  targetStudentIds: {
+    type: [mongoose.Schema.Types.ObjectId],
+    ref: 'User',
+    default: []
+  },
   topic: {
     type: String,
     trim: true,

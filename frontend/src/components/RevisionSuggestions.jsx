@@ -9,6 +9,86 @@ function RevisionSuggestions({ roomId, token }) {
   const [notes, setNotes] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [reviewNote, setReviewNote] = useState(null)
+  const [reviewDraft, setReviewDraft] = useState({ topic: '', title: '', content: '' })
+  const [reviewSaving, setReviewSaving] = useState(false)
+
+  const openReview = (note) => {
+    setReviewNote(note)
+    setReviewDraft({ topic: note.topic || '', title: note.title || '', content: note.content || '' })
+  }
+
+  const refreshNotes = async () => {
+    const notesRes = await fetch(`${API_URL}/notes/room/${roomId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+    if (notesRes.ok) {
+      const notesJson = await notesRes.json()
+      setNotes(notesJson.notes || [])
+    }
+  }
+
+  const handleSaveDraft = async () => {
+    if (!reviewNote) return
+    setReviewSaving(true)
+    try {
+      const res = await fetch(`${API_URL}/notes/${reviewNote._id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(reviewDraft)
+      })
+      if (!res.ok) throw new Error('Failed to save draft')
+      await refreshNotes()
+      setReviewNote(null)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setReviewSaving(false)
+    }
+  }
+
+  const handleRelease = async () => {
+    if (!reviewNote) return
+    setReviewSaving(true)
+    try {
+      const patchRes = await fetch(`${API_URL}/notes/${reviewNote._id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(reviewDraft)
+      })
+      if (!patchRes.ok) throw new Error('Failed to save before releasing')
+
+      const res = await fetch(`${API_URL}/notes/${reviewNote._id}/release`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Failed to release note')
+      await refreshNotes()
+      setReviewNote(null)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setReviewSaving(false)
+    }
+  }
+
+  const handleDiscard = async () => {
+    if (!reviewNote) return
+    setReviewSaving(true)
+    try {
+      const res = await fetch(`${API_URL}/notes/${reviewNote._id}/discard`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Failed to discard note')
+      await refreshNotes()
+      setReviewNote(null)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setReviewSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (!roomId || !token) return
@@ -116,6 +196,7 @@ function RevisionSuggestions({ roomId, token }) {
   }
 
   const QuestionRow = ({ item, isHardest }) => {
+    const [isGenerating, setIsGenerating] = useState(false)
     const badge = badgeColor(item.wrongPercentage)
     const displayLabel = item.topic && item.topic !== item.question ? item.topic : null
 
@@ -193,21 +274,69 @@ function RevisionSuggestions({ roomId, token }) {
             {item.wrongCount}/{item.totalResponses} got it wrong
           </div>
         </div>
-        
+
         {/* Note Linkage Section */}
         <div style={{ flexShrink: 0, minWidth: '150px', textAlign: 'right' }}>
           {(() => {
-            const relatedNote = notes.find(n => n.segmentIndex === item.segmentIndex)
+            const relatedNote = notes.find(n => n.questionId && item.questionId && n.questionId.toString() === item.questionId.toString())
             if (relatedNote) {
               if (relatedNote.status === 'released') {
                 return <span style={{ fontSize: '12px', color: '#059669', background: '#d1fae5', padding: '4px 8px', borderRadius: '4px' }}>📘 Note released</span>
               } else if (relatedNote.status === 'pending_review') {
-                return <a href={`/teacher/room/${roomId}/notes`} style={{ fontSize: '12px', color: '#d97706', background: '#fef3c7', padding: '4px 8px', borderRadius: '4px', textDecoration: 'none' }}>📝 Draft ready (Review)</a>
+                return (
+                  <button
+                    onClick={() => openReview(relatedNote)}
+                    style={{ fontSize: '12px', color: '#d97706', background: '#fef3c7', padding: '4px 8px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
+                  >
+                    📝 Draft ready (Review)
+                  </button>
+                )
               } else {
                 return <span style={{ fontSize: '12px', color: '#6b7280' }}>Note discarded</span>
               }
             } else {
-              return <a href={`/teacher/room/${roomId}/notes`} style={{ fontSize: '12px', color: '#3b82f6', textDecoration: 'underline' }}>➕ Generate Note</a>
+              return (
+                <button
+                  onClick={async () => {
+                    setIsGenerating(true)
+                    try {
+                      const res = await fetch(`${API_URL}/notes/generate-for-question`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ roomId, questionId: item.questionId })
+                      })
+                      if (!res.ok) {
+                        const json = await res.json()
+                        throw new Error(json.error || 'Failed to generate note')
+                      }
+                      const json = await res.json()
+                      // Refresh notes to show draft status
+                      await refreshNotes()
+                      // Immediately open the review/release popup for this note
+                      openReview(json.note)
+                    } catch (err) {
+                      alert(err.message)
+                    } finally {
+                      setIsGenerating(false)
+                    }
+                  }}
+                  disabled={isGenerating}
+                  style={{
+                    fontSize: '12px',
+                    color: isGenerating ? '#9ca3af' : '#3b82f6',
+                    textDecoration: isGenerating ? 'none' : 'underline',
+                    background: 'none',
+                    border: 'none',
+                    cursor: isGenerating ? 'wait' : 'pointer',
+                    padding: 0
+                  }}
+                >
+                  {isGenerating ? '⏳ Generating...' : '➕ Generate Note'}
+                </button>
+              )
             }
           })()}
         </div>
@@ -426,6 +555,71 @@ function RevisionSuggestions({ roomId, token }) {
                 isHardest={hardestQuestion && item.questionId === hardestQuestion.questionId}
               />
             ))}
+          </div>
+        </div>
+      )}
+
+      {reviewNote && (
+        <div
+          onClick={() => !reviewSaving && setReviewNote(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', maxWidth: '700px', width: '90%', maxHeight: '85vh', overflowY: 'auto' }}
+          >
+            <h2 style={{ margin: '0 0 20px', color: 'var(--text-primary)' }}>Review Note</h2>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+              <div>
+                <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>Topic</label>
+                <input
+                  value={reviewDraft.topic}
+                  onChange={(e) => setReviewDraft(d => ({ ...d, topic: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>Title</label>
+                <input
+                  value={reviewDraft.title}
+                  onChange={(e) => setReviewDraft(d => ({ ...d, title: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                />
+              </div>
+            </div>
+
+            <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>Content (Markdown Supported)</label>
+            <textarea
+              value={reviewDraft.content}
+              onChange={(e) => setReviewDraft(d => ({ ...d, content: e.target.value }))}
+              rows={14}
+              style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontFamily: 'monospace', fontSize: '13px', resize: 'vertical' }}
+            />
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+              <button
+                onClick={handleDiscard}
+                disabled={reviewSaving}
+                style={{ padding: '10px 18px', borderRadius: '8px', border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: reviewSaving ? 'not-allowed' : 'pointer', fontWeight: '600' }}
+              >
+                Discard
+              </button>
+              <button
+                onClick={handleSaveDraft}
+                disabled={reviewSaving}
+                style={{ padding: '10px 18px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: reviewSaving ? 'not-allowed' : 'pointer', fontWeight: '600' }}
+              >
+                Save Draft
+              </button>
+              <button
+                onClick={handleRelease}
+                disabled={reviewSaving}
+                style={{ padding: '10px 18px', borderRadius: '8px', border: 'none', background: '#059669', color: 'white', cursor: reviewSaving ? 'not-allowed' : 'pointer', fontWeight: '600' }}
+              >
+                {reviewSaving ? 'Working...' : 'Release to Students'}
+              </button>
+            </div>
           </div>
         </div>
       )}

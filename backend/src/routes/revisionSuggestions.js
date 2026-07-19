@@ -85,8 +85,20 @@ router.get('/:roomId/student/:studentId', authorize('student'), async (req, res)
     // Try to attach Note IDs if they exist for that segment
 
     const enrichedWeakTopics = await Promise.all(weakTopics.map(async (topic) => {
+      // Prefer a targeted per-question note released specifically for this student
+      if (topic.questionIds && topic.questionIds.length > 0) {
+        const questionNote = await Note.findOne({
+          roomId,
+          questionId: { $in: topic.questionIds },
+          targetStudentIds: studentId,
+          status: 'released'
+        }).lean()
+        if (questionNote) {
+          return { ...topic, noteId: questionNote._id, noteTitle: questionNote.title, noteStatus: 'released' }
+        }
+      }
+      // Fall back to a general segment-level note
       if (topic.segmentIndex !== undefined && topic.segmentIndex !== null) {
-        // Find notes for this segment (released notes preferred)
         const note = await Note.findOne({ roomId, segmentIndex: topic.segmentIndex, status: 'released' }).lean()
         if (note) {
           return { ...topic, noteId: note._id, noteTitle: note.title, noteStatus: 'released' }

@@ -9,7 +9,8 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   googleApiKey: process.env.GOOGLE_API_KEY || '',
-  nodeEnv: process.env.NODE_ENV || 'development'
+  nodeEnv: process.env.NODE_ENV || 'development',
+  defaultNoteProvider: process.env.DEFAULT_NOTE_PROVIDER || 'ollama'
 }
 
 export const AI_PROVIDERS = {

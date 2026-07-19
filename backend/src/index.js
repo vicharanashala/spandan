@@ -20,7 +20,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import revisionSuggestionsRoutes from './routes/revisionSuggestions.js'
 import notesRoutes from './routes/notes.js'
-
+import questionNotesRoutes from './routes/questionNotes.js'
 
 // Import models for reference
 import './models/index.js'
@@ -358,6 +358,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/revision-suggestions', revisionSuggestionsRoutes)
 app.use('/api/notes', notesRoutes)
+app.use('/api/notes', questionNotesRoutes)
 
 
 // Health check
@@ -587,4 +588,4 @@ const startServer = async () => {
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app, io } 

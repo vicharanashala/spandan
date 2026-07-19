@@ -14,6 +14,21 @@ import RevisionSuggestions from '../components/RevisionSuggestions'
 function MyRevisionSummary({ roomId, token, userId }) {
   const [weakTopics, setWeakTopics] = useState([])
   const [loading, setLoading] = useState(true)
+  const [openNoteId, setOpenNoteId] = useState(null)
+  const [openNote, setOpenNote] = useState(null)
+  const [noteLoading, setNoteLoading] = useState(false)
+
+  useEffect(() => {
+    if (!openNoteId) return
+    setNoteLoading(true)
+    fetch(`${API_URL}/notes/${openNoteId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => setOpenNote(data.note || null))
+      .catch(err => console.error('Failed to load note:', err))
+      .finally(() => setNoteLoading(false))
+  }, [openNoteId, token])
 
   useEffect(() => {
     fetch(`${API_URL}/revision-suggestions/${roomId}/student/${userId}`, {
@@ -54,15 +69,49 @@ function MyRevisionSummary({ roomId, token, userId }) {
               <div style={{ fontSize: '12px', color: '#ef4444' }}>{topic.wrongCount} mistakes</div>
             </div>
             {topic.noteStatus === 'released' ? (
-              <Link to="/student/notes" style={{ fontSize: '12px', color: '#059669', background: '#d1fae5', padding: '6px 12px', borderRadius: '6px', textDecoration: 'none', fontWeight: '600' }}>
+              <button
+                onClick={() => setOpenNoteId(topic.noteId)}
+                style={{ fontSize: '12px', color: '#059669', background: '#d1fae5', padding: '6px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: '600' }}
+              >
                 📘 Read Study Note
-              </Link>
+              </button>
             ) : (
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Note pending...</span>
             )}
           </div>
         ))}
       </div>
+      {openNoteId && (
+        <div
+          onClick={() => { setOpenNoteId(null); setOpenNote(null) }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}
+          >
+            {noteLoading ? (
+              <p style={{ color: 'var(--text-secondary)' }}>Loading note...</p>
+            ) : openNote ? (
+              <>
+                <h2 style={{ margin: '0 0 8px', color: 'var(--text-primary)' }}>{openNote.title}</h2>
+                <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>{openNote.topic}</p>
+                <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-primary)', fontSize: '14px', lineHeight: 1.6 }}>
+                  {openNote.content}
+                </div>
+              </>
+            ) : (
+              <p style={{ color: 'var(--text-secondary)' }}>Could not load note.</p>
+            )}
+            <button
+              onClick={() => { setOpenNoteId(null); setOpenNote(null) }}
+              style={{ marginTop: '16px', padding: '8px 16px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -72,7 +121,7 @@ function RoomResultsPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
-  
+
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
@@ -113,16 +162,16 @@ function RoomResultsPage() {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         const studentData = await studentRes.json()
-        
+
         // Use studentData.questions for rendering (has answered, isCorrect, pointsEarned, etc.)
         setQuestions(studentData.questions || [])
-        
+
         // Build responses data from student's question data
         const responsesData = {}
         let totalResponses = 0
         let totalCorrect = 0
         let totalPoints = 0
-        
+
         studentData.questions?.forEach(q => {
           if (q.answered) {
             responsesData[q._id] = {
@@ -135,18 +184,18 @@ function RoomResultsPage() {
             totalPoints += q.pointsEarned || 0
           }
         })
-        
+
         setResponses(responsesData)
-        
+
         // Fetch leaderboard to get student's rank
         const leaderboardRes = await fetch(`${API_URL}/responses/leaderboard/${roomId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         const leaderboardData = await leaderboardRes.json()
         const userRank = leaderboardData.userRank || 0
-        
+
         const averageScore = totalResponses > 0 ? Math.round((totalPoints / (totalResponses * 100)) * 100) : 0
-        
+
         setStats({
           totalResponses,
           totalCorrect,
@@ -158,17 +207,17 @@ function RoomResultsPage() {
       } else {
         // Teacher: set questions from API
         setQuestions(roomQuestions)
-        
+
         // Teacher: fetch full room stats once
         const rRes = await fetch(`${API_URL}/responses/stats/room/${roomId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         const rData = await rRes.json()
-        
+
         // Build responsesData from questionStats
         const responsesData = {}
         const questionStats = rData.stats?.questionStats || []
-        
+
         questionStats.forEach(qStat => {
           responsesData[qStat.questionId] = {
             totalResponses: qStat.totalResponses,
@@ -176,15 +225,15 @@ function RoomResultsPage() {
             answerCounts: qStat.answerCounts || {}
           }
         })
-        
+
         setResponses(responsesData)
-        
+
         // Calculate overall stats from aggregated data
         const totalResponses = rData.stats?.totalResponses || 0
         const totalCorrect = questionStats.reduce((sum, q) => sum + (q.correctCount || 0), 0)
         const averageScore = totalResponses > 0 ? Math.round((totalCorrect / totalResponses) * 100) : 0
         const uniqueStudents = rData.stats?.totalStudents || 0
-        const participationRate = roomQuestions.length > 0 
+        const participationRate = roomQuestions.length > 0
           ? Math.round((uniqueStudents / Math.max(roomQuestions.length, 1)) * 100)
           : 0
 
@@ -240,7 +289,7 @@ function RoomResultsPage() {
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
     }}>
       <Sidebar user={user} />
-      
+
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
         {/* Header */}
         <header style={{
@@ -285,7 +334,7 @@ function RoomResultsPage() {
           >
             ←
           </button>
-          
+
           {/* Overview Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '24px' }}>
             <div style={{
@@ -382,7 +431,7 @@ function RoomResultsPage() {
             <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
               Question-wise Analysis
             </h2>
-            
+
             {questions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
                 <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
@@ -393,12 +442,12 @@ function RoomResultsPage() {
                 {questions.map((q, index) => {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
-                  
+
                   // Teacher: show class percentage. Student: show their result
-                  const correctRate = isTeacher && qStats.totalResponses > 0 
-                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100) 
+                  const correctRate = isTeacher && qStats.totalResponses > 0
+                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100)
                     : q.answered ? (q.isCorrect ? 100 : 0) : null
-                  
+
                   return (
                     <div key={q._id} style={{
                       padding: '20px',
@@ -459,22 +508,22 @@ function RoomResultsPage() {
                           <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 12px' }}>
                             {q.question}
                           </p>
-                          
+
                           {/* Options - show differently for teacher vs student */}
                           <div style={{ display: 'grid', gap: '8px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
-                              
+
                               // For student: highlight their selection. For teacher: highlight correct answer
                               const showAsSelected = isTeacher ? isCorrect : isSelected
-                              const highlightStyle = showAsSelected 
+                              const highlightStyle = showAsSelected
                                 ? (isTeacher ? '#d1fae5' : (isSelected ? (isCorrect ? '#d1fae5' : '#fee2e2') : '#d1fae5'))
                                 : 'var(--bg-card)'
-                              const borderStyle = showAsSelected 
+                              const borderStyle = showAsSelected
                                 ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid #3b82f6' : '2px solid #059669'))
                                 : '1px solid var(--border-color)'
-                              
+
                               return (
                                 <div key={optIdx} style={{
                                   padding: '10px 14px',
@@ -499,8 +548,8 @@ function RoomResultsPage() {
                                   }}>
                                     {String.fromCharCode(65 + optIdx)}
                                   </span>
-                                  <span style={{ 
-                                    fontSize: '14px', 
+                                  <span style={{
+                                    fontSize: '14px',
                                     color: 'var(--text-primary)',
                                     fontWeight: isCorrect ? '600' : '400'
                                   }}>
@@ -520,13 +569,13 @@ function RoomResultsPage() {
                             })}
                           </div>
                         </div>
-                        
+
                         {/* Question Stats */}
                         <div style={{
                           minWidth: '120px',
                           textAlign: 'center',
                           padding: '16px',
-                          background: isTeacher 
+                          background: isTeacher
                             ? (correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2')
                             : (q.answered ? (q.isCorrect ? '#d1fae5' : '#fee2e2') : '#fef3c7'),
                           borderRadius: '12px'

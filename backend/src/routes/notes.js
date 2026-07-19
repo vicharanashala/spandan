@@ -7,6 +7,31 @@ import { generateNoteContent } from '../services/noteService.js'
 
 const router = express.Router()
 
+// GET /api/notes/:id — fetch a single note (student can view their own released/targeted note)
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const note = await Note.findById(req.params.id).populate('teacherId', 'name')
+    if (!note) return res.status(404).json({ error: 'Note not found' })
+
+    if (req.user.role === 'student') {
+      const isReleased = note.status === 'released'
+      const isTargetedToMe = note.targetStudentIds.length === 0 || note.targetStudentIds.some(id => id.toString() === req.user._id.toString())
+      if (!isReleased || !isTargetedToMe) {
+        return res.status(403).json({ error: 'Not authorized to view this note' })
+      }
+    } else if (req.user.role === 'teacher') {
+      if (note.teacherId._id.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ error: 'Not authorized to view this note' })
+      }
+    }
+
+    res.json({ note })
+  } catch (error) {
+    console.error('Error fetching note:', error)
+    res.status(500).json({ error: 'Failed to fetch note' })
+  }
+})
+
 // POST /api/notes/generate
 router.post('/generate', authenticate, authorize('teacher'), async (req, res) => {
   try {
@@ -14,10 +39,10 @@ router.post('/generate', authenticate, authorize('teacher'), async (req, res) =>
 
     if (!transcript) return res.status(400).json({ error: 'transcript is required' })
 
-    const generated = await generateNoteContent({ 
-      transcriptText: transcript, 
-      topicHint: topic, 
-      provider 
+    const generated = await generateNoteContent({
+      transcriptText: transcript,
+      topicHint: topic,
+      provider
     })
 
     const note = new Note({
@@ -58,7 +83,7 @@ router.get('/room/:roomId', authenticate, authorize('teacher'), async (req, res)
   try {
     const { roomId } = req.params
     const { status } = req.query
-    
+
     const query = { roomId, teacherId: req.user._id }
     if (status) query.status = status
 
@@ -74,13 +99,13 @@ router.get('/room/:roomId', authenticate, authorize('teacher'), async (req, res)
 router.patch('/:id', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const { title, content, topic } = req.body
-    
+
     const note = await Note.findOneAndUpdate(
       { _id: req.params.id, teacherId: req.user._id },
       { title, content, topic },
       { new: true, runValidators: true }
     )
-    
+
     if (!note) return res.status(404).json({ error: 'Note not found' })
     res.json({ note })
   } catch (error) {
@@ -97,7 +122,7 @@ router.post('/:id/release', authenticate, authorize('teacher'), async (req, res)
       { status: 'released', releasedAt: Date.now() },
       { new: true }
     )
-    
+
     if (!note) return res.status(404).json({ error: 'Note not found' })
     res.json({ note })
   } catch (error) {
@@ -114,7 +139,7 @@ router.post('/:id/discard', authenticate, authorize('teacher'), async (req, res)
       { status: 'discarded' },
       { new: true }
     )
-    
+
     if (!note) return res.status(404).json({ error: 'Note not found' })
     res.json({ note })
   } catch (error) {
@@ -127,7 +152,12 @@ router.post('/:id/discard', authenticate, authorize('teacher'), async (req, res)
 router.get('/student/room/:roomId', authenticate, authorize('student'), async (req, res) => {
   try {
     const { roomId } = req.params
-    const notes = await Note.find({ roomId, status: 'released' }).sort({ releasedAt: -1 }).populate('teacherId', 'name')
+    const notes = await Note.find({
+      roomId,
+      status: 'released',
+      questionId: null,
+      $or: [{ targetStudentIds: { $size: 0 } }, { targetStudentIds: req.user._id }]
+    }).sort({ releasedAt: -1 }).populate('teacherId', 'name')
     res.json({ notes })
   } catch (error) {
     console.error('Error fetching student room notes:', error)
@@ -151,15 +181,23 @@ router.get('/student/history', authenticate, authorize('student'), async (req, r
     // 2. Are independent notes (no roomId) created by a teacher from one of their rooms
     const notes = await Note.find({
       status: 'released',
-      $or: [
-        { roomId: { $in: roomIds } },
-        { roomId: null, teacherId: { $in: teacherIds } }
+      questionId: null,
+      $and: [
+        {
+          $or: [
+            { roomId: { $in: roomIds } },
+            { roomId: null, teacherId: { $in: teacherIds } }
+          ]
+        },
+        {
+          $or: [{ targetStudentIds: { $size: 0 } }, { targetStudentIds: req.user._id }]
+        }
       ]
     })
-    .sort({ releasedAt: -1 })
-    .populate('roomId', 'name code createdAt endedAt')
-    .populate('teacherId', 'name')
-    .lean()
+      .sort({ releasedAt: -1 })
+      .populate('roomId', 'name code createdAt endedAt')
+      .populate('teacherId', 'name')
+      .lean()
 
     // Format the response to include room details nicely
     const formattedNotes = notes.map(n => ({

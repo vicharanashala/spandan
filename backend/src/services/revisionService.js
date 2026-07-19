@@ -46,7 +46,7 @@ export function classifyQuestions(answeredQuestions, threshold = DEFAULT_WRONG_T
 
   const hardestQuestion = answeredQuestions.length > 0
     ? answeredQuestions.reduce((max, q) =>
-        q.wrongPercentage > max.wrongPercentage ? q : max
+      q.wrongPercentage > max.wrongPercentage ? q : max
       , answeredQuestions[0])
     : null
 
@@ -119,7 +119,7 @@ export function parseThreshold(queryValue) {
 export function getStudentTopicPerformance(approvedQuestions, studentResponses) {
   // Map questions for quick lookup
   const questionMap = new Map(approvedQuestions.map(q => [q._id.toString(), q]))
-  
+
   // Aggregate mistakes by topic for this student
   const topicStatsMap = new Map()
 
@@ -128,13 +128,16 @@ export function getStudentTopicPerformance(approvedQuestions, studentResponses) 
     if (!q) continue
 
     const label = q.topic || getTopicLabel(q)
-    const existing = topicStatsMap.get(label) || { topic: label, segmentIndex: q.segmentIndex, wrongCount: 0, questionCount: 0 }
-    
+    const existing = topicStatsMap.get(label) || { topic: label, segmentIndex: q.segmentIndex, wrongCount: 0, questionCount: 0, questionIds: [] }
+
     existing.questionCount += 1
+    if (!existing.questionIds.includes(q._id.toString())) {
+      existing.questionIds.push(q._id.toString())
+    }
     if (!response.isCorrect) {
       existing.wrongCount += 1
     }
-    
+
     // We prefer the lowest segment index if a topic spans multiple segments (or just keep the first we see)
     if (q.segmentIndex !== undefined && q.segmentIndex !== null && existing.segmentIndex === undefined) {
       existing.segmentIndex = q.segmentIndex
