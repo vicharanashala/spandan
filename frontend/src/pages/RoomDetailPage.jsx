@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import HostRiskPanel from '../components/HostRiskPanel'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -162,12 +163,14 @@ function RoomDetailPage() {
     return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
-  // Listen for question launch events to show timer to teacher
-  useEffect(() => {
-    if (!socket) return
-
+  // Start a local countdown UI that mirrors the active question.
   const startQuestionTimer = (question) => {
     const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    // Capture the question id in the closure so the timer-zero emit
+    // still fires even when local React state hasn't refreshed yet
+    // (the previous version read `activeQuestion` from the closure
+    // which was `null` on the first re-render after launch).
+    const targetQuestionId = question?._id || question?.id
 
     // Clear any existing timer
     if (questionTimerRef.current) {
@@ -183,6 +186,17 @@ function RoomDetailPage() {
         if (prev <= 1) {
           clearInterval(questionTimerRef.current)
           questionTimerRef.current = null
+          // Tell the backend the question is over so it can apply skip penalties
+          // to any student in the room who didn't submit a response.
+          if (socket && isConnected && targetQuestionId) {
+            const idStr = typeof targetQuestionId === 'string'
+              ? targetQuestionId
+              : targetQuestionId.toString()
+            socket.emit('question:end', {
+              roomCode: room.code,
+              questionId: idStr
+            })
+          }
           setActiveQuestion(null)
           return 0
         }
@@ -191,9 +205,48 @@ function RoomDetailPage() {
     }, 1000)
   }
 
+  // Tell the backend the currently active question is finished so it can
+  // apply skip penalties to any student who didn't submit a response.
+  // Uses Room.currentQuestion as the source of truth (not local React
+  // state) so a teacher refresh / rejoin still works.
+  const endActiveQuestion = () => {
+    const activeId = activeQuestion?._id || room?.currentQuestion
+    if (socket && isConnected && activeId) {
+      const idStr = typeof activeId === 'string' ? activeId : (activeId.toString ? activeId.toString() : null)
+      if (idStr) {
+        socket.emit('question:end', {
+          roomCode: room.code,
+          questionId: idStr
+        })
+      }
+    }
+    setActiveQuestion(null)
+    setQuestionTimeLeft(0)
+    if (questionTimerRef.current) {
+      clearInterval(questionTimerRef.current)
+      questionTimerRef.current = null
+    }
+  }
+
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    // The backend may wrap the question in a `question` field; accept both.
+    const question = data?.question || data
+    if (!question?._id) return
+
+    // Update local room.currentQuestion so subsequent `endActiveQuestion()`
+    // calls can find the right id (without this, endActiveQuestion
+    // reads stale state and silently no-ops).
+    setRoom(prev => prev ? { ...prev, currentQuestion: question._id } : prev)
+
+    // Start the teacher's local countdown so `question:end` is emitted
+    // server-side when the timer hits zero (with the right id).
+    startQuestionTimer(question)
   }
+
+  // Listen for question launch events to show timer to teacher
+  useEffect(() => {
+    if (!socket) return
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -817,6 +870,8 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         // Emit to students via socket
+        // Close any previous active question first so skip penalties are applied.
+        endActiveQuestion()
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
@@ -860,6 +915,8 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         if (socket && isConnected) {
+          // Close any previous active question first so skip penalties are applied.
+          endActiveQuestion()
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -904,6 +961,8 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         // Emit to socket for students to receive (include roomCode)
+        // Close any previous active question first so skip penalties are applied.
+        endActiveQuestion()
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
         console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
         if (socket && isConnected) {
@@ -915,14 +974,16 @@ function RoomDetailPage() {
         } else {
           console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
         }
+        return { ok: true, question: data.question }
       } else {
-        const errorData = await response.json()
-        console.error('Failed to save question:', errorData)
-        alert('Failed to save question: ' + (errorData.error || 'Unknown error'))
+        const errorData = await response.json().catch(() => ({}))
+        const msg = errorData.error || `HTTP ${response.status}`
+        console.error('Failed to save question:', msg)
+        return { ok: false, error: msg }
       }
     } catch (error) {
       console.error('Failed to create question:', error)
-      alert('Failed to create question')
+      return { ok: false, error: error?.message || 'Network error' }
     }
   }
 
@@ -984,7 +1045,7 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px - 288px)', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1722,6 +1783,21 @@ function RoomDetailPage() {
           50% { transform: scale(1.1); }
         }
       `}</style>
+      {/* Live Risk Scores — sticky right panel, 280px fixed, scrolls with the page */}
+      <div style={{
+        width: '280px',
+        flexShrink: 0,
+        position: 'sticky',
+        top: 0,
+        alignSelf: 'flex-start',
+        height: '100vh',
+        overflowY: 'auto',
+        padding: '16px 12px',
+        borderLeft: '1px solid var(--border-color, #e5e7eb)',
+        background: 'var(--bg-primary)'
+      }}>
+        <HostRiskPanel roomId={roomId} token={token} />
+      </div>
     </div>
   )
 }

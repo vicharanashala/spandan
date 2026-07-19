@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import RiskScoreWidget from '../components/RiskScoreWidget'
 import { API_URL } from '../config.js'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
@@ -165,6 +166,19 @@ function StudentRoomPage() {
     }
   }, [socket, navigate, room?._id])
 
+  // Re-join the socket room on every (re)connection — handles server restarts where
+  // Socket.IO room memberships are wiped. Without this, new_question events are never
+  // delivered to the student after a reconnect because socket.join() was never re-called.
+  useEffect(() => {
+    if (!socket || !room?.code || !user?._id) return
+    const handleReconnect = () => {
+      console.log('[socket] reconnected — re-joining room', room.code)
+      joinRoom(room.code, user._id)
+    }
+    socket.on('connect', handleReconnect)
+    return () => socket.off('connect', handleReconnect)
+  }, [socket, room?.code, user?._id])
+
   const joinSession = async () => {
     setIsLoading(true)
     try {
@@ -177,6 +191,8 @@ function StudentRoomPage() {
             socket.off('room:joined', handleRoomJoined)
             // Still fetch even if timeout - RoomMember should already exist from HTTP join
             fetchPastResponses(roomData._id, user._id)
+            // Also try active-question sync in case the socket join silently failed.
+            fetchActiveQuestion(roomData.code)
             resolve()
           }, 3000)
 
@@ -185,6 +201,8 @@ function StudentRoomPage() {
               clearTimeout(timeout)
               socket.off('room:joined', handleRoomJoined)
               fetchPastResponses(roomData._id, user._id)
+              // Also fetch any active question — late-join sync.
+              fetchActiveQuestion(roomData.code)
               resolve()
             }
           }
@@ -226,6 +244,67 @@ function StudentRoomPage() {
       }
     } catch (err) {
       console.error('Failed to fetch past responses:', err)
+    }
+  }
+
+  // Late-join sync: when this tab joins a room, fetch any currently-active
+  // question via REST. The teacher's `new_question` socket event only reaches
+  // sockets that were ALREADY in the room at broadcast time; this is how a
+  // student who refreshes or opens the page after the broadcast can still
+  // see the live question.
+  const fetchActiveQuestion = async (code) => {
+    if (!code || !token) return
+    try {
+      console.log('[StudentRoom] Fetching active question for room:', code)
+      const response = await fetch(`${API_URL}/questions/active?code=${encodeURIComponent(code)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      if (!response.ok) {
+        console.error('Failed to fetch active question:', response.status)
+        return
+      }
+      const data = await response.json()
+      if (!data.success || !data.activeQuestion) {
+        console.log('[StudentRoom] No active question')
+        return
+      }
+      const aq = data.activeQuestion
+      // Start the question UI with the SERVER's remaining time, not a fresh
+      // timeToAnswer, so this tab's countdown matches the teacher's clock.
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+        timerIntervalRef.current = null
+      }
+      const initialSec = Math.max(0, Math.ceil((aq.remainingMs || 0) / 1000))
+      setCurrentQuestion({
+        _id: aq._id,
+        question: aq.question,
+        options: aq.options,
+        timeToAnswer: aq.timeToAnswer,
+        type: aq.type,
+        points: aq.points
+      })
+      setSelectedOptions([])
+      setSubmitted(false)
+      setTimeLeft(initialSec)
+      timerIntervalRef.current = setInterval(() => {
+        setTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(timerIntervalRef.current)
+            timerIntervalRef.current = null
+            if (room?._id && user?._id) {
+              fetchPastResponses(room._id, user._id)
+            }
+            setCurrentQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    } catch (err) {
+      console.error('Failed to fetch active question:', err)
     }
   }
 
@@ -819,6 +898,10 @@ function StudentRoomPage() {
           )}
         </div>
       </div>
+      {/* Live risk-score widget pinned to the top-right.
+          - roomId + token: hydrates the persisted DB score on mount/refresh.
+          - Also listens for live risk-score:self-update socket events. */}
+      <RiskScoreWidget roomId={room?._id} token={token} />
     </div>
   )
 }

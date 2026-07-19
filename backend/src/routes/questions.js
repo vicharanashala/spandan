@@ -105,6 +105,84 @@ router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
   }
 })
 
+// GET /api/questions/active?code=ROOMCODE
+// Returns the currently-active question for a room (if any), with
+// `remainingMs` so a late joiner can sync their local timer.
+//
+// Authorization: any authenticated user. Access is verified by membership
+// or ownership of the room — mirrors the standard question-list pattern.
+router.get('/active', async (req, res) => {
+  try {
+    const { code, roomId } = req.query
+    if (!code && !roomId) {
+      return res.status(400).json({ error: 'code or roomId is required' })
+    }
+
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const currentUser = req.user
+
+    const room = await Room.findOne(code ? { code: code.toUpperCase() } : { _id: roomId })
+      .select('_id teacher coHosts currentQuestion currentQuestionStartedAt isActive')
+      .lean()
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Access guard: room owner, co-host, or joined student.
+    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const isCoHost = (room.coHosts || []).some(id => id.toString() === currentUser._id.toString())
+    const isMember = await RoomMember.findOne({ roomId: room._id, studentId: currentUser._id })
+    if (!isTeacher && !isCoHost && !isMember) {
+      return res.status(403).json({ error: 'Not authorized to access this room' })
+    }
+
+    // No active question right now — return null cleanly.
+    if (!room.currentQuestion || !room.currentQuestionStartedAt) {
+      return res.json({ success: true, activeQuestion: null })
+    }
+
+    // Auto-expire: if the question's window has passed, treat as inactive.
+    const QuestionModel = Question
+    const q = await QuestionModel.findById(room.currentQuestion)
+      .select('+options +timeToAnswer +points +type +question')
+      .lean()
+    if (!q) {
+      // Stale pointer — clear and return null.
+      await Room.updateOne(
+        { _id: room._id },
+        { $set: { currentQuestion: null, currentQuestionStartedAt: null } }
+      )
+      return res.json({ success: true, activeQuestion: null })
+    }
+
+    const tta = (q.timeToAnswer || 30) * 1000
+    const elapsed = Date.now() - new Date(room.currentQuestionStartedAt).getTime()
+    const remainingMs = Math.max(0, tta - elapsed)
+
+    if (remainingMs <= 0) {
+      return res.json({ success: true, activeQuestion: null })
+    }
+
+    return res.json({
+      success: true,
+      activeQuestion: {
+        ...q,
+        options: (q.options || []).map(o => ({ text: o.text })),
+        remainingMs,
+        startedAt: room.currentQuestionStartedAt
+      }
+    })
+  } catch (error) {
+    console.error('Error fetching active question:', error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch active question'
+    })
+  }
+})
+
 // Create a question (for manual creation)
 // Authorization: teacher only
 router.post('/', authorize('teacher'), async (req, res) => {

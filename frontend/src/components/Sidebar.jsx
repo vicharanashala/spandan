@@ -8,18 +8,20 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'risk-trend', label: 'Engagement Trends', icon: '📈', path: '/teacher/risk-trend' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
+    { id: 'risk-history', label: 'My Risk History', icon: '📈', path: '/student/risk-history' },
   ]
 }
 
-export default function Sidebar({ user }) {
+export default function Sidebar({ user, role: roleProp }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const role = user?.role || 'student'
+  const role = roleProp || user?.role || 'student'
   const items = menuItems[role] || menuItems.student
 
   return (

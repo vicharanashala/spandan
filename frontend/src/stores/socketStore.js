@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_URL, BASE_PATH } from '../config.js'
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
@@ -21,7 +21,9 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      // In dev (empty base path) Vite proxies /socket.io to backend.
+      // In prod (BASE_PATH=/spandan) nginx proxies /spandan/socket.io to backend.
+      path: BASE_PATH ? BASE_PATH + '/socket.io' : '/socket.io',
       transports: ['websocket', 'polling']
     })
 

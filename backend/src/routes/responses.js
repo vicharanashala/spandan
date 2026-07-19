@@ -2,6 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { applyEvent, getRoomRiskSnapshot } from '../services/riskScoreService.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -178,6 +179,64 @@ router.post('/', authorize('student'), async (req, res) => {
       rank: rankInfo.rank ?? null,
       totalParticipants: rankInfo.totalParticipants ?? null
     })
+    // ── Risk score update (fire-and-forget) ─────────────────────────────────
+    // Runs AFTER the HTTP response is sent so it never adds latency to the student.
+    // Uses the shared io + connectedUsers from the app to emit socket events.
+    ;(async () => {
+      try {
+        console.log(`[risk-score] HTTP submit: studentId=${studentId} questionId=${questionId} isCorrect=${isCorrect}`)
+        const Room = (await import('../models/Room.js')).default
+        const room = await Room.findById(roomId).select('_id teacher coHosts createdAt').lean()
+        if (!room) { console.log('[risk-score] room not found, skipping'); return }
+
+        const eventType = isCorrect ? 'correct' : 'wrong'
+        const { update } = await applyEvent(
+          studentId,
+          room._id,
+          { type: eventType, questionId },
+          room.createdAt || new Date()
+        )
+        console.log(`[risk-score] applyEvent result: newScore=${update.newScore} zone=${update.newZone} deduped=${update.deduped}`)
+
+        const io = req.app.get('io')
+        const connectedUsers = req.app.get('connectedUsers')
+        if (!io || !connectedUsers) { console.log('[risk-score] io or connectedUsers not found on app'); return }
+
+        const sid = studentId.toString()
+        let emittedToStudent = false
+
+        // Emit to student
+        for (const [sockId, uid] of connectedUsers.entries()) {
+          if (uid === sid) {
+            io.to(sockId).emit('risk-score:self-update', {
+              currentScore: update.newScore,
+              zone: update.newZone,
+              correctStreakNeeded: update.correctStreakNeeded
+            })
+            emittedToStudent = true
+          }
+        }
+        console.log(`[risk-score] emitted self-update to student: ${emittedToStudent} (connectedUsers size=${connectedUsers.size})`)
+
+        // Emit updated snapshot to teacher/co-hosts
+        const snapshot = await getRoomRiskSnapshot(room._id)
+        const hostIds = new Set([
+          room.teacher.toString(),
+          ...(room.coHosts || []).map(id => id.toString())
+        ])
+        for (const [sockId, uid] of connectedUsers.entries()) {
+          if (hostIds.has(uid)) {
+            io.to(sockId).emit('risk-score:all-update', {
+              roomId: room._id.toString(),
+              snapshot
+            })
+          }
+        }
+      } catch (riskErr) {
+        console.error('[risk-score] update on response failed:', riskErr.message, riskErr.stack)
+      }
+    })()
+    // ────────────────────────────────────────────────────────────────────────
   } catch (error) {
     console.error('Error saving response:', error)
     res.status(500).json({ success: false, error: 'Failed to save response' })
@@ -292,11 +351,14 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const totalPoints = responses.reduce((sum, r) => sum + r.points, 0)
     const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
 
-    // Count launched polls: questions with 'approved' status (approved & launched to students)
-    // Use allRoomIds (RoomMember + Response unique) to count ALL rooms student participated in
+    // Count launched polls: only questions that were actually run (status 'active'
+    // or 'closed') in rooms where the student has responded at least once.
+    // Using 'approved' counted every drafted question, inflating the missed count.
+    // Using uniqueRoomIdsFromResponse (rooms with actual responses) ensures we
+    // don't count questions from rooms the student joined but never participated in.
     const launchedCount = await Question.countDocuments({
-      roomId: { $in: allRoomIds },
-      status: 'approved'
+      roomId: { $in: uniqueRoomIdsFromResponse },
+      status: { $in: ['active', 'closed'] }
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
 

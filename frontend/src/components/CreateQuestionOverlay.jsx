@@ -17,6 +17,10 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   const [launchedTimeLeft, setLaunchedTimeLeft] = useState(0)
   const launchedTimerRef = useRef(null)
 
+  // Launch-in-flight + inline error state
+  const [isLaunching, setIsLaunching] = useState(false)
+  const [launchError, setLaunchError] = useState('')
+
   if (!isOpen) return null
 
   const handleTypeChange = (newType) => {
@@ -85,7 +89,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     }
   }
 
-  const handleLaunch = () => {
+  const handleLaunch = async () => {
+    if (isLaunching || isLaunched) return
+
     if (!question.trim()) {
       alert('Please enter a question')
       return
@@ -97,35 +103,48 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
       return
     }
 
-    // First, emit the question to students via onLaunch
-    onLaunch({
-      type: questionType,
-      question: question.trim(),
-      options: questionType === 'TF' 
-        ? [{ text: 'True', isCorrect: options[0].isCorrect }, { text: 'False', isCorrect: options[1].isCorrect }]
-        : options.filter(o => o.text.trim()),
-      timeToAnswer,
-      points
-    })
+    setLaunchError('')
+    setIsLaunching(true)
 
-    // Start launched timer - question is now live
-    setIsLaunched(true)
-    setLaunchedTimeLeft(timeToAnswer)
-    
-    launchedTimerRef.current = setInterval(() => {
-      setLaunchedTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(launchedTimerRef.current)
-          launchedTimerRef.current = null
-          // Auto-close when timer hits 0
-          setTimeout(() => {
-            handleCloseAndReset()
-          }, 500)
-          return 0
-        }
-        return prev - 1
+    try {
+      // Ask the parent to persist + broadcast. Only flip into launched state on success.
+      const result = await onLaunch({
+        type: questionType,
+        question: question.trim(),
+        options: questionType === 'TF'
+          ? [{ text: 'True', isCorrect: options[0].isCorrect }, { text: 'False', isCorrect: options[1].isCorrect }]
+          : options.filter(o => o.text.trim()),
+        timeToAnswer,
+        points
       })
-    }, 1000)
+
+      if (result && result.ok === false) {
+        setLaunchError(result.error || 'Failed to launch question')
+        setIsLaunching(false)
+        return
+      }
+
+      // Success: start the local countdown UI to mirror the live question.
+      setIsLaunched(true)
+      setLaunchedTimeLeft(timeToAnswer)
+      launchedTimerRef.current = setInterval(() => {
+        setLaunchedTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(launchedTimerRef.current)
+            launchedTimerRef.current = null
+            setTimeout(() => {
+              handleCloseAndReset()
+            }, 500)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    } catch (error) {
+      console.error('Launch failed:', error)
+      setLaunchError(error?.message || 'Network error')
+      setIsLaunching(false)
+    }
   }
 
   const handleCloseAndReset = () => {
@@ -482,26 +501,68 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
           </div>
         </div>
 
+        {/* Inline launch error */}
+        {launchError && (
+          <div
+            role="alert"
+            style={{
+              marginBottom: '12px',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid #ef4444',
+              color: '#dc2626',
+              fontSize: '13px',
+              fontWeight: '500',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <span style={{ fontSize: '16px' }}>⚠️</span>
+            <span style={{ flex: 1 }}>{launchError}</span>
+            <button
+              onClick={() => setLaunchError('')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#dc2626',
+                cursor: 'pointer',
+                fontSize: '16px',
+                padding: 0,
+                lineHeight: 1
+              }}
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Launch Button */}
         <button
           onClick={handleLaunch}
+          disabled={isLaunching || isLaunched}
           style={{
             width: '100%',
             padding: '14px',
             borderRadius: '12px',
             border: 'none',
-            background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+            background: isLaunching || isLaunched
+              ? 'linear-gradient(135deg, #9ca3af, #6b7280)'
+              : 'linear-gradient(135deg, #3b82f6, #2563eb)',
             color: 'white',
             fontSize: '14px',
             fontWeight: '600',
-            cursor: 'pointer',
+            cursor: isLaunching || isLaunched ? 'not-allowed' : 'pointer',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '8px'
+            gap: '8px',
+            opacity: isLaunching || isLaunched ? 0.7 : 1
           }}
         >
-          🚀 Launch Question
+          {isLaunching ? '⏳ Launching…' : isLaunched ? '✅ Live' : '🚀 Launch Question'}
         </button>
       </div>
     </div>

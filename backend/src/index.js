@@ -19,11 +19,21 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import riskScoreRoutes from './routes/riskScores.js'
 
 // Import models for reference
 import './models/index.js'
+import { Room, User, Response, RiskScore } from './models/index.js'
+import {
+  applyEvent,
+  getRoomRiskSnapshot,
+  SAFE_THRESHOLD
+} from './services/riskScoreService.js'
 
 dotenv.config()
+
+console.log('[debug] cwd:', process.cwd())
+console.log('[debug] MONGODB_URI:', process.env.MONGODB_URI ? process.env.MONGODB_URI.substring(0, 50) + '...' : 'UNDEFINED')
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
@@ -342,6 +352,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/risk-scores', riskScoreRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -355,6 +366,7 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+app.set('connectedUsers', connectedUsers)
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -393,6 +405,9 @@ io.use(async (socket, next) => {
   }
   next()
 })
+
+// Per-room auto-end timers: roomCode -> { questionId, timerHandle }
+const questionTimers = new Map()
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
@@ -476,6 +491,93 @@ io.on('connection', (socket) => {
     }
   })
 
+  // Submit response (real-time)
+  // Extends the original broadcast with risk-score update + targeted emits.
+  socket.on('response:submit', async (data) => {
+    // Preserve original broadcast behavior.
+    io.to(data.roomCode).emit('response:new', {
+      questionId: data.questionId,
+      studentId: data.studentId,
+      selectedOption: data.selectedOption,
+      responseTime: data.responseTime
+    })
+
+    // Risk-score update path. If anything fails here, do not break the
+    // existing broadcast — log and move on.
+    try {
+      const room = await Room.findOne({ code: data.roomCode })
+        .select('_id teacher coHosts createdAt')
+        .lean()
+      if (!room) return
+
+      // Fetch the question for timeToAnswer only (needed by the risk scorer).
+      const Question = (await import('./models/Question.js')).default
+      const question = await Question.findById(data.questionId)
+        .select('timeToAnswer')
+        .lean()
+      if (!question) return
+
+      // Use the Response doc saved by the HTTP route as the single source of
+      // truth for correctness. This guarantees the risk score always agrees
+      // with the leaderboard — no duplicate correctness logic here.
+      // If the HTTP POST hasn't committed yet (unlikely but possible under
+      // high load), we fall back to false (scored as wrong) which is safe;
+      // the dedup guard in applyEvent will reject any retry anyway.
+      const savedResponse = await Response.findOne({
+        questionId: data.questionId,
+        studentId: data.studentId,
+        roomId: room._id
+      }).select('isCorrect').lean()
+      const isCorrect = savedResponse?.isCorrect ?? false
+
+      const { doc, update } = await applyEvent(
+        data.studentId,
+        room._id,
+        {
+          type: isCorrect ? 'correct' : 'wrong',
+          questionId: data.questionId,
+          responseTimeMs: data.responseTime ?? null,
+          timeToAnswerMs: (question.timeToAnswer || 30) * 1000
+        },
+        room.createdAt || new Date()
+      )
+
+      // PER-STUDENT emit: only to sockets belonging to this studentId.
+      // This is the strict access rule — students never see each other's scores.
+      for (const [sockId, uid] of connectedUsers.entries()) {
+        if (uid === data.studentId) {
+          io.to(sockId).emit('risk-score:self-update', {
+            currentScore: update.newScore,
+            zone: update.newZone,
+            correctStreakNeeded: update.correctStreakNeeded
+          })
+        }
+      }
+
+      // HOST/CO-HOST emit: per-room snapshot of all student scores.
+      // Use the snapshot helper so the payload is consistent with the
+      // /api/risk-scores/room/:roomId endpoint.
+      const snapshot = await getRoomRiskSnapshot(room._id)
+      const hostIds = new Set([
+        room.teacher.toString(),
+        ...(room.coHosts || []).map(id => id.toString())
+      ])
+      for (const [sockId, uid] of connectedUsers.entries()) {
+        if (hostIds.has(uid)) {
+          io.to(sockId).emit('risk-score:all-update', {
+            roomId: room._id.toString(),
+            snapshot
+          })
+        }
+      }
+
+      // Silence unused-var lint for doc (kept for future logging)
+      void doc
+    } catch (err) {
+      console.error('[risk-score] apply on response:submit failed:', err)
+    }
+  })
+
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
   // handlers were removed in Phase 1. They let clients forge points/answers and caused a
   // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) and the deferred
@@ -494,22 +596,213 @@ io.on('connection', (socket) => {
     })
   })
 
+  // Server-side skip detection helper. For every RoomMember of this room,
+  // if they have NO Response doc for this questionId, treat as a skip
+  // and apply the (heavier-than-wrong) skip penalty.
+  async function runSkipDetection(roomCode, questionId) {
+    try {
+      const room = await Room.findOne({ code: roomCode })
+        .select('_id teacher coHosts createdAt')
+        .lean()
+      if (!room) return
+
+      // Use RiskScore history (not RoomMember) to find participants.
+      // RoomMember records are deleted when students leave the room — so a student
+      // who exits before a question launches would never get the skip penalty.
+      // RiskScore docs persist permanently, so anyone who ever answered or was
+      // skipped in this room is correctly included here.
+      const participantIds = await RiskScore.distinct('studentId', { roomId: room._id })
+      if (!participantIds.length) return
+
+      const respondedStudentIds = await Response.find({
+        questionId: questionId,
+        roomId: room._id
+      }).distinct('studentId')
+      const respondedSet = new Set(respondedStudentIds.map(id => id.toString()))
+
+      for (const studentId of participantIds) {
+        const sid = studentId.toString()
+        if (respondedSet.has(sid)) continue  // already answered
+
+        const { update } = await applyEvent(
+          studentId,
+          room._id,
+          { type: 'skip', questionId },
+          room.createdAt || new Date()
+        )
+
+        for (const [sockId, uid] of connectedUsers.entries()) {
+          if (uid === sid) {
+            io.to(sockId).emit('risk-score:self-update', {
+              currentScore: update.newScore,
+              zone: update.newZone,
+              correctStreakNeeded: update.correctStreakNeeded
+            })
+            console.log(`[risk-score] Emitted self-update to socket ${sockId} (user ${sid}) — newScore=${update.newScore}`)
+          }
+        }
+      }
+
+      // Push the refreshed snapshot to host sockets once after bulk skip processing.
+      const snapshot = await getRoomRiskSnapshot(room._id)
+      const hostIds = new Set([
+        room.teacher.toString(),
+        ...(room.coHosts || []).map(id => id.toString())
+      ])
+      for (const [sockId, uid] of connectedUsers.entries()) {
+        if (hostIds.has(uid)) {
+          io.to(sockId).emit('risk-score:all-update', {
+            roomId: room._id.toString(),
+            snapshot
+          })
+        }
+      }
+
+      // Mark SAFE_THRESHOLD used for future tuning reference
+      void SAFE_THRESHOLD
+    } catch (err) {
+      console.error('[risk-score] skip-detection failed:', err)
+    }
+  }
+
   socket.on('question:end', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    // Clear the auto-end timer for this room since the question is being
+    // ended manually (or via the timer itself; either way, no-op if absent).
+    const existingTimer = questionTimers.get(data.roomCode)
+    if (existingTimer) {
+      clearTimeout(existingTimer.timerHandle)
+      questionTimers.delete(data.roomCode)
+    }
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
+    // Clear active-question pointer if this is the question that's active.
+    try {
+      await Room.updateOne(
+        { code: data.roomCode, currentQuestion: data.questionId },
+        { $set: { currentQuestion: null, currentQuestionStartedAt: null } }
+      )
+    } catch (err) {
+      console.error('Failed to clear currentQuestion on Room:', err.message)
+    }
+
+    // Run server-side skip detection (extracted helper below).
+    await runSkipDetection(data.roomCode, data.questionId)
   })
 
-  // New question pushed by the teacher (manually created)
+  // New question from teacher (manually created)
   socket.on('new_question', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
-    if (data.question) {
-      io.to(data.roomCode).emit('new_question', data.question)
+    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
+    const roomCode = data.roomCode
+    const question = data.question
+    if (!roomCode || !question) {
+      console.error('new_question event missing roomCode or question:', data)
+      return
+    }
+
+    // Auto-end the previous active question (if any) so skip-detection
+    // runs server-side even when the teacher's React state hasn't
+    // updated yet (e.g. across page refreshes or rapid back-to-back
+    // launches). Without this, the frontend's `endActiveQuestion()`
+    // relies on stale `room.currentQuestion` and silently no-ops.
+    let replacedPrevQuestion = false
+    try {
+      const prevRoom = await Room.findOne({ code: roomCode })
+        .select('currentQuestion')
+        .lean()
+      const prevQuestionId = prevRoom?.currentQuestion?.toString()
+      const newQuestionId = (question._id || question.id)?.toString()
+      if (prevQuestionId && newQuestionId && prevQuestionId !== newQuestionId) {
+        console.log(`[new_question] Auto-ending previous question ${prevQuestionId} for room ${roomCode}`)
+        replacedPrevQuestion = true
+        // Emit question:ended broadcast so clients refresh UI state.
+        io.to(roomCode).emit('question:ended', {
+          questionId: prevQuestionId,
+          reason: 'replaced-by-new-question'
+        })
+        // Clear active-question pointer only if it still points to the
+        // previous question (avoids races with another in-flight end).
+        await Room.updateOne(
+          { code: roomCode, currentQuestion: prevQuestionId },
+          { $set: { currentQuestion: null, currentQuestionStartedAt: null } }
+        )
+        // Run skip-detection for the previous question.
+        await runSkipDetection(roomCode, prevQuestionId)
+      }
+    } catch (err) {
+      console.error('[new_question] auto-end previous question failed:', err.message)
+    }
+
+    // Broadcast to existing room members (original behavior).
+    // Give the score-update event time to reach the client and render
+    // before the new question arrives. Without this delay, Socket.IO
+    // batches both events on the wire and the student sees the score
+    // change AT the same moment as the new-question overlay (UI noise
+    // hides the prior change). 350ms is enough for the React render
+    // to flush without feeling laggy to the teacher.
+    const broadcastDelay = typeof data?.deferBroadcastMs === 'number' ? data.deferBroadcastMs : (replacedPrevQuestion ? 350 : 0)
+    if (broadcastDelay > 0) {
+      setTimeout(() => io.to(roomCode).emit('new_question', question), broadcastDelay)
+    } else {
+      io.to(roomCode).emit('new_question', question)
+    }
+
+    // Server-side auto-end timer: after `timeToAnswer` seconds, emit a
+    // synthetic question:end so skip-detection runs even if the teacher
+    // never launches the next question. This is what makes the student's
+    // risk score drop visibly after they skip the only question in a session.
+    const newQuestionId = (question._id || question.id)?.toString()
+    if (newQuestionId) {
+      // Clear any prior timer for this room.
+      const prior = questionTimers.get(roomCode)
+      if (prior) clearTimeout(prior.timerHandle)
+      const ttl = Math.max(5, (question.timeToAnswer || 30)) * 1000
+      const handle = setTimeout(async () => {
+        questionTimers.delete(roomCode)
+        try {
+          // Re-fetch to ensure we don't fire on a question that's already been
+          // replaced or ended by the teacher manually.
+          const stillActive = await Room.findOne({ code: roomCode, currentQuestion: newQuestionId })
+            .select('currentQuestion')
+            .lean()
+          if (!stillActive) return
+
+          console.log(`[auto-end] question ${newQuestionId} in room ${roomCode} timer expired — running skip detection`)
+
+          // Broadcast question:ended to clients so their UI updates.
+          io.to(roomCode).emit('question:ended', { questionId: newQuestionId, reason: 'timer' })
+
+          // Clear the active-question pointer on the Room doc.
+          await Room.updateOne(
+            { code: roomCode, currentQuestion: newQuestionId },
+            { $set: { currentQuestion: null, currentQuestionStartedAt: null } }
+          )
+
+          // Run skip detection directly server-side — no round-trip needed.
+          await runSkipDetection(roomCode, newQuestionId)
+        } catch (err) {
+          console.error('[auto-end] failed:', err.message)
+        }
+      }, ttl)
+      questionTimers.set(roomCode, { questionId: newQuestionId, timerHandle: handle })
+    }
+    // Persist active-question pointer so late joiners can fetch via REST.
+    try {
+      const questionId = question._id || question.id
+      if (questionId) {
+        await Room.updateOne(
+          { code: roomCode },
+          { $set: { currentQuestion: questionId, currentQuestionStartedAt: new Date() } }
+        )
+      }
+    } catch (err) {
+      console.error('Failed to persist currentQuestion on Room:', err.message)
     }
   })
 
@@ -538,20 +831,24 @@ app.use((req, res) => {
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
+    console.log('[debug] Final URI to connect:', mongoUri.substring(0, 60) + '...')
+    console.log('[debug] mongoose version check skipped (ESM)')
     
+    console.log('[debug] connect attempt with options: timeout=30s, dbName=spandan')
     await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 30000,
       socketTimeoutMS: 45000,
+      dbName: 'spandan',
       // Ceiling on concurrent in-flight queries. Default is 100; a live event with
       // hundreds of students bursting responses/leaderboard reads can exhaust it and
       // queue requests until they time out. Size to the Mongo server's capacity.
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
       minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
-    
-    console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
+    console.error('Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2))
+    console.error('Stack:', error.stack)
     console.log('Server will continue without database connection')
   }
 }
