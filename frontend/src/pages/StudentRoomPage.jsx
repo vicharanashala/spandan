@@ -7,6 +7,8 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import QuizCountdownPopup from '../components/QuizCountdownPopup'
+import { requestNotificationPermission, showQuizCountdownNotification } from '../services/notificationService'
 import { API_URL } from '../config.js'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
@@ -37,6 +39,9 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const [showCountdown, setShowCountdown] = useState(false)
+  const [countdownValue, setCountdownValue] = useState(15)
+  const countdownTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -141,6 +146,35 @@ function StudentRoomPage() {
       }
     }
 
+    const handleQuizCountdown = (data) => {
+      console.log('[StudentRoom] quiz:countdown received:', data)
+      const duration = data?.duration || 15
+      setCountdownValue(duration)
+      setShowCountdown(true)
+      // Supplement the in-app popup with an OS-level notification so a student who is in
+      // another tab/app (e.g. Zoom) is alerted. No-ops silently if permission was denied
+      // or the API is unsupported.
+      showQuizCountdownNotification(duration)
+
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current)
+        countdownTimerRef.current = null
+      }
+
+      countdownTimerRef.current = setInterval(() => {
+        setCountdownValue(prev => {
+          if (prev <= 1) {
+            clearInterval(countdownTimerRef.current)
+            countdownTimerRef.current = null
+            setShowCountdown(false)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+
+    socket.on('quiz:countdown', handleQuizCountdown)
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -158,10 +192,12 @@ function StudentRoomPage() {
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
+      socket.off('quiz:countdown', handleQuizCountdown)
       socket.off('new_question', handleNewQuestion)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -185,6 +221,10 @@ function StudentRoomPage() {
               clearTimeout(timeout)
               socket.off('room:joined', handleRoomJoined)
               fetchPastResponses(roomData._id, user._id)
+              // First relevant opportunity to prompt for OS notifications: the moment the
+              // student is actually in a live session (not at page load). Safe to call repeatedly;
+              // the service only prompts when permission is still 'default'.
+              requestNotificationPermission()
               resolve()
             }
           }
@@ -391,6 +431,14 @@ function StudentRoomPage() {
     )
   }
 
+  const handleDismissCountdown = () => {
+    setShowCountdown(false)
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -399,8 +447,17 @@ function StudentRoomPage() {
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
       width: '100vw',
       maxWidth: '100vw',
-      overflowX: 'hidden'
+      overflowX: 'hidden',
+      position: 'relative'
     }}>
+      {showCountdown && (
+        <QuizCountdownPopup
+          show={showCountdown}
+          value={countdownValue}
+          onDismiss={handleDismissCountdown}
+        />
+      )}
+
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>

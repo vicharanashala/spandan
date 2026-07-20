@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import QuizCountdownPopup from '../components/QuizCountdownPopup'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -69,6 +70,12 @@ function RoomDetailPage() {
   const [activeQuestion, setActiveQuestion] = useState(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const questionTimerRef = useRef(null)
+
+  // Pop-quiz countdown state (teacher also sees the broadcast). Mirrors StudentRoomPage.
+  const [showCountdown, setShowCountdown] = useState(false)
+  const [countdownValue, setCountdownValue] = useState(15)
+  const [countdownDuration, setCountdownDuration] = useState(15)
+  const countdownTimerRef = useRef(null)
 
 
   // Question generation
@@ -203,6 +210,56 @@ function RoomDetailPage() {
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
+
+  // Pop-quiz countdown — the broadcast goes to everyone in the room, including this teacher tab
+  // and any co-teachers. Mirror the student-side handler so the popup appears locally with the
+  // same 15s-style decrement, regardless of which client triggered the broadcast.
+  useEffect(() => {
+    if (!socket) return
+
+    const handleQuizCountdown = (data) => {
+      console.log('[QuizCountdown] received on teacher side:', data)
+      const duration = data?.duration || 15
+      setCountdownValue(duration)
+      setCountdownDuration(duration)
+      setShowCountdown(true)
+
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current)
+        countdownTimerRef.current = null
+      }
+
+      countdownTimerRef.current = setInterval(() => {
+        setCountdownValue(prev => {
+          if (prev <= 1) {
+            clearInterval(countdownTimerRef.current)
+            countdownTimerRef.current = null
+            setShowCountdown(false)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+
+    socket.on('quiz:countdown', handleQuizCountdown)
+
+    return () => {
+      socket.off('quiz:countdown', handleQuizCountdown)
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current)
+        countdownTimerRef.current = null
+      }
+    }
+  }, [socket])
+
+  const handleDismissCountdown = () => {
+    setShowCountdown(false)
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
+  }
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -982,6 +1039,11 @@ function RoomDetailPage() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
+      <QuizCountdownPopup
+        show={showCountdown}
+        value={countdownValue}
+        onDismiss={handleDismissCountdown}
+      />
       <Sidebar user={user} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
@@ -1115,6 +1177,58 @@ function RoomDetailPage() {
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
                   ⏱️ Time's Up!
                 </span>
+              </div>
+            )}
+
+            {/* Pop Quiz Countdown Button */}
+            {!isEnded && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <select
+                  value={countdownDuration}
+                  onChange={(e) => setCountdownDuration(Number(e.target.value))}
+                  aria-label="Countdown duration in seconds"
+                  style={{
+                    padding: '8px 10px',
+                    background: 'white',
+                    color: '#1f2937',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value={5}>5s</option>
+                  <option value={10}>10s</option>
+                  <option value={15}>15s</option>
+                  <option value={30}>30s</option>
+                  <option value={60}>60s</option>
+                </select>
+                <button
+                  onClick={() => {
+                    if (!socket) {
+                      console.warn('[QuizCountdown] socket not available')
+                      return
+                    }
+                    console.log('[QuizCountdown] emitting quiz:countdown for room:', room?.code, 'duration:', countdownDuration)
+                    socket.emit('quiz:countdown', { roomCode: room.code, duration: countdownDuration })
+                  }}
+                  style={{
+                    padding: '8px 16px',
+                    background: '#7c3aed',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  ⏱ Start Countdown
+                </button>
               </div>
             )}
 
