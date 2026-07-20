@@ -7,6 +7,8 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
+import { fetchCriteria as fetchEvalCriteria, listProfiles, previewOrApplyProfile } from '../services/evaluationProfileService'
+import EvaluationScoresModal from '../components/EvaluationScoresModal'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -18,6 +20,16 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+
+  // Teacher-only: Evaluation Profiles integration (added at the bottom of the existing teacher
+  // analytics surface — no duplicate analytics page). State kept local; nothing else in this
+  // file reads it.
+  const [evalProfiles, setEvalProfiles] = useState([])
+  const [evalCriteriaMeta, setEvalCriteriaMeta] = useState([])
+  const [evalScores, setEvalScores] = useState(null)
+  const [evalScoresLoading, setEvalScoresLoading] = useState(false)
+  const [evalScoresError, setEvalScoresError] = useState('')
+  const [evalSelectedId, setEvalSelectedId] = useState('')
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -31,6 +43,33 @@ function RoomResultsPage() {
       fetchRoomData()
     }
   }, [token, roomId])
+
+  // Teacher-only: load own evaluation profiles + criteria registry once the room has loaded.
+  // Placed here (not in fetchRoomData) so it doesn't fire on every refetch.
+  useEffect(() => {
+    if (user?.role !== 'teacher' || !token) return
+    let cancelled = false
+    Promise.all([listProfiles().catch(() => []), fetchEvalCriteria().catch(() => ({ criteria: [] }))])
+      .then(([profiles, criteriaData]) => {
+        if (cancelled) return
+        setEvalProfiles(profiles || [])
+        setEvalCriteriaMeta(criteriaData.criteria || [])
+      })
+    return () => { cancelled = true }
+  }, [user?.role, token])
+
+  const runEvaluation = async (mode) => {
+    if (!evalSelectedId) return
+    setEvalScoresLoading(true); setEvalScoresError(''); setEvalScores(null)
+    try {
+      const result = await previewOrApplyProfile(evalSelectedId, roomId, mode)
+      setEvalScores(result)
+    } catch (e) {
+      setEvalScoresError(e.message)
+    } finally {
+      setEvalScoresLoading(false)
+    }
+  }
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -488,8 +527,98 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+
+          {/* Teacher-only: Evaluation Profiles — inline on the existing analytics surface. */}
+          {user?.role === 'teacher' && room?.endedAt && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '24px',
+              boxShadow: 'var(--card-shadow)',
+              border: '1px solid var(--border-color)',
+              marginTop: '24px'
+            }}>
+              <h2 style={{ margin: '0 0 8px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                📈 Teacher Evaluation Profiles
+              </h2>
+              <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                Apply a reusable weighted-criteria profile to score every joined student in this session.
+                Profile management lives under the sidebar menu; preview and apply use the same server calculation.
+              </p>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Profile:
+                </label>
+                <select
+                  value={evalSelectedId}
+                  onChange={(e) => setEvalSelectedId(e.target.value)}
+                  style={{
+                    flex: '1 1 240px', maxWidth: '420px',
+                    padding: '8px 10px', borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '14px', background: 'var(--input-bg)', color: 'var(--text-primary)'
+                  }}
+                >
+                  <option value="">— select a profile —</option>
+                  {evalProfiles.map((p) => (
+                    <option key={p._id} value={p._id}>{p.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => runEvaluation('preview')}
+                  disabled={!evalSelectedId || evalScoresLoading}
+                  style={{
+                    padding: '8px 16px',
+                    background: (!evalSelectedId || evalScoresLoading) ? '#9ca3af' : '#3b82f6',
+                    color: 'white', border: 'none', borderRadius: '8px',
+                    fontSize: '13px', fontWeight: '600',
+                    cursor: (!evalSelectedId || evalScoresLoading) ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  Preview
+                </button>
+                <button
+                  onClick={() => runEvaluation('apply')}
+                  disabled={!evalSelectedId || evalScoresLoading}
+                  style={{
+                    padding: '8px 16px',
+                    background: (!evalSelectedId || evalScoresLoading) ? '#9ca3af' : '#7c3aed',
+                    color: 'white', border: 'none', borderRadius: '8px',
+                    fontSize: '13px', fontWeight: '600',
+                    cursor: (!evalSelectedId || evalScoresLoading) ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  Apply &amp; Show Scores
+                </button>
+                <a
+                  href="/spandan/teacher/evaluation-profiles"
+                  style={{ fontSize: '13px', color: '#7c3aed', textDecoration: 'none', marginLeft: 'auto' }}
+                >
+                  Manage profiles →
+                </a>
+              </div>
+
+              {evalProfiles.length === 0 && (
+                <div style={{ marginTop: '12px', padding: '10px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', color: '#92400e', fontSize: '13px' }}>
+                  You haven't created any profiles yet. Open <strong>Manage profiles</strong> above to author your first one.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      <EvaluationScoresModal
+        open={!!(evalScores || evalScoresLoading || evalScoresError)}
+        onClose={() => { setEvalScores(null); setEvalScoresError(''); setEvalScoresLoading(false) }}
+        title={evalScores ? 'Evaluation scores' : 'Computing…'}
+        subtitle={evalScores ? `${questions.length} approved question${questions.length === 1 ? '' : 's'} · ${stats.totalStudents || 0} joined student${(stats.totalStudents || 0) === 1 ? '' : 's'}` : ''}
+        result={evalScores}
+        loading={evalScoresLoading}
+        error={evalScoresError}
+        criteriaMeta={evalCriteriaMeta}
+      />
     </div>
   )
 }

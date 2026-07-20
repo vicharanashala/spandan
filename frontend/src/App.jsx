@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import EvaluationProfilesPage from './pages/EvaluationProfilesPage'
 import { API_URL } from './config.js'
 
 function App() {
@@ -159,6 +160,11 @@ function App() {
         <Route path="/teacher/room/:roomId/results" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <RoomResultsPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/evaluation-profiles" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <EvaluationProfilesPage />
           </ProtectedRoute>
         } />
         <Route path="/student" element={
