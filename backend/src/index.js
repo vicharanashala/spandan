@@ -513,14 +513,22 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Pop quiz countdown — teacher triggers a 15s countdown on all student screens
+  // Pop quiz countdown — teacher triggers a countdown on every OTHER screen in the room
+  // (students, co-teachers). The triggering teacher's own socket is excluded via `socket.to(...)`
+  // (vs `io.to(...)`) since they're already aware — no need to echo the popup back to them.
+  // Duration is read from the payload (clamped to [1, 300]s) so the teacher's selected
+  // duration is honored end-to-end.
   socket.on('quiz:countdown', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) {
       console.warn('quiz:countdown rejected — not the room owner:', socket.id)
       return
     }
-    console.log('[quiz:countdown] broadcasting to room:', data?.roomCode)
-    io.to(data.roomCode).emit('quiz:countdown', { duration: 15 })
+    const requested = Number(data?.duration)
+    const duration = Number.isFinite(requested) && requested > 0
+      ? Math.min(300, Math.max(1, Math.floor(requested)))
+      : 15
+    console.log('[quiz:countdown] broadcasting to room:', data?.roomCode, 'duration:', duration)
+    socket.to(data.roomCode).emit('quiz:countdown', { duration })
   })
 
   socket.on('disconnect', () => {
