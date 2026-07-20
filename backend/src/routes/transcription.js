@@ -1,4 +1,6 @@
 import express from 'express'
+import http from 'http'
+import { URL } from 'url'
 
 const router = express.Router()
 
@@ -10,19 +12,70 @@ const router = express.Router()
 const TRANSCRIPTION_URL = process.env.TRANSCRIPTION_SERVICE_URL || 'http://127.0.0.1:3003'
 const TRANSCRIBE_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS) || 30000
 
-// Retry a fetch up to `maxAttempts` times with `delayMs` between attempts.
-// Used to absorb the model-load window at startup (~20-30 s).
-async function fetchWithRetry(url, options, maxAttempts = 4, delayMs = 3000) {
+// transcription_server.py is built on Python's BaseHTTPRequestHandler, whose default
+// protocol_version is HTTP/1.0 — it closes the TCP connection after every single
+// response. Node's global fetch() (undici) pools/reuses keep-alive connections, so it
+// will eventually try to reuse a socket the Python side already closed, producing
+// UND_ERR_SOCKET ("other side closed", bytesRead: 0). Using the plain `http` module
+// with a fresh connection per request (no Agent reuse) avoids this entirely, since it
+// always opens a brand-new socket that matches the server's close-after-response model.
+function rawRequest(targetUrl, { method = 'GET', body, timeoutMs = 5000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(targetUrl)
+    const payload = body ? Buffer.from(body) : null
+
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname + parsed.search,
+        method,
+        agent: false, // no pooling/keep-alive reuse — fresh socket every call
+        headers: payload
+          ? { 'Content-Type': 'application/json', 'Content-Length': payload.length }
+          : {}
+      },
+      (res) => {
+        const chunks = []
+        res.on('data', (chunk) => chunks.push(chunk))
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8')
+          let json
+          try {
+            json = raw ? JSON.parse(raw) : {}
+          } catch (parseErr) {
+            reject(new Error(`Invalid JSON from transcription service: ${parseErr.message}`))
+            return
+          }
+          resolve({ status: res.statusCode, data: json })
+        })
+      }
+    )
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Transcription request timed out'))
+    })
+
+    req.on('error', reject)
+
+    if (payload) req.write(payload)
+    req.end()
+  })
+}
+
+// Retry a rawRequest up to `maxAttempts` times with `delayMs` between attempts.
+// Used to absorb the model-load window at startup (~20-30 s) and transient
+// connection issues.
+async function requestWithRetry(targetUrl, options, maxAttempts = 4, delayMs = 3000) {
   let lastErr
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const r = await fetch(url, options)
-      return r
+      return await rawRequest(targetUrl, options)
     } catch (err) {
       lastErr = err
       if (attempt < maxAttempts) {
-        console.warn(`[transcription proxy] Attempt ${attempt}/${maxAttempts} failed (${err.message}) CAUSE=${err.cause}, retrying in ${delayMs}ms...`)
-        await new Promise(r => setTimeout(r, delayMs))
+        console.warn(`[transcription proxy] Attempt ${attempt}/${maxAttempts} failed (${err.message}), retrying in ${delayMs}ms...`)
+        await new Promise((r) => setTimeout(r, delayMs))
       }
     }
   }
@@ -32,8 +85,7 @@ async function fetchWithRetry(url, options, maxAttempts = 4, delayMs = 3000) {
 // Health/status check (proxied to the transcription service)
 router.get('/status', async (req, res) => {
   try {
-    const r = await fetch(`${TRANSCRIPTION_URL}/health`, { signal: AbortSignal.timeout(3000) })
-    const data = await r.json()
+    const { data } = await rawRequest(`${TRANSCRIPTION_URL}/health`, { method: 'GET', timeoutMs: 3000 })
     res.json({ status: data.loaded ? 'ready' : 'loading', model: data.model || 'unknown' })
   } catch (err) {
     res.status(503).json({ status: 'unavailable', error: 'Transcription service not reachable. Make sure the Python server is running (npm run dev starts it automatically).' })
@@ -44,25 +96,26 @@ router.get('/status', async (req, res) => {
 // Retries up to 4 times (12 s total) to absorb the model-load startup window.
 router.post('/transcribe', async (req, res) => {
   if (!req.body || !req.body.audio) {
+    if (res.headersSent) return
     return res.status(400).json({ error: 'No audio provided' })
   }
   try {
-    const r = await fetchWithRetry(
+    const { status, data } = await requestWithRetry(
       `${TRANSCRIPTION_URL}/transcribe`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req.body),
-        signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS)
+        timeoutMs: TRANSCRIBE_TIMEOUT_MS
       },
       4,   // 4 attempts
       3000 // 3 s between each attempt (covers ~12 s of model loading)
     )
-    const data = await r.json()
-    res.status(r.status).json(data)
+    if (res.headersSent) return
+    res.status(status).json(data)
   } catch (err) {
-    const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError'
-    console.error('Transcription proxy error (all retries exhausted):', err.message, 'CAUSE:', err.cause)
+    const timedOut = err.message === 'Transcription request timed out'
+    console.error('Transcription proxy error (all retries exhausted):', err.message)
+    if (res.headersSent) return
     res.status(502).json({
       error: timedOut
         ? 'Transcription timed out'

@@ -197,6 +197,7 @@ function RevisionSuggestions({ roomId, token }) {
 
   const QuestionRow = ({ item, isHardest }) => {
     const [isGenerating, setIsGenerating] = useState(false)
+    const [selectedProvider, setSelectedProvider] = useState('')
     const badge = badgeColor(item.wrongPercentage)
     const displayLabel = item.topic && item.topic !== item.question ? item.topic : null
 
@@ -296,46 +297,68 @@ function RevisionSuggestions({ roomId, token }) {
               }
             } else {
               return (
-                <button
-                  onClick={async () => {
-                    setIsGenerating(true)
-                    try {
-                      const res = await fetch(`${API_URL}/notes/generate-for-question`, {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json',
-                          'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ roomId, questionId: item.questionId })
-                      })
-                      if (!res.ok) {
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                  <select
+                    value={selectedProvider}
+                    onChange={(e) => setSelectedProvider(e.target.value)}
+                    disabled={isGenerating}
+                    style={{
+                      fontSize: '12px',
+                      padding: '4px 6px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--input-bg)',
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    <option value="">Select AI...</option>
+                    <option value="ollama">Ollama (Local)</option>
+                    <option value="minimax">MiniMax</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic Claude</option>
+                    <option value="google">Google Gemini</option>
+                  </select>
+                  <button
+                    onClick={async () => {
+                      setIsGenerating(true)
+                      try {
+                        const res = await fetch(`${API_URL}/notes/generate-for-question`, {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify({ roomId, questionId: item.questionId, provider: selectedProvider })
+                        })
+                        if (!res.ok) {
+                          const json = await res.json()
+                          throw new Error(json.error || 'Failed to generate note')
+                        }
                         const json = await res.json()
-                        throw new Error(json.error || 'Failed to generate note')
+                        // Refresh notes to show draft status
+                        await refreshNotes()
+                        // Immediately open the review/release popup for this note
+                        openReview(json.note)
+                      } catch (err) {
+                        alert(err.message)
+                      } finally {
+                        setIsGenerating(false)
                       }
-                      const json = await res.json()
-                      // Refresh notes to show draft status
-                      await refreshNotes()
-                      // Immediately open the review/release popup for this note
-                      openReview(json.note)
-                    } catch (err) {
-                      alert(err.message)
-                    } finally {
-                      setIsGenerating(false)
-                    }
-                  }}
-                  disabled={isGenerating}
-                  style={{
-                    fontSize: '12px',
-                    color: isGenerating ? '#9ca3af' : '#3b82f6',
-                    textDecoration: isGenerating ? 'none' : 'underline',
-                    background: 'none',
-                    border: 'none',
-                    cursor: isGenerating ? 'wait' : 'pointer',
-                    padding: 0
-                  }}
-                >
-                  {isGenerating ? '⏳ Generating...' : '➕ Generate Note'}
-                </button>
+                    }}
+                    disabled={isGenerating || !selectedProvider}
+                    style={{
+                      fontSize: '12px',
+                      color: (isGenerating || !selectedProvider) ? '#9ca3af' : '#3b82f6',
+                      textDecoration: (isGenerating || !selectedProvider) ? 'none' : 'underline',
+                      background: 'none',
+                      border: 'none',
+                      cursor: (isGenerating || !selectedProvider) ? 'not-allowed' : 'pointer',
+                      padding: 0
+                    }}
+                  >
+                    {isGenerating ? '⏳ Generating...' : '➕ Generate Note'}
+                  </button>
+                </div>
               )
             }
           })()}

@@ -80,7 +80,7 @@ export default function TeacherNotesPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ 
-          ...(selectedRoomId ? { roomId: selectedRoomId } : {}),
+          ...(selectedRoomId && selectedRoomId !== 'independent' ? { roomId: selectedRoomId } : {}),
           topic, 
           transcript,
           provider 

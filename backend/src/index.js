@@ -35,8 +35,8 @@ const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
   // 10- or 30-minute session) that can take minutes, so those routes get a much
   // longer timeout. Everything else keeps the tight 30s cap.
-  const isGeneration = req.path.startsWith('/api/questions/generate')
-  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+  const isGeneration = req.path.startsWith('/api/questions/generate') || req.path.startsWith('/api/transcription')
+  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation/transcription, 30s otherwise
 
   req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {

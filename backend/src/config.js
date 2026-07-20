@@ -33,5 +33,10 @@ export const AI_PROVIDERS = {
     name: 'Gemini',
     enabled: !!config.googleApiKey,
     icon: '🔴'
+  },
+  ollama: {
+    name: 'Ollama',
+    enabled: true, // Always enabled as it doesn't require an API key
+    icon: '🦙'
   }
 }

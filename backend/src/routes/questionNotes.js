@@ -8,9 +8,15 @@ import { generateQuestionFocusedNote } from '../services/noteService.js'
 
 const router = express.Router()
 
+const VALID_PROVIDERS = ['ollama', 'minimax', 'openai', 'anthropic', 'google']
+
 router.post('/generate-for-question', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const { roomId, questionId, provider } = req.body
+
+    if (!provider || !VALID_PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: 'Please select an AI provider (Ollama, MiniMax, OpenAI, Anthropic, or Google) before generating a note.' })
+    }
 
     const room = await Room.findById(roomId)
     if (!room) {
@@ -20,7 +26,8 @@ router.post('/generate-for-question', authenticate, authorize('teacher'), async 
       return res.status(403).json({ error: 'Not authorized to generate notes for this room' })
     }
 
-    const targetStudentIds = await Response.find({ roomId, questionId, isCorrect: false }).distinct('studentId')
+    const wrongResponses = await Response.find({ roomId, questionId, isCorrect: false })
+    const targetStudentIds = [...new Set(wrongResponses.map(r => r.studentId.toString()))]
 
     if (!targetStudentIds || targetStudentIds.length === 0) {
       return res.status(400).json({ error: 'No students answered this question incorrectly. Cannot generate targeted notes.' })
@@ -34,7 +41,10 @@ router.post('/generate-for-question', authenticate, authorize('teacher'), async 
     // Attempt AI generation; fall back to a manual draft if the LLM fails or returns empty
     let generated
     try {
-      generated = await generateQuestionFocusedNote(question, targetStudentIds.length, provider)
+      generated = await generateQuestionFocusedNote(question, wrongResponses, provider)
+      if (generated.title === 'Class Notes (needs formatting)' || !generated.topic) {
+        throw new Error(`${provider} returned unparseable/empty content`)
+      }
     } catch (llmErr) {
       console.warn('[question-notes] AI generation failed, saving manual draft:', llmErr.message)
       const correctAnswers = Array.isArray(question.options)

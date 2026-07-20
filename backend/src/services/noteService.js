@@ -38,6 +38,21 @@ IMPORTANT:
 - Do not make up information that is not in the transcript.`
 }
 
+function repairYamlBlockScalar(jsonStr) {
+  return jsonStr.replace(
+    /"content"\s*:\s*\|\s*\n([\s\S]*?)(\n\s*\})/,
+    (match, content, closing) => {
+      const lines = content.split('\n')
+      const cleaned = lines
+        .map(l => l.trim())
+        .filter(Boolean)
+        .join('\\n')
+        .replace(/"/g, '\\"')
+      return `"content": "${cleaned}"${closing}`
+    }
+  )
+}
+
 function repairJsonNewlines(jsonStr) {
   let result = ''
   let inString = false
@@ -68,13 +83,6 @@ function repairJsonNewlines(jsonStr) {
   return result
 }
 
-// Handles the case where the model emits the content field as multiple adjacent
-// quoted string literals instead of one JSON string, e.g.:
-//   "content": "line1\n"
-//              "line2\n"
-//              "line3"
-// This is valid JS/Python string concatenation but INVALID JSON, so JSON.parse
-// fails on it. We detect the pattern and join the fragments ourselves.
 function extractConcatenatedContent(responseText) {
   const keyMatch = responseText.match(/"content"\s*:\s*/)
   if (!keyMatch) return null
@@ -119,8 +127,16 @@ function parseNoteResponse(responseText) {
     let parsed
     try {
       parsed = JSON.parse(candidate)
-    } catch (parseErr) {
-      parsed = JSON.parse(repairJsonNewlines(candidate))
+    } catch (e1) {
+      try {
+        parsed = JSON.parse(repairJsonNewlines(candidate))
+      } catch (e2) {
+        try {
+          parsed = JSON.parse(repairJsonNewlines(repairYamlBlockScalar(candidate)))
+        } catch (e3) {
+          throw new Error('All JSON repair attempts failed')
+        }
+      }
     }
 
     if (!parsed.content) {
@@ -133,15 +149,10 @@ function parseNoteResponse(responseText) {
       content: parsed.content
     }
   } catch (error) {
-    // Second-pass: try to regex-extract the three fields individually from the raw text.
-    // This handles cases where JSON.parse fails due to unescaped newlines/quotes inside
-    // the content string but the surrounding structure is otherwise correct.
     try {
       const topicMatch = responseText.match(/"topic"\s*:\s*"((?:[^"\\]|\\.)*)"/)
       const titleMatch = responseText.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/)
 
-      // First: handle the "multiple adjacent quoted strings" pattern (see
-      // extractConcatenatedContent above) — this is what's causing the current failures.
       const concatenatedContent = extractConcatenatedContent(responseText)
       if (concatenatedContent) {
         return {
@@ -151,15 +162,13 @@ function parseNoteResponse(responseText) {
         }
       }
 
-      // Fallback: content as a single quoted string spanning many lines.
       const contentMatch = responseText.match(/"content"\s*:\s*"([\s\S]*?)"\s*\}/)
-
       if (contentMatch && contentMatch[1]) {
         const rawContent = contentMatch[1]
-          .replace(/\\n/g, '\n')   // unescape \n
-          .replace(/\\t/g, '\t')   // unescape \t
-          .replace(/\\"/g, '"')    // unescape \"
-          .replace(/\\\\/g, '\\')  // unescape \\
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\')
         return {
           topic: topicMatch ? topicMatch[1] : 'General Notes',
           title: titleMatch ? titleMatch[1] : 'Class Notes',
@@ -167,7 +176,7 @@ function parseNoteResponse(responseText) {
         }
       }
     } catch (regexErr) {
-      // fall through to raw-text fallback below
+      // fall through to raw-text fallback
     }
 
     console.warn('Failed to parse note JSON, falling back to raw text:', error.message)
@@ -178,7 +187,6 @@ function parseNoteResponse(responseText) {
     }
   }
 }
-
 
 export async function generateNoteContent({ transcriptText, topicHint, provider = 'minimax' }) {
   if (!transcriptText || transcriptText.trim().length === 0) {
@@ -257,20 +265,59 @@ export async function generateAutoNoteForRoom(roomId, teacherId) {
   return note
 }
 
-export async function generateQuestionFocusedNote(question, wrongStudentCount, provider = 'minimax') {
+function summarizeWrongAnswers(question, wrongResponses) {
+  const counts = {}
+  wrongResponses.forEach(r => {
+    const chosen = (r.selectedOptions && r.selectedOptions.length) ? r.selectedOptions : [r.selectedOption]
+    chosen.forEach(idx => {
+      if (idx === undefined || idx === null) return
+      counts[idx] = (counts[idx] || 0) + 1
+    })
+  })
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([idx, count]) => {
+      const opt = question.options?.[idx]
+      return opt ? `- "${opt.text}" was picked by ${count} student(s) (incorrect)` : null
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+export async function generateQuestionFocusedNote(question, wrongResponses, provider) {
+  if (!provider) {
+    throw new Error('provider is required to generate a question-focused note')
+  }
+
   const topicHint = question.topic || 'Revision Notes'
   const correctAnswers = Array.isArray(question.options)
     ? question.options.filter(o => o.isCorrect).map(o => o.text).join(', ')
     : 'Unknown'
+  const allOptions = Array.isArray(question.options)
+    ? question.options.map((o, i) => `${i + 1}. ${o.text}${o.isCorrect ? ' (correct)' : ''}`).join('\n')
+    : ''
+  const mistakePattern = summarizeWrongAnswers(question, wrongResponses)
 
   const transcriptText = `
-We are providing targeted revision notes for students who struggled with the following question.
-Question: ${question.question}
-Correct Answer(s): ${correctAnswers}
-Context/Topic: ${question.topic || 'General'}
-Number of students who answered incorrectly: ${wrongStudentCount}
+We are providing targeted revision notes for students who answered the following question incorrectly.
 
-Please generate clear, encouraging, and helpful revision notes explaining the core concepts behind this question. Focus on why the correct answer is correct, clarify the underlying principles, and address common misconceptions. Keep it concise but highly educational.
+Question: ${question.question}
+All options:
+${allOptions}
+
+Correct Answer(s): ${correctAnswers}
+${question.explanation ? `Teacher's existing explanation: ${question.explanation}` : ''}
+
+Breakdown of incorrect answers chosen by students:
+${mistakePattern || 'Not available'}
+
+Number of students who answered incorrectly: ${wrongResponses.length}
+
+Write clear, encouraging revision notes that:
+1. Directly address WHY the specific wrong option(s) above are common misconceptions, not just why the correct answer is right.
+2. Explain the underlying concept simply, as if to a student who just got this wrong.
+3. End with a one-line memory tip or mnemonic if natural.
+Keep it concise (150-250 words) and highly specific to this question — do not give generic advice.
 `
 
   return await generateNoteContent({
