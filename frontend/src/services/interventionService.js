@@ -25,9 +25,28 @@ export async function fetchFlaggedQuestions(token, roomId) {
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Failed to fetch flagged questions')
-  return { threshold: data.threshold, flagged: data.flagged || [] }
+  return {
+    threshold: data.threshold,
+    thresholdPercent: data.thresholdPercent,
+    thresholdIsCustom: !!data.thresholdIsCustom,
+    flagged: data.flagged || [],
+    questions: data.questions || []
+  }
 }
 
+export async function setRoomInterventionThreshold(token, roomId, thresholdPercent) {
+  const res = await fetch(`${API_URL}/interventions/room/${roomId}/threshold`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify({ thresholdPercent })
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to set threshold')
+  return { threshold: data.threshold, thresholdPercent: data.thresholdPercent }
+}
+
+// Stage 1 — publish the ASK only. No content fields required. offeredTypes is optional — the
+// backend defaults to the full enum (Need Notes / Need Question Explanation / Need Topic Again).
 export async function publishIntervention(token, payload) {
   const res = await fetch(`${API_URL}/interventions`, {
     method: 'POST',
@@ -36,6 +55,19 @@ export async function publishIntervention(token, payload) {
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Failed to publish intervention')
+  return data.intervention
+}
+
+// Stage 2 — send the actual notes / link content. text or url is required. type is optional
+// (defaults to nothing on the record; the teacher typically picks the most-popular response).
+export async function deliverIntervention(token, interventionId, payload) {
+  const res = await fetch(`${API_URL}/interventions/${interventionId}/deliver`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to deliver intervention')
   return data.intervention
 }
 

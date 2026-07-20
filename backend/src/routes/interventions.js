@@ -1,7 +1,12 @@
 import express from 'express'
 import mongoose from 'mongoose'
 import { authenticate, authorize } from '../middleware/auth.js'
-import QuestionIntervention, { INTERVENTION_TYPES, INTERVENTION_TYPE_LABELS, retentionWindowDays } from '../models/QuestionIntervention.js'
+import QuestionIntervention, {
+  INTERVENTION_TYPES,
+  INTERVENTION_TYPE_LABELS,
+  INTERVENTION_STATUSES,
+  retentionWindowDays
+} from '../models/QuestionIntervention.js'
 import InterventionResponse from '../models/InterventionResponse.js'
 import Room from '../models/Room.js'
 import RoomMember from '../models/RoomMember.js'
@@ -12,8 +17,8 @@ const router = express.Router()
 
 router.use(authenticate)
 
-// Threshold is exposed via env so the frontend never hardcodes it. Defaults to 60% — i.e.
-// a question where fewer than 60% of joined students answered correctly is flagged.
+// Global env-default threshold — used when a room has no per-room override set. Teacher can
+// still configure any percentage via PUT /api/interventions/room/:roomId/threshold.
 const INTERVENTION_THRESHOLD = Math.max(0, Math.min(1, Number(process.env.INTERVENTION_THRESHOLD) || 0.6))
 // Default for the "relative duration" deadline mode in the teacher UI (hours). Backend
 // resolves both modes to an absolute Date — this just provides a sensible suggested value.
@@ -24,9 +29,17 @@ const DEFAULT_RELATIVE_HOURS = Math.max(1, Number(process.env.INTERVENTION_DEFAU
 const MIN_RELATIVE_MS = 60 * 1000
 const MAX_RELATIVE_MS = 30 * 24 * 60 * 60 * 1000
 
-// GET /api/interventions/config — exposes threshold + defaults so the frontend never hardcodes.
-// Public to any authenticated user so the student results page can read the same threshold the
-// teacher used (purely informational; the flag UI is teacher-only).
+// Resolve the effective threshold for a given room: per-room override > global env-default.
+// Single source of truth used by /flagged and any other endpoint that consults the threshold.
+function effectiveThresholdForRoom(room) {
+  const t = room?.settings?.interventionThreshold
+  if (typeof t === 'number' && Number.isFinite(t) && t >= 0 && t <= 1) return t
+  return INTERVENTION_THRESHOLD
+}
+
+// GET /api/interventions/config — exposes the global threshold + defaults so the front-end
+// never hardcodes. Per-room overrides are read from /flagged directly. Public to any
+// authenticated user so the student results page can read the same global default.
 router.get('/config', (req, res) => {
   res.json({
     success: true,
@@ -39,10 +52,44 @@ router.get('/config', (req, res) => {
   })
 })
 
+// PUT /api/interventions/room/:roomId/threshold — teacher (room owner) sets the per-room
+// accuracy threshold used to flag questions for intervention. Stored on Room.settings so it
+// is naturally scoped to this session — never bleeds into other rooms.
+router.put('/room/:roomId/threshold', authorize('teacher'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId)
+    if (!room) return res.status(404).json({ error: 'Room not found' })
+    if (room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized: only the room owner can change the threshold' })
+    }
+    if (!room.endedAt) {
+      return res.status(400).json({ error: 'The threshold can only be set after the session has ended' })
+    }
+    const pct = Number(req.body?.thresholdPercent)
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      return res.status(400).json({ error: 'thresholdPercent must be a number between 0 and 100' })
+    }
+    room.settings = room.settings || {}
+    room.settings.interventionThreshold = pct / 100
+    await room.save()
+    res.json({
+      success: true,
+      threshold: room.settings.interventionThreshold,
+      thresholdPercent: Math.round(room.settings.interventionThreshold * 100)
+    })
+  } catch (error) {
+    console.error('Error setting intervention threshold:', error)
+    res.status(500).json({ error: 'Failed to set threshold' })
+  }
+})
+
 // GET /api/interventions/room/:roomId/flagged — teacher only, room owner only, ended room only.
 // Reuses the analytics primitive from routes/responses.js (correctCount from grouped aggregation,
 // totalEligible from RoomMember count). Returns accuracy alongside the existing question data so
-// the UI doesn't have to recompute.
+// the UI doesn't have to recompute. Uses the per-room threshold if the teacher set one,
+// otherwise the global env-default. Returns ALL approved questions with their `flagged` boolean
+// (not just flagged ones) so the teacher can see accuracy inline for every question.
 router.get('/room/:roomId/flagged', authorize('teacher'), async (req, res) => {
   try {
     const { roomId } = req.params
@@ -55,6 +102,7 @@ router.get('/room/:roomId/flagged', authorize('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Flagged questions are only available after the session ends' })
     }
 
+    const threshold = effectiveThresholdForRoom(room)
     const totalEligible = await RoomMember.countDocuments({ roomId })
 
     // Pull questions + their per-option counts via the same aggregation the room-stats endpoint uses,
@@ -76,7 +124,7 @@ router.get('/room/:roomId/flagged', authorize('teacher'), async (req, res) => {
       if (g._id.isCorrect) correctByQuestion.set(qid, (correctByQuestion.get(qid) || 0) + g.count)
     }
 
-    const flagged = questions.map((q) => {
+    const all = questions.map((q) => {
       const correct = correctByQuestion.get(q._id.toString()) || 0
       const total = totalByQuestion.get(q._id.toString()) || 0
       const accuracy = totalEligible > 0 ? correct / totalEligible : 0
@@ -89,11 +137,19 @@ router.get('/room/:roomId/flagged', authorize('teacher'), async (req, res) => {
         totalResponses: total,
         totalEligible,
         accuracy,
-        flagged: accuracy < INTERVENTION_THRESHOLD
+        accuracyPercent: Math.round(accuracy * 100),
+        flagged: accuracy < threshold
       }
-    }).filter((q) => q.flagged)
+    })
 
-    res.json({ success: true, threshold: INTERVENTION_THRESHOLD, flagged })
+    res.json({
+      success: true,
+      threshold,
+      thresholdPercent: Math.round(threshold * 100),
+      thresholdIsCustom: room.settings?.interventionThreshold != null,
+      questions: all,
+      flagged: all.filter((q) => q.flagged)
+    })
   } catch (error) {
     console.error('Error fetching flagged questions:', error)
     res.status(500).json({ error: 'Failed to fetch flagged questions' })
@@ -119,21 +175,27 @@ function resolveDeadline(mode, value) {
   throw new Error('Invalid deadlineMode — must be "absolute" or "relative"')
 }
 
-// POST /api/interventions — teacher publishes an intervention for a question.
-// Refuses unless the room has ended (interventions are explicitly post-session).
+// POST /api/interventions — Stage 1 of the two-step flow. Teacher publishes an ASK only:
+// offered type options + deadline. No content required at this stage — the actual notes /
+// link are sent later via POST /api/interventions/:id/deliver (Stage 2). Refuses unless the
+// room has ended (interventions are explicitly post-session).
 router.post('/', authorize('teacher'), async (req, res) => {
   try {
-    const { questionId, type, content, deadlineMode, deadlineValue } = req.body || {}
-    if (!questionId || !type) {
-      return res.status(400).json({ error: 'Missing required fields: questionId, type' })
+    const { questionId, offeredTypes, deadlineMode, deadlineValue } = req.body || {}
+    if (!questionId) {
+      return res.status(400).json({ error: 'Missing required field: questionId' })
     }
-    if (!Object.values(INTERVENTION_TYPES).includes(type)) {
-      return res.status(400).json({ error: `Invalid type. Must be one of: ${Object.values(INTERVENTION_TYPES).join(', ')}` })
-    }
-    const text = (content?.text || '').toString()
-    const url = (content?.url || '').toString()
-    if (!text.trim() && !url.trim()) {
-      return res.status(400).json({ error: 'Intervention content required: at least one of text or url' })
+    // offeredTypes is optional — default to the full enum if not provided. If provided, every
+    // entry must be a valid INTERVENTION_TYPES value.
+    let offered
+    if (Array.isArray(offeredTypes) && offeredTypes.length > 0) {
+      const allValid = offeredTypes.every((t) => Object.values(INTERVENTION_TYPES).includes(t))
+      if (!allValid) {
+        return res.status(400).json({ error: `Invalid offeredTypes. Each must be one of: ${Object.values(INTERVENTION_TYPES).join(', ')}` })
+      }
+      offered = [...new Set(offeredTypes)]
+    } else {
+      offered = Object.values(INTERVENTION_TYPES)
     }
 
     const question = await Question.findById(questionId).lean()
@@ -155,15 +217,22 @@ router.post('/', authorize('teacher'), async (req, res) => {
       return res.status(400).json({ error: e.message })
     }
 
+    // 3-day retention window is set up-front at ASK time too — the same TTL index drops the
+    // row 3 days after creation if no content was ever delivered. Once Stage 2 fires we
+    // RESET contentExpiresAt to a fresh 3 days from the deliver moment (see /:id/deliver).
     const contentExpiresAt = new Date(Date.now() + retentionWindowDays * 24 * 60 * 60 * 1000)
 
     // Application-level uniqueness per (question, teacher): if the teacher already published
-    // an intervention for this question, replace it (the compound index on the model backs this up).
+    // an intervention for this question, replace it (the compound index on the model backs
+    // this up). Re-asking after a prior deliver resets status back to 'asked' and clears
+    // any prior content — the teacher is explicitly choosing to start over.
     const existing = await QuestionIntervention.findOne({ questionId, teacherId: req.user._id })
     let saved
     if (existing) {
-      existing.type = type
-      existing.content = { text, url }
+      existing.status = INTERVENTION_STATUSES.ASKED
+      existing.offeredTypes = offered
+      existing.type = null
+      existing.content = { text: '', url: '' }
       existing.deadlineAt = deadlineAt
       existing.contentExpiresAt = contentExpiresAt
       saved = await existing.save()
@@ -172,8 +241,8 @@ router.post('/', authorize('teacher'), async (req, res) => {
         questionId,
         roomId: question.roomId,
         teacherId: req.user._id,
-        type,
-        content: { text, url },
+        status: INTERVENTION_STATUSES.ASKED,
+        offeredTypes: offered,
         deadlineAt,
         contentExpiresAt
       })
@@ -181,16 +250,60 @@ router.post('/', authorize('teacher'), async (req, res) => {
 
     res.status(201).json({
       success: true,
-      intervention: serializeIntervention(saved)
+      intervention: await serializeInterventionWithQuestion(saved)
     })
   } catch (error) {
-    console.error('Error publishing intervention:', error)
-    res.status(500).json({ error: 'Failed to publish intervention' })
+    console.error('Error publishing intervention ask:', error)
+    res.status(500).json({ error: 'Failed to publish intervention ask' })
+  }
+})
+
+// POST /api/interventions/:id/deliver — Stage 2 of the two-step flow. Teacher sends the
+// actual notes / link after reviewing aggregated response counts. Sets status='content_sent',
+// refreshes the 3-day retention window from this moment, and attaches the teacher's chosen
+// content type. Re-delivery on the same intervention resets contentExpiresAt to a fresh
+// 3 days so the student window restarts.
+router.post('/:id/deliver', authorize('teacher'), async (req, res) => {
+  try {
+    const { id } = req.params
+    const { text, url, type } = req.body || {}
+    const cleanText = (text || '').toString()
+    const cleanUrl = (url || '').toString()
+    if (!cleanText.trim() && !cleanUrl.trim()) {
+      return res.status(400).json({ error: 'Content required: at least one of text or url' })
+    }
+    if (type != null && !Object.values(INTERVENTION_TYPES).includes(type)) {
+      return res.status(400).json({ error: `Invalid type. Must be one of: ${Object.values(INTERVENTION_TYPES).join(', ')}` })
+    }
+
+    const intervention = await QuestionIntervention.findById(id)
+    if (!intervention) return res.status(404).json({ error: 'Intervention not found' })
+
+    const room = await Room.findById(intervention.roomId)
+    if (!room || room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized: only the room owner can deliver intervention content' })
+    }
+
+    intervention.content = { text: cleanText, url: cleanUrl }
+    intervention.type = type || null
+    intervention.status = INTERVENTION_STATUSES.CONTENT_SENT
+    intervention.contentExpiresAt = new Date(Date.now() + retentionWindowDays * 24 * 60 * 60 * 1000)
+    await intervention.save()
+
+    res.status(201).json({
+      success: true,
+      intervention: await serializeInterventionWithQuestion(intervention)
+    })
+  } catch (error) {
+    console.error('Error delivering intervention:', error)
+    res.status(500).json({ error: 'Failed to deliver intervention content' })
   }
 })
 
 // GET /api/interventions/room/:roomId — student-facing fetch of interventions for a room.
 // Filters out content where contentExpiresAt < now AND the student has not saved.
+// Each intervention is enriched with `questionText` by looking up the linked Question —
+// the model already stores questionId, no duplicate question data is stored here.
 router.get('/room/:roomId', async (req, res) => {
   try {
     const { roomId } = req.params
@@ -205,6 +318,14 @@ router.get('/room/:roomId', async (req, res) => {
 
     const interventions = await QuestionIntervention.find({ roomId }).sort({ createdAt: -1 }).lean()
 
+    // Bulk lookup the question text for every intervention in this room — single round-trip
+    // vs N point-lookups for large rooms with many interventions.
+    const questionIds = [...new Set(interventions.map((i) => i.questionId?.toString()).filter(Boolean))]
+    const questions = questionIds.length
+      ? await Question.find({ _id: { $in: questionIds } }, { question: 1 }).lean()
+      : []
+    const questionTextById = new Map(questions.map((q) => [q._id.toString(), q.question]))
+
     // For students, look up their saved/response status in one batched query.
     let responseByIntervention = new Map()
     if (!isTeacherOwner) {
@@ -216,7 +337,12 @@ router.get('/room/:roomId', async (req, res) => {
     const now = Date.now()
     const payload = interventions
       .filter((i) => isTeacherOwner || isContentVisible(i, now))
-      .map((i) => serializeInterventionForStudent(i, responseByIntervention.get(i._id.toString()), now))
+      .map((i) => serializeInterventionForStudent(
+        i,
+        responseByIntervention.get(i._id.toString()),
+        now,
+        { isTeacher: isTeacherOwner, questionText: questionTextById.get(i.questionId?.toString()) || null }
+      ))
 
     res.json({ success: true, interventions: payload })
   } catch (error) {
@@ -226,6 +352,7 @@ router.get('/room/:roomId', async (req, res) => {
 })
 
 // GET /api/interventions/question/:questionId — convenience: single-question variant.
+// Also enriches with questionText via the linked question's own `question` field.
 router.get('/question/:questionId', async (req, res) => {
   try {
     const { questionId } = req.params
@@ -256,7 +383,10 @@ router.get('/question/:questionId', async (req, res) => {
 
     res.json({
       success: true,
-      intervention: serializeInterventionForStudent(intervention, studentResponse, now, { isTeacher: isTeacherOwner })
+      intervention: serializeInterventionForStudent(intervention, studentResponse, now, {
+        isTeacher: isTeacherOwner,
+        questionText: question?.question || null
+      })
     })
   } catch (error) {
     console.error('Error fetching question intervention:', error)
@@ -329,6 +459,8 @@ router.post('/:id/save', authorize('student'), async (req, res) => {
 })
 
 // GET /api/interventions/:id/analytics — teacher (room owner) views aggregated response counts.
+// Also returns the linked question text so the teacher can identify which question this
+// intervention's analytics are for when there are multiple interventions in the same room.
 router.get('/:id/analytics', authorize('teacher'), async (req, res) => {
   try {
     const { id } = req.params
@@ -340,6 +472,10 @@ router.get('/:id/analytics', authorize('teacher'), async (req, res) => {
       return res.status(403).json({ error: 'Not authorized: only the room owner can view intervention analytics' })
     }
 
+    const question = intervention.questionId
+      ? await Question.findById(intervention.questionId, { question: 1 }).lean()
+      : null
+
     const counts = await InterventionResponse.aggregate([
       { $match: { interventionId: intervention._id, selectedType: { $ne: null } } },
       { $group: { _id: '$selectedType', count: { $sum: 1 } } }
@@ -348,18 +484,26 @@ router.get('/:id/analytics', authorize('teacher'), async (req, res) => {
     const countsByType = {}
     for (const t of Object.values(INTERVENTION_TYPES)) countsByType[t] = 0
     let totalResponses = 0
+    let topType = null
+    let topCount = 0
     for (const c of counts) {
       countsByType[c._id] = c.count
       totalResponses += c.count
+      if (c.count > topCount) { topCount = c.count; topType = c._id }
     }
 
     res.json({
       success: true,
       analytics: {
         interventionId: intervention._id,
+        questionId: intervention.questionId,
+        questionText: question?.question || null,
+        status: intervention.status,
         type: intervention.type,
         deadlineAt: intervention.deadlineAt,
         totalResponses,
+        topType,
+        topCount,
         counts: countsByType,
         labels: INTERVENTION_TYPE_LABELS
       }
@@ -385,14 +529,28 @@ function isContentVisible(intervention, now) {
   return intervention.contentExpiresAt.getTime() > now
 }
 
-function serializeIntervention(doc) {
+// Helper for teacher-only endpoints — looks up the question text once and returns the
+// teacher-shaped serializer. Keeps the call sites short.
+async function serializeInterventionWithQuestion(doc) {
+  const question = doc.questionId
+    ? await Question.findById(doc.questionId, { question: 1 }).lean()
+    : null
+  return serializeIntervention(doc, { questionText: question?.question || null })
+}
+
+function serializeIntervention(doc, opts = {}) {
+  const typeLabel = doc.type ? (INTERVENTION_TYPE_LABELS[doc.type] || doc.type) : null
   return {
     _id: doc._id,
     questionId: doc.questionId,
+    questionText: opts.questionText ?? null,
     roomId: doc.roomId,
     teacherId: doc.teacherId,
+    status: doc.status,
+    statusLabel: doc.status === INTERVENTION_STATUSES.CONTENT_SENT ? 'Content sent' : 'Awaiting responses',
+    offeredTypes: doc.offeredTypes,
     type: doc.type,
-    typeLabel: INTERVENTION_TYPE_LABELS[doc.type] || doc.type,
+    typeLabel,
     content: doc.content,
     deadlineAt: doc.deadlineAt,
     contentExpiresAt: doc.contentExpiresAt,
@@ -405,11 +563,19 @@ function serializeIntervention(doc) {
 function serializeInterventionForStudent(doc, studentResponse, now, opts = {}) {
   const isTeacher = opts.isTeacher === true
   const visible = isTeacher || isContentVisible(doc, now)
+  // At ASK stage there is no chosen content type yet — show the offered options as the label.
+  const typeLabel = doc.type
+    ? (INTERVENTION_TYPE_LABELS[doc.type] || doc.type)
+    : 'Awaiting teacher response'
   return {
     _id: doc._id,
     questionId: doc.questionId,
+    questionText: opts.questionText ?? null,
+    status: doc.status,
+    statusLabel: doc.status === INTERVENTION_STATUSES.CONTENT_SENT ? 'Content sent' : 'Awaiting teacher response',
+    offeredTypes: doc.offeredTypes,
     type: doc.type,
-    typeLabel: INTERVENTION_TYPE_LABELS[doc.type] || doc.type,
+    typeLabel,
     content: visible ? doc.content : { text: '', url: '' },
     contentVisible: visible,
     deadlineAt: doc.deadlineAt,

@@ -12,6 +12,15 @@ export const INTERVENTION_TYPE_LABELS = Object.freeze({
   [INTERVENTION_TYPES.NEED_TOPIC_AGAIN]: 'Need Topic Explained Again'
 })
 
+// Lifecycle stages for a single QuestionIntervention record. Two-step flow:
+//   'asked'        — Stage 1: teacher published the ask (no content yet); students respond.
+//   'content_sent' — Stage 2: teacher reviewed counts and delivered the actual notes/link.
+// One document progresses through both stages — do NOT create a second record for delivery.
+export const INTERVENTION_STATUSES = Object.freeze({
+  ASKED: 'asked',
+  CONTENT_SENT: 'content_sent'
+})
+
 const CONTENT_RETENTION_DAYS = 3
 
 const interventionSchema = new mongoose.Schema({
@@ -33,10 +42,27 @@ const interventionSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  status: {
+    type: String,
+    enum: Object.values(INTERVENTION_STATUSES),
+    default: INTERVENTION_STATUSES.ASKED
+  },
+  // The set of intervention types students may choose from during the ASK stage. Defaults to
+  // the full enum so the front-end always has the canonical "Need Notes / Explanation /
+  // Topic Again" radio options without the teacher having to opt in. Extensible: callers may
+  // pass a subset of INTERVENTION_TYPES to constrain the choices.
+  offeredTypes: {
+    type: [String],
+    enum: Object.values(INTERVENTION_TYPES),
+    default: () => Object.values(INTERVENTION_TYPES)
+  },
+  // The teacher's chosen content type for DELIVER. Null while status='asked' (no content yet);
+  // set when the teacher sends the actual notes/link in stage 2. Stored as the canonical
+  // chosen "kind" of intervention content the teacher decided on.
   type: {
     type: String,
-    enum: Object.values(INTERVENTION_TYPES),
-    required: true
+    enum: [...Object.values(INTERVENTION_TYPES), null],
+    default: null
   },
   content: {
     text: { type: String, default: '' },

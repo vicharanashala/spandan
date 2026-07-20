@@ -43,7 +43,12 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    // Per-room teacher-configurable accuracy threshold for flagging questions for intervention.
+    // Stored as a fraction in [0, 1] (e.g. 0.55 for 55%). When null the global env-default
+    // (INTERVENTION_THRESHOLD) is used — see routes/interventions.js. Scoped per session so a
+    // teacher's setting on one room never bleeds into another.
+    interventionThreshold: { type: Number, default: null, min: 0, max: 1 }
   }
 }, {
   timestamps: true

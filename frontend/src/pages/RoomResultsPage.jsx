@@ -10,7 +10,9 @@ import { fetchAllRoomQuestions } from '../services/questionService'
 import {
   fetchInterventionConfig,
   fetchFlaggedQuestions,
+  setRoomInterventionThreshold,
   publishIntervention,
+  deliverIntervention,
   fetchRoomInterventions,
   submitInterventionResponse,
   fetchInterventionAnalytics
@@ -45,20 +47,30 @@ function RoomResultsPage() {
   // Threshold + defaults are read from the backend (never hardcoded on the client).
   const [interventionConfig, setInterventionConfig] = useState(null)
   const [flaggedQuestions, setFlaggedQuestions] = useState([])
+  // Per-room effective threshold (may be a teacher-set override) + whether it's custom.
+  const [roomThresholdPercent, setRoomThresholdPercent] = useState(null)
+  const [thresholdIsCustom, setThresholdIsCustom] = useState(false)
+  const [thresholdInput, setThresholdInput] = useState('')
+  const [thresholdSaving, setThresholdSaving] = useState(false)
   const [interventions, setInterventions] = useState([])
-  // Publisher modal state — only teacher uses this.
+  // Two publisher modals: one for the ASK (Stage 1) and one for DELIVER (Stage 2).
   const [publisherQuestion, setPublisherQuestion] = useState(null)
-  const [publisherType, setPublisherType] = useState('need_notes')
-  const [publisherText, setPublisherText] = useState('')
-  const [publisherUrl, setPublisherUrl] = useState('')
   const [publisherDeadlineMode, setPublisherDeadlineMode] = useState('relative')
   const [publisherDeadlineValue, setPublisherDeadlineValue] = useState('')
   const [publisherError, setPublisherError] = useState('')
   const [publisherBusy, setPublisherBusy] = useState(false)
+  // DELIVER modal state — opened from a teacher card on an existing intervention.
+  const [deliverModal, setDeliverModal] = useState(null)
   // Per-intervention analytics cache so we don't refetch when re-opening.
   const [analyticsCache, setAnalyticsCache] = useState({})
   // Inline message after student submits/responds/saves.
   const [interventionNotice, setInterventionNotice] = useState('')
+  // localStorage-backed set of intervention IDs the student has dismissed from their view
+  // (purely client-side — server content still exists for the 3-day retention window).
+  const [removedInterventionIds, setRemovedInterventionIds] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('removedInterventionIds') || '[]')) }
+    catch { return new Set() }
+  })
 
   useEffect(() => {
     if (token) {
@@ -85,14 +97,50 @@ function RoomResultsPage() {
       if (cfg?.defaultRelativeHours && !publisherDeadlineValue) {
         setPublisherDeadlineValue(String(cfg.defaultRelativeHours))
       }
+      // Seed the threshold input with the backend's default until the per-room value loads.
+      if (thresholdInput === '' && cfg?.thresholdPercent != null) {
+        setThresholdInput(String(cfg.thresholdPercent))
+      }
     } catch (e) { console.warn('[intervention] config:', e.message) }
   }
 
   const loadFlaggedQuestions = async () => {
     try {
-      const { flagged } = await fetchFlaggedQuestions(token, roomId)
-      setFlaggedQuestions(flagged)
+      const data = await fetchFlaggedQuestions(token, roomId)
+      setFlaggedQuestions(data.flagged || [])
+      // The flagged endpoint is the authoritative source for the effective threshold:
+      // it returns the room override (if set) or the global env-default. We mirror both
+      // so the threshold input shows the right value to edit.
+      if (data.thresholdPercent != null) {
+        setRoomThresholdPercent(data.thresholdPercent)
+        setThresholdIsCustom(!!data.thresholdIsCustom)
+        setThresholdInput(String(data.thresholdPercent))
+      }
     } catch (e) { console.warn('[intervention] flagged:', e.message) }
+  }
+
+  // Save the teacher's chosen threshold for this room. Persists to Room.settings so it never
+  // bleeds into other rooms — see backend PUT /api/interventions/room/:roomId/threshold.
+  const saveThreshold = async () => {
+    const n = Number(thresholdInput)
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      setInterventionNotice('Threshold must be a number between 0 and 100.')
+      return
+    }
+    setThresholdSaving(true)
+    try {
+      const res = await setRoomInterventionThreshold(token, roomId, n)
+      setRoomThresholdPercent(res.thresholdPercent)
+      setThresholdIsCustom(true)
+      setThresholdInput(String(res.thresholdPercent))
+      setInterventionNotice(`Threshold saved at ${res.thresholdPercent}%. Flagged questions updated.`)
+      // Refetch flagged list so the badges recompute against the new threshold.
+      await loadFlaggedQuestions()
+    } catch (e) {
+      setInterventionNotice(e.message || 'Failed to save threshold')
+    } finally {
+      setThresholdSaving(false)
+    }
   }
 
   const loadInterventions = async () => {
@@ -216,12 +264,9 @@ function RoomResultsPage() {
   }
 
   // ---- Intervention handlers -----------------------------------------------------------
-  // Teacher opens the publisher modal for a specific question.
+  // Teacher opens the ASK publisher for a specific question. Stage 1 only — no content fields.
   const openPublisher = (question) => {
     setPublisherQuestion(question)
-    setPublisherType('need_notes')
-    setPublisherText('')
-    setPublisherUrl('')
     setPublisherDeadlineMode('relative')
     setPublisherDeadlineValue(String(interventionConfig?.defaultRelativeHours || 12))
     setPublisherError('')
@@ -230,6 +275,7 @@ function RoomResultsPage() {
     if (publisherBusy) return
     setPublisherQuestion(null)
   }
+  // Stage 1 submit — publishes the ask only (no content yet).
   const submitPublisher = async () => {
     if (!publisherQuestion) return
     setPublisherError('')
@@ -237,12 +283,8 @@ function RoomResultsPage() {
     try {
       const intervention = await publishIntervention(token, {
         questionId: publisherQuestion._id || publisherQuestion.questionId,
-        type: publisherType,
-        content: { text: publisherText, url: publisherUrl },
         deadlineMode: publisherDeadlineMode,
-        deadlineValue: publisherDeadlineMode === 'relative'
-          ? publisherDeadlineValue
-          : publisherDeadlineValue
+        deadlineValue: publisherDeadlineValue
       })
       setInterventions((prev) => {
         const without = prev.filter((p) => p._id !== intervention._id)
@@ -253,6 +295,44 @@ function RoomResultsPage() {
       setPublisherError(e.message || 'Failed to publish intervention')
     } finally {
       setPublisherBusy(false)
+    }
+  }
+
+  // Stage 2 — open the DELIVER modal for an existing intervention. Pre-fills the type
+  // with the most-popular response from analytics (if the teacher has already loaded
+  // analytics for this intervention) so picking is one click when the answer is obvious.
+  const openDeliver = (intervention, analytics) => {
+    setDeliverModal({
+      interventionId: intervention._id,
+      type: analytics?.topType || intervention.type || null,
+      text: '',
+      url: '',
+      busy: false,
+      error: ''
+    })
+  }
+  const closeDeliver = () => {
+    if (deliverModal?.busy) return
+    setDeliverModal(null)
+  }
+  const submitDeliver = async () => {
+    if (!deliverModal) return
+    if (!deliverModal.text.trim() && !deliverModal.url.trim()) {
+      setDeliverModal((m) => ({ ...m, error: 'Content required: add notes, a link, or both.' }))
+      return
+    }
+    setDeliverModal((m) => ({ ...m, busy: true, error: '' }))
+    try {
+      const updated = await deliverIntervention(token, deliverModal.interventionId, {
+        text: deliverModal.text,
+        url: deliverModal.url,
+        type: deliverModal.type || null
+      })
+      setInterventions((prev) => prev.map((i) => i._id === updated._id ? updated : i))
+      setDeliverModal(null)
+      setInterventionNotice('Content delivered. Students can download for the next 3 days.')
+    } catch (e) {
+      setDeliverModal((m) => ({ ...m, busy: false, error: e.message || 'Failed to deliver content' }))
     }
   }
 
@@ -268,6 +348,20 @@ function RoomResultsPage() {
     } catch (e) {
       setInterventionNotice(e.message)
     }
+  }
+
+  // Student removes an intervention card from their own view. Purely client-side — the
+  // server content still exists for other students in the 3-day window. Persisted in
+  // localStorage so the choice survives a page reload. Use localStorage.clear() or
+  // DevTools to undo.
+  const handleRemoveIntervention = (interventionId) => {
+    setRemovedInterventionIds((prev) => {
+      const next = new Set(prev)
+      next.add(interventionId)
+      try { localStorage.setItem('removedInterventionIds', JSON.stringify([...next])) } catch {}
+      return next
+    })
+    setInterventionNotice('Removed from your view. The content is still on the server for the 3-day window.')
   }
 
   // Build an exportable plain-text file from the intervention content and trigger a browser
@@ -498,17 +592,22 @@ function RoomResultsPage() {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
 
-                  // Teacher: show class percentage. Student: show their result
-                  const correctRate = isTeacher && qStats.totalResponses > 0
-                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100)
-                    : q.answered ? (q.isCorrect ? 100 : 0) : null
+                  // Brief's accuracy formula: correctCount / totalEligibleStudents (joined).
+                  // Reused everywhere — flagging threshold, inline pill, and the right-side
+                  // big-% stat, so all three stay in sync.
+                  const accuracy = isTeacher && stats.totalStudents > 0
+                    ? (qStats.correctCount || 0) / stats.totalStudents
+                    : 0
+                  const accuracyPercent = Math.round(accuracy * 100)
 
-                  // Accuracy = correct / total eligible (room-wide joined students).
-                  // Used for the "flagged" badge for teachers. The room-wide totalJoined is
-                  // shared across all questions in the room — non-responders are in the denominator
-                  // but not the numerator, matching the brief's accuracy formula.
-                  const flagged = isTeacher && interventionConfig && stats.totalStudents > 0
-                    ? (qStats.correctCount || 0) / stats.totalStudents < interventionConfig.threshold
+                  // Student-side: keep the existing personal-result pill (Correct/Incorrect).
+                  // For teacher, the right-side stat below uses the brief's accuracyPercent.
+
+                  // Use the per-room threshold (teacher override > global default) so the badge
+                  // honors whatever threshold is currently active for this session.
+                  const effectiveThreshold = (roomThresholdPercent != null ? roomThresholdPercent / 100 : interventionConfig?.threshold) || 1
+                  const flagged = isTeacher && stats.totalStudents > 0
+                    ? accuracy < effectiveThreshold
                     : false
 
                   return (
@@ -569,7 +668,7 @@ function RoomResultsPage() {
                             )}
                             {flagged && (
                               <span
-                                title={`Accuracy is below the configured intervention threshold (${interventionConfig.thresholdPercent}%). Click "Add Intervention" to publish supporting content for this question.`}
+                                title={`Accuracy is below the configured intervention threshold (${Math.round(effectiveThreshold * 100)}%). Click "Add Intervention" to publish an ask for this question.`}
                                 style={{
                                   padding: '2px 8px',
                                   borderRadius: '6px',
@@ -581,6 +680,21 @@ function RoomResultsPage() {
                                 }}
                               >
                                 🚩 Flagged
+                              </span>
+                            )}
+                            {isTeacher && stats.totalStudents > 0 && (
+                              <span
+                                title="Accuracy = correct responses ÷ joined students (non-responders are in the denominator)."
+                                style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  background: accuracyPercent >= 70 ? '#d1fae5' : accuracyPercent >= 40 ? '#fef3c7' : '#fee2e2',
+                                  color: accuracyPercent >= 70 ? '#059669' : accuracyPercent >= 40 ? '#d97706' : '#dc2626'
+                                }}
+                              >
+                                {accuracyPercent}% students were right
                               </span>
                             )}
                           </div>
@@ -647,7 +761,7 @@ function RoomResultsPage() {
                               )
                             })}
                           </div>
-                          {/* Teacher: Add-intervention button on flagged questions. */}
+{/* Teacher: Add-intervention button on flagged questions. */}
                           {isTeacher && flagged && room?.endedAt && (
                             <button
                               onClick={() => openPublisher(q)}
@@ -667,24 +781,27 @@ function RoomResultsPage() {
                             </button>
                           )}
                         </div>
-                        
+
                         {/* Question Stats */}
                         <div style={{
                           minWidth: '120px',
                           textAlign: 'center',
                           padding: '16px',
-                          background: isTeacher 
-                            ? (correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2')
+                          background: isTeacher
+                            ? (accuracyPercent >= 70 ? '#d1fae5' : accuracyPercent >= 40 ? '#fef3c7' : '#fee2e2')
                             : (q.answered ? (q.isCorrect ? '#d1fae5' : '#fee2e2') : '#fef3c7'),
                           borderRadius: '12px'
                         }}>
                           {isTeacher ? (
                             <>
-                              <div style={{ fontSize: '32px', fontWeight: '700', color: correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626' }}>
-                                {correctRate !== null ? `${correctRate}%` : '0%'}
+                              <div style={{ fontSize: '32px', fontWeight: '700', color: accuracyPercent >= 70 ? '#059669' : accuracyPercent >= 40 ? '#d97706' : '#dc2626' }}>
+                                {stats.totalStudents > 0 ? `${accuracyPercent}%` : '—'}
                               </div>
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                                {qStats.totalResponses || 0} responses
+                                students were right
+                              </div>
+                              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                {qStats.totalResponses || 0}/{stats.totalStudents || 0} answered
                               </div>
                             </>
                           ) : (
@@ -721,9 +838,64 @@ function RoomResultsPage() {
               </h2>
               <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
                 {user?.role === 'teacher'
-                  ? `Interventions appear here once published. Flagged questions (accuracy below ${interventionConfig?.thresholdPercent ?? '...'}%) get an "Add Intervention" button in the analysis above.`
-                  : 'Interventions are notes, explanations, or follow-ups your teacher published for questions the class struggled with.'}
+                  ? `Two-step flow: publish an "ask" first, review responses, then deliver the actual notes/link. Threshold: ${roomThresholdPercent ?? interventionConfig?.thresholdPercent ?? '…'}%${thresholdIsCustom ? ' (custom for this session)' : ' (global default)'}.`
+                  : 'Notes, explanations, or follow-ups your teacher published for questions the class struggled with.'}
               </p>
+
+              {/* Teacher-only: per-room threshold control. The displayed value is always sourced
+                  from the backend (per-room override if set, else global default); the input
+                  pre-fills with that value and the teacher can override it for this session. */}
+              {user?.role === 'teacher' && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap',
+                  padding: '12px 14px', background: '#f9fafb', border: '1px solid var(--border-color)',
+                  borderRadius: '10px', marginBottom: '16px'
+                }}>
+                  <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Accuracy threshold (%)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={thresholdInput}
+                    onChange={(e) => setThresholdInput(e.target.value)}
+                    disabled={thresholdSaving}
+                    aria-label="Intervention threshold percent"
+                    style={{
+                      width: '80px',
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                      background: 'white',
+                      color: '#1f2937'
+                    }}
+                  />
+                  <button
+                    onClick={saveThreshold}
+                    disabled={thresholdSaving}
+                    style={{
+                      padding: '6px 14px',
+                      background: thresholdSaving ? '#9ca3af' : '#7c3aed',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: thresholdSaving ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {thresholdSaving ? 'Saving…' : 'Save threshold'}
+                  </button>
+                  <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                    {thresholdIsCustom
+                      ? `Custom for this session. Currently: ${roomThresholdPercent}% — questions below this are flagged.`
+                      : `Using global default (${roomThresholdPercent ?? interventionConfig?.thresholdPercent ?? '…'}%). Save to override.`}
+                  </span>
+                </div>
+              )}
 
               {interventionNotice && (
                 <div style={{
@@ -745,12 +917,16 @@ function RoomResultsPage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {interventions.map((iv) => {
+                  {interventions
+                    .filter((iv) => !(user?.role === 'student' && removedInterventionIds.has(iv._id)))
+                    .map((iv) => {
                     const deadlineMs = iv.deadlineAt ? new Date(iv.deadlineAt).getTime() : 0
                     const pastDeadline = deadlineMs > 0 && deadlineMs <= Date.now()
                     const expiresMs = iv.contentExpiresAt ? new Date(iv.contentExpiresAt).getTime() : 0
                     const pastRetention = expiresMs > 0 && expiresMs <= Date.now()
                     const isTeacher = user?.role === 'teacher'
+                    const isAskedStage = iv.status === 'asked'
+                    const isDelivered = iv.status === 'content_sent'
                     return (
                       <div key={iv._id} style={{
                         padding: '16px',
@@ -758,21 +934,33 @@ function RoomResultsPage() {
                         borderRadius: '12px',
                         border: '1px solid var(--border-color)'
                       }}>
+                        {/* Question reference — same question text shown on both teacher and student
+                            cards so each card is identifiable when there are multiple interventions
+                            in the same room. Sourced from the linked Question via questionText. */}
+                        <div style={{
+                          fontSize: '12px', fontWeight: '600', color: '#5b21b6',
+                          background: '#ede9fe', padding: '4px 10px', borderRadius: '6px',
+                          display: 'inline-block', marginBottom: '8px'
+                        }}>
+                          📌 Question{iv.questionText ? `: ${iv.questionText}` : ''}
+                        </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
                           <span style={{
                             padding: '4px 10px',
-                            background: '#ede9fe',
-                            color: '#5b21b6',
+                            background: isDelivered ? '#dcfce7' : '#fef3c7',
+                            color: isDelivered ? '#166534' : '#92400e',
                             borderRadius: '6px',
                             fontSize: '12px',
                             fontWeight: '600'
                           }}>
-                            {iv.typeLabel || INTERVENTION_TYPE_LABELS[iv.type] || iv.type}
+                            {isDelivered
+                              ? (iv.typeLabel || INTERVENTION_TYPE_LABELS[iv.type] || iv.type || 'Awaiting teacher response')
+                              : (isTeacher ? 'Stage 1 — Awaiting responses' : 'Awaiting teacher response')}
                           </span>
                           <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            Deadline: {deadlineMs ? new Date(deadlineMs).toLocaleString() : '—'}
+                            Response deadline: {deadlineMs ? new Date(deadlineMs).toLocaleString() : '—'}
                           </span>
-                          {pastDeadline && (
+                          {pastDeadline && !isDelivered && (
                             <span style={{
                               padding: '2px 8px',
                               background: '#fef3c7',
@@ -786,8 +974,11 @@ function RoomResultsPage() {
                           )}
                         </div>
 
-                        {iv.contentVisible ? (
-                          <>
+                        {/* Stage 2 — Delivered content. Renders INSIDE the same card the student
+                            used to respond with, so the deliver/respond flow is one card per
+                            intervention. (Confirmed by the inline layout below — no popup.) */}
+                        {isDelivered && iv.contentVisible ? (
+                          <div style={{ marginTop: '4px' }}>
                             {iv.content?.text && (
                               <p style={{ margin: '0 0 8px', fontSize: '14px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
                                 {iv.content.text}
@@ -801,17 +992,24 @@ function RoomResultsPage() {
                               </p>
                             )}
                             <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                              Visible until: {expiresMs ? new Date(expiresMs).toLocaleDateString() : '—'}
+                              Visible until: {expiresMs ? new Date(expiresMs).toLocaleDateString() : '—'} (server removes after 3 days)
                             </div>
-                          </>
-                        ) : (
+                          </div>
+                        ) : isDelivered && !iv.contentVisible ? (
                           <p style={{ margin: '0', fontSize: '13px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                            This intervention's content has expired and was not saved.
+                            This intervention's content has expired and was not downloaded within the 3-day window.
+                          </p>
+                        ) : (
+                          <p style={{ margin: '0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                            {isTeacher
+                              ? 'Awaiting student responses. Once the deadline passes, review the counts and deliver notes/links below.'
+                              : 'Awaiting teacher to publish notes or a link.'}
                           </p>
                         )}
 
-                        {/* Student: respond (single-select radio) + save */}
-                        {!isTeacher && iv.contentVisible && (
+                        {/* Student: respond (single-select radio). Offered types come from the
+                            record so the student sees exactly the same options the teacher published. */}
+                        {!isTeacher && (iv.offeredTypes || ['need_notes','need_question_explanation','need_topic_again']).length > 0 && (
                           <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
                             {pastDeadline ? (
                               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0' }}>
@@ -823,7 +1021,7 @@ function RoomResultsPage() {
                                   What would help you most for this question?
                                 </p>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
-                                  {Object.entries(INTERVENTION_TYPE_LABELS).map(([key, label]) => (
+                                  {(iv.offeredTypes || Object.keys(INTERVENTION_TYPE_LABELS)).map((key) => (
                                     <label key={key} style={{
                                       display: 'flex',
                                       alignItems: 'center',
@@ -840,51 +1038,112 @@ function RoomResultsPage() {
                                         onChange={() => handleRespond(iv, key)}
                                         style={{ cursor: 'pointer' }}
                                       />
-                                      {label}
+                                      {INTERVENTION_TYPE_LABELS[key] || key}
                                     </label>
                                   ))}
                                 </div>
                               </>
                             )}
-                            {(iv.content?.text || iv.content?.url) && (
+                            {/* Stage 2: student actions on delivered content. Download keeps a
+                                local copy on the student's device for past the 3-day window;
+                                Remove is purely client-side and hides the card from this view. */}
+                            {isDelivered && (iv.content?.text || iv.content?.url) && (
+                              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                <button
+                                  onClick={() => downloadIntervention(iv)}
+                                  style={{
+                                    padding: '6px 14px',
+                                    background: 'transparent',
+                                    color: '#7c3aed',
+                                    border: '1px solid #7c3aed',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  ⬇ Download
+                                </button>
+                                <button
+                                  onClick={() => handleRemoveIntervention(iv._id)}
+                                  style={{
+                                    padding: '6px 14px',
+                                    background: 'transparent',
+                                    color: '#dc2626',
+                                    border: '1px solid #dc2626',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  🗑 Remove from my view
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Teacher: per-intervention analytics + Stage 2 "Send Content" button. */}
+                        {isTeacher && (
+                          <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               <button
-                                onClick={() => downloadIntervention(iv)}
+                                onClick={() => loadAnalytics(iv._id)}
                                 style={{
-                                  marginTop: '8px',
                                   padding: '6px 14px',
-                                  background: 'transparent',
-                                  color: '#7c3aed',
-                                  border: '1px solid #7c3aed',
+                                  background: '#3b82f6',
+                                  color: 'white',
+                                  border: 'none',
                                   borderRadius: '6px',
                                   fontSize: '12px',
                                   fontWeight: '600',
                                   cursor: 'pointer'
                                 }}
                               >
-                                ⬇ Download
+                                View response analytics
                               </button>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Teacher: per-intervention analytics */}
-                        {isTeacher && (
-                          <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
-                            <button
-                              onClick={() => loadAnalytics(iv._id)}
-                              style={{
-                                padding: '6px 14px',
-                                background: '#3b82f6',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              View response analytics
-                            </button>
+                              {isAskedStage && (
+                                <button
+                                  onClick={async () => {
+                                    const a = await loadAnalytics(iv._id)
+                                    openDeliver(iv, a)
+                                  }}
+                                  style={{
+                                    padding: '6px 14px',
+                                    background: '#7c3aed',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  ✉️ Send Content
+                                </button>
+                              )}
+                              {isDelivered && (
+                                <button
+                                  onClick={async () => {
+                                    const a = await loadAnalytics(iv._id)
+                                    openDeliver(iv, a)
+                                  }}
+                                  style={{
+                                    padding: '6px 14px',
+                                    background: 'transparent',
+                                    color: '#7c3aed',
+                                    border: '1px solid #7c3aed',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  ✉️ Update Content
+                                </button>
+                              )}
+                            </div>
                             {analyticsCache[iv._id] && (
                               <div style={{ marginTop: '10px', fontSize: '13px', color: 'var(--text-primary)' }}>
                                 <div style={{ fontWeight: '600', marginBottom: '6px' }}>
@@ -907,7 +1166,7 @@ function RoomResultsPage() {
             </div>
           )}
 
-          {/* Publisher modal (teacher only) */}
+          {/* Publisher modal (teacher only) — Stage 1 (Ask). No content/type fields: just deadline. */}
           {publisherQuestion && (
             <div
               onClick={closePublisher}
@@ -934,72 +1193,24 @@ function RoomResultsPage() {
                   boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
                 }}
               >
-                <h3 style={{ margin: '0 0 16px', fontSize: '20px', fontWeight: '700', color: '#1f2937' }}>
-                  Publish Intervention
+                <h3 style={{ margin: '0 0 8px', fontSize: '20px', fontWeight: '700', color: '#1f2937' }}>
+                  Publish Intervention Ask
                 </h3>
-                <p style={{ margin: '0 0 16px', fontSize: '14px', color: '#6b7280' }}>
-                  For: <strong>{publisherQuestion.question}</strong>
+                <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#6b7280' }}>
+                  Stage 1 of 2 — students will pick what they need. You'll deliver the actual notes/link after reviewing responses.
+                </p>
+                <p style={{ margin: '0 0 16px', fontSize: '14px', color: '#1f2937', background: '#f9fafb', padding: '8px 12px', borderRadius: '8px' }}>
+                  📌 For question: <strong>{publisherQuestion.question}</strong>
                 </p>
 
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-                  Type
-                </label>
-                <select
-                  value={publisherType}
-                  onChange={(e) => setPublisherType(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid #d1d5db',
-                    fontSize: '14px',
-                    marginBottom: '16px',
-                    background: 'white',
-                    color: '#1f2937'
-                  }}
-                >
-                  {Object.entries(INTERVENTION_TYPE_LABELS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
+                <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: '600', color: '#374151' }}>
+                  Students will be offered (pick exactly one):
+                </p>
+                <ul style={{ margin: '0 0 16px', paddingLeft: '20px', fontSize: '13px', color: '#1f2937' }}>
+                  {Object.values(INTERVENTION_TYPE_LABELS).map((label) => (
+                    <li key={label}>{label}</li>
                   ))}
-                </select>
-
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-                  Notes / Explanation (text)
-                </label>
-                <textarea
-                  value={publisherText}
-                  onChange={(e) => setPublisherText(e.target.value)}
-                  rows={5}
-                  placeholder="Write the notes, explanation, or follow-up here…"
-                  style={{
-                    width: '100%',
-                    padding: '10px',
-                    borderRadius: '8px',
-                    border: '1px solid #d1d5db',
-                    fontSize: '14px',
-                    marginBottom: '16px',
-                    resize: 'vertical',
-                    fontFamily: 'inherit'
-                  }}
-                />
-
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-                  Link (optional)
-                </label>
-                <input
-                  type="url"
-                  value={publisherUrl}
-                  onChange={(e) => setPublisherUrl(e.target.value)}
-                  placeholder="https://…"
-                  style={{
-                    width: '100%',
-                    padding: '8px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid #d1d5db',
-                    fontSize: '14px',
-                    marginBottom: '16px'
-                  }}
-                />
+                </ul>
 
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
                   Response deadline
@@ -1109,7 +1320,157 @@ function RoomResultsPage() {
                       cursor: publisherBusy ? 'not-allowed' : 'pointer'
                     }}
                   >
-                    {publisherBusy ? 'Publishing…' : 'Publish'}
+                    {publisherBusy ? 'Publishing…' : 'Publish Ask'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* DELIVER modal (teacher only) — Stage 2. Opens from "Send Content" button on an
+              existing intervention card. Pre-fills the type picker with the most-popular
+              response from analytics (if loaded). Refreshes contentExpiresAt to a fresh
+              3 days on submit. */}
+          {deliverModal && (
+            <div
+              onClick={closeDeliver}
+              style={{
+                position: 'fixed',
+                top: 0, left: 0, right: 0, bottom: 0,
+                background: 'rgba(0,0,0,0.6)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 9999
+              }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  background: 'white',
+                  borderRadius: '16px',
+                  padding: '32px',
+                  width: '90%',
+                  maxWidth: '560px',
+                  maxHeight: '90vh',
+                  overflowY: 'auto',
+                  boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+                }}
+              >
+                <h3 style={{ margin: '0 0 8px', fontSize: '20px', fontWeight: '700', color: '#1f2937' }}>
+                  Deliver Intervention Content
+                </h3>
+                <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#6b7280' }}>
+                  Stage 2 of 2 — sent to all students who were in this session. The 3-day retention window restarts now.
+                </p>
+
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+                  Content type (for the card label)
+                </label>
+                <select
+                  value={deliverModal.type || ''}
+                  onChange={(e) => setDeliverModal((m) => ({ ...m, type: e.target.value || null }))}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    fontSize: '14px',
+                    marginBottom: '16px',
+                    background: 'white',
+                    color: '#1f2937'
+                  }}
+                >
+                  <option value="">— pick the kind of content —</option>
+                  {Object.entries(INTERVENTION_TYPE_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+                  Notes / Explanation (text)
+                </label>
+                <textarea
+                  value={deliverModal.text}
+                  onChange={(e) => setDeliverModal((m) => ({ ...m, text: e.target.value }))}
+                  rows={6}
+                  placeholder="Write the notes, explanation, or follow-up here…"
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    fontSize: '14px',
+                    marginBottom: '16px',
+                    resize: 'vertical',
+                    fontFamily: 'inherit'
+                  }}
+                />
+
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+                  Link (optional)
+                </label>
+                <input
+                  type="url"
+                  value={deliverModal.url}
+                  onChange={(e) => setDeliverModal((m) => ({ ...m, url: e.target.value }))}
+                  placeholder="https://…"
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    fontSize: '14px',
+                    marginBottom: '16px'
+                  }}
+                />
+
+                {deliverModal.error && (
+                  <div style={{
+                    padding: '10px',
+                    background: '#fef2f2',
+                    color: '#dc2626',
+                    border: '1px solid #fecaca',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    marginBottom: '12px'
+                  }}>
+                    {deliverModal.error}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                  <button
+                    onClick={closeDeliver}
+                    disabled={deliverModal.busy}
+                    style={{
+                      padding: '10px 20px',
+                      background: '#e5e7eb',
+                      color: '#374151',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: deliverModal.busy ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={submitDeliver}
+                    disabled={deliverModal.busy}
+                    style={{
+                      padding: '10px 20px',
+                      background: deliverModal.busy ? '#9ca3af' : '#7c3aed',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: deliverModal.busy ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {deliverModal.busy ? 'Delivering…' : 'Deliver Content'}
                   </button>
                 </div>
               </div>
