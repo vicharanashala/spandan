@@ -112,7 +112,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
 
   const renderRank = (entry, index) => {
     const rank = entry.rank
-    const isCurrentUser = entry.isCurrentUser
+    const isCurrentUser = entry.isCurrentUser || entry.studentId === userId
     
     // If not teacher and there's a gap between current entry and previous
     // AND this entry is the user's rank (and not in top 10 shown), show ellipsis before
