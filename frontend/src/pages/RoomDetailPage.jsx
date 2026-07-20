@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useQuestionBankStore from '../stores/questionBankStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -23,6 +24,94 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { saveFromRoomQuestion, getStagedQueue, clearStagedQueue, isAlreadySaved } = useQuestionBankStore()
+
+  // Track questions saved in this session to prevent duplicate bank entries
+  const [savedQuestionKeys] = useState(() => new Set())
+  const [savingIds, setSavingIds] = useState(() => new Set())
+
+  const questionFingerprint = (q) =>
+    `${q.type}::${(q.question || '').trim().toLowerCase().slice(0, 200)}`
+
+  const [bankToast, setBankToast] = useState(null)
+  const [pendingBankCount, setPendingBankCount] = useState(0)
+
+  const showBankToast = useCallback((message, type = 'success') => {
+    setBankToast({ message, type })
+    setTimeout(() => setBankToast(null), 2500)
+  }, [])
+
+  // ONE-CLICK IMPORT: pick up staged questions on mount, offer to inject
+  useEffect(() => {
+    const staged = getStagedQueue()
+    if (staged.length > 0) setPendingBankCount(staged.length)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleAcceptBankImport = useCallback(() => {
+    const staged = getStagedQueue()
+    if (!staged.length || !room) return
+    // Mark each with metadata, give them fresh _ids so they fit the room
+    const imported = staged.map((q, i) => ({
+      ...q,
+      _id: q._id || q.sourceBankId || `bank-${Date.now()}-${i}`,
+      timeToAnswer: q.timeToAnswer || roomSettings.timeToAnswer || 30,
+      points: q.points || roomSettings.points || 100,
+      segmentIndex: q.segmentIndex ?? 0,
+      status: 'approved',
+      source: 'bank'
+    }))
+    setGeneratedQuestions(prev => [...imported, ...prev])
+    clearStagedQueue()
+    setPendingBankCount(0)
+    showBankToast(`📥 Imported ${imported.length} question${imported.length !== 1 ? 's' : ''} from bank`)
+  }, [getStagedQueue, clearStagedQueue, room, roomSettings, showBankToast])
+
+  const handleDismissBankImport = useCallback(() => {
+    clearStagedQueue()
+    setPendingBankCount(0)
+  }, [clearStagedQueue])
+
+  // ONE-CLICK SAVE: turn a generated question into a bank entry.
+  // Guards against double-clicks, missing fields, and duplicate saves in one session.
+  const handleSaveToBank = useCallback(async (question) => {
+    if (!question || !question._id) {
+      showBankToast('Cannot save: question is missing an id', 'error')
+      return
+    }
+    const fp = questionFingerprint(question)
+    if (savedQuestionKeys.has(fp) || isAlreadySaved(question._id)) {
+      showBankToast('Already saved to bank', 'success')
+      return
+    }
+    if (savingIds.has(question._id)) return // already in flight
+    setSavingIds(prev => new Set(prev).add(question._id))
+    try {
+      const result = await saveFromRoomQuestion(
+        question,
+        room?._id,
+        {
+          topic: roomSettings?.topic || '',
+          difficulty: roomSettings?.difficulty || 'medium',
+          tags: []
+        }
+      )
+      if (result && result.ok) {
+        savedQuestionKeys.add(fp)
+        showBankToast('Saved to bank', 'success')
+      } else {
+        showBankToast('Save failed: ' + (result && result.error || 'unknown'), 'error')
+      }
+    } catch (e) {
+      showBankToast('Save failed: ' + (e.message || 'unknown'), 'error')
+    } finally {
+      setSavingIds(prev => {
+        const next = new Set(prev)
+        next.delete(question._id)
+        return next
+      })
+    }
+  }, [saveFromRoomQuestion, room, roomSettings, showBankToast, savedQuestionKeys, isAlreadySaved, savingIds])
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -1546,7 +1635,7 @@ function RoomDetailPage() {
                         })}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
                       <span style={{
                         padding: '4px 10px',
                         borderRadius: '6px',
@@ -1558,6 +1647,40 @@ function RoomDetailPage() {
                         {answerCounts[q._id] || 0}/{totalParticipants}
                       </span>
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                      <button
+                        onClick={() => handleSaveToBank(q)}
+                        disabled={savingIds.has(q._id) || savedQuestionKeys.has(questionFingerprint(q))}
+                        title="Save this question to your Question Bank"
+                        style={{
+                          marginTop: 6,
+                          padding: '4px 10px',
+                          background: (q.source === 'bank' || savedQuestionKeys.has(questionFingerprint(q)))
+                            ? '#ecfdf5'
+                            : (savingIds.has(q._id) ? '#94a3b8' : '#3b82f6'),
+                          color: (q.source === 'bank' || savedQuestionKeys.has(questionFingerprint(q)))
+                            ? '#047857'
+                            : 'white',
+                          border: 'none',
+                          borderRadius: 6,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: (savingIds.has(q._id) || savedQuestionKeys.has(questionFingerprint(q)))
+                            ? 'default'
+                            : 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          opacity: savingIds.has(q._id) ? 0.7 : 1
+                        }}
+                      >
+                        {savingIds.has(q._id)
+                          ? 'Saving...'
+                          : savedQuestionKeys.has(questionFingerprint(q))
+                          ? 'Saved'
+                          : q.source === 'bank'
+                          ? 'From Bank'
+                          : 'Save to Bank'}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -1581,9 +1704,69 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                            <Leaderboard roomId={room?._id} token={token} socket={socket} />
             </div>
           </div>
+
+          {/* ONE-CLICK IMPORT BANNER — staged questions from Question Bank */}
+          {pendingBankCount > 0 && (
+            <div style={{
+              marginTop: 20,
+              background: 'linear-gradient(135deg, #3b82f615, #10b98115)',
+              border: '1px solid #3b82f6',
+              borderRadius: 12,
+              padding: '14px 20px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap'
+            }}>
+              <span style={{ fontSize: 20 }}>📚</span>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ color: 'var(--text-primary)', fontWeight: 700, fontSize: 14 }}>
+                  {pendingBankCount} question{pendingBankCount !== 1 ? 's' : ''} from your Question Bank
+                </div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 2 }}>
+                  Add them to this room in one click.
+                </div>
+              </div>
+              <button
+                onClick={handleAcceptBankImport}
+                style={{
+                  padding: '10px 18px', background: '#10b981', color: 'white',
+                  border: 'none', borderRadius: 8, fontWeight: 700,
+                  cursor: 'pointer', fontSize: 13,
+                  display: 'inline-flex', alignItems: 'center', gap: 6
+                }}
+              >
+                📥 Import {pendingBankCount}
+              </button>
+              <button
+                onClick={handleDismissBankImport}
+                style={{
+                  padding: '8px 14px', background: 'transparent',
+                  color: 'var(--text-secondary)', border: '1px solid var(--border-color)',
+                  borderRadius: 8, fontWeight: 600,
+                  cursor: 'pointer', fontSize: 12
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Question Bank toast (save success / error) */}
+          {bankToast && (
+            <div style={{
+              position: 'fixed', bottom: 24, right: 24,
+              background: bankToast.type === 'success' ? '#10b981' : '#ef4444',
+              color: 'white', padding: '14px 22px', borderRadius: 10,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.3)', fontWeight: 600, zIndex: 200,
+              maxWidth: 420
+            }}>
+              {bankToast.message}
+            </div>
+          )}
         </div>
       </div>
 

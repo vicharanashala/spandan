@@ -83,4 +83,17 @@ export const questionApi = {
   getResults: (id) => api.get(`/questions/${id}/results`)
 }
 
+export const questionBankApi = {
+  list: (filters = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v) })
+    const qs = params.toString()
+    return api.get(`/question-bank${qs ? `?${qs}` : ''}`)
+  },
+  saveFromRoomQuestion: (data) => api.post('/question-bank/from-room-question', data),
+  prepareImport: (id) => api.get(`/question-bank/${id}/import-ready`),
+  archive: (id) => api.delete(`/question-bank/${id}`),
+  getTopics: () => api.get('/question-bank/meta/topics')
+}
+
 export default api

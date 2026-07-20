@@ -3,11 +3,12 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
 
 const menuItems = {
-  teacher: [
+    teacher: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/teacher' },
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'question-bank', label: 'Question Bank', icon: '📚', path: '/teacher/question-bank' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },

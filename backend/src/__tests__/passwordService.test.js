@@ -1,19 +1,21 @@
+import crypto from 'crypto'
+
 // Unit tests for password service - testing pure logic
 // Note: These tests verify the token generation logic in isolation
 // For full integration tests, use supertest with actual database
+
+
 
 describe('Password Service Logic', () => {
   describe('Token Format Validation', () => {
     it('should generate 64-character hex token', () => {
       // crypto.randomBytes(32).toString('hex') produces 64 hex chars
-      const crypto = require('crypto')
       const token = crypto.randomBytes(32).toString('hex')
       expect(token).toHaveLength(64)
       expect(token).toMatch(/^[a-f0-9]{64}$/)
     })
 
     it('should generate unique tokens', () => {
-      const crypto = require('crypto')
       const token1 = crypto.randomBytes(32).toString('hex')
       const token2 = crypto.randomBytes(32).toString('hex')
       expect(token1).not.toBe(token2)

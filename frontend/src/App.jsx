@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import QuestionBankPage from './pages/QuestionBankPage'
 import { API_URL } from './config.js'
 
 function App() {
@@ -96,13 +97,23 @@ function App() {
   }, [isAuthenticated, samagamaChecked, setAuth])
 
   // Connect socket when user is authenticated with valid token
-  useEffect(() => {
+    useEffect(() => {
     if (token && isAuthenticated) {
       console.log('App: connecting socket with token')
       connect(token)
     } else {
       console.log('App: disconnecting socket')
       disconnect()
+      // User logged out — clear any staged Question Bank queue so the
+      // next user on this browser doesn't see leftovers from the previous
+      // account.
+      try {
+        Object.keys(localStorage)
+          .filter(k => k.startsWith('spandan:questionBank:pending:'))
+          .forEach(k => localStorage.removeItem(k))
+      } catch {
+        // localStorage may be unavailable; ignore.
+      }
     }
   }, [token, isAuthenticated, connect, disconnect])
 
@@ -146,9 +157,14 @@ function App() {
             <ProfilePage />
           </ProtectedRoute>
         } />
-        <Route path="/teacher/room-history" element={
+                <Route path="/teacher/room-history" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/question-bank" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <QuestionBankPage />
           </ProtectedRoute>
         } />
         <Route path="/teacher/room/:roomId" element={
