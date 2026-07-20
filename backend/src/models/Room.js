@@ -45,7 +45,7 @@ const roomSchema = new mongoose.Schema({
       MSQ: { type: Number, default: 20 }
     }
   },
-  
+
   // Precomputed Session-Level Aggregates
   stats: {
     totalStudents: { type: Number, default: 0 },
@@ -54,7 +54,7 @@ const roomSchema = new mongoose.Schema({
     averageTTAMs: { type: Number, default: 0 },
     flaggedTabSwitches: { type: Number, default: 0 } // Total across all students
   },
-  
+
   // Session Leaderboard Snapshot (frozen at end)
   leaderboard: [{
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -67,7 +67,7 @@ const roomSchema = new mongoose.Schema({
 })
 
 // Generate unique room code before saving
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', function (next) {
   if (!this.code) {
     this.code = generateRoomCode()
   }
@@ -84,9 +84,12 @@ function generateRoomCode() {
 }
 
 // Static method to find by code
-roomSchema.statics.findByCode = function(code) {
+roomSchema.statics.findByCode = function (code) {
   return this.findOne({ code: code.toUpperCase() })
 }
+
+// Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
+roomSchema.index({ teacher: 1, createdAt: -1 })
 
 roomSchema.index({ teacher: 1 })
 

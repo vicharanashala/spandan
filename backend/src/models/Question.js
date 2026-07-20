@@ -48,7 +48,7 @@ const questionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  
+
   // Precomputed Question-Level Aggregates
   stats: {
     answerDistribution: { type: Map, of: Number, default: {} }, // e.g., { "Option1": 15, "Option2": 2 }
@@ -58,7 +58,9 @@ const questionSchema = new mongoose.Schema({
   }
 })
 
-questionSchema.index({ roomId: 1 })
+// Covers the hot query shapes: filter by room (+status) and sort by createdAt.
+// Without this every question read (poll load, stats, history) is a full COLLSCAN.
+questionSchema.index({ roomId: 1, status: 1, createdAt: -1 })
 
 const Question = mongoose.model('Question', questionSchema)
 

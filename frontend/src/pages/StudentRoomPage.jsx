@@ -9,21 +9,33 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
 
+// Spread the ~N students' navigation to the results page over this window (ms). When a big room
+// ends, all students receive room:ended at once; without a spread they'd all hit the results
+// endpoints in the same instant (the end-session "results stampede"). Each student waits a random
+// delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
+const RESULTS_NAV_JITTER_MS = 4000
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const { joinRoom, activePoll, remainingTime, hasAnswered, submitAnswer, recordTabSwitch } = useLiveRoom(roomCode, token, 'student')
-  
+
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
+  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
+  const [timeLeft, setTimeLeft] = useState(0)
+  const [results, setResults] = useState(null)
+  // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
-  const [prevPollId, setPrevPollId] = useState(null)
+  const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  const timerIntervalRef = useRef(null)
+  const resultsNavTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token) return
@@ -43,17 +55,69 @@ function StudentRoomPage() {
       fetchPastResponses(room._id, user._id)
       setPrevPollId(null)
     }
-  }, [activePoll, prevPollId, room, user])
 
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        recordTabSwitch()
+    const handleNewQuestion = (question) => {
+      // Handle manually created questions from teacher
+      // Clear any existing timer
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+        timerIntervalRef.current = null
+      }
+
+      setCurrentQuestion(question)
+      setSelectedOptions([])
+      setSubmitted(false)
+      setTimeLeft(question.timeToAnswer || 30)
+
+      timerIntervalRef.current = setInterval(() => {
+        setTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(timerIntervalRef.current)
+            timerIntervalRef.current = null
+            // Time expired - refresh from MongoDB only if room/user available
+            if (room?._id && user?._id) {
+              fetchPastResponses(room._id, user._id)
+            }
+            setCurrentQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+
+    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
+    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
+    // room's questions so any missed one surfaces without the student manually refreshing.
+    const handleReconnect = () => {
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
       }
     }
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [recordTabSwitch])
+
+    socket.on('question:started', handleQuestionStarted)
+    socket.on('question:ended', handleQuestionEnded)
+    socket.on('new_question', handleNewQuestion)
+    socket.on('connect', handleReconnect)
+    socket.on('room:ended', () => {
+      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
+      // so all students don't hit the results endpoints in the same instant.
+      setSessionEnded(true)
+      const delay = Math.random() * RESULTS_NAV_JITTER_MS
+      resultsNavTimerRef.current = setTimeout(() => {
+        navigate(`/student/room/${room?._id}/results`)
+      }, delay)
+    })
+
+    return () => {
+      socket.off('question:started', handleQuestionStarted)
+      socket.off('question:ended', handleQuestionEnded)
+      socket.off('new_question', handleNewQuestion)
+      socket.off('connect', handleReconnect)
+      socket.off('room:ended')
+      if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+    }
+  }, [socket, navigate, room?._id])
 
   const joinSession = async () => {
     setIsLoading(true)
@@ -70,7 +134,7 @@ function StudentRoomPage() {
       setIsLoading(false)
     }
   }
-  
+
   const fetchPastResponses = async (roomId, studentId) => {
     // Defensive: don't call if room or user not ready
     if (!roomId || !studentId) {
@@ -104,17 +168,63 @@ function StudentRoomPage() {
   const handleSubmitAnswer = async () => {
     if (selectedOptions.length === 0 || submitted || !activePoll) return
 
-    const questionId = activePoll.questionId
-    
-    // Submit via polling REST hook
-    const success = await submitAnswer(questionId, selectedOptions.length === 1 ? selectedOptions[0] : selectedOptions, false)
-    
-    if (success) {
-      setSubmitted(true)
-      setHasAnsweredPoll(true)
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+    const questionId = currentQuestion._id || currentQuestion.question?._id
+    const tta = currentQuestion.timeToAnswer || 30
+    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
+    // is actually sent, so the send-jitter below can never change a student's points.
+    const responseTime = tta - timeLeft
+    const roomId = room?._id
+    const studentId = user?._id
+
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
+    // even though the network POST itself is deferred by a small random delay.
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
+    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
+    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
+    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    const jitterMs = Math.floor(Math.random() * 2000)
+
+    console.log('[StudentRoom] Submitting answer:', {
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
+    })
+
+    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
+
+    // Save to MongoDB
+    try {
+      const saveResponse = await fetch(`${API_URL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId,
+          questionId,
+          studentId,
+          selectedOptions,
+          responseTime
+        })
+      })
+      const saveData = await saveResponse.json()
+      console.log('[StudentRoom] Response saved:', saveData)
+
+      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
+      // (from this authenticated POST) — the client no longer emits points:update /
+      // response:submit. The POST returns this student's current rank; surface it so the
+      // leaderboard's "you" pill updates even when outside the broadcast top-N.
+      if (saveData.success && saveData.rank != null) {
+        setMyRank(saveData.rank)
       }
+    } catch (err) {
+      console.error('Failed to save response:', err)
+    }
+
+    if (roomId && studentId) {
+      fetchPastResponses(roomId, studentId)
     }
   }
 
@@ -126,7 +236,7 @@ function StudentRoomPage() {
           headers: { 'Authorization': `Bearer ${token}` }
         })
       }
-    } catch(e) {}
+    } catch (e) { }
     navigate('/student')
   }
 
@@ -195,6 +305,33 @@ function StudentRoomPage() {
     )
   }
 
+  if (sessionEnded) {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              width: '48px',
+              height: '48px',
+              border: '4px solid var(--border-color)',
+              borderTopColor: '#3b82f6',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              margin: '0 auto 16px'
+            }} />
+            <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -206,7 +343,7 @@ function StudentRoomPage() {
       overflowX: 'hidden'
     }}>
       <Sidebar user={user} />
-      
+
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
@@ -306,18 +443,18 @@ function StudentRoomPage() {
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
                 {activePoll.options && activePoll.options.map((option, index) => {
                   const isMSQ = activePoll.type === 'MSQ'
-                  const isSelected = isMSQ 
+                  const isSelected = isMSQ
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
                   const optionText = typeof option === 'string' ? option : option.text
                   const optionLabel = String.fromCharCode(65 + index)
-                  
+
                   const handleOptionClick = () => {
                     if (submitted) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
-                      setSelectedOptions(prev => 
-                        prev.includes(index) 
+                      setSelectedOptions(prev =>
+                        prev.includes(index)
                           ? prev.filter(i => i !== index)
                           : [...prev, index]
                       )
@@ -326,7 +463,7 @@ function StudentRoomPage() {
                       setSelectedOptions([index])
                     }
                   }
-                  
+
                   return (
                     <button
                       key={index}
@@ -334,7 +471,7 @@ function StudentRoomPage() {
                       disabled={submitted}
                       style={{
                         padding: '20px 24px',
-                        background: submitted 
+                        background: submitted
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
@@ -457,166 +594,166 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
-                {pastResponses.length === 0 ? (
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
-                    No questions answered yet. Questions you answer will appear here.
-                  </p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    {pastResponses.map((q, index) => (
-                      <div key={`past-${index}`} style={{
-                        padding: '20px',
-                        background: 'var(--bg-primary)',
-                        borderRadius: '12px',
-                        border: '1px solid var(--border-color)',
-                        opacity: q.answered ? 1 : 0.8
-                      }}>
-                        {/* Header with status badges */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: q.answered ? '#d1fae5' : '#fee2e2',
-                              color: q.answered ? '#059669' : '#dc2626',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.answered ? 'Answered' : 'Missed'}
-                            </span>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: '#eff6ff',
-                              color: '#3b82f6',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.type}
-                            </span>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: '#fef3c7',
-                              color: '#d97706',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
-                            </span>
-                          </div>
-                          {q.answered && q.isCorrect && (
-                            <span style={{
-                              padding: '4px 12px',
-                              background: '#10b981',
-                              color: 'white',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              ✓ Correct (+{q.pointsEarned || 0})
-                            </span>
-                          )}
-                          {q.answered && !q.isCorrect && (
-                            <span style={{
-                              padding: '4px 12px',
-                              background: '#ef4444',
-                              color: 'white',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              ✗ Incorrect (+{q.pointsEarned || 0})
-                            </span>
-                          )}
-                        </div>
-                        
-                        {/* Question text */}
-                        <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
-                          {q.question || 'Question'}
-                        </p>
-                        
-                        {/* All options - always shown */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
-                          {(q.options || []).map((option, optIdx) => {
-                            const isSelected = q.selectedOptions?.includes(optIdx)
-                            const isCorrect = option.isCorrect
-                            const letter = String.fromCharCode(65 + optIdx)
-                            
-                            let bgColor = 'var(--bg-secondary)'
-                            let borderColor = 'var(--border-color)'
-                            let textColor = 'var(--text-primary)'
-                            let label = ''
-                            
-                            if (q.answered && isSelected && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
-                              label = ' (Your correct answer)'
-                            } else if (q.answered && isSelected && !isCorrect) {
-                              bgColor = '#fee2e2'
-                              borderColor = '#dc2626'
-                              label = ' (Your wrong answer)'
-                            } else if (!q.answered && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
-                              label = ' (Correct answer)'
-                            }
-                            
-                            return (
-                              <div key={optIdx} style={{
-                                padding: '12px 16px',
-                                background: bgColor,
-                                border: `2px solid ${borderColor}`,
-                                borderRadius: '8px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px'
+                  {pastResponses.length === 0 ? (
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
+                      No questions answered yet. Questions you answer will appear here.
+                    </p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {pastResponses.map((q, index) => (
+                        <div key={`past-${index}`} style={{
+                          padding: '20px',
+                          background: 'var(--bg-primary)',
+                          borderRadius: '12px',
+                          border: '1px solid var(--border-color)',
+                          opacity: q.answered ? 1 : 0.8
+                        }}>
+                          {/* Header with status badges */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              <span style={{
+                                padding: '2px 10px',
+                                background: q.answered ? '#d1fae5' : '#fee2e2',
+                                color: q.answered ? '#059669' : '#dc2626',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
                               }}>
-                                <span style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '50%',
-                                  background: isCorrect ? '#059669' : 'var(--border-color)',
-                                  color: 'white',
+                                {q.answered ? 'Answered' : 'Missed'}
+                              </span>
+                              <span style={{
+                                padding: '2px 10px',
+                                background: '#eff6ff',
+                                color: '#3b82f6',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                {q.type}
+                              </span>
+                              <span style={{
+                                padding: '2px 10px',
+                                background: '#fef3c7',
+                                color: '#d97706',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
+                              </span>
+                            </div>
+                            {q.answered && q.isCorrect && (
+                              <span style={{
+                                padding: '4px 12px',
+                                background: '#10b981',
+                                color: 'white',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                ✓ Correct (+{q.pointsEarned || 0})
+                              </span>
+                            )}
+                            {q.answered && !q.isCorrect && (
+                              <span style={{
+                                padding: '4px 12px',
+                                background: '#ef4444',
+                                color: 'white',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                ✗ Incorrect (+{q.pointsEarned || 0})
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Question text */}
+                          <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
+                            {q.question || 'Question'}
+                          </p>
+
+                          {/* All options - always shown */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                            {(q.options || []).map((option, optIdx) => {
+                              const isSelected = q.selectedOptions?.includes(optIdx)
+                              const isCorrect = option.isCorrect
+                              const letter = String.fromCharCode(65 + optIdx)
+
+                              let bgColor = 'var(--bg-secondary)'
+                              let borderColor = 'var(--border-color)'
+                              let textColor = 'var(--text-primary)'
+                              let label = ''
+
+                              if (q.answered && isSelected && isCorrect) {
+                                bgColor = '#d1fae5'
+                                borderColor = '#059669'
+                                label = ' (Your correct answer)'
+                              } else if (q.answered && isSelected && !isCorrect) {
+                                bgColor = '#fee2e2'
+                                borderColor = '#dc2626'
+                                label = ' (Your wrong answer)'
+                              } else if (!q.answered && isCorrect) {
+                                bgColor = '#d1fae5'
+                                borderColor = '#059669'
+                                label = ' (Correct answer)'
+                              }
+
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '12px 16px',
+                                  background: bgColor,
+                                  border: `2px solid ${borderColor}`,
+                                  borderRadius: '8px',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  gap: '12px'
                                 }}>
-                                  {letter}
-                                </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
-                                </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
+                                  <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: '700',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
                                   </span>
-                                )}
-                              </div>
-                            )
-                          })}
+                                  <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                    {option.text || option}
+                                  </span>
+                                  {label && (
+                                    <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                      {label}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          {/* Missed question notice */}
+                          {!q.answered && (
+                            <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
+                              ⚠️ You did not answer this question
+                            </p>
+                          )}
                         </div>
-                        
-                        {/* Missed question notice */}
-                        {!q.answered && (
-                          <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
-                            ⚠️ You did not answer this question
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {/* Leaderboard - flexible width */}
                 <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} />
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
                 </div>
               </div>
             </div>

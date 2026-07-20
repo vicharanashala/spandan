@@ -27,11 +27,11 @@ export const createQuestion = async (data, createdBy) => {
 
 export const getQuestionById = async (id) => {
   const question = await Question.findById(id).populate('createdBy', 'name email')
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   return question
 }
 
@@ -41,38 +41,38 @@ export const getQuestionsByRoom = async (roomId) => {
 
 export const updateQuestion = async (questionId, updates, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Check ownership
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to update this question')
   }
-  
+
   Object.assign(question, updates)
   await question.save()
-  
+
   return question
 }
 
 export const deleteQuestion = async (questionId, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to delete this question')
   }
-  
+
   await Question.findByIdAndDelete(questionId)
-  
+
   // Also delete related responses
   await Response.deleteMany({ question: questionId })
-  
+
   return true
 }
 
@@ -82,36 +82,36 @@ export const setActiveQuestion = async (roomId, questionId) => {
     { roomId: roomId },
     { $set: { isActive: false } }
   )
-  
+
   // Activate the specified question
   const question = await Question.findByIdAndUpdate(
     questionId,
     { $set: { isActive: true } },
     { new: true }
   )
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Update room's currentQuestion
   await Room.findByIdAndUpdate(roomId, { currentQuestion: questionId })
-  
+
   return question
 }
 
 export const submitResponse = async (data, studentId) => {
   const { questionId, selectedOption, responseTime } = data
-  
+
   // Get the question to check correct answer
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   const isCorrect = selectedOption === question.correctOptionIndex
-  
+
   const response = new Response({
     question: questionId,
     roomId: question.roomId,
@@ -122,7 +122,7 @@ export const submitResponse = async (data, studentId) => {
   })
 
   await response.save()
-  
+
   return response
 }
 
@@ -140,9 +140,9 @@ export const getResponsesByRoom = async (roomId) => {
 
 export const getQuestionResults = async (questionId) => {
   const responses = await Response.find({ question: questionId })
-  
+
   const totalResponses = responses.length
-  
+
   if (totalResponses === 0) {
     return {
       totalResponses: 0,
@@ -150,19 +150,19 @@ export const getQuestionResults = async (questionId) => {
       correctPercentage: 0
     }
   }
-  
+
   const results = {}
   let correctCount = 0
-  
+
   responses.forEach(response => {
     const option = response.selectedOption
     results[option] = (results[option] || 0) + 1
-    
+
     if (response.isCorrect) {
       correctCount++
     }
   })
-  
+
   return {
     totalResponses,
     results,
@@ -173,7 +173,7 @@ export const getQuestionResults = async (questionId) => {
 // Question Type Mix helper
 function getQuestionTypeMix(numQuestions) {
   const types = []
-  
+
   if (numQuestions === 1) {
     types.push('MCQ')
   } else if (numQuestions === 2) {
@@ -184,12 +184,12 @@ function getQuestionTypeMix(numQuestions) {
     const mcqCount = Math.round(numQuestions * 0.5)
     const tfCount = Math.round(numQuestions * 0.3)
     const msqCount = numQuestions - mcqCount - tfCount
-    
+
     for (let i = 0; i < mcqCount; i++) types.push('MCQ')
     for (let i = 0; i < tfCount; i++) types.push('TF')
     for (let i = 0; i < msqCount; i++) types.push('MSQ')
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -206,18 +206,18 @@ function generateFromMix(questionTypeMix, numQuestions) {
   const mcqCount = Math.round((MCQ / total) * numQuestions)
   const tfCount = Math.round((TF / total) * numQuestions)
   const msqCount = numQuestions - mcqCount - tfCount
-  
+
   const types = []
   for (let i = 0; i < mcqCount; i++) types.push('MCQ')
   for (let i = 0; i < tfCount; i++) types.push('TF')
   for (let i = 0; i < msqCount; i++) types.push('MSQ')
-  
+
   // Shuffle to mix them up nicely
   for (let i = types.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [types[i], types[j]] = [types[j], types[i]]
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -302,20 +302,20 @@ IMPORTANT:
 function parseQuestions(responseText, expectedTypes) {
   try {
     let jsonStr = responseText
-    
+
     const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
     if (jsonMatch) {
       jsonStr = jsonMatch[1]
     }
-    
+
     const objMatch = jsonStr.match(/\{[\s\S]*\}/)
     if (!objMatch) {
       throw new Error('No JSON found in response')
     }
-    
+
     const parsed = JSON.parse(objMatch[0])
     const questions = parsed.questions || []
-    
+
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
@@ -326,7 +326,14 @@ function parseQuestions(responseText, expectedTypes) {
       createdAt: new Date().toISOString()
     }))
   } catch (error) {
-    console.error('Failed to parse questions:', error)
+    // Log the RAW model text so a failure is diagnosable instead of a silent []. Truncate huge
+    // responses (keep head + tail) so logs stay readable.
+    const raw = typeof responseText === 'string' ? responseText : String(responseText ?? '')
+    const shown = raw.length > 2000
+      ? raw.slice(0, 1000) + `\n…[${raw.length - 2000} chars truncated]…\n` + raw.slice(-1000)
+      : raw
+    console.error('Failed to parse questions:', error?.message || error)
+    console.error(`[gen:parse-fail] raw model response (${raw.length} chars): ${shown}`)
     return []
   }
 }
@@ -338,7 +345,7 @@ function parseOptions(options, type) {
     if (Array.isArray(options) && options.length === 2) {
       const trueIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('true'))
       const falseIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('false'))
-      
+
       if (trueIdx !== -1 && falseIdx !== -1) {
         // Return with correct marking preserved
         return [
@@ -369,6 +376,53 @@ function parseOptions(options, type) {
   }))
 }
 
+// MiniMax API call
+async function generateWithMiniMax(prompt) {
+  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.minimaxApiKey}`
+    },
+    body: JSON.stringify({
+      model: 'MiniMax-M2.7',
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 8000
+    })
+  })
+
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    throw new Error(`MiniMax API error: ${response.status} - ${errorData}`)
+  }
+
+  const data = await response.json()
+  const choice = data.choices?.[0]
+  const content = choice?.message?.content || ''
+  const reasoning = choice?.message?.reasoning_content || ''
+  const finish = choice?.finish_reason
+  const usage = data.usage || {}
+  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
+  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
+  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  const text = content || reasoning
+  if (!text) {
+    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
+      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+  } else if (!content && reasoning) {
+    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+  }
+  return text
+}
+
 // OpenAI API call
 async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -386,7 +440,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
         }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 8000
     })
   })
 
@@ -416,7 +470,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
           content: prompt
         }
       ],
-      max_tokens: 2000,
+      max_tokens: 8000,
       temperature: 0.7
     })
   })
@@ -449,7 +503,7 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2000
+        maxOutputTokens: 8000
       }
     })
   })
@@ -481,12 +535,12 @@ export async function generateQuestions(transcript, cfg) {
   }
 
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
 
   let responseText
 
@@ -551,8 +605,13 @@ export async function generateQuestions(transcript, cfg) {
       throw new Error(`Unknown provider: ${provider}`)
   }
 
+  console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
   const questions = parseQuestions(responseText, questionTypes)
-  console.log(`Generated ${questions.length} questions successfully`)
+  if (questions.length === 0) {
+    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
+  } else {
+    console.log(`Generated ${questions.length} questions successfully`)
+  }
 
   return questions
 }

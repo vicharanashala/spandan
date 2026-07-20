@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token }) => {
+const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // Keep the latest isTeacher available inside the socket listener without rebinding it.
+  const isTeacherRef = useRef(false)
+  useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
 
   const fetchLeaderboard = async () => {
     try {
@@ -37,13 +40,36 @@ const Leaderboard = ({ roomId, token }) => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Poll leaderboard every 2 seconds
-    const interval = setInterval(() => {
-      fetchLeaderboard()
-    }, 2000)
-    
-    return () => clearInterval(interval)
-  }, [roomId, token])
+    // Phase 1: consume the server's throttled, pushed leaderboard payload instead of
+    // re-fetching on every points event (which caused the ~N^2 storm). Students apply the
+    // top-N payload directly; the teacher is a single client, so it just re-fetches the
+    // full board on each tick.
+    if (socket) {
+      const handleLiveUpdate = (payload) => {
+        if (isTeacherRef.current) {
+          fetchLeaderboard()
+          return
+        }
+        if (payload?.leaderboard) {
+          setLeaderboard(payload.leaderboard)
+          if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
+          // If this student is within the broadcast top-N, refresh their rank from it.
+          // Outside top-N, their rank refreshes on their own next submit (myRank prop).
+          if (userId) {
+            const me = payload.leaderboard.find(e => e.studentId === userId)
+            if (me) setUserRank(me.rank)
+          }
+        }
+      }
+      socket.on('leaderboard:updated', handleLiveUpdate)
+      return () => socket.off('leaderboard:updated', handleLiveUpdate)
+    }
+  }, [roomId, socket, userId])
+
+  // "Rank on submit": when the student answers, the POST returns their current rank; apply it.
+  useEffect(() => {
+    if (myRank != null) setUserRank(myRank)
+  }, [myRank])
 
   if (loading) {
     return (
@@ -87,7 +113,7 @@ const Leaderboard = ({ roomId, token }) => {
   const renderRank = (entry, index) => {
     const rank = entry.rank
     const isCurrentUser = entry.isCurrentUser
-    
+
     // If not teacher and there's a gap between current entry and previous
     // AND this entry is the user's rank (and not in top 10 shown), show ellipsis before
     if (!isTeacher && index === 10 && userRank && userRank > 10) {
@@ -171,7 +197,7 @@ const Leaderboard = ({ roomId, token }) => {
         </>
       )
     }
-    
+
     return (
       <div key={entry.studentId} style={{
         display: 'flex',
@@ -184,12 +210,12 @@ const Leaderboard = ({ roomId, token }) => {
         overflow: 'hidden',
         boxSizing: 'border-box',
         background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
-                     entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
-                     entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' : 
-                     isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
+          entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
+            entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
+              isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
-        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` : 
-               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
+        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` :
+          isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
       }}>
         <span style={{
           width: '28px',
@@ -246,18 +272,18 @@ const Leaderboard = ({ roomId, token }) => {
   }
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      gap: '8px', 
-      width: '100%', 
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '8px',
+      width: '100%',
       minWidth: 0,
       maxWidth: '100%',
-      overflowX: 'hidden', 
-      boxSizing: 'border-box' 
+      overflowX: 'hidden',
+      boxSizing: 'border-box'
     }}>
       {leaderboard.map((entry, index) => renderRank(entry, index))}
-      
+
       {/* Show total participants count */}
       {!isTeacher && totalParticipants > 10 && (
         <div style={{
