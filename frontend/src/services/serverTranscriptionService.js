@@ -21,8 +21,14 @@ export const transcribeAudio = async (audioBlob) => {
   if (!response.ok) {
     throw new Error(`Transcription failed: ${response.statusText}`)
   }
-  
-  return response.json()
+
+  const text = await response.text()
+  if (!text) return { text: '' }
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { text: '' }
+  }
 }
 
 // Convert blob to base64
@@ -41,7 +47,13 @@ export const blobToBase64 = (blob) => {
 // Check transcription service status
 export const getTranscriptionStatus = async () => {
   const response = await fetch(`${API_URL}/transcription/status`)
-  return response.json()
+  const text = await response.text()
+  if (!text) return { status: 'unavailable', error: 'Empty response from server' }
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { status: 'unavailable', error: 'Invalid response from server' }
+  }
 }
 
 // Convert WebM audio to WAV (16kHz mono) using Web Audio API

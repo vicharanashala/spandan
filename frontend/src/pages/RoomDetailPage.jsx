@@ -16,6 +16,7 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { createAudioQualityDetector } from '../services/audioQualityDetector'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -43,6 +44,7 @@ function RoomDetailPage() {
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
   const streamRef = useRef(null)
+  const audioDetectorRef = useRef(null)
   const transcriptionIntervalRef = useRef(null)
   const finalTranscriptRef = useRef('')
   const accumulatedTranscriptRef = useRef('')
@@ -651,6 +653,24 @@ function RoomDetailPage() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
+      // Initialize Audio Quality Detector
+      try {
+        const detector = createAudioQualityDetector(stream, {
+          onIssue: (issue) => {
+            console.log('[AUDIO QUALITY ISSUE]', issue.message)
+            setModelStatus(issue.message)
+          },
+          onClear: () => {
+            console.log('[AUDIO QUALITY CLEAR]')
+            setModelStatus('Listening...')
+          }
+        })
+        audioDetectorRef.current = detector
+        detector.start()
+      } catch (err) {
+        console.error('Failed to start Audio Quality Detector:', err)
+      }
+
       // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
       let selectedMimeType = 'audio/ogg'
       const possibleTypes = [
@@ -698,6 +718,12 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+
+    // Stop Audio Quality Detector
+    if (audioDetectorRef.current) {
+      audioDetectorRef.current.stop()
+      audioDetectorRef.current = null
+    }
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
