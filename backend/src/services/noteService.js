@@ -38,6 +38,21 @@ IMPORTANT:
 - Do not make up information that is not in the transcript.`
 }
 
+function repairTruncatedJson(responseText) {
+  const topicMatch = responseText.match(/"topic"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  const titleMatch = responseText.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  const contentStartMatch = responseText.match(/"content"\s*:\s*"/)
+  if (!contentStartMatch) return null
+  const contentFrom = responseText.slice(contentStartMatch.index + contentStartMatch[0].length)
+  const content = contentFrom.replace(/["]\s*\}?\s*$/, '').trim()
+  if (!content) return null
+  return {
+    topic: topicMatch ? topicMatch[1] : 'General Notes',
+    title: titleMatch ? titleMatch[1] : 'Class Notes',
+    content
+  }
+}
+
 function repairYamlBlockScalar(jsonStr) {
   return jsonStr.replace(
     /"content"\s*:\s*\|\s*\n([\s\S]*?)(\n\s*\})/,
@@ -86,21 +101,14 @@ function repairJsonNewlines(jsonStr) {
 function extractConcatenatedContent(responseText) {
   const keyMatch = responseText.match(/"content"\s*:\s*/)
   if (!keyMatch) return null
-
   const remainder = responseText.slice(keyMatch.index + keyMatch[0].length)
   const fragmentBlock = remainder.match(/^(\s*"(?:[^"\\]|\\.)*"\s*)+/)
   if (!fragmentBlock) return null
-
   const literals = fragmentBlock[0].match(/"(?:[^"\\]|\\.)*"/g) || []
   if (literals.length === 0) return null
-
   return literals
     .map(lit => {
-      try {
-        return JSON.parse(lit)
-      } catch {
-        return lit.slice(1, -1)
-      }
+      try { return JSON.parse(lit) } catch { return lit.slice(1, -1) }
     })
     .join('')
 }
@@ -175,6 +183,10 @@ function parseNoteResponse(responseText) {
           content: rawContent
         }
       }
+
+      const truncatedResult = repairTruncatedJson(responseText)
+      if (truncatedResult) return truncatedResult
+
     } catch (regexErr) {
       // fall through to raw-text fallback
     }
