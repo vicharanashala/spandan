@@ -8,6 +8,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import QuizCountdownPopup from '../components/QuizCountdownPopup'
+import { requestNotificationPermission, showQuizCountdownNotification } from '../services/notificationService'
 import { API_URL } from '../config.js'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
@@ -150,6 +151,10 @@ function StudentRoomPage() {
       const duration = data?.duration || 15
       setCountdownValue(duration)
       setShowCountdown(true)
+      // Supplement the in-app popup with an OS-level notification so a student who is in
+      // another tab/app (e.g. Zoom) is alerted. No-ops silently if permission was denied
+      // or the API is unsupported.
+      showQuizCountdownNotification(duration)
 
       if (countdownTimerRef.current) {
         clearInterval(countdownTimerRef.current)
@@ -216,6 +221,10 @@ function StudentRoomPage() {
               clearTimeout(timeout)
               socket.off('room:joined', handleRoomJoined)
               fetchPastResponses(roomData._id, user._id)
+              // First relevant opportunity to prompt for OS notifications: the moment the
+              // student is actually in a live session (not at page load). Safe to call repeatedly;
+              // the service only prompts when permission is still 'default'.
+              requestNotificationPermission()
               resolve()
             }
           }
