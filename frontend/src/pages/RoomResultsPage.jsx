@@ -44,10 +44,6 @@ function RoomResultsPage() {
         setRoom(roomData.room || roomData)
       }
 
-      // Fetch ALL questions for this room (pages past the API's 50/page cap), so the teacher's
-      // results show the true question count and every question's stats, not just the first 50.
-      const roomQuestions = await fetchAllRoomQuestions(roomId)
-
       if (user?.role === 'student') {
         // Student: fetch their own responses (includes questions with answers)
         const studentRes = await fetch(`${API_URL}/responses/room/${roomId}/student/${user._id}`, {
@@ -97,7 +93,10 @@ function RoomResultsPage() {
           totalPoints
         })
       } else {
-        // Teacher: set questions from API
+        // Teacher: fetch ALL questions (pages past the API's 50/page cap) so results show the true
+        // question count and every question's stats. Students don't need this — their per-response
+        // call above already returns the questions with their answers merged in.
+        const roomQuestions = await fetchAllRoomQuestions(roomId)
         setQuestions(roomQuestions)
         
         // Teacher: fetch full room stats once

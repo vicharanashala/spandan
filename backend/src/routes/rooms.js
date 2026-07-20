@@ -3,6 +3,7 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 
 const router = express.Router()
 
@@ -144,6 +145,10 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)
+      // Pre-warm the results snapshot so the ~N students about to open the results page all read a
+      // shared cache instead of each triggering full-room aggregations (the end-session stampede).
+      // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
+      rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })

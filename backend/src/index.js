@@ -10,6 +10,7 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
+import { computeRanked } from './services/leaderboardAgg.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -163,30 +164,18 @@ async function scheduleCountsBroadcast(roomId) {
 async function broadcastLeaderboard(roomId) {
   try {
     const Response = (await import('./models/Response.js')).default
-    const User = (await import('./models/User.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
-    const [ranked, countAgg] = await Promise.all([
-      Response.aggregate([
-        { $match: { roomId: roomObjId } },
-        { $group: { _id: '$studentId', totalPoints: { $sum: '$points' }, correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }, totalAnswered: { $sum: 1 } } },
-        { $sort: { totalPoints: -1 } }
-      ]),
+    // Ranked board comes from the shared helper (single source of truth); the per-question answer
+    // counts stay here (live-only concern). Both run in one round-trip via Promise.all.
+    const [{ full, rankByStudent }, countAgg] = await Promise.all([
+      computeRanked(roomId),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
         { $group: { _id: '$questionId', count: { $sum: 1 }, studentIds: { $push: '$studentId' } } }
       ])
     ])
 
-    const users = await User.find({ _id: { $in: ranked.map(e => e._id) } }).select('name email').lean()
-    const nameById = new Map(users.map(u => [u._id.toString(), u.name || u.email || 'Unknown Student']))
-
-    const rankByStudent = new Map()
-    const full = ranked.map((e, i) => {
-      const sid = e._id.toString()
-      rankByStudent.set(sid, i + 1)
-      return { rank: i + 1, studentId: sid, studentName: nameById.get(sid) || 'Unknown Student', totalPoints: e.totalPoints, correctCount: e.correctCount, totalAnswered: e.totalAnswered }
-    })
     const counts = {}
     const respondedStudents = {}
     countAgg.forEach(c => {

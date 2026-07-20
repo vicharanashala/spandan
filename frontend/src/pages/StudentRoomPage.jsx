@@ -9,6 +9,12 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
 
+// Spread the ~N students' navigation to the results page over this window (ms). When a big room
+// ends, all students receive room:ended at once; without a spread they'd all hit the results
+// endpoints in the same instant (the end-session "results stampede"). Each student waits a random
+// delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
+const RESULTS_NAV_JITTER_MS = 4000
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
@@ -28,11 +34,13 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   // SEI behavioral signals
   const answerSwitchesRef = useRef(0)
   const firstInteractionRef = useRef(null)  // ms timestamp of first option click
   const questionStartRef = useRef(null)
+  const resultsNavTimerRef = useRef(null)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -148,7 +156,13 @@ function StudentRoomPage() {
     socket.on('new_question', handleNewQuestion)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
-      navigate(`/student/room/${room?._id}/results`)
+      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
+      // so all students don't hit the results endpoints in the same instant.
+      setSessionEnded(true)
+      const delay = Math.random() * RESULTS_NAV_JITTER_MS
+      resultsNavTimerRef.current = setTimeout(() => {
+        navigate(`/student/room/${room?._id}/results`)
+      }, delay)
     })
 
     return () => {
@@ -157,6 +171,7 @@ function StudentRoomPage() {
       socket.off('new_question', handleNewQuestion)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -357,6 +372,33 @@ function StudentRoomPage() {
             >
               Back to Dashboard
             </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (sessionEnded) {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              width: '48px',
+              height: '48px',
+              border: '4px solid var(--border-color)',
+              borderTopColor: '#3b82f6',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              margin: '0 auto 16px'
+            }} />
+            <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
           </div>
         </div>
       </div>
