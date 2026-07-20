@@ -8,6 +8,7 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'evaluation-profiles', label: 'Evaluation Profiles', icon: '📈', path: '/teacher/evaluation-profiles' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
