@@ -586,7 +586,7 @@ function AuthPage() {
                         transition: 'all 0.2s'
                       }}
                     >
-                      🎓 Student
+                      🎓 Learn
                     </button>
                     <button
                       type="button"
@@ -605,7 +605,7 @@ function AuthPage() {
                         transition: 'all 0.2s'
                       }}
                     >
-                      👨‍🏫 Teacher
+                      👨‍🏫 Teach
                     </button>
                   </div>
                 </div>

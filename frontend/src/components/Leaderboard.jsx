@@ -135,7 +135,8 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             justifyContent: 'center',
             padding: '8px 0',
             color: 'var(--text-secondary)',
-            fontSize: '12px'
+            fontSize: '12px',
+            flexShrink: 0
           }}>
             •••
           </div>
@@ -152,7 +153,8 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             borderRadius: '10px',
             border: '2px solid #3b82f6',
             boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
-            boxSizing: 'border-box'
+            boxSizing: 'border-box',
+            flexShrink: 0
           }}>
             <span style={{
               width: '28px',
@@ -218,6 +220,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         maxWidth: '100%',
         overflow: 'hidden',
         boxSizing: 'border-box',
+        flexShrink: 0,
         background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
                      entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
                      entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' : 

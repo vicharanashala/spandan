@@ -149,6 +149,7 @@ function DashboardPage() {
         display: 'flex',
         flexDirection: 'column',
         marginLeft: 'var(--sidebar-width, 240px)',
+        transition: 'margin-left 0.2s ease',
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>
@@ -197,7 +198,7 @@ function DashboardPage() {
           {/* Stats Cards */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fill, minmax(220px, 1fr))',
+            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
             gap: isMobile ? '12px' : '20px',
             marginBottom: isMobile ? '24px' : '32px'
           }}>

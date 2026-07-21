@@ -281,7 +281,11 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const roomIdsMember = roomMemberships.map(m => m.roomId)
     const uniqueRoomIdsFromResponse = await Response.distinct('roomId', { studentId })
     const allRoomIds = [...new Set([...roomIdsMember.map(id => id.toString()), ...uniqueRoomIdsFromResponse.map(id => id.toString())])]
-    const totalRooms = allRoomIds.length
+    // Count only rooms that still exist. A deleted room leaves orphaned membership/response
+    // records whose roomId would otherwise inflate totalRooms (and the launched-poll count below),
+    // making the dashboard "Total Rooms" disagree with the existence-checked Room History list.
+    const existingRoomIds = (await Room.distinct('_id', { _id: { $in: allRoomIds } })).map(id => id.toString())
+    const totalRooms = existingRoomIds.length
     const roomIds = roomMemberships.map(m => m.roomId)
     
     // Total responses (polls taken)
@@ -293,9 +297,9 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
 
     // Count launched polls: questions with 'approved' status (approved & launched to students)
-    // Use allRoomIds (RoomMember + Response unique) to count ALL rooms student participated in
+    // Use existingRoomIds (rooms that still exist) to count polls across the student's rooms.
     const launchedCount = await Question.countDocuments({
-      roomId: { $in: allRoomIds },
+      roomId: { $in: existingRoomIds },
       status: 'approved'
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
