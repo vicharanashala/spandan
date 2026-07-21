@@ -43,6 +43,12 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
+    },
+    // Team Battle settings
+    teamBattleActive: { type: Boolean, default: false },
+    teamBattleConfig: {
+      teamSize: { type: Number, default: 3 },
+      groupingMode: { type: String, default: 'random', enum: ['random', 'student-choice', 'performance-mixed'] }
     }
   }
 }, {
