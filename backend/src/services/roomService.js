@@ -2,6 +2,7 @@ import Room from '../models/Room.js'
 import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
+import Transcript from '../models/Transcript.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -72,6 +73,21 @@ export const deleteRoom = async (roomId) => {
   if (!room) {
     throw new Error('Room not found')
   }
+  // Cascade-delete everything tied to this room so no orphaned records are left behind.
+  // Orphans (e.g. a Response whose room is gone) otherwise break student room-history and
+  // skew per-room queries. The room doc is removed first (fail-fast on not-found); if a
+  // cascade delete were to partially fail, the null-guards in the read paths still cope.
+  const [responses, members, questions, transcripts] = await Promise.all([
+    Response.deleteMany({ roomId }),
+    RoomMember.deleteMany({ roomId }),
+    Question.deleteMany({ roomId }),
+    Transcript.deleteMany({ roomId })
+  ])
+  console.log(
+    `[rooms] deleted room ${roomId} + cascade: ` +
+    `${responses.deletedCount} responses, ${members.deletedCount} members, ` +
+    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts`
+  )
   return room
 }
 
@@ -108,9 +124,11 @@ export const getRoomsByStudent = async (studentId) => {
   const memberships = await RoomMember.find({ studentId }).populate('roomId')
   const memberRooms = memberships.filter(m => m.roomId).map(m => m.roomId)
   
-  // Also get rooms from Response (where student answered) - includes rooms student left
+  // Also get rooms from Response (where student answered) - includes rooms student left.
+  // Guard against orphan responses whose room was deleted (roomId populates to null) —
+  // otherwise a single orphan throws and the student's whole room history 500s.
   const responseRooms = await Response.find({ studentId }).populate('roomId')
-  const uniqueResponseRoomIds = [...new Set(responseRooms.map(r => r.roomId._id.toString()))]
+  const uniqueResponseRoomIds = [...new Set(responseRooms.filter(r => r.roomId).map(r => r.roomId._id.toString()))]
   
   // Get full room objects for Response rooms that aren't in RoomMember
   const responseRoomIds = uniqueResponseRoomIds.filter(id => !memberRooms.some(r => r._id.toString() === id))
