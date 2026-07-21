@@ -103,6 +103,9 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  // Real-time integrity events emitted by the backend when a student triggers
+  // a tab switch, window blur, fullscreen exit, or paste during a live question.
+  const [integrityAlerts, setIntegrityAlerts] = useState([]) // newest first, max 20
 
   useEffect(() => {
     if (token) {
@@ -162,6 +165,18 @@ function RoomDetailPage() {
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)
+  }, [socket])
+
+  // ── Integrity event listener ───────────────────────────────────────────────
+  // The backend emits 'integrity:event' to the teacher socket whenever a student
+  // triggers a monitored event (tab switch, window blur, fullscreen exit, paste).
+  useEffect(() => {
+    if (!socket) return
+    const handleIntegrityEvent = (data) => {
+      setIntegrityAlerts(prev => [{ ...data, receivedAt: Date.now() }, ...prev].slice(0, 20))
+    }
+    socket.on('integrity:event', handleIntegrityEvent)
+    return () => socket.off('integrity:event', handleIntegrityEvent)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -1601,6 +1616,88 @@ function RoomDetailPage() {
                 </span>
               </div>
               <Leaderboard roomId={room?._id} token={token} socket={socket} />
+            </div>
+
+            {/* Integrity Alerts — real-time feed of student integrity events */}
+            <div style={{
+              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+              minWidth: isMobile ? 0 : '280px',
+              maxWidth: '100%',
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              border: integrityAlerts.length > 0 ? '1px solid rgba(239,68,68,0.4)' : '1px solid var(--border-color)',
+              boxShadow: integrityAlerts.length > 0 ? '0 0 16px rgba(239,68,68,0.12)' : 'var(--shadow-md)',
+              padding: '20px',
+              boxSizing: 'border-box',
+              overflow: 'hidden',
+              transition: 'border-color 0.3s, box-shadow 0.3s'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>🚨</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Integrity Alerts
+                </span>
+                {integrityAlerts.length > 0 && (
+                  <span style={{
+                    marginLeft: 'auto', background: '#ef4444', color: '#fff',
+                    fontSize: '11px', fontWeight: 700, borderRadius: '10px',
+                    padding: '2px 8px'
+                  }}>
+                    {integrityAlerts.length}
+                  </span>
+                )}
+              </div>
+
+              {integrityAlerts.length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '24px 0' }}>
+                  No integrity events yet.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto' }}>
+                  {integrityAlerts.map((alert, i) => {
+                    const icons = {
+                      tab_switch:      '🔁',
+                      window_blur:     '🪟',
+                      fullscreen_exit: '⛶',
+                      paste:           '📋'
+                    }
+                    const labels = {
+                      tab_switch:      'Tab Switch',
+                      window_blur:     'Window Blur',
+                      fullscreen_exit: 'Fullscreen Exit',
+                      paste:           'Paste Detected'
+                    }
+                    const secsAgo = Math.floor((Date.now() - alert.receivedAt) / 1000)
+                    const timeStr = secsAgo < 60
+                      ? `${secsAgo}s ago`
+                      : `${Math.floor(secsAgo / 60)}m ago`
+
+                    return (
+                      <div key={i} style={{
+                        background: 'rgba(239,68,68,0.07)',
+                        border: '1px solid rgba(239,68,68,0.18)',
+                        borderRadius: '8px',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '3px'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '16px' }}>{icons[alert.eventType] ?? '⚠️'}</span>
+                          <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)', flex: 1 }}>
+                            {alert.studentName}
+                          </span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{timeStr}</span>
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#ef4444', paddingLeft: '24px' }}>
+                          {labels[alert.eventType] ?? alert.eventType}
+                          {alert.questionId && <span style={{ color: 'var(--text-muted)', marginLeft: '6px' }}>· during active question</span>}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
