@@ -21,7 +21,7 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: '/socket.io',
       transports: ['websocket', 'polling']
     })
 
@@ -52,7 +52,7 @@ export const useSocketStore = create((set, get) => ({
 
     socket.on('room:joined', (data) => {
       console.log('Joined room:', data)
-      set({ 
+      set({
         currentRoom: data.roomCode,
         participants: data.participants || 0
       })
@@ -60,7 +60,7 @@ export const useSocketStore = create((set, get) => ({
 
     socket.on('room:left', (data) => {
       console.log('Left room:', data)
-      set({ 
+      set({
         currentRoom: null,
         participants: 0
       })

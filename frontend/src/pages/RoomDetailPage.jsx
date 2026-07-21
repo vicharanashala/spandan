@@ -104,6 +104,176 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
 
+  // YouTube Player refs and state
+  const ytPlayerRef = useRef(null)
+  const [ytPlayerReady, setYtPlayerReady] = useState(false)
+  const ytSyncIntervalRef = useRef(null)
+  const ytIsSeekingRef = useRef(false)
+  const loadedVideoIdRef = useRef(null)
+  const [sharedMediaExpanded, setSharedMediaExpanded] = useState(true)
+  const [mediaUrlInput, setMediaUrlInput] = useState('')
+  const [hasCaptions, setHasCaptions] = useState(false)
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false)
+
+  // Helper to extract YouTube video ID
+  const getYouTubeId = (url) => {
+    if (!url) return null;
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+  }
+
+  // Handle YouTube player state changes
+  const handlePlayerStateChange = useCallback((event) => {
+    if (!socket || !room) return
+    const player = ytPlayerRef.current
+    if (!player || typeof player.getCurrentTime !== 'function') return
+
+    const currentTime = player.getCurrentTime()
+
+    if (event.data === window.YT.PlayerState.PLAYING) {
+      setIsVideoPlaying(true)
+      if (ytIsSeekingRef.current) {
+        socket.emit('video:seek', { roomCode: room.code, currentTime })
+        ytIsSeekingRef.current = false
+      } else {
+        socket.emit('video:play', { roomCode: room.code, currentTime })
+      }
+      
+      // Start 5-second sync interval
+      if (!ytSyncIntervalRef.current) {
+        ytSyncIntervalRef.current = setInterval(() => {
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
+            socket.emit('video:sync', {
+              roomCode: room.code,
+              currentTime: ytPlayerRef.current.getCurrentTime(),
+              isPlaying: true
+            })
+          }
+        }, 5000)
+      }
+    } else if (event.data === window.YT.PlayerState.PAUSED) {
+      setIsVideoPlaying(false)
+      if (ytIsSeekingRef.current) {
+        socket.emit('video:seek', { roomCode: room.code, currentTime })
+        ytIsSeekingRef.current = false
+      } else {
+        socket.emit('video:pause', { roomCode: room.code, currentTime })
+      }
+      
+      // Clear interval when paused
+      if (ytSyncIntervalRef.current) {
+        clearInterval(ytSyncIntervalRef.current)
+        ytSyncIntervalRef.current = null
+      }
+    } else if (event.data === window.YT.PlayerState.BUFFERING) {
+      ytIsSeekingRef.current = true
+    }
+  }, [socket, room])
+
+  // Proactively load YouTube Iframe API script on component mount
+  useEffect(() => {
+    if (!window.YT) {
+      if (!document.getElementById('youtube-iframe-api-script')) {
+        const tag = document.createElement('script')
+        tag.id = 'youtube-iframe-api-script'
+        tag.src = 'https://www.youtube.com/iframe_api'
+        const firstScriptTag = document.getElementsByTagName('script')[0]
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
+      }
+    }
+  }, [])
+
+  // Load YouTube Player API and initialize
+  useEffect(() => {
+    if (!room) return
+    const isVideoRoom = room.mode === 'video'
+    const sharedMediaActive = room.sharedMedia && room.sharedMedia.provider === 'youtube' && room.sharedMedia.url
+
+    if (!isVideoRoom && !sharedMediaActive) {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+        ytPlayerRef.current = null
+        setYtPlayerReady(false)
+        loadedVideoIdRef.current = null
+      }
+      return
+    }
+
+    const videoUrl = isVideoRoom ? room.videoUrl : room.sharedMedia.url
+    const videoId = getYouTubeId(videoUrl)
+    if (!videoId) return
+
+    // If loaded video ID has changed, destroy and recreate
+    if (ytPlayerRef.current && loadedVideoIdRef.current !== videoId) {
+      if (typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+      }
+      ytPlayerRef.current = null
+      setYtPlayerReady(false)
+    }
+
+    loadedVideoIdRef.current = videoId
+
+    const initPlayer = () => {
+      if (ytPlayerRef.current) return
+      
+      try {
+        ytPlayerRef.current = new window.YT.Player('youtube-player', {
+          videoId: videoId,
+          playerVars: {
+            autoplay: 0,
+            controls: 1,
+            rel: 0,
+            modestbranding: 1
+          },
+          events: {
+            onReady: () => {
+              console.log('Teacher YT Player Ready')
+              setYtPlayerReady(true)
+            },
+            onStateChange: handlePlayerStateChange
+          }
+        })
+      } catch (err) {
+        console.error('Failed to create YT Player:', err)
+      }
+    }
+
+    if (window.YT && window.YT.Player) {
+      initPlayer()
+    } else {
+      const handleReady = () => {
+        if (window.YT && window.YT.Player) {
+          initPlayer()
+        }
+      }
+      if (window.onYouTubeIframeAPIReady) {
+        const original = window.onYouTubeIframeAPIReady
+        window.onYouTubeIframeAPIReady = () => {
+          original()
+          handleReady()
+        }
+      } else {
+        window.onYouTubeIframeAPIReady = handleReady
+      }
+    }
+  }, [room, handlePlayerStateChange])
+
+  // Cleanup player on unmount
+  useEffect(() => {
+    return () => {
+      if (ytSyncIntervalRef.current) {
+        clearInterval(ytSyncIntervalRef.current)
+        ytSyncIntervalRef.current = null
+      }
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+        ytPlayerRef.current = null
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -149,6 +319,70 @@ function RoomDetailPage() {
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
+    }
+  }, [socket])
+
+  // Listen for video sync and automated question generation events
+  useEffect(() => {
+    if (!socket) return
+
+    const handleVideoState = (data) => {
+      console.log('[VIDEO STATE] Received:', data)
+      if (data && data.hasCaptions !== undefined) {
+        setHasCaptions(data.hasCaptions)
+      }
+    }
+
+    const handleMediaUpdated = (data) => {
+      console.log('[MEDIA UPDATED] Received:', data)
+      if (data && data.hasCaptions !== undefined) {
+        setHasCaptions(data.hasCaptions)
+      }
+    }
+
+    const handleMediaRemoved = () => {
+      console.log('[MEDIA REMOVED]')
+      setHasCaptions(false)
+    }
+
+    const handleQuestionsGenerated = (data) => {
+      console.log('[YT AI] Questions generated from YouTube transcript:', data)
+      if (data && data.questions && data.questions.length > 0) {
+        setPendingQuestions(data.questions)
+        setShowQuestionPopup(true)
+        setIsPopupOpen(true)
+        if (data.transcript) {
+          setTranscript(data.transcript)
+        }
+      }
+    }
+
+    const handleSegmentSync = (data) => {
+      if (data && data.timeLeft !== undefined) {
+        setSegmentTimeLeft(data.timeLeft)
+      }
+    }
+
+    const handleTranscriptUpdate = (data) => {
+      if (data && data.transcript !== undefined) {
+        setTranscript(data.transcript)
+      }
+    }
+
+    socket.on('video:state', handleVideoState)
+    socket.on('media:updated', handleMediaUpdated)
+    socket.on('media:removed', handleMediaRemoved)
+    socket.on('video:questions-generated', handleQuestionsGenerated)
+    socket.on('video:segment-sync', handleSegmentSync)
+    socket.on('video:transcript-update', handleTranscriptUpdate)
+
+    return () => {
+      socket.off('video:state', handleVideoState)
+      socket.off('media:updated', handleMediaUpdated)
+      socket.off('media:removed', handleMediaRemoved)
+      socket.off('video:questions-generated', handleQuestionsGenerated)
+      socket.off('video:segment-sync', handleSegmentSync)
+      socket.off('video:transcript-update', handleTranscriptUpdate)
     }
   }, [socket])
 
@@ -213,18 +447,32 @@ function RoomDetailPage() {
     }
   }, [transcript])
 
-  // Start segment timer when recording
+  // Start segment timer when recording OR when video is playing
   useEffect(() => {
-    console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
-    // Only start timer if recording AND not pending review (popup shown)
-    if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
-      startSegmentTimer()
+    const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
+    
+    if (isVideoMode) {
+      if (isVideoPlaying && roomSettings.segmentTime > 0 && !isPendingReview) {
+        if (!segmentTimerRef.current) {
+          startSegmentTimer(segmentTimeLeft > 0 ? segmentTimeLeft : roomSettings.segmentTime * 60)
+        }
+      } else {
+        pauseSegmentTimer()
+      }
     } else {
-      if (segmentTimerRef.current) {
-        clearInterval(segmentTimerRef.current)
+      // Audio mode
+      if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
+        if (!segmentTimerRef.current) {
+          startSegmentTimer(segmentTimeLeft > 0 ? segmentTimeLeft : roomSettings.segmentTime * 60)
+        }
+      } else {
+        if (segmentTimerRef.current) {
+          clearInterval(segmentTimerRef.current)
+          segmentTimerRef.current = null
+        }
       }
     }
-  }, [isRecording, roomSettings.segmentTime, isPendingReview])
+  }, [isRecording, isVideoPlaying, roomSettings.segmentTime, isPendingReview, room?.mode, room?.sharedMedia?.url])
 
   // Close settings dropdown when clicking outside
   useEffect(() => {
@@ -288,12 +536,24 @@ function RoomDetailPage() {
         clearInterval(segmentTimerRef.current)
         segmentTimerRef.current = null
 
-        console.log('[TIMER] Calling handleSegmentComplete')
-        try {
-          handleSegmentComplete()
-          console.log('[TIMER] handleSegmentComplete called successfully')
-        } catch (e) {
-          console.error('[TIMER] Error calling handleSegmentComplete:', e)
+        const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
+        if (isVideoMode) {
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+            ytPlayerRef.current.pauseVideo()
+          }
+          setIsPendingReview(true)
+          setGenerateQEnabled(false)
+          setTimeout(() => {
+            handleManualGenerateQuestions()
+          }, 500)
+        } else {
+          console.log('[TIMER] Calling handleSegmentComplete')
+          try {
+            handleSegmentComplete()
+            console.log('[TIMER] handleSegmentComplete called successfully')
+          } catch (e) {
+            console.error('[TIMER] Error calling handleSegmentComplete:', e)
+          }
         }
       }
     }, 1000)
@@ -483,6 +743,9 @@ function RoomDetailPage() {
           ...prev,
           ...roomData.settings
         }))
+        if (roomData.settings.segmentTime) {
+          setSegmentTimeLeft(roomData.settings.segmentTime * 60)
+        }
       }
       // Load questions for this room from database
       loadQuestions(roomId)
@@ -490,6 +753,33 @@ function RoomDetailPage() {
       setError(err.message)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleLoadMedia = async (url) => {
+    try {
+      const updated = await updateRoom(room._id, {
+        sharedMedia: {
+          provider: 'youtube',
+          url: url
+        }
+      })
+      setRoom(updated)
+    } catch (err) {
+      console.error('Failed to load shared media:', err)
+      window.alert('Failed to load media: ' + err.message)
+    }
+  }
+
+  const handleRemoveMedia = async () => {
+    try {
+      const updated = await updateRoom(room._id, {
+        sharedMedia: null
+      })
+      setRoom(updated)
+    } catch (err) {
+      console.error('Failed to remove shared media:', err)
+      window.alert('Failed to remove media: ' + err.message)
     }
   }
 
@@ -938,7 +1228,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -960,7 +1250,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
           <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
             <h2 style={{ color: 'var(--text-primary)' }}>{error || 'Room not found'}</h2>
             <button onClick={() => navigate('/teacher')} style={{
@@ -986,7 +1276,7 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
@@ -1062,7 +1352,7 @@ function RoomDetailPage() {
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
             {/* Segment Timer Display */}
-            {isRecording && (
+            {(isRecording || room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)) && (
               <div style={{
                 padding: '8px 16px',
                 background: 'rgba(239, 68, 68, 0.1)',
@@ -1196,6 +1486,10 @@ function RoomDetailPage() {
                 settings={roomSettings}
                 onSave={async (newSettings) => {
                   setRoomSettings(newSettings)
+                  // Also reset the segment timer if it's not currently active
+                  if (!segmentTimerRef.current) {
+                    setSegmentTimeLeft(newSettings.segmentTime * 60)
+                  }
                   // Persist settings to backend
                   try {
                     await fetch(`${API_URL}/rooms/${room._id}`, {
@@ -1231,217 +1525,440 @@ function RoomDetailPage() {
             )}
           </div>
 
-          {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
-            {/* Microphone Card - 30% */}
-            <div style={{
-              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
-              minWidth: isMobile ? 0 : '280px',
-              maxWidth: '100%',
-              background: 'var(--bg-card)',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid var(--border-color)',
-              boxShadow: 'var(--shadow-md)',
-              padding: '20px',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '12px',
-              boxSizing: 'border-box',
-              overflow: 'hidden'
-            }}>
-              {/* Mic Button */}
-              <button
-                onClick={toggleRecording}
-                disabled={isEnded}
-                style={{
-                  width: '80px',
-                  height: '80px',
-                  borderRadius: '50%',
-                  background: isEnded
-                    ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
-                    : (isRecording
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
-                  color: 'white',
-                  border: 'none',
-                  cursor: isEnded ? 'not-allowed' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '32px',
-                  boxShadow: isRecording
-                    ? '0 0 30px rgba(239, 68, 68, 0.5)'
-                    : '0 8px 25px rgba(16, 185, 129, 0.4)',
-                  transform: isRecording ? 'scale(1.05)' : 'scale(1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                {isRecording ? (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
-                  </svg>
-                ) : (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
-                  </svg>
-                )}
-              </button>
-
-              {/* Status Text */}
-              <div style={{ textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
-                  {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
-                </p>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {modelStatus}
-                </p>
-              </div>
-
-              {/* Live indicator */}
-              {isRecording && (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 12px',
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  borderRadius: '20px'
-                }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
-                </div>
-              )}
-
-              {/* Settings Labels Below Mic */}
+          {room.mode === 'video' ? (
+            <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
               <div style={{
-                width: '100%',
-                background: 'var(--bg-primary)',
-                borderRadius: '10px',
-                padding: '10px',
-                fontSize: '11px'
+                flex: '1 1 100%',
+                background: 'var(--bg-card)',
+                borderRadius: '16px',
+                padding: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                boxSizing: 'border-box',
+                overflow: 'hidden'
               }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '18px' }}>📺</span>
+                    <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                      Interactive Video Class
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.timeToAnswer}s</span>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    Synchronized playback across all students in the room
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Points:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.points}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Segment Time:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.segmentTime} min</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Questions/Segment:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionsPerSegment}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
-                  </div>
+                </div>
+                <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%', minHeight: '300px', borderRadius: '8px', overflow: 'hidden' }}>
+                  <div id="youtube-player" style={{ width: '100%', height: '100%', border: 'none' }} />
                 </div>
               </div>
             </div>
+          ) : (
+            <>
+              {/* Shared Media Card */}
+              {!isEnded && (
+                <div style={{
+                  background: 'var(--bg-card)',
+                  borderRadius: '16px',
+                  padding: '20px',
+                  boxShadow: 'var(--card-shadow)',
+                  border: '1px solid var(--border-color)',
+                  marginBottom: '20px',
+                  boxSizing: 'border-box'
+                }}>
+                  <div 
+                    onClick={() => setSharedMediaExpanded(!sharedMediaExpanded)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      userSelect: 'none'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '18px' }}>📺</span>
+                      <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                        Shared Media
+                      </span>
+                      {room.sharedMedia && room.sharedMedia.url && (
+                        <span style={{
+                          background: '#eff6ff',
+                          color: '#3b82f6',
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: '600'
+                        }}>
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
+                      {sharedMediaExpanded ? '▲' : '▼'}
+                    </span>
+                  </div>
 
-            {/* Transcription Card - 70% */}
-            <div style={{
-              flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
-              minWidth: isMobile ? 0 : '300px',
-              maxWidth: '100%',
-              minHeight: isMobile ? '260px' : undefined,
-              background: 'var(--bg-card)',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid var(--border-color)',
-              boxShadow: 'var(--shadow-md)',
-              padding: '20px',
-              display: 'flex',
-              flexDirection: 'column',
-              boxSizing: 'border-box'
-            }}>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: '8px',
-                flexWrap: 'wrap',
-                marginBottom: '12px',
-                paddingBottom: '12px',
-                borderBottom: '1px solid var(--border-color)'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  <span style={{ fontSize: '18px' }}>🎙️</span>
-                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                    Current Segment Transcription
-                  </span>
-                  {isTranscribing && (
-                    <div style={{ padding: '2px 8px', background: '#fef2f2', borderRadius: '10px', fontSize: '10px', color: '#ef4444', fontWeight: '600' }}>
-                      LIVE
+                  {sharedMediaExpanded && (
+                    <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                      {(!room.sharedMedia || !room.sharedMedia.url) ? (
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                          <input
+                            type="text"
+                            value={mediaUrlInput}
+                            onChange={(e) => setMediaUrlInput(e.target.value)}
+                            placeholder="Paste YouTube URL..."
+                            style={{
+                              flex: 1,
+                              padding: '10px 14px',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '8px',
+                              background: 'var(--bg-primary)',
+                              color: 'var(--text-primary)',
+                              fontSize: '14px',
+                              outline: 'none'
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              if (!mediaUrlInput.trim()) return
+                              handleLoadMedia(mediaUrlInput.trim())
+                              setMediaUrlInput('')
+                            }}
+                            style={{
+                              padding: '10px 20px',
+                              background: '#3b82f6',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '8px',
+                              fontSize: '14px',
+                              fontWeight: '600',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Load
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '13px', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                              Loaded: {room.sharedMedia.url}
+                            </span>
+                            <button
+                              onClick={handleRemoveMedia}
+                              style={{
+                                padding: '6px 12px',
+                                background: '#ef4444',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '600',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Remove Video
+                            </button>
+                          </div>
+
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            fontSize: '13px',
+                            color: 'var(--text-secondary)',
+                            background: 'var(--bg-primary)',
+                            padding: '8px 12px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-color)',
+                            boxSizing: 'border-box'
+                          }}>
+                            <strong>Transcript Source:</strong>
+                            {hasCaptions ? (
+                              <span style={{ color: '#10b981', fontWeight: '600' }}>✓ Captions Available</span>
+                            ) : (
+                              <span style={{ color: '#ef4444', fontWeight: '600' }}>⚠ Captions Unavailable</span>
+                            )}
+                          </div>
+                          
+                          <div style={{ 
+                            position: 'relative', 
+                            width: '100%', 
+                            paddingTop: '56.25%', /* 16:9 Aspect Ratio */
+                            borderRadius: '8px', 
+                            overflow: 'hidden',
+                            background: '#000'
+                          }}>
+                            <div id="youtube-player" style={{ 
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%', 
+                              height: '100%', 
+                              border: 'none' 
+                            }} />
+                          </div>
+
+                          {/* Replace Section */}
+                          <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+                            <input
+                              type="text"
+                              value={mediaUrlInput}
+                              onChange={(e) => setMediaUrlInput(e.target.value)}
+                              placeholder="Paste new YouTube URL to replace..."
+                              style={{
+                                flex: 1,
+                                padding: '8px 12px',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '6px',
+                                background: 'var(--bg-primary)',
+                                color: 'var(--text-primary)',
+                                fontSize: '13px',
+                                outline: 'none'
+                              }}
+                            />
+                            <button
+                              onClick={() => {
+                                if (!mediaUrlInput.trim()) return
+                                handleLoadMedia(mediaUrlInput.trim())
+                                setMediaUrlInput('')
+                              }}
+                              style={{
+                                padding: '8px 16px',
+                                background: '#10b981',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                fontSize: '13px',
+                                fontWeight: '600',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Replace
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {transcript && (
-                    <button onClick={clearTranscript} style={{
-                      padding: '4px 12px',
-                      background: 'transparent',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      color: 'var(--text-secondary)',
-                      cursor: 'pointer'
-                    }}>
-                      ✕ Clear
-                    </button>
+              )}
+
+              <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+              {/* Microphone Card - 30% */}
+              <div style={{
+                flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+                minWidth: isMobile ? 0 : '280px',
+                maxWidth: '100%',
+                background: 'var(--bg-card)',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--border-color)',
+                boxShadow: 'var(--shadow-md)',
+                padding: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '12px',
+                boxSizing: 'border-box',
+                overflow: 'hidden'
+              }}>
+                {/* Mic Button */}
+                <button
+                  onClick={toggleRecording}
+                  disabled={isEnded}
+                  style={{
+                    width: '80px',
+                    height: '80px',
+                    borderRadius: '50%',
+                    background: isEnded
+                      ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
+                      : (isRecording
+                          ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                          : 'linear-gradient(135deg, #10b981, #059669)'),
+                    color: 'white',
+                    border: 'none',
+                    cursor: isEnded ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '32px',
+                    boxShadow: isRecording
+                      ? '0 0 30px rgba(239, 68, 68, 0.5)'
+                      : '0 8px 25px rgba(16, 185, 129, 0.4)',
+                    transform: isRecording ? 'scale(1.05)' : 'scale(1)',
+                    transition: 'all 0.3s ease'
+                  }}
+                >
+                  {isRecording ? (
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
+                      <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    </svg>
+                  ) : (
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                      <line x1="12" x2="12" y1="19" y2="22"/>
+                    </svg>
                   )}
-                  <button
-                    onClick={handleManualGenerateQuestions}
-                    disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
-                    style={{
-                      padding: '4px 12px',
-                      background: '#3b82f6',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: '500',
-                      cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
-                      opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                  >
-                    {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
-                  </button>
+                </button>
+
+                {/* Status Text */}
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
+                    {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
+                  </p>
+                  <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    {modelStatus}
+                  </p>
+                </div>
+
+                {/* Live indicator */}
+                {isRecording && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '20px'
+                  }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                    <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
+                  </div>
+                )}
+
+                {/* Settings Labels Below Mic */}
+                <div style={{
+                  width: '100%',
+                  background: 'var(--bg-primary)',
+                  borderRadius: '10px',
+                  padding: '10px',
+                  fontSize: '11px'
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.timeToAnswer}s</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Points:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.points}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Segment Time:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.segmentTime} min</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Questions/Segment:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionsPerSegment}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div ref={transcriptRef} style={{
-                flex: 1,
-                fontSize: '15px',
-                lineHeight: '1.8',
-                color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                overflowY: 'auto'
+              {/* Transcription Card - 70% */}
+              <div style={{
+                flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
+                minWidth: isMobile ? 0 : '300px',
+                maxWidth: '100%',
+                minHeight: isMobile ? '260px' : undefined,
+                background: 'var(--bg-card)',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--border-color)',
+                boxShadow: 'var(--shadow-md)',
+                padding: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                boxSizing: 'border-box'
               }}>
-                {transcript ? transcript : (
-                  <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
-                  </span>
-                )}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '8px',
+                  flexWrap: 'wrap',
+                  marginBottom: '12px',
+                  paddingBottom: '12px',
+                  borderBottom: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                    <span style={{ fontSize: '18px' }}>🎙️</span>
+                    <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                      Current Segment Transcription
+                    </span>
+                    {isTranscribing && (
+                      <div style={{ padding: '2px 8px', background: '#fef2f2', borderRadius: '10px', fontSize: '10px', color: '#ef4444', fontWeight: '600' }}>
+                        LIVE
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {transcript && (
+                      <button onClick={clearTranscript} style={{
+                        padding: '4px 12px',
+                        background: 'transparent',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer'
+                      }}>
+                        ✕ Clear
+                      </button>
+                    )}
+                    <button
+                      onClick={handleManualGenerateQuestions}
+                      disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
+                      style={{
+                        padding: '4px 12px',
+                        background: '#3b82f6',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: '500',
+                        cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
+                        opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                    </button>
+                  </div>
+                </div>
+
+                <div ref={transcriptRef} style={{
+                  flex: 1,
+                  fontSize: '15px',
+                  lineHeight: '1.8',
+                  color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  overflowY: 'auto'
+                }}>
+                  {transcript ? transcript : (
+                    <span style={{ fontStyle: 'italic' }}>
+                      {room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
+                        ? 'Video transcript will appear here when the segment is complete.'
+                        : 'Click the microphone to start real-time transcription.'}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
+          </>
+        )}
 
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
@@ -1622,6 +2139,7 @@ function RoomDetailPage() {
             setSegmentTranscript('')
             segmentTranscriptRef.current = ''
             finalTranscriptRef.current = ''
+            setTranscript('')
 
             // Reset pending review flag
             setIsPendingReview(false)
@@ -1630,10 +2148,19 @@ function RoomDetailPage() {
             // Reset segment timer
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
 
-            // Resume recording for next segment
-            startRecording({ resetSegment: false })
-
-            // Timer will auto-start via the useEffect since isPendingReview is now false
+            const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
+            if (isVideoMode) {
+              if (socket && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
+                socket.emit('video:commit-segment', {
+                  roomCode: room.code,
+                  currentTime: ytPlayerRef.current.getCurrentTime()
+                })
+              }
+              setCurrentSegment(prev => prev + 1)
+            } else {
+              // Resume recording for next segment
+              startRecording({ resetSegment: false })
+            }
           }}
           onClose={() => {
             // Teacher manually closed popup - same as complete for next segment
@@ -1643,10 +2170,23 @@ function RoomDetailPage() {
             setSegmentTranscript('')
             segmentTranscriptRef.current = ''
             finalTranscriptRef.current = ''
+            setTranscript('')
             setIsPendingReview(false)
             setGenerateQEnabled(true)
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
-            startRecording({ resetSegment: false })
+
+            const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
+            if (isVideoMode) {
+              if (socket && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
+                socket.emit('video:commit-segment', {
+                  roomCode: room.code,
+                  currentTime: ytPlayerRef.current.getCurrentTime()
+                })
+              }
+              setCurrentSegment(prev => prev + 1)
+            } else {
+              startRecording({ resetSegment: false })
+            }
           }}
         />
       )}

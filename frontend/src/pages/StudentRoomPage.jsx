@@ -40,6 +40,175 @@ function StudentRoomPage() {
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
+  // YouTube Player refs and state for student
+  const ytPlayerRef = useRef(null)
+  const [ytPlayerReady, setYtPlayerReady] = useState(false)
+  const ytPlayerReadyRef = useRef(false)
+  const [showAutoplayOverlay, setShowAutoplayOverlay] = useState(false)
+  const cachedVideoStateRef = useRef(null)
+  const [teacherDisconnected, setTeacherDisconnected] = useState(false)
+  const loadedVideoIdRef = useRef(null)
+
+  // Sync state ref to avoid stale closures in socket handlers
+  useEffect(() => {
+    ytPlayerReadyRef.current = ytPlayerReady
+  }, [ytPlayerReady])
+
+  // Helper to extract YouTube video ID
+  const getYouTubeId = (url) => {
+    if (!url) return null;
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+  }
+
+  // Synchronize player with teacher's state
+  const syncToState = (state) => {
+    const player = ytPlayerRef.current
+    if (!player || typeof player.seekTo !== 'function') return
+
+    let targetTime = state.currentTime
+    if (state.isPlaying) {
+      const elapsed = (Date.now() - state.lastUpdated) / 1000
+      targetTime += elapsed
+    }
+
+    const studentTime = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : 0
+    const drift = Math.abs(studentTime - targetTime)
+    if (drift > 1.5) {
+      player.seekTo(targetTime, true)
+    }
+
+    if (state.isPlaying) {
+      player.playVideo()
+      // Check if browser blocked autoplay
+      setTimeout(() => {
+        if (player.getPlayerState && player.getPlayerState() !== window.YT.PlayerState.PLAYING) {
+          setShowAutoplayOverlay(true)
+          player.mute()
+          player.playVideo()
+        }
+      }, 600)
+    } else {
+      player.pauseVideo()
+    }
+  }
+
+  // Override autoplay restriction when user clicks button
+  const handleAutoplayClick = () => {
+    const player = ytPlayerRef.current
+    if (player && typeof player.unMute === 'function') {
+      player.unMute()
+      player.playVideo()
+      if (cachedVideoStateRef.current) {
+        syncToState(cachedVideoStateRef.current)
+      }
+      setShowAutoplayOverlay(false)
+    }
+  }
+
+  // Proactively load YouTube Iframe API script on component mount
+  useEffect(() => {
+    if (!window.YT) {
+      if (!document.getElementById('youtube-iframe-api-script')) {
+        const tag = document.createElement('script')
+        tag.id = 'youtube-iframe-api-script'
+        tag.src = 'https://www.youtube.com/iframe_api'
+        const firstScriptTag = document.getElementsByTagName('script')[0]
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
+      }
+    }
+  }, [])
+
+  // Load YouTube Player API and initialize
+  useEffect(() => {
+    if (!room) return
+    const isVideoRoom = room.mode === 'video'
+    const sharedMediaActive = room.sharedMedia && room.sharedMedia.provider === 'youtube' && room.sharedMedia.url
+
+    if (!isVideoRoom && !sharedMediaActive) {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+        ytPlayerRef.current = null
+        setYtPlayerReady(false)
+        loadedVideoIdRef.current = null
+      }
+      return
+    }
+
+    const videoUrl = isVideoRoom ? room.videoUrl : room.sharedMedia.url
+    const videoId = getYouTubeId(videoUrl)
+    if (!videoId) return
+
+    // If loaded video ID has changed, destroy and recreate
+    if (ytPlayerRef.current && loadedVideoIdRef.current !== videoId) {
+      if (typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+      }
+      ytPlayerRef.current = null
+      setYtPlayerReady(false)
+    }
+
+    loadedVideoIdRef.current = videoId
+
+    const initPlayer = () => {
+      if (ytPlayerRef.current) return
+
+      try {
+        ytPlayerRef.current = new window.YT.Player('youtube-player', {
+          videoId: videoId,
+          playerVars: {
+            autoplay: 0,
+            controls: 0, // disable controls for student
+            disablekb: 1, // disable keyboard control
+            rel: 0,
+            modestbranding: 1
+          },
+          events: {
+            onReady: () => {
+              console.log('Student YT Player Ready')
+              setYtPlayerReady(true)
+              if (cachedVideoStateRef.current) {
+                syncToState(cachedVideoStateRef.current)
+              }
+            }
+          }
+        })
+      } catch (err) {
+        console.error('Failed to create student YT Player:', err)
+      }
+    }
+
+    if (window.YT && window.YT.Player) {
+      initPlayer()
+    } else {
+      const handleReady = () => {
+        if (window.YT && window.YT.Player) {
+          initPlayer()
+        }
+      }
+      if (window.onYouTubeIframeAPIReady) {
+        const original = window.onYouTubeIframeAPIReady
+        window.onYouTubeIframeAPIReady = () => {
+          original()
+          handleReady()
+        }
+      } else {
+        window.onYouTubeIframeAPIReady = handleReady
+      }
+    }
+  }, [room, ytPlayerReady])
+
+  // Cleanup player on unmount
+  useEffect(() => {
+    return () => {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        ytPlayerRef.current.destroy()
+        ytPlayerRef.current = null
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (!token || !socket) return
     setAuthToken(token)
@@ -143,6 +312,112 @@ function StudentRoomPage() {
       }
     }
 
+    // Video sync handlers
+    const handleVideoState = (data) => {
+      console.log('Received initial video state:', data)
+      cachedVideoStateRef.current = data
+      if (data.teacherDisconnected) {
+        setTeacherDisconnected(true)
+      } else {
+        setTeacherDisconnected(false)
+      }
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        syncToState(data)
+      }
+    }
+
+    const handleVideoPlayed = (data) => {
+      console.log('Video played:', data)
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        const studentTime = typeof ytPlayerRef.current.getCurrentTime === 'function' ? ytPlayerRef.current.getCurrentTime() : 0
+        const drift = Math.abs(studentTime - data.currentTime)
+        if (drift > 1.5) {
+          ytPlayerRef.current.seekTo(data.currentTime, true)
+        }
+        ytPlayerRef.current.playVideo()
+      } else {
+        cachedVideoStateRef.current = { isPlaying: true, currentTime: data.currentTime, lastUpdated: Date.now() }
+      }
+    }
+
+    const handleVideoPaused = (data) => {
+      console.log('Video paused:', data)
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        const studentTime = typeof ytPlayerRef.current.getCurrentTime === 'function' ? ytPlayerRef.current.getCurrentTime() : 0
+        const drift = Math.abs(studentTime - data.currentTime)
+        if (drift > 1.5) {
+          ytPlayerRef.current.seekTo(data.currentTime, true)
+        }
+        ytPlayerRef.current.pauseVideo()
+      } else {
+        cachedVideoStateRef.current = { isPlaying: false, currentTime: data.currentTime, lastUpdated: Date.now() }
+      }
+    }
+
+    const handleVideoSeeked = (data) => {
+      console.log('Video seeked:', data)
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        ytPlayerRef.current.seekTo(data.currentTime, true)
+      } else {
+        if (cachedVideoStateRef.current) {
+          cachedVideoStateRef.current.currentTime = data.currentTime
+          cachedVideoStateRef.current.lastUpdated = Date.now()
+        }
+      }
+    }
+
+    const handleVideoSynced = (data) => {
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        const studentTime = ytPlayerRef.current.getCurrentTime()
+        const drift = Math.abs(studentTime - data.currentTime)
+        if (drift > 1.5) {
+          ytPlayerRef.current.seekTo(data.currentTime, true)
+        }
+        if (data.isPlaying) {
+          ytPlayerRef.current.playVideo()
+        } else {
+          ytPlayerRef.current.pauseVideo()
+        }
+      } else {
+        cachedVideoStateRef.current = { isPlaying: data.isPlaying, currentTime: data.currentTime, lastUpdated: Date.now() }
+      }
+    }
+
+    const handleMediaUpdated = (data) => {
+      console.log('Media updated:', data)
+      cachedVideoStateRef.current = { isPlaying: false, currentTime: 0, lastUpdated: Date.now() }
+      setRoom(prev => prev ? { ...prev, sharedMedia: data.sharedMedia } : null)
+    }
+
+    const handleMediaRemoved = () => {
+      console.log('Media removed')
+      cachedVideoStateRef.current = null
+      setRoom(prev => prev ? { ...prev, sharedMedia: null } : null)
+      setTeacherDisconnected(false)
+    }
+
+    const handleTeacherDisconnect = (data) => {
+      console.log('Teacher disconnected:', data)
+      setTeacherDisconnected(true)
+      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
+        ytPlayerRef.current.pauseVideo()
+      }
+    }
+
+    const handleTeacherReconnect = () => {
+      console.log('Teacher reconnected')
+      setTeacherDisconnected(false)
+    }
+
+    socket.on('video:state', handleVideoState)
+    socket.on('video:played', handleVideoPlayed)
+    socket.on('video:paused', handleVideoPaused)
+    socket.on('video:seeked', handleVideoSeeked)
+    socket.on('video:synced', handleVideoSynced)
+    socket.on('media:updated', handleMediaUpdated)
+    socket.on('media:removed', handleMediaRemoved)
+    socket.on('video:teacher-disconnect', handleTeacherDisconnect)
+    socket.on('video:teacher-reconnect', handleTeacherReconnect)
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -158,6 +433,16 @@ function StudentRoomPage() {
     })
 
     return () => {
+      socket.off('video:state', handleVideoState)
+      socket.off('video:played', handleVideoPlayed)
+      socket.off('video:paused', handleVideoPaused)
+      socket.off('video:seeked', handleVideoSeeked)
+      socket.off('video:synced', handleVideoSynced)
+      socket.off('media:updated', handleMediaUpdated)
+      socket.off('media:removed', handleMediaRemoved)
+      socket.off('video:teacher-disconnect', handleTeacherDisconnect)
+      socket.off('video:teacher-reconnect', handleTeacherReconnect)
+
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
@@ -469,6 +754,128 @@ function StudentRoomPage() {
               Leave
             </button>
           </div>
+
+          {/* YouTube Player for Video Rooms or Shared Media */}
+          {(room.mode === 'video' || (room.sharedMedia && room.sharedMedia.provider === 'youtube' && room.sharedMedia.url)) && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px',
+              boxShadow: 'var(--card-shadow)',
+              border: '1px solid var(--border-color)',
+              marginBottom: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              position: 'relative'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '18px' }}>📺</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    {room.mode === 'video' ? 'Live Classroom Video' : 'Shared Classroom Media'}
+                  </span>
+                </div>
+              </div>
+              
+              <div style={{ 
+                position: 'relative', 
+                width: '100%', 
+                paddingTop: '56.25%', /* 16:9 Aspect Ratio */
+                borderRadius: '8px', 
+                overflow: 'hidden',
+                background: '#000'
+              }}>
+                <div id="youtube-player" style={{ 
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%', 
+                  height: '100%', 
+                  border: 'none' 
+                }} />
+                
+                {/* Pointer block overlay to prevent students from playing/pausing by clicking the video */}
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  zIndex: 5,
+                  cursor: 'default',
+                  background: 'transparent'
+                }} />
+                
+                {/* Autoplay block overlay */}
+                {showAutoplayOverlay && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.85)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 10,
+                    padding: '20px',
+                    textAlign: 'center',
+                    color: 'white'
+                  }}>
+                    <p style={{ fontSize: '18px', fontWeight: '600', marginBottom: '16px' }}>
+                      Sync with the Teacher's Playback
+                    </p>
+                    <button
+                      onClick={handleAutoplayClick}
+                      style={{
+                        padding: '12px 24px',
+                        background: '#ffd700',
+                        color: '#1f2937',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '16px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        boxShadow: '0 4px 15px rgba(255, 215, 0, 0.4)'
+                      }}
+                    >
+                      🔊 Unmute & Connect
+                    </button>
+                  </div>
+                )}
+
+                {/* Teacher disconnected overlay */}
+                {teacherDisconnected && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.9)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 20,
+                    padding: '20px',
+                    textAlign: 'center',
+                    color: 'white'
+                  }}>
+                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>📡</div>
+                    <p style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px' }}>
+                      Teacher disconnected
+                    </p>
+                    <p style={{ fontSize: '14px', opacity: 0.8, margin: 0 }}>
+                      Waiting for instructor...
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Live Question */}
           {currentQuestion ? (

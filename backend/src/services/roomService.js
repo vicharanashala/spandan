@@ -4,10 +4,12 @@ import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
 
-export const createRoom = async (name, teacherId, settings = {}) => {
+export const createRoom = async (name, teacherId, mode = 'audio', videoUrl = null, settings = {}) => {
   const room = new Room({
     name,
     teacher: teacherId,
+    mode,
+    videoUrl,
     settings
   })
 

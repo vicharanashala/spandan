@@ -1,0 +1,71 @@
+# Spandan - Project Requirements
+
+This is a Node.js-based project. Node.js dependencies are defined in `package.json` files and should be installed using `npm`. Below is the list of system requirements and the primary Node.js packages used by this application.
+
+## 1. System Prerequisites
+* **Node.js**: v18.x or higher (v20+ recommended)
+* **npm**: v9.x or higher (installed automatically with Node.js)
+* **MongoDB**: v6.0 or higher (either a local instance running or a MongoDB Atlas URI)
+
+---
+
+## 2. Monorepo Workspaces & Package List
+To install all these packages, run `npm run install:all` from the project root.
+
+### Root Workspace (Project Coordination)
+* **concurrently**: ^8.2.2 (Runs frontend and backend servers simultaneously in development)
+* **pm2**: ^7.0.1 (Production process manager)
+
+### Backend Workspace (spandan-backend)
+* **@xenova/transformers**: ^2.17.2 (Whisper models for server-side audio transcription)
+* **bcryptjs**: ^2.4.3 (Password hashing and security)
+* **cors**: ^2.8.5 (Cross-Origin Resource Sharing middleware)
+* **dotenv**: ^16.4.5 (Loads environment variables from a `.env` file)
+* **express**: ^4.19.2 (Web framework for building the API)
+* **express-rate-limit**: ^7.2.0 (Rate-limiting middleware to prevent abuse)
+* **helmet**: ^7.1.0 (Secures Express apps by setting various HTTP headers)
+* **jsonwebtoken**: ^9.0.2 (JWT token generation and verification for authentication)
+* **mongoose**: ^8.3.4 (MongoDB object modeling/ODM library)
+* **nodemailer**: ^8.0.7 (Sends transactional emails)
+* **socket.io**: ^4.7.5 (Real-time bidirectional event-based communication)
+* **zod**: ^3.23.8 (TypeScript-first schema validation for API requests)
+
+### Frontend Workspace (spandan-frontend)
+* **react**: ^18.3.1 (Component-based UI rendering library)
+* **react-dom**: ^18.3.1 (Entry point to the DOM for React)
+* **react-router-dom**: ^6.23.1 (Routing library for single-page React apps)
+* **socket.io-client**: ^4.8.3 (Real-time connection client for backend socket communication)
+* **zustand**: ^4.5.2 (Lightweight state management store)
+* **tailwindcss**: ^3.4.3 (Utility-first CSS framework for custom styling)
+* **vite**: ^5.2.11 (Fast modern frontend build tool and dev server)
+
+---
+
+## 3. Installation & Run Command Quick Reference
+
+### Option A: Automatic Installation (Recommended)
+From the root directory, run:
+```bash
+npm run install:all
+```
+This script runs `npm install` for the root, frontend, and backend packages in one step.
+
+### Option B: Manual Installation
+If you prefer running standard npm commands:
+```bash
+# Install root tools
+npm install
+
+# Install backend workspace packages
+npm install --workspace=backend
+
+# Install frontend workspace packages
+npm install --workspace=frontend
+```
+
+### Running the Project
+Once dependencies are installed, copy and configure your backend environment file (`backend/.env.example` -> `backend/.env`), make sure MongoDB is running, and then run:
+```bash
+npm run dev
+```
+This starts both the React frontend and Express backend concurrently.

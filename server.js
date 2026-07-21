@@ -53,8 +53,8 @@ function proxyReq(req, res, targetPath, isSocketIO = false) {
       clientSocket.on('error', (e) => { proxySocket.destroy(); });
     });
     proxyReq.on('response', (proxyRes) => {
-      proxyRes.on('data', () => {});
-      proxyRes.on('end', () => {});
+      proxyRes.on('data', () => { });
+      proxyRes.on('end', () => { });
     });
     req.pipe(proxyReq);
   } else {
@@ -75,7 +75,7 @@ app.use(BASE_PATH + '/api', (req, res) => {
 
 // Socket.IO proxy: BASE_PATH/socket.io/* -> localhost:3001/spandan/socket.io/*
 app.use(BASE_PATH + '/socket.io', (req, res) => {
-  const targetPath = '/spandan/socket.io' + req.url.replace(BASE_PATH + '/socket.io', '');
+  const targetPath = 'socket.io' + req.url.replace(BASE_PATH + '/socket.io', '');
   proxyReq(req, res, targetPath, true);
 });
 

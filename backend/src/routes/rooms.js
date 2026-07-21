@@ -10,8 +10,8 @@ const router = express.Router()
 // Create new room
 router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema), async (req, res) => {
   try {
-    const { name, settings } = req.validatedBody
-    const room = await createRoom(name, req.user._id, settings)
+    const { name, mode, videoUrl, settings } = req.validatedBody
+    const room = await createRoom(name, req.user._id, mode, videoUrl, settings)
 
     res.status(201).json({
       message: 'Room created successfully',
@@ -38,7 +38,7 @@ router.get('/', authenticate, async (req, res) => {
       // Count total rooms for teacher
       const Room = (await import('../models/Room.js')).default
       const totalCount = await Room.countDocuments({ teacher: req.user._id })
-      res.json({ 
+      res.json({
         rooms,
         pagination: {
           page: pageNum,
@@ -60,16 +60,16 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
+
     // Check if user is the room teacher (owner) or a student member
     const isOwner = room.teacher._id.toString() === req.user._id.toString()
     const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
-    
+
     // Only the room owner OR room members can access
     if (!isOwner && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
-    
+
     res.json({ room })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -82,19 +82,19 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
   try {
     const RoomMember = (await import('../models/RoomMember.js')).default
     const room = await getRoomByCode(req.params.code)
-    
+
     // Check if room has ended
     if (room.endedAt) {
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
-    
+
     // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
     await RoomMember.findOneAndUpdate(
       { roomId: room._id, studentId: req.user._id },
       { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
       { upsert: true, new: true }
     )
-    
+
     res.json({ room })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -126,7 +126,7 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
-    
+
     if (room.teacher._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ error: 'Only the room owner can update the room' })
     }
@@ -137,7 +137,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     }
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
-    
+
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
@@ -150,7 +150,44 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
-    
+
+    // Handle shared media socket broadcasts
+    if ('sharedMedia' in req.body) {
+      const io = req.app.get('io')
+      const roomVideoStates = req.app.get('roomVideoStates')
+      const { VideoTranscriptCoordinator } = await import('../services/videoTranscriptCoordinator.js')
+
+      if (updatedRoom.sharedMedia && updatedRoom.sharedMedia.url) {
+        // Initialize transcript and determine captions availability
+        const { hasCaptions } = await VideoTranscriptCoordinator.initializeTranscript(
+          room._id,
+          updatedRoom.sharedMedia.url,
+          updatedRoom.sharedMedia.provider || 'youtube'
+        )
+
+        if (roomVideoStates) {
+          // Reset server-side transient playback state when media is updated/replaced
+          roomVideoStates.set(room.code, {
+            isPlaying: false,
+            currentTime: 0,
+            teacherDisconnected: false,
+            hasCaptions,
+            lastUpdated: Date.now()
+          })
+        }
+        io.to(room.code).emit('media:updated', { 
+          sharedMedia: updatedRoom.sharedMedia,
+          hasCaptions
+        })
+      } else {
+        VideoTranscriptCoordinator.clearTranscript(room._id)
+        if (roomVideoStates) {
+          roomVideoStates.delete(room.code)
+        }
+        io.to(room.code).emit('media:removed')
+      }
+    }
+
     res.json({ message: 'Room updated successfully', room: updatedRoom })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -162,7 +199,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
-    
+
     if (room.teacher._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ error: 'Only the room owner can delete the room' })
     }
