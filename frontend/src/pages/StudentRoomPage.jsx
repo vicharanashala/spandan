@@ -37,6 +37,9 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  const [joinBlocked, setJoinBlocked] = useState(false)    // room is locked, student can't join
+  const [joinBlockReason, setJoinBlockReason] = useState(null) // 'locked' | 'question_live'
+  const [isRoomLocked, setIsRoomLocked] = useState(false)  // live banner showing lock status
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
@@ -147,14 +150,39 @@ function StudentRoomPage() {
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
     socket.on('connect', handleReconnect)
-    socket.on('room:ended', () => {
+    socket.on('room:ended', (data) => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
       setSessionEnded(true)
-      const delay = Math.random() * RESULTS_NAV_JITTER_MS
-      resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/results`)
-      }, delay)
+      const targetRoomId = data?.roomId || room?._id
+      if (targetRoomId) {
+        const delay = Math.random() * RESULTS_NAV_JITTER_MS
+        resultsNavTimerRef.current = setTimeout(() => {
+          navigate(`/student/room/${targetRoomId}/results`)
+        }, delay)
+      } else {
+        navigate('/student')
+      }
+    })
+
+    // Teacher toggled join lock — show/hide a real-time banner
+    socket.on('room:lock_changed', ({ isLocked }) => {
+      setIsRoomLocked(isLocked)
+    })
+
+    // Student was blocked from joining
+    socket.on('room:join_blocked', ({ error: msg, reason }) => {
+      setJoinBlocked(true)
+      setJoinBlockReason(reason || 'locked')
+      setError(msg || 'This session is no longer accepting new participants')
+      setIsLoading(false)
+    })
+
+    // Gate opened — auto-join
+    socket.on('room:join_open', () => {
+      setJoinBlocked(false)
+      setJoinBlockReason(null)
+      joinSession()
     })
 
     return () => {
@@ -163,6 +191,9 @@ function StudentRoomPage() {
       socket.off('new_question', handleNewQuestion)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      socket.off('room:lock_changed')
+      socket.off('room:join_blocked')
+      socket.off('room:join_open')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
@@ -172,6 +203,7 @@ function StudentRoomPage() {
     try {
       const roomData = await joinRoomByCode(roomCode)
       setRoom(roomData)
+      setIsRoomLocked(roomData.isLocked || false)
       if (user?._id && socket) {
         // Join via socket - room:joined confirms the student was added to RoomMember
         return new Promise((resolve, reject) => {
@@ -182,11 +214,37 @@ function StudentRoomPage() {
             resolve()
           }, 3000)
 
-          const handleRoomJoined = (data) => {
+          const handleRoomJoined = async (data) => {
             if (data.roomCode === roomData.code) {
               clearTimeout(timeout)
               socket.off('room:joined', handleRoomJoined)
-              fetchPastResponses(roomData._id, user._id)
+              await fetchPastResponses(roomData._id, user._id)
+              
+              // Post-join poll: fetch current room state to catch any question launched
+              // while we were waiting for the socket join confirmation (join-race bug fix).
+              try {
+                const res = await fetch(`${API_URL}/rooms/${roomData._id}`, {
+                  headers: { 'Authorization': `Bearer ${token}` }
+                })
+                if (res.ok) {
+                  const currentRoom = await res.json()
+                  if (currentRoom?.room?.currentQuestion) {
+                    const qRes = await fetch(`${API_URL}/questions?roomId=${roomData._id}`, {
+                      headers: { 'Authorization': `Bearer ${token}` }
+                    })
+                    if (qRes.ok) {
+                      const qData = await qRes.json()
+                      const activeQ = qData.questions?.find(q => q._id === currentRoom.room.currentQuestion)
+                      if (activeQ) {
+                        // Synthesize the socket event locally
+                        handleNewQuestion(activeQ)
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                console.error('[StudentRoom] Post-join poll failed:', e)
+              }
               resolve()
             }
           }
@@ -328,6 +386,45 @@ function StudentRoomPage() {
     )
   }
 
+  // === JOIN BLOCKED SCREEN ===
+  if (joinBlocked) {
+    const isQuestionLive = joinBlockReason === 'question_live'
+    return (
+      <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
+        <Sidebar user={user} />
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center', maxWidth: '480px', padding: '32px' }}>
+            {isQuestionLive ? (
+              <div style={{ 
+                width: '64px', height: '64px', margin: '0 auto 24px',
+                borderRadius: '50%', background: 'rgba(59, 130, 246, 0.1)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+              }}>
+                <span style={{ fontSize: '32px' }}>⏳</span>
+              </div>
+            ) : (
+              <div style={{ fontSize: '72px', marginBottom: '24px' }}>🔒</div>
+            )}
+            
+            <h2 style={{ margin: '0 0 12px', fontSize: '24px', fontWeight: '800', color: 'var(--text-primary)' }}>
+              {isQuestionLive ? 'Please Wait' : 'Session Closed'}
+            </h2>
+            <p style={{ margin: '0 0 28px', color: 'var(--text-secondary)', fontSize: '15px', lineHeight: '1.6' }}>
+              {error || 'This session is no longer accepting new participants. Please check with your teacher.'}
+            </p>
+            <button onClick={() => navigate('/student')} style={{
+              padding: '14px 32px', background: '#3b82f6', color: 'white',
+              border: 'none', borderRadius: '12px', fontSize: '15px', fontWeight: '600', cursor: 'pointer'
+            }}>
+              ← Back to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (!room) {
     return (
       <div style={{
@@ -393,6 +490,8 @@ function StudentRoomPage() {
     )
   }
 
+
+
   return (
     <div style={{
       display: 'flex',
@@ -416,7 +515,14 @@ function StudentRoomPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
+                {isRoomLocked && (
+                  <span style={{ fontSize: '11px', background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', padding: '2px 8px', borderRadius: '12px', fontWeight: '600', marginTop: '4px' }}>
+                    🔒 Locked
+                  </span>
+                )}
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <ThemeToggle />

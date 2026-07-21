@@ -108,7 +108,18 @@ const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTime
 
 function getRoomState(id) {
   let s = roomLive.get(id)
-  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  if (!s) {
+    s = {
+      countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null,
+      rankByStudent: new Map(), total: 0,
+      // Join-gate state
+      pendingSocketIds: new Set(), // socket IDs waiting to join while gated
+      batchQuestionsCompleted: 0,  // questions finished in the current batch
+      currentBatchSize: 0,         // snapshotted from settings.batchSize when batch starts
+      batchIdleTimer: null         // fires if room goes quiet before batch completes
+    }
+    roomLive.set(id, s)
+  }
   return s
 }
 
@@ -279,6 +290,115 @@ app.set('liveUpdates', {
   getRank: getCachedStudentRank
 })
 
+// ─── Join-gate infrastructure ──────────────────────────────────────────────
+// Manages pending-joiner queues for both the manual lock (Mechanism 1) and
+// the batch-based auto gate (Mechanism 2). All state is in-memory (roomLive);
+// known limitation: not shared across multiple backend instances.
+
+// Register a blocked student's socket as a pending joiner. Subscribes them to
+// the room's waiting channel so the server can signal them without them being
+// in the main room channel yet. Self-cleans on disconnect.
+function registerPendingJoiner(roomId, socket) {
+  const s = getRoomState(String(roomId))
+  s.pendingSocketIds.add(socket.id)
+  socket.join(`${roomId}:waiting`)
+  socket.once('disconnect', () => {
+    s.pendingSocketIds.delete(socket.id)
+  })
+}
+
+// Cancel the abandoned-batch idle timer for a room (no-op if not armed).
+function cancelBatchIdleTimer(roomId) {
+  const s = getRoomState(String(roomId))
+  if (s.batchIdleTimer) {
+    clearTimeout(s.batchIdleTimer)
+    s.batchIdleTimer = null
+  }
+}
+
+// Arm the abandoned-batch idle timer. If activeQuestionCount drops to 0
+// while a batch is still incomplete, this fires after idleMs and treats
+// the batch as abandoned — flushing pending joiners so they are never
+// stuck waiting for questions the teacher never intends to send.
+function armBatchIdleTimer(roomId, idleMs) {
+  const s = getRoomState(String(roomId))
+  if (s.batchIdleTimer) clearTimeout(s.batchIdleTimer) // rearm if already set
+  s.batchIdleTimer = setTimeout(async () => {
+    s.batchIdleTimer = null
+    // Reset batch state so the next question starts a fresh batch.
+    s.batchQuestionsCompleted = 0
+    s.currentBatchSize = 0
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findById(roomId).select('isLocked code').lean()
+      if (room && !room.isLocked) {
+        await flushPendingJoiners(String(roomId), room.code)
+      }
+    } catch (e) {
+      console.error('[joingate] armBatchIdleTimer flush failed:', e.message)
+    }
+  }, idleMs)
+}
+
+// Release all pending joiners for a room.
+// - Normal / lock-release / idle-timeout path: emits `room:join_open` to each
+//   waiting socket, which triggers the student's joinSession() automatically.
+// - Room-end path ({ ended: true }): emits `room:ended` instead so students on
+//   the waiting screen navigate away cleanly.
+async function flushPendingJoiners(roomId, roomCode, { ended = false } = {}) {
+  const s = getRoomState(String(roomId))
+  // Always cancel any armed idle timer when flushing.
+  cancelBatchIdleTimer(roomId)
+  if (!s.pendingSocketIds.size) return
+  const ids = [...s.pendingSocketIds]
+  s.pendingSocketIds.clear()
+  // Reset batch counters so the next batch starts fresh.
+  s.batchQuestionsCompleted = 0
+  s.currentBatchSize = 0
+
+  if (ended) {
+    // Emit room:ended to the waiting channel as a catch-all (covers any sockets
+    // that weren't individually reachable). Also emit per-socket for reliability.
+    io.to(`${roomId}:waiting`).emit('room:ended', { roomId, ended: true })
+  } else {
+    for (const socketId of ids) {
+      const waitingSocket = io.sockets.sockets.get(socketId)
+      if (waitingSocket) {
+        waitingSocket.leave(`${roomId}:waiting`)
+        // Signal the student page to call joinSession() — no button click needed.
+        waitingSocket.emit('room:join_open', { roomCode })
+      }
+    }
+  }
+}
+
+function getBatchState(roomId) {
+  const s = getRoomState(String(roomId))
+  return {
+    batchQuestionsCompleted: s.batchQuestionsCompleted || 0,
+    currentBatchSize: s.currentBatchSize || 0
+  }
+}
+
+function updateBatchState(roomId, updates) {
+  const s = getRoomState(String(roomId))
+  if (updates.batchQuestionsCompleted !== undefined) {
+    s.batchQuestionsCompleted = updates.batchQuestionsCompleted
+  }
+  if (updates.currentBatchSize !== undefined) {
+    s.currentBatchSize = updates.currentBatchSize
+  }
+}
+
+app.set('joinControl', {
+  registerPending: registerPendingJoiner,
+  flush: flushPendingJoiners,
+  armIdleTimer: armBatchIdleTimer,
+  cancelIdleTimer: cancelBatchIdleTimer,
+  getBatchState,
+  updateBatchState
+})
+
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
 
@@ -428,12 +548,39 @@ io.on('connection', (socket) => {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.join(roomCode)
       const room = await Room.findByCode(roomCode)
+
+      if (room && role === 'student') {
+        const existingMember = await RoomMember.findOne({ roomId: room._id, studentId: userId })
+
+        if (!existingMember) {
+          if (room.isLocked) {
+            socket.emit('room:join_blocked', {
+              reason: 'locked',
+              error: 'This session is no longer accepting new participants.'
+            })
+            registerPendingJoiner(room._id, socket)
+            return
+          }
+
+          const batchState = getBatchState(String(room._id))
+          const batchInProgress = batchState.currentBatchSize > 0 &&
+                                   batchState.batchQuestionsCompleted < batchState.currentBatchSize
+          if (room.activeQuestionCount > 0 || batchInProgress) {
+            socket.emit('room:join_blocked', {
+              reason: 'question_live',
+              error: 'A question is currently live — you will be joined automatically when it finishes.'
+            })
+            registerPendingJoiner(room._id, socket)
+            return
+          }
+        }
+      }
+
+      socket.join(roomCode)
 
       let participantCount = 0
       if (room) {
-        // Only students are added to RoomMember (not teachers)
         if (role === 'student') {
           await RoomMember.findOneAndUpdate(
             { roomId: room._id, studentId: userId },

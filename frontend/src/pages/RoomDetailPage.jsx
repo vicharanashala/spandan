@@ -195,6 +195,7 @@ function RoomDetailPage() {
 
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    startQuestionTimer(data.question || data)
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -526,6 +527,17 @@ function RoomDetailPage() {
       navigate(`/teacher/room/${room._id}/results`)
     } catch (err) {
       setError(err.message)
+    }
+  }
+
+  // Toggle the real-time join lock
+  const handleToggleLock = async () => {
+    const newLocked = !room.isLocked
+    try {
+      const updated = await updateRoom(room._id, { isLocked: newLocked })
+      setRoom(updated)
+    } catch (err) {
+      setError(err.message || 'Failed to update lock status')
     }
   }
 
@@ -1000,7 +1012,7 @@ function RoomDetailPage() {
           </div>
         </header>
 
-        {/* Content */}
+{/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
@@ -1008,7 +1020,7 @@ function RoomDetailPage() {
             </div>
           )}
 
-          {/* Room Code Row */}
+          {/* Room Code Row - Only rendered in LIVE view */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -1060,6 +1072,71 @@ function RoomDetailPage() {
             </div>
 
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
+
+            {/* === JOIN LOCK & BATCH UI === */}
+            {!isEnded && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-primary)', padding: '4px 8px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title="Block joining for this many consecutive questions before reopening automatically.">
+                  <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Batch</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={roomSettings.batchSize || 1}
+                    onChange={async (e) => {
+                      const newSize = parseInt(e.target.value) || 1
+                      const newSettings = { ...roomSettings, batchSize: newSize }
+                      setRoomSettings(newSettings)
+                      try {
+                        await fetch(`${API_URL}/rooms/${room._id}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({ settings: newSettings })
+                        })
+                      } catch (err) { console.error('Failed to save batchSize:', err) }
+                    }}
+                    style={{
+                      width: '40px',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-card)',
+                      color: 'var(--text-primary)',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      textAlign: 'center'
+                    }}
+                  />
+                </div>
+                <div style={{ width: '1px', height: '24px', background: 'var(--border-color)' }} />
+                <button
+                  onClick={handleToggleLock}
+                  id="join-lock-toggle"
+                  title={room.isLocked ? 'Room is locked — click to allow new joins' : 'Room is open — click to lock new joins'}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 16px',
+                    background: room.isLocked
+                      ? 'linear-gradient(135deg, #ef4444, #dc2626)'
+                      : 'linear-gradient(135deg, #22c55e, #16a34a)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    boxShadow: room.isLocked
+                      ? '0 4px 12px rgba(239,68,68,0.35)'
+                      : '0 4px 12px rgba(34,197,94,0.35)',
+                    transition: 'all 0.25s'
+                  }}
+                >
+                  {room.isLocked ? '🔒 Locked' : '🔓 Accepting Joins'}
+                </button>
+              </div>
+            )}
 
             {/* Segment Timer Display */}
             {isRecording && (

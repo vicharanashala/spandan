@@ -28,6 +28,19 @@ const roomSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
   },
+  // Manual join gate (Mechanism 1 — Zoom-style). When true, new students cannot join.
+  // Existing RoomMember students (page refresh / reconnect) are still allowed in.
+  isLocked: {
+    type: Boolean,
+    default: false
+  },
+  // Automatic per-question join gate (Mechanism 2 — YouTube Live-style).
+  // Counts how many questions are currently live. Incremented when a question goes live,
+  // decremented (never below 0) when its timer expires. New students are blocked while > 0.
+  activeQuestionCount: {
+    type: Number,
+    default: 0
+  },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
@@ -43,14 +56,20 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    // Batch-based auto join-gate (Mechanism 2 — YouTube Live-style).
+    // How many consecutive questions to block new joins for. The gate opens
+    // automatically once this many questions have finished. Default 1 = single-
+    // question gating (original behaviour). Teacher can raise it to batch several
+    // questions together into one uninterrupted gate window.
+    batchSize: { type: Number, default: 1, min: 1, max: 20 }
   }
 }, {
   timestamps: true
 })
 
 // Generate unique room code before saving
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', function (next) {
   if (!this.code) {
     this.code = generateRoomCode()
   }
@@ -67,7 +86,7 @@ function generateRoomCode() {
 }
 
 // Static method to find by code
-roomSchema.statics.findByCode = function(code) {
+roomSchema.statics.findByCode = function (code) {
   return this.findOne({ code: code.toUpperCase() })
 }
 

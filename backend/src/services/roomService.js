@@ -8,7 +8,8 @@ export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
     name,
     teacher: teacherId,
-    settings
+    settings,
+    isLocked: false
   })
 
   await room.save()

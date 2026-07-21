@@ -135,6 +135,81 @@ router.post('/', authorize('teacher'), async (req, res) => {
 
     await newQuestion.save()
 
+    // Populate Room.currentQuestion so the student-side "catch up" poll can find it.
+    // Cleared when the batch completes or the room ends.
+    const Room = (await import('../models/Room.js')).default
+    await Room.findByIdAndUpdate(roomId, { $set: { currentQuestion: newQuestion._id } })
+
+    // --- Batch-based auto join-gate (Mechanism 2) ---
+    // The joinControl helpers live in index.js and are shared via app.set().
+    const joinControl = req.app.get('joinControl')
+
+    // Snapshot batchSize when a NEW batch starts (currentBatchSize === 0 means no batch is
+    // running). If a batch is already running, a new question extends it — cancel any idle
+    // timer that was armed during a gap between questions in this batch.
+    // We access the live roomLive state via the joinControl arm/cancel helpers rather than
+    // importing roomLive directly (avoids tight coupling with index.js internals).
+    // Read the current batch state from joinControl's perspective via a helper we export.
+    let meta = joinControl?.getBatchState(roomId)
+    if (!meta || meta.currentBatchSize === 0) {
+      // Fresh batch — snapshot the teacher's chosen batchSize.
+      const freshRoom = await Room.findById(roomId).select('settings').lean()
+      const batchSize = freshRoom?.settings?.batchSize || 1
+      joinControl?.updateBatchState(roomId, { currentBatchSize: batchSize, batchQuestionsCompleted: 0 })
+      meta = { currentBatchSize: batchSize, batchQuestionsCompleted: 0 }
+      console.log(`[joingate] New batch started for room ${roomId}: batchSize=${batchSize}`)
+    } else {
+      // Batch in progress — a new question arrived, cancel the idle timer (room not abandoned).
+      joinControl?.cancelIdleTimer(String(roomId))
+      console.log(`[joingate] Question added to running batch for room ${roomId} (${meta.batchQuestionsCompleted}/${meta.currentBatchSize} done)`)
+    }
+
+    // Increment activeQuestionCount, then decrement after timeToAnswer seconds.
+    await Room.findByIdAndUpdate(roomId, { $inc: { activeQuestionCount: 1 } })
+
+    const gateMs = (sanitizedData.timeToAnswer || 30) * 1000
+    setTimeout(async () => {
+      try {
+        // Decrement activeQuestionCount (clamped to 0) atomically.
+        await Room.findByIdAndUpdate(roomId, [{
+          $set: { activeQuestionCount: { $max: [0, { $subtract: ['$activeQuestionCount', 1] }] } }
+        }])
+
+        // Increment the per-batch completed counter.
+        const currentMeta = joinControl?.getBatchState(roomId)
+        if (!currentMeta) return // room state cleared (e.g. server restart)
+        currentMeta.batchQuestionsCompleted += 1
+        joinControl?.updateBatchState(roomId, { batchQuestionsCompleted: currentMeta.batchQuestionsCompleted })
+        console.log(`[joingate] Question finished for room ${roomId}: ${currentMeta.batchQuestionsCompleted}/${currentMeta.currentBatchSize}`)
+
+        if (currentMeta.batchQuestionsCompleted >= currentMeta.currentBatchSize) {
+          // Batch complete — clear currentQuestion, reset meta, flush pending joiners
+          // (unless the teacher still has the manual lock engaged).
+          joinControl?.updateBatchState(roomId, { currentBatchSize: 0, batchQuestionsCompleted: 0 })
+          await Room.findByIdAndUpdate(roomId, { $set: { currentQuestion: null } })
+
+          const updatedRoom = await Room.findById(roomId).select('isLocked code').lean()
+          if (!updatedRoom?.isLocked) {
+            console.log(`[joingate] Batch complete for room ${roomId} — flushing pending joiners`)
+            await joinControl?.flush(String(roomId), updatedRoom?.code)
+          } else {
+            console.log(`[joingate] Batch complete for room ${roomId} but manual lock still set — not flushing`)
+          }
+        } else {
+          // Batch incomplete. Read activeQuestionCount to see if the room went quiet.
+          const quietRoom = await Room.findById(roomId).select('activeQuestionCount').lean()
+          if (quietRoom?.activeQuestionCount === 0) {
+            // No questions are live but batch is not done — arm the abandoned-batch safety valve.
+            const idleMs = Math.max(60000, (sanitizedData.timeToAnswer || 30) * 2 * 1000)
+            console.log(`[joingate] Room ${roomId} quiet with incomplete batch — arming idle timer (${idleMs}ms)`)
+            joinControl?.armIdleTimer(String(roomId), idleMs)
+          }
+        }
+      } catch (e) {
+        console.error('[questions] Failed to update batch gate:', e.message)
+      }
+    }, gateMs)
+
     res.status(201).json({
       success: true,
       question: newQuestion

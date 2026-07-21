@@ -38,7 +38,7 @@ router.get('/', authenticate, async (req, res) => {
       // Count total rooms for teacher
       const Room = (await import('../models/Room.js')).default
       const totalCount = await Room.countDocuments({ teacher: req.user._id })
-      res.json({ 
+      res.json({
         rooms,
         pagination: {
           page: pageNum,
@@ -60,16 +60,16 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
+
     // Check if user is the room teacher (owner) or a student member
     const isOwner = room.teacher._id.toString() === req.user._id.toString()
     const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
-    
+
     // Only the room owner OR room members can access
     if (!isOwner && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
-    
+
     res.json({ room })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -77,24 +77,18 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 })
 
-// Join room by code (for students)
 router.get('/join/:code', authenticate, authorize('student'), async (req, res) => {
   try {
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const room = await getRoomByCode(req.params.code)
-    
+
     // Check if room has ended
     if (room.endedAt) {
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
-    
-    // Ensure student is added to RoomMember (idempotent - safe to call multiple times)
-    await RoomMember.findOneAndUpdate(
-      { roomId: room._id, studentId: req.user._id },
-      { roomId: room._id, studentId: req.user._id, joinedAt: new Date() },
-      { upsert: true, new: true }
-    )
-    
+
+    // No blocking or membership logic here — the socket 'room:join' handler is the
+    // single authoritative gate (manual lock + batch + auto-gate checks, and pending-
+    // joiner registration all live there). This route only resolves the code to a room.
     res.json({ room })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -126,7 +120,7 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
-    
+
     if (room.teacher._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ error: 'Only the room owner can update the room' })
     }
@@ -137,10 +131,28 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     }
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
-    
+    const io = req.app.get('io')
+
+    // Broadcast real-time lock/unlock so students see it immediately
+    if (typeof req.body.isLocked === 'boolean' && req.body.isLocked !== room.isLocked) {
+      io.to(room.code).emit('room:lock_changed', { roomId: room._id, isLocked: req.body.isLocked })
+      if (!updatedRoom.isLocked && updatedRoom.activeQuestionCount === 0) {
+        const joinControl = req.app.get('joinControl')
+        const batchState = joinControl?.getBatchState(room._id)
+        // Only flush if no batch is currently running (currentBatchSize === 0)
+        if (!batchState || batchState.currentBatchSize === 0) {
+          joinControl?.flush(room._id, room.code)
+        }
+      }
+    }
+
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
-      const io = req.app.get('io')
+      const joinControl = req.app.get('joinControl')
+      joinControl?.cancelIdleTimer(room._id)
+      // Release pending students with the ended signal
+      joinControl?.flush(room._id, room.code, { ended: true })
+
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
@@ -150,7 +162,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
-    
+
     res.json({ message: 'Room updated successfully', room: updatedRoom })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
@@ -162,7 +174,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
-    
+
     if (room.teacher._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ error: 'Only the room owner can delete the room' })
     }
