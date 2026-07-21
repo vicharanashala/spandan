@@ -620,3 +620,47 @@ How do we check if we built it correctly? Follow these easy tests:
 4. **Verify Consensus Score boost**:
    * Submit the correct answer for both Student A and Student B (the whole team).
    * Confirm that the team score rises by **150 points** (100 base points x 1.5 consensus multiplier).
+
+---
+
+## 🔒 Part 8: Proctored Fullscreen Poll Lock (OA-Style Exam Portal)
+
+In addition to Team Battle Mode, PR #63 introduces an **Online Assessment (OA)-style Proctored Fullscreen Lock** for standard live polls (similar to TCS iON / Mettl / Hackerrank exam portals).
+
+### 🌟 Key Capabilities:
+
+1. **OS-Level Fullscreen Enforcement**:
+   - Forces the student browser into real OS-level fullscreen mode (`requestFullscreen()`) when a live question starts.
+   - **Entry Gate Screen**: Renders a dedicated entry screen requiring an explicit click to enter the locked test environment (conforming to browser security policy).
+
+2. **Real-time Violation Detection & Tracking**:
+   - **ESC Key Exit Detection**: If a student exits fullscreen using ESC or browser controls, the system immediately forces re-entry into fullscreen and logs a security violation.
+   - **Tab Switch Detection**: Listens to `visibilitychange` (`hidden` state) to detect when a student switches tabs or minimizes the window.
+   - **Window Blur Detection**: Detects when the browser window loses focus (`blur`).
+   - **Violation HUD Bar & Warning Toast**: Displays a top status bar with real-time violation count (`⚠️ Violations: X/3`) and flashes red warning toasts.
+
+3. **Auto-Submit Penalty Threshold**:
+   - When the violation count hits the threshold (default: 3 violations), the system triggers an automatic force-submission (`onForceSubmit`), locking in the current selection or submitting blank.
+
+4. **Teacher Socket Alerts**:
+   - Emits `proctor:violation` via Socket.IO to the backend, which forwards `proctor:violation_alert` to the teacher's room channel in real time.
+
+5. **Shortcut & Developer Tools Blocking**:
+   - Blocks right-click context menu (`contextmenu`).
+   - Blocks keyboard inspection shortcuts (`F12`, `Ctrl+Shift+I`, `Ctrl+Shift+J`, `Ctrl+Shift+C`, `Ctrl+U`).
+
+6. **Automatic Release & Mode Scope**:
+   - Exits fullscreen automatically upon answer submission or question completion.
+   - Automatically bypassed during Collaborative Team Battle Mode to preserve discussion canvas usability.
+
+---
+
+## 📋 Part 9: Complete Summary of Pull Request #63
+
+| Feature Component | Implementation Details | Files Changed |
+|---|---|---|
+| **Proctored Fullscreen Lock** | Entry gate, OS fullscreen request, ESC/Tab-switch/Blur detection, 3-strike auto-submit, shortcut blocking, teacher alerts | `frontend/src/components/FullscreenLock.jsx`, `frontend/src/pages/StudentRoomPage.jsx`, `backend/src/index.js` |
+| **Team Battle Mode** | Team models, serpentine & random grouping, student choice mode with join/leave controls, consensus 1.5x scoring, ephemeral chat, option sync, tug-of-war leaderboard | `backend/src/models/Team.js`, `backend/src/models/Room.js`, `backend/src/services/teamService.js`, `backend/src/routes/teams.js`, `frontend/src/components/TeamLobby.jsx`, `frontend/src/components/TeamDiscussionCanvas.jsx`, `frontend/src/components/TeamTugOfWar.jsx`, `frontend/src/components/TeamBattleSetup.jsx`, `frontend/src/stores/teamStore.js` |
+| **Socket & Reconnection Resilience** | Auto room re-join on socket reconnect, team channel re-join, token bucket rate limiting, zero-trust points, atomic transactions | `frontend/src/stores/socketStore.js`, `backend/src/index.js` |
+| **Dynamic Routing & Dev Server** | Dynamic `BASE_PATH` handling for local dev root `/` vs production `/spandan` | `frontend/src/config.js`, `frontend/src/App.jsx` |
+| **Documentation & Diagrams** | Architectural guides, pipeline flowcharts, database schemas, test logs | `myfeature.md`, `mycontext.md`, `product.md`, `bug.md`, `team_battle_overview.png`, `team_battle_pipeline.png` |
