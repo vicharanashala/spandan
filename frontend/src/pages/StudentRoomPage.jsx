@@ -3,27 +3,24 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useTeamStore from '../stores/teamStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
-import useIsMobile from '../hooks/useIsMobile'
+import TeamDiscussionCanvas from '../components/TeamDiscussionCanvas'
+import TeamLobby from '../components/TeamLobby'
+import TeamTugOfWar from '../components/TeamTugOfWar'
+import FullscreenLock from '../components/FullscreenLock'
 import { API_URL } from '../config.js'
-
-// Spread the ~N students' navigation to the results page over this window (ms). When a big room
-// ends, all students receive room:ended at once; without a spread they'd all hit the results
-// endpoints in the same instant (the end-session "results stampede"). Each student waits a random
-// delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
-const RESULTS_NAV_JITTER_MS = 4000
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, joinTeamChannel } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
-  const isMobile = useIsMobile()
-
+  
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -31,14 +28,18 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
-  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
-  const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
-  const resultsNavTimerRef = useRef(null)
+
+  // Team Battle state
+  const { myTeam, teams, fetchMyTeam, fetchTeams, clearPartnerChoices, setTeamsAndFindMyTeam } = useTeamStore()
+  const { checkTeamConsensus } = useSocketStore()
+  const [teamBattleActive, setTeamBattleActive] = useState(false)
+  // Proctored fullscreen poll lock
+  const [pollViolations, setPollViolations]     = useState(0)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -50,6 +51,13 @@ function StudentRoomPage() {
       }
     }
   }, [token, socket])
+
+  // Join team socket channel when assigned
+  useEffect(() => {
+    if (myTeam?._id && socket) {
+      joinTeamChannel(myTeam._id)
+    }
+  }, [myTeam?._id, socket])
 
 
 
@@ -134,38 +142,51 @@ function StudentRoomPage() {
       }, 1000)
     }
 
-    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
-    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
-    // room's questions so any missed one surfaces without the student manually refreshing.
-    const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+    const handleTeamBattleStarted = (data) => {
+      console.log('[SOCKET] Team Battle Started received:', data)
+      setTeamBattleActive(true)
+      if (data.teams && user?._id) {
+        setTeamsAndFindMyTeam(data.teams, user._id)
+      } else if (room?._id) {
+        fetchMyTeam(room._id)
+        fetchTeams(room._id)
       }
+    }
+
+    const handleTeamBattleEnded = () => {
+      console.log('[SOCKET] Team Battle Ended received')
+      setTeamBattleActive(false)
+      const teamStore = useTeamStore?.getState?.()
+      if (teamStore) teamStore.reset()
+    }
+
+    const handleTeamAssigned = (data) => {
+      console.log('[SOCKET] Late-joiner team assigned:', data.team)
+      setTeamBattleActive(true)
+      const teamStore = useTeamStore?.getState?.()
+      if (teamStore) teamStore.setState({ myTeam: data.team })
     }
 
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
-    socket.on('connect', handleReconnect)
+    socket.on('team:battle_started', handleTeamBattleStarted)
+    socket.on('team:battle_ended', handleTeamBattleEnded)
+    socket.on('team:assigned', handleTeamAssigned)
     socket.on('room:ended', () => {
-      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
-      // so all students don't hit the results endpoints in the same instant.
-      setSessionEnded(true)
-      const delay = Math.random() * RESULTS_NAV_JITTER_MS
-      resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/results`)
-      }, delay)
+      navigate(`/student/room/${room?._id}/results`)
     })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
-      socket.off('connect', handleReconnect)
+      socket.off('team:battle_started', handleTeamBattleStarted)
+      socket.off('team:battle_ended', handleTeamBattleEnded)
+      socket.off('team:assigned', handleTeamAssigned)
       socket.off('room:ended')
-      if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
-  }, [socket, navigate, room?._id])
+  }, [socket, navigate, room?._id, myTeam])
 
   const joinSession = async () => {
     setIsLoading(true)
@@ -193,6 +214,13 @@ function StudentRoomPage() {
           socket.on('room:joined', handleRoomJoined)
           joinRoom(roomData.code, user._id)
         })
+      }
+
+      // Check if team battle is active on this room
+      if (roomData.settings?.teamBattleActive) {
+        setTeamBattleActive(true)
+        await fetchMyTeam(roomData._id)
+        await fetchTeams(roomData._id)
       }
     } catch (err) {
       setError(err.message)
@@ -236,30 +264,19 @@ function StudentRoomPage() {
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
-    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
-    // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
-    const roomId = room?._id
-    const studentId = user?._id
-
-    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
-    // even though the network POST itself is deferred by a small random delay.
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-
-    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
-    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
-    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
-    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
-    const jitterMs = Math.floor(Math.random() * 2000)
-
-    console.log('[StudentRoom] Submitting answer:', {
-      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
+    
+    console.log('[StudentRoom] Submitting answer:', { 
+      questionId, 
+      roomId: room._id, 
+      studentId: user._id, 
+      selectedOptions,
+      timeToAnswer: tta,
+      timeLeft,
+      responseTime
     })
 
-    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
-
-    // Save to MongoDB
+    // Save to MongoDB - wait for it to complete before fetching past responses
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -268,29 +285,50 @@ function StudentRoomPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          roomId,
+          roomId: room._id,
           questionId,
-          studentId,
+          studentId: user._id,
           selectedOptions,
           responseTime
         })
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-
-      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
-      // (from this authenticated POST) — the client no longer emits points:update /
-      // response:submit. The POST returns this student's current rank; surface it so the
-      // leaderboard's "you" pill updates even when outside the broadcast top-N.
-      if (saveData.success && saveData.rank != null) {
-        setMyRank(saveData.rank)
+      
+      // Emit points:update for leaderboard broadcast
+      if (saveData.success && saveData.response) {
+        socket.emit('points:update', {
+          roomCode: room.code,
+          questionId,
+          studentId: user._id,
+          points: saveData.response.points,
+          isCorrect: saveData.response.isCorrect
+        })
       }
     } catch (err) {
       console.error('Failed to save response:', err)
     }
 
-    if (roomId && studentId) {
-      fetchPastResponses(roomId, studentId)
+    // Emit via socket
+    socket.emit('response:submit', {
+      roomCode: room.code,
+      questionId,
+      studentId: user._id,
+      selectedOptions,
+      responseTime
+    })
+    
+    // Set submitted immediately and fetch past responses without delay
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    if (room?._id && user?._id) {
+      fetchPastResponses(room._id, user._id)
+    }
+
+    // Team Battle: trigger consensus check
+    if (teamBattleActive && room?._id) {
+      const qid = currentQuestion._id || currentQuestion.question?._id
+      setTimeout(() => checkTeamConsensus(room._id, qid), 1200)
     }
   }
 
@@ -310,7 +348,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -337,7 +375,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
@@ -366,33 +404,6 @@ function StudentRoomPage() {
     )
   }
 
-  if (sessionEnded) {
-    return (
-      <div style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: 'var(--bg-primary)',
-        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
-      }}>
-        <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{
-              width: '48px',
-              height: '48px',
-              border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite',
-              margin: '0 auto 16px'
-            }} />
-            <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div style={{
       display: 'flex',
@@ -405,16 +416,15 @@ function StudentRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
           color: 'white',
-          padding: isMobile ? '20px 16px' : '24px 32px',
-          paddingLeft: isMobile ? '64px' : '32px'
+          padding: '24px 32px'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
               <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
             </div>
@@ -426,7 +436,7 @@ function StudentRoomPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {/* Connection Status */}
           <div style={{
             background: 'var(--bg-card)',
@@ -472,34 +482,133 @@ function StudentRoomPage() {
 
           {/* Live Question */}
           {currentQuestion ? (
+            teamBattleActive && myTeam ? (
+              /* Team Battle Mode: Discussion Canvas (no fullscreen lock in team mode) */
+              <TeamDiscussionCanvas
+                question={currentQuestion}
+                team={myTeam}
+                student={user}
+                roomId={room?._id}
+                onSubmit={(optionIndex) => {
+                  setSelectedOptions([optionIndex])
+                  // Trigger the normal submit flow
+                  const questionId = currentQuestion._id || currentQuestion.question?._id
+                  const tta = currentQuestion.timeToAnswer || 30
+                  const responseTime = tta - timeLeft
+
+                  fetch(`${API_URL}/responses`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                      roomId: room._id,
+                      questionId,
+                      studentId: user._id,
+                      selectedOptions: [optionIndex],
+                      responseTime
+                    })
+                  })
+                  .then(r => r.json())
+                  .then(saveData => {
+                    if (saveData.success && saveData.response) {
+                      socket.emit('points:update', {
+                        roomCode: room.code,
+                        questionId,
+                        studentId: user._id,
+                        points: saveData.response.points,
+                        isCorrect: saveData.response.isCorrect
+                      })
+                    }
+                    socket.emit('response:submit', {
+                      roomCode: room.code,
+                      questionId,
+                      studentId: user._id,
+                      selectedOptions: [optionIndex],
+                      responseTime
+                    })
+                    setSubmitted(true)
+                    setHasAnsweredPoll(true)
+                    if (room?._id && user?._id) {
+                      fetchPastResponses(room._id, user._id)
+                    }
+                    // Consensus check
+                    setTimeout(() => checkTeamConsensus(room._id, questionId), 1200)
+                  })
+                  .catch(err => console.error('Team submit error:', err))
+                }}
+                hasSubmitted={submitted}
+              />
+            ) : (
+            /* ── Proctored Fullscreen Poll Lock (solo / individual mode) ── */
+            <FullscreenLock
+              active={!!currentQuestion && !teamBattleActive}
+              maxViolations={3}
+              onViolation={(count, reason) => {
+                setPollViolations(count)
+                console.warn(`[ProctoredLock] Violation ${count}: ${reason}`)
+                // Optionally emit to teacher via socket
+                if (socket && room?.code) {
+                  socket.emit('proctor:violation', {
+                    roomCode: room.code,
+                    studentId: user?._id,
+                    violationCount: count,
+                    reason,
+                  })
+                }
+              }}
+              onForceSubmit={() => {
+                if (!submitted) handleSubmitAnswer()
+              }}
+            >
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-              borderRadius: 'var(--radius-lg)',
-              padding: isMobile ? '20px 16px' : '32px',
+              borderRadius: '16px',
+              padding: '32px',
               color: 'white',
               boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
-              maxWidth: '100%',
-              boxSizing: 'border-box'
+              width: '100%',
+              maxWidth: '720px',
+              margin: '0 auto',
             }}>
+              {/* Violation badge inside question card */}
+              {pollViolations > 0 && (
+                <div style={{
+                  background: 'rgba(239,68,68,0.25)',
+                  border: '1px solid rgba(239,68,68,0.5)',
+                  borderRadius: '8px',
+                  padding: '8px 16px',
+                  marginBottom: '16px',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  color: '#fca5a5',
+                  textAlign: 'center',
+                }}>
+                  ⚠️ Violations recorded: {pollViolations}/3 — auto-submit on 3rd
+                </div>
+              )}
+
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
                   width: '100px',
                   height: '100px',
                   borderRadius: '50%',
-                  border: '4px solid rgba(255,255,255,0.3)',
+                  border: `4px solid ${timeLeft <= 5 ? 'rgba(239,68,68,0.8)' : 'rgba(255,255,255,0.3)'}`,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  margin: '0 auto 16px'
+                  margin: '0 auto 16px',
+                  transition: 'border-color 0.3s',
                 }}>
-                  <span style={{ fontSize: '36px', fontWeight: '700' }}>{timeLeft}</span>
+                  <span style={{ fontSize: '36px', fontWeight: '700', color: timeLeft <= 5 ? '#fca5a5' : 'white' }}>{timeLeft}</span>
                 </div>
                 <p style={{ fontSize: '14px', opacity: 0.9 }}>seconds remaining</p>
               </div>
 
               {/* Question */}
-              <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
                 {currentQuestion.question}
               </h2>
 
@@ -534,22 +643,19 @@ function StudentRoomPage() {
                       onClick={handleOptionClick}
                       disabled={submitted}
                       style={{
-                        width: '100%',
-                        minHeight: '48px',
-                        boxSizing: 'border-box',
-                        padding: isMobile ? '14px 16px' : '20px 24px',
-                        background: submitted
+                        padding: '20px 24px',
+                        background: submitted 
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
                         borderRadius: '12px',
                         color: 'white',
-                        fontSize: isMobile ? '16px' : '18px',
+                        fontSize: '18px',
                         textAlign: 'left',
                         cursor: submitted ? 'default' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: isMobile ? '12px' : '16px'
+                        gap: '16px'
                       }}
                     >
                       {isMSQ && (
@@ -563,8 +669,7 @@ function StudentRoomPage() {
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: isSelected ? '#1f2937' : 'white',
-                          fontSize: '14px',
-                          flexShrink: 0
+                          fontSize: '14px'
                         }}>
                           {isSelected ? '✓' : ''}
                         </span>
@@ -579,12 +684,11 @@ function StudentRoomPage() {
                         justifyContent: 'center',
                         fontWeight: '700',
                         color: isSelected ? '#1f2937' : 'white',
-                        fontSize: '16px',
-                        flexShrink: 0
+                        fontSize: '16px'
                       }}>
                         {optionLabel}
                       </span>
-                      <span style={{ minWidth: 0, wordBreak: 'break-word' }}>{optionText}</span>
+                      <span>{optionText}</span>
                     </button>
                   )
                 })}
@@ -598,7 +702,7 @@ function StudentRoomPage() {
                   background: 'rgba(255,255,255,0.1)',
                   borderRadius: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted — Unlocking screen...</p>
                   <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
                     Waiting for next question...
                   </p>
@@ -619,19 +723,34 @@ function StudentRoomPage() {
                     cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
                   }}
                 >
-                  Submit Answer
+                  🔒 Submit &amp; Unlock Screen
                 </button>
               )}
             </div>
+            </FullscreenLock>
+            )
           ) : (
-            /* Waiting State - Show Passed Questions */
+            /* Waiting State */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              {/* Active question area placeholder */}
-              <div style={{
-                background: 'var(--bg-card)',
-                borderRadius: 'var(--radius-lg)',
-                padding: isMobile ? '32px 20px' : '48px',
-                boxShadow: 'var(--shadow-md)',
+              {/* Team Lobby (when team battle is active) */}
+              {teamBattleActive && teams.length > 0 && (
+                <TeamLobby
+                  teams={teams}
+                  myTeam={myTeam}
+                  studentId={user?._id}
+                  roomId={room?._id}
+                  groupingMode={room?.settings?.teamBattleConfig?.groupingMode}
+                  teamSize={room?.settings?.teamBattleConfig?.teamSize || 3}
+                />
+              )}
+
+              {/* If NOT in team battle, show default waiting */}
+              {!teamBattleActive && (
+                <div style={{
+                  background: 'var(--bg-card)',
+                  borderRadius: '16px',
+                  padding: '48px',
+                boxShadow: 'var(--card-shadow)',
                 border: '1px solid var(--border-color)',
                 textAlign: 'center'
               }}>
@@ -655,11 +774,12 @@ function StudentRoomPage() {
                   The teacher will start a poll soon. Stay tuned!
                 </p>
               </div>
+              )}
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+                <div style={{ flex: '1 1 calc(70% - 8px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
@@ -668,8 +788,7 @@ function StudentRoomPage() {
                     No questions answered yet. Questions you answer will appear here.
                   </p>
                 ) : (
-                  <div style={{ position: 'relative' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {pastResponses.map((q, index) => (
                       <div key={`past-${index}`} style={{
                         padding: '20px',
@@ -816,18 +935,14 @@ function StudentRoomPage() {
                       </div>
                     ))}
                   </div>
-                  {pastResponses.length > 3 && (
-                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 12px 12px' }} />
-                  )}
-                  </div>
                 )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
                 </div>
               </div>
             </div>

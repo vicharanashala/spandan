@@ -48,6 +48,15 @@ export const roomSettingsSchema = z.object({
   }).optional()
 })
 
+// Team Battle configuration validation
+export const teamBattleConfigSchema = z.object({
+  roomId: z.string().min(1, 'Room ID is required'),
+  teamSize: z.number().int().min(2, 'Team size must be between 2 and 50').max(50, 'Team size must be between 2 and 50'),
+  groupingMode: z.enum(['random', 'student-choice', 'performance-mixed'], {
+    errorMap: () => ({ message: 'Invalid grouping mode selected.' })
+  })
+})
+
 // Question validation schemas
 export const createQuestionSchema = z.object({
   question: z.string().min(1, 'Question text is required'),

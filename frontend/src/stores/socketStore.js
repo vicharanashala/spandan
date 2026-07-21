@@ -1,16 +1,14 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_URL, SOCKET_PATH } from '../config.js'
+import { useTeamStore } from './teamStore.js'
+import useAuthStore from './authStore.js'
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
   isConnected: false,
   currentRoom: null,
   participants: 0,
-  // The room we should belong to. Kept across reconnects (unlike currentRoom, which is cleared
-  // on disconnect) so the 'connect' handler can auto-rejoin after a dropped socket. Cleared only
-  // on an explicit leaveRoom()/disconnect().
-  joinedRoom: null,
 
   connect: (token) => {
     const { socket: existingSocket } = get()
@@ -21,7 +19,7 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: SOCKET_PATH,
       transports: ['websocket', 'polling']
     })
 
@@ -29,19 +27,26 @@ export const useSocketStore = create((set, get) => ({
       console.log('Socket connected')
       set({ isConnected: true })
       socket.emit('authenticate', { token })
-      // On a (re)connect, socket.io gives us a NEW underlying connection that is a member of NO
-      // rooms — even if we had joined one before the drop. Without this, a student whose socket
-      // briefly reconnects silently stops receiving room broadcasts (new_question, leaderboard…)
-      // until they manually refresh the page. Re-join the room we were in so delivery self-heals.
-      const { joinedRoom } = get()
-      if (joinedRoom?.roomCode) {
-        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId })
+
+      // Auto-rejoin room if we were in one
+      const { currentRoom } = get()
+      const userId = useAuthStore.getState().user?._id
+      if (currentRoom && userId) {
+        console.log(`Auto-rejoining room ${currentRoom} after socket reconnect`)
+        socket.emit('room:join', { roomCode: currentRoom, userId })
+      }
+
+      // Auto-rejoin team channel if we were in one
+      const myTeam = useTeamStore.getState().myTeam
+      if (myTeam?._id) {
+        console.log(`Auto-rejoining team channel team:${myTeam._id} after socket reconnect`)
+        socket.emit('team:join_channel', { teamId: myTeam._id })
       }
     })
 
     socket.on('disconnect', () => {
       console.log('Socket disconnected')
-      set({ isConnected: false, currentRoom: null })
+      set({ isConnected: false })
     })
 
     socket.on('authenticated', (data) => {
@@ -86,6 +91,56 @@ export const useSocketStore = create((set, get) => ({
       console.log('New question received:', data)
     })
 
+    // Team Battle socket listeners
+    socket.on('team:message_received', (data) => {
+      useTeamStore.getState().addMessage(data)
+    })
+
+    socket.on('team:partner_selected', (data) => {
+      useTeamStore.getState().setPartnerChoice(data.studentId, data.selectedOption)
+    })
+
+    socket.on('team:score_updated', (data) => {
+      useTeamStore.getState().updateTeamScore(data.teamId, data.points, data.streakCount, data.consensusBonus)
+    })
+
+    socket.on('team:consensus_success', (data) => {
+      console.log('🎉 Consensus bonus!', data)
+    })
+
+    socket.on('team:battle_started', (data) => {
+      console.log('Team Battle started:', data)
+    })
+
+    socket.on('team:assigned', (data) => {
+      console.log('Assigned to team:', data.team?.name)
+      useTeamStore.setState({ myTeam: data.team })
+    })
+
+    socket.on('team:updated', (data) => {
+      console.log('Teams updated:', data.teams)
+      const studentId = useAuthStore.getState().user?._id
+      if (studentId) {
+        useTeamStore.getState().setTeamsAndFindMyTeam(data.teams, studentId)
+      } else {
+        useTeamStore.setState({ teams: data.teams })
+      }
+    })
+
+    socket.on('team:joined_successfully', (data) => {
+      console.log('Successfully joined team:', data.team)
+      useTeamStore.setState({ myTeam: data.team })
+    })
+
+    socket.on('team:left_successfully', () => {
+      console.log('Successfully left team')
+      useTeamStore.setState({ myTeam: null })
+    })
+
+    socket.on('rate_limit_exceeded', (data) => {
+      console.warn('Rate limited:', data.message)
+    })
+
     set({ socket })
   },
 
@@ -93,14 +148,12 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.disconnect()
-      set({ socket: null, isConnected: false, currentRoom: null, joinedRoom: null })
+      set({ socket: null, isConnected: false, currentRoom: null })
     }
   },
 
   joinRoom: (roomCode, userId) => {
     const { socket } = get()
-    // Remember the room so the socket auto-rejoins after a reconnect (see the 'connect' handler).
-    set({ joinedRoom: { roomCode, userId } })
     if (socket) {
       socket.emit('room:join', { roomCode, userId })
     }
@@ -108,8 +161,6 @@ export const useSocketStore = create((set, get) => ({
 
   leaveRoom: (roomCode, userId) => {
     const { socket } = get()
-    // Deliberate leave — stop auto-rejoining on future reconnects.
-    set({ joinedRoom: null })
     if (socket) {
       socket.emit('room:leave', { roomCode, userId })
       set({ currentRoom: null, participants: 0 })
@@ -135,6 +186,37 @@ export const useSocketStore = create((set, get) => ({
     if (socket) {
       socket.emit('question:end', data)
     }
+  },
+
+  // Team Battle socket methods
+  joinTeamChannel: (teamId) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:join_channel', { teamId })
+  },
+
+  sendTeamMessage: (teamId, text) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:message', { teamId, text })
+  },
+
+  sendTeamOptionSelect: (teamId, selectedOption) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:select_option', { teamId, selectedOption })
+  },
+
+  checkTeamConsensus: (roomId, questionId) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:check_consensus', { roomId, questionId })
+  },
+
+  joinManualTeam: (roomId, teamId) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:join', { roomId, teamId })
+  },
+
+  leaveManualTeam: (roomId) => {
+    const { socket } = get()
+    if (socket) socket.emit('team:leave', { roomId })
   }
 }))
 
