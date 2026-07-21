@@ -11,6 +11,7 @@ import Leaderboard from '../components/Leaderboard'
 import TeamDiscussionCanvas from '../components/TeamDiscussionCanvas'
 import TeamLobby from '../components/TeamLobby'
 import TeamTugOfWar from '../components/TeamTugOfWar'
+import FullscreenLock from '../components/FullscreenLock'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -37,6 +38,8 @@ function StudentRoomPage() {
   const { myTeam, teams, fetchMyTeam, fetchTeams, clearPartnerChoices, setTeamsAndFindMyTeam } = useTeamStore()
   const { checkTeamConsensus } = useSocketStore()
   const [teamBattleActive, setTeamBattleActive] = useState(false)
+  // Proctored fullscreen poll lock
+  const [pollViolations, setPollViolations]     = useState(0)
 
   useEffect(() => {
     if (!token || !socket) return
@@ -480,7 +483,7 @@ function StudentRoomPage() {
           {/* Live Question */}
           {currentQuestion ? (
             teamBattleActive && myTeam ? (
-              /* Team Battle Mode: Discussion Canvas */
+              /* Team Battle Mode: Discussion Canvas (no fullscreen lock in team mode) */
               <TeamDiscussionCanvas
                 question={currentQuestion}
                 team={myTeam}
@@ -538,26 +541,68 @@ function StudentRoomPage() {
                 hasSubmitted={submitted}
               />
             ) : (
+            /* ── Proctored Fullscreen Poll Lock (solo / individual mode) ── */
+            <FullscreenLock
+              active={!!currentQuestion && !teamBattleActive}
+              maxViolations={3}
+              onViolation={(count, reason) => {
+                setPollViolations(count)
+                console.warn(`[ProctoredLock] Violation ${count}: ${reason}`)
+                // Optionally emit to teacher via socket
+                if (socket && room?.code) {
+                  socket.emit('proctor:violation', {
+                    roomCode: room.code,
+                    studentId: user?._id,
+                    violationCount: count,
+                    reason,
+                  })
+                }
+              }}
+              onForceSubmit={() => {
+                if (!submitted) handleSubmitAnswer()
+              }}
+            >
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
               borderRadius: '16px',
               padding: '32px',
               color: 'white',
-              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
+              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
+              width: '100%',
+              maxWidth: '720px',
+              margin: '0 auto',
             }}>
+              {/* Violation badge inside question card */}
+              {pollViolations > 0 && (
+                <div style={{
+                  background: 'rgba(239,68,68,0.25)',
+                  border: '1px solid rgba(239,68,68,0.5)',
+                  borderRadius: '8px',
+                  padding: '8px 16px',
+                  marginBottom: '16px',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  color: '#fca5a5',
+                  textAlign: 'center',
+                }}>
+                  ⚠️ Violations recorded: {pollViolations}/3 — auto-submit on 3rd
+                </div>
+              )}
+
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
                   width: '100px',
                   height: '100px',
                   borderRadius: '50%',
-                  border: '4px solid rgba(255,255,255,0.3)',
+                  border: `4px solid ${timeLeft <= 5 ? 'rgba(239,68,68,0.8)' : 'rgba(255,255,255,0.3)'}`,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  margin: '0 auto 16px'
+                  margin: '0 auto 16px',
+                  transition: 'border-color 0.3s',
                 }}>
-                  <span style={{ fontSize: '36px', fontWeight: '700' }}>{timeLeft}</span>
+                  <span style={{ fontSize: '36px', fontWeight: '700', color: timeLeft <= 5 ? '#fca5a5' : 'white' }}>{timeLeft}</span>
                 </div>
                 <p style={{ fontSize: '14px', opacity: 0.9 }}>seconds remaining</p>
               </div>
@@ -657,7 +702,7 @@ function StudentRoomPage() {
                   background: 'rgba(255,255,255,0.1)',
                   borderRadius: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted — Unlocking screen...</p>
                   <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
                     Waiting for next question...
                   </p>
@@ -678,10 +723,11 @@ function StudentRoomPage() {
                     cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
                   }}
                 >
-                  Submit Answer
+                  🔒 Submit &amp; Unlock Screen
                 </button>
               )}
             </div>
+            </FullscreenLock>
             )
           ) : (
             /* Waiting State */

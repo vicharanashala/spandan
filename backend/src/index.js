@@ -623,6 +623,27 @@ io.on('connection', (socket) => {
     }
   })
 
+  // ========================
+  // PROCTORED POLL LOCK EVENTS
+  // ========================
+
+  // proctor:violation — student triggered a fullscreen/tab-switch violation
+  // Forwarded to the teacher's room channel for live monitoring
+  socket.on('proctor:violation', ({ roomCode, studentId, violationCount, reason }) => {
+    if (!roomCode || typeof roomCode !== 'string') return
+    if (!studentId || typeof violationCount !== 'number') return
+    // Rule 10: only broadcast into the room the socket actually joined
+    const targetRoom = socket.roomCode || roomCode
+    // Emit to room (teacher will receive this and show a warning badge)
+    socket.to(targetRoom).emit('proctor:violation_alert', {
+      studentId,
+      violationCount,
+      reason,
+      timestamp: new Date().toISOString()
+    })
+    console.log(`[Proctor] Room ${targetRoom} — student ${studentId} violation #${violationCount}: ${reason}`)
+  })
+
   socket.on('disconnect', () => {
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
