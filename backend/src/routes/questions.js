@@ -1,6 +1,7 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
+import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
 
 const router = express.Router()
@@ -42,27 +43,65 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       })
     }
 
-    console.log(`Generating ${numQuestions} questions with ${provider}...`)
+    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
 
-    const questions = await generateQuestions(transcript, {
-      numQuestions,
-      difficulty,
-      provider,
-      questionTypeMix
-    })
+    // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
+    // The client polls GET /questions/jobs/:jobId for the result.
+    const queue = getGenerationQueue()
+    if (queue) {
+      const job = await queue.add(
+        'generate',
+        { transcript, config: jobConfig, requestedBy: String(req.user._id) },
+        {
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: { age: 900 }, // keep the result ~15 min so the client can poll it
+          removeOnFail: { age: 900 }
+        }
+      )
+      return res.status(202).json({ success: true, async: true, jobId: job.id })
+    }
 
+    // Sync fallback (no Redis): generate inline — today's behavior.
+    console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
+    const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-
-    res.json({
-      success: true,
-      questions
-    })
+    res.json({ success: true, questions })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to generate questions'
     })
+  }
+})
+
+// GET /api/questions/jobs/:jobId - poll an async generation job (Phase 2D)
+// Authorization: teacher only, and only the teacher who requested it.
+router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
+  try {
+    const queue = getGenerationQueue()
+    if (!queue) {
+      return res.status(404).json({ success: false, error: 'Async generation is not enabled' })
+    }
+    const job = await queue.getJob(req.params.jobId)
+    if (!job) {
+      return res.status(404).json({ success: false, status: 'not_found', error: 'Job not found or expired' })
+    }
+    if (job.data?.requestedBy && job.data.requestedBy !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not authorized to view this job' })
+    }
+    const state = await job.getState()
+    if (state === 'completed') {
+      return res.json({ success: true, status: 'completed', questions: job.returnvalue || [] })
+    }
+    if (state === 'failed') {
+      return res.json({ success: false, status: 'failed', error: job.failedReason || 'Generation failed' })
+    }
+    return res.json({ success: true, status: 'processing' })
+  } catch (error) {
+    console.error('Job status error:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch job status' })
   }
 })
 
