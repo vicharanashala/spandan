@@ -85,7 +85,7 @@ function AIIntegrationSettings() {
       setGlobalStatus(globalProviders)
       setEnvStatus(envProviders)
       setKeys({ minimax: '', openai: '', anthropic: '', google: '' })
-      setMessage('AI integration settings saved')
+      setMessage('AI keys saved successfully')
     } catch (err) {
       setError(err.message || 'Unable to save AI settings')
     } finally {
@@ -114,7 +114,7 @@ function AIIntegrationSettings() {
             AI Integration Settings
           </h2>
           <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: '13px' }}>
-            Save provider keys for quiz generation. Existing keys are never displayed.
+            Configure API keys for automated question generation.
           </p>
         </div>
         <button
@@ -179,7 +179,7 @@ function AIIntegrationSettings() {
               cursor: 'pointer'
             }}
           >
-            Personal
+            Personal API Keys
           </button>
           <button
             type="button"
@@ -195,7 +195,7 @@ function AIIntegrationSettings() {
               cursor: 'pointer'
             }}
           >
-            Institution
+            Institute API Keys
           </button>
         </div>
 
@@ -278,7 +278,7 @@ function AIIntegrationSettings() {
                   type="password"
                   value={keys[provider.id]}
                   onChange={(event) => handleChange(provider.id, event.target.value)}
-                  placeholder={providerHasKey ? 'Leave blank to keep current key' : 'Paste API key'}
+                  placeholder={providerHasKey ? 'Leave blank to keep configured key' : 'Paste API key'}
                   autoComplete="off"
                   style={{
                     width: '100%',

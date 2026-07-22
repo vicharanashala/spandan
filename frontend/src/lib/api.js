@@ -1,11 +1,10 @@
 import { API_URL } from '../config.js'
-import useAuthStore from '../stores/authStore.js'
+import { getAuthHeader } from './authToken.js'
 
 const getHeaders = () => {
-  const { token } = useAuthStore.getState()
   return {
     'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    ...getAuthHeader()
   }
 }
 
@@ -84,8 +83,13 @@ export const questionApi = {
 }
 
 export const aiConfigApi = {
-  getStatus: () => api.get('/config/ai'),
-  saveKeys: (keys, scope = 'personal') => api.put('/config/ai', { keys, scope })
+  getStatus: (roomId) => {
+    const query = roomId ? `?roomId=${encodeURIComponent(roomId)}` : ''
+    return api.get(`/config/ai${query}`)
+  },
+  saveKeys: (keys, scope = 'personal', roomId) => (
+    api.put('/config/ai', { keys, scope, roomId })
+  )
 }
 
 export default api

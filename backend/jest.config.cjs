@@ -1,8 +1,8 @@
 module.exports = {
   testEnvironment: 'node',
-  preset: '@shelf/jest-mongodb',
   testMatch: ['**/__tests__/**/*.test.js'],
   setupFilesAfterEnv: ['./src/__tests__/setup.cjs'],
+  testTimeout: 60000,
   collectCoverageFrom: [
     'src/**/*.js',
     '!src/__tests__/**',

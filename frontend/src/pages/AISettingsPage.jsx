@@ -39,7 +39,7 @@ function AISettingsPage() {
                 AI Integration Settings
               </h1>
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Configure provider keys for automated question generation
+                Configure API keys for automated question generation.
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

@@ -1,12 +1,9 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
-import User from '../models/User.js'
-import GlobalConfig from '../models/GlobalConfig.js'
-import { encrypt } from '../utils/crypto.js'
 import { config } from '../config.js'
+import { AI_KEY_PROVIDERS as PROVIDERS, getAiKeyStatus, setAiKeys } from '../services/aiKeyCache.js'
 
 const router = express.Router()
-const PROVIDERS = ['minimax', 'openai', 'anthropic', 'google']
 
 function hasValidKey(value) {
   return typeof value === 'string' && value.trim() !== ''
@@ -15,36 +12,22 @@ function hasValidKey(value) {
 router.use(authenticate)
 router.use(authorize('teacher'))
 
-function providerStatus(encryptedAiKeys = {}, envKeys = {}) {
+function providerStatus(cachedKeys = {}, envKeys = {}) {
   return PROVIDERS.reduce((acc, provider) => {
     acc[provider] = {
-      hasKey: hasValidKey(encryptedAiKeys?.[provider]),
+      hasKey: hasValidKey(cachedKeys?.[provider]),
       hasEnvFallback: hasValidKey(envKeys?.[provider])
     }
     return acc
   }, {})
 }
 
-function getPersonalKeys(user = {}) {
-  return {
-    ...(user?.encryptedAiKeys || {}),
-    ...(user?.encryptedPersonalAiKeys || {})
-  }
-}
-
-function configuredStatus(personalProviders = {}, globalProviders = {}, envProviders = {}) {
+function configuredStatus(...providerGroups) {
   return PROVIDERS.reduce((acc, provider) => {
-    const personalStatus = personalProviders[provider] || {}
-    const globalStatus = globalProviders[provider] || {}
-    const envStatus = envProviders[provider] || {}
-    acc[provider] = !!(
-      personalStatus.hasKey ||
-      personalStatus.hasEnvFallback ||
-      globalStatus.hasKey ||
-      globalStatus.hasEnvFallback ||
-      envStatus.hasKey ||
-      envStatus.hasEnvFallback
-    )
+    acc[provider] = providerGroups.some(statuses => (
+      statuses?.[provider]?.hasKey ||
+      statuses?.[provider]?.hasEnvFallback
+    ))
     return acc
   }, {})
 }
@@ -64,20 +47,19 @@ function envProviderStatus() {
 
 router.get('/', async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
-      .lean()
-    const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
-
-    const providers = providerStatus(getPersonalKeys(user), {})
-    const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+    const { roomId } = req.query
+    const { providers, roomProviders, globalProviders } = getAiKeyStatus({
+      userId: req.user._id,
+      roomId
+    })
     const envProviders = envProviderStatus()
-    const statuses = configuredStatus(providers, globalProviders, envProviders)
+    const statuses = configuredStatus(providers, roomProviders, globalProviders, envProviders)
 
     res.json({
       success: true,
       statuses,
       providers,
+      roomProviders,
       globalProviders,
       envProviders,
       configured: statuses
@@ -94,55 +76,41 @@ router.get('/', async (req, res) => {
 
 const saveAiConfig = async (req, res) => {
   try {
-    const { keys = {}, provider, apiKey, scope = 'personal' } = req.body
+    const { keys = {}, provider, apiKey, scope = 'personal', roomId } = req.body
     const requestedKeys = provider && apiKey
       ? { [provider]: apiKey }
       : keys
-    const encryptedUpdates = {}
+    const cacheKeys = {}
 
     for (const provider of PROVIDERS) {
       const value = typeof requestedKeys[provider] === 'string' ? requestedKeys[provider].trim() : ''
       if (value) {
-        const fieldPrefix = scope === 'global' ? 'encryptedAiKeys' : 'encryptedPersonalAiKeys'
-        encryptedUpdates[`${fieldPrefix}.${provider}`] = encrypt(value)
+        cacheKeys[provider] = value
       }
     }
 
-    if (Object.keys(encryptedUpdates).length === 0) {
+    if (Object.keys(cacheKeys).length === 0) {
       return res.status(400).json({
         success: false,
         error: 'Provide at least one API key to save'
       })
     }
 
-    if (scope === 'global') {
-      await GlobalConfig.findOneAndUpdate(
-        { key: 'default' },
-        { $set: { ...encryptedUpdates, updatedBy: req.user._id } },
-        { upsert: true, new: true, runValidators: true }
-      )
-    } else {
-      await User.findByIdAndUpdate(
-        req.user._id,
-        { $set: encryptedUpdates },
-        { new: true, runValidators: true }
-      )
-    }
+    const ownerId = scope === 'room' ? roomId : req.user._id
+    setAiKeys({ scope, ownerId, keys: cacheKeys })
 
-    const user = await User.findById(req.user._id)
-      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
-      .lean()
-    const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
-
-    const providers = providerStatus(getPersonalKeys(user), {})
-    const globalProviders = providerStatus(globalConfig?.encryptedAiKeys, {})
+    const { providers, roomProviders, globalProviders } = getAiKeyStatus({
+      userId: req.user._id,
+      roomId
+    })
     const envProviders = envProviderStatus()
-    const statuses = configuredStatus(providers, globalProviders, envProviders)
+    const statuses = configuredStatus(providers, roomProviders, globalProviders, envProviders)
 
     res.json({
       success: true,
       statuses,
       providers,
+      roomProviders,
       globalProviders,
       envProviders,
       configured: statuses

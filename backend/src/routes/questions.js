@@ -32,7 +32,8 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       numQuestions = 2, 
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      roomId = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -46,6 +47,7 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       provider,
       numQuestions,
       difficulty,
+      roomId,
       transcriptLength: transcript.trim().length,
       hasQuestionTypeMix: !!questionTypeMix,
       userId: String(req.user._id)
@@ -56,6 +58,7 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       difficulty,
       provider,
       questionTypeMix,
+      roomId,
       userId: req.user._id
     })
 

@@ -25,11 +25,13 @@ const hasEnvFallback = (status) => Boolean(
   typeof status === 'boolean' ? status : status?.hasEnvFallback
 )
 
-const combineProviderStatuses = (providers = {}, globalProviders = {}, envProviders = {}) => (
+const combineProviderStatuses = (providers = {}, roomProviders = {}, globalProviders = {}, envProviders = {}) => (
   AI_PROVIDER_OPTIONS.reduce((acc, provider) => {
     acc[provider.id] = Boolean(
       hasProviderKey(providers[provider.id]) ||
       hasEnvFallback(providers[provider.id]) ||
+      hasProviderKey(roomProviders[provider.id]) ||
+      hasEnvFallback(roomProviders[provider.id]) ||
       hasProviderKey(globalProviders[provider.id]) ||
       hasEnvFallback(globalProviders[provider.id]) ||
       hasProviderKey(envProviders[provider.id]) ||
@@ -39,7 +41,7 @@ const combineProviderStatuses = (providers = {}, globalProviders = {}, envProvid
   }, { ...EMPTY_PROVIDER_STATUS })
 )
 
-function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
+function RoomSettingsModal({ isOpen, onClose, settings, onSave, roomId }) {
   const [localSettings, setLocalSettings] = useState(settings)
   const [providerStatus, setProviderStatus] = useState(EMPTY_PROVIDER_STATUS)
   const [loadingProviders, setLoadingProviders] = useState(false)
@@ -54,10 +56,10 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const loadProviders = async () => {
     setLoadingProviders(true)
     try {
-      const data = await aiConfigApi.getStatus()
+      const data = await aiConfigApi.getStatus(roomId)
       const combinedStatus = data.statuses ||
         data.configured ||
-        combineProviderStatuses(data.providers, data.globalProviders, data.envProviders)
+        combineProviderStatuses(data.providers, data.roomProviders, data.globalProviders, data.envProviders)
       setProviderStatus(combinedStatus)
     } catch (error) {
       console.error('Failed to load AI providers:', error)

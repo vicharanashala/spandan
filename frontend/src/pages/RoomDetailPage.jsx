@@ -466,7 +466,8 @@ IMPORTANT:
           config: {
             numQuestions: roomSettings.questionsPerSegment,
             difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
+            provider: roomSettings.questionProvider || 'minimax',
+            roomId: room._id
           }
         })
       })
@@ -550,7 +551,8 @@ IMPORTANT:
             numQuestions: roomSettings.questionsPerSegment,
             difficulty: roomSettings.difficulty,
             provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: typeMix
+            questionTypeMix: typeMix,
+            roomId: room._id
           }
         })
       })
@@ -1397,6 +1399,7 @@ IMPORTANT:
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
                 settings={roomSettings}
+                roomId={room._id}
                 onSave={async (newSettings) => {
                   setRoomSettings(newSettings)
                   // Persist settings to backend

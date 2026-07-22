@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
 import { SOCKET_URL } from '../config.js'
+import { getAuthToken } from '../lib/authToken.js'
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
@@ -9,6 +10,12 @@ export const useSocketStore = create((set, get) => ({
   participants: 0,
 
   connect: (token) => {
+    const authToken = getAuthToken(token)
+    if (!authToken) {
+      console.warn('Socket connection skipped: no auth token available')
+      return
+    }
+
     const { socket: existingSocket } = get()
     if (existingSocket?.connected) {
       console.log('Socket already connected, skipping')
@@ -16,7 +23,7 @@ export const useSocketStore = create((set, get) => ({
     }
 
     const socket = io(SOCKET_URL, {
-      auth: { token },
+      auth: { token: authToken },
       path: '/spandan/socket.io',
       transports: ['websocket', 'polling']
     })
@@ -24,7 +31,7 @@ export const useSocketStore = create((set, get) => ({
     socket.on('connect', () => {
       console.log('Socket connected')
       set({ isConnected: true })
-      socket.emit('authenticate', { token })
+      socket.emit('authenticate', { token: authToken })
     })
 
     socket.on('disconnect', () => {

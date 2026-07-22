@@ -3,10 +3,8 @@ dotenv.config()
 import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
-import User from '../models/User.js'
-import GlobalConfig from '../models/GlobalConfig.js'
 import { config, AI_PROVIDERS } from '../config.js'
-import { decrypt } from '../utils/crypto.js'
+import { resolveCachedAiKey } from './aiKeyCache.js'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 // Re-export for convenience
@@ -297,39 +295,10 @@ IMPORTANT:
 - Questions should be based ONLY on the transcription content`
 }
 
-async function resolveAiApiKey(provider, userId) {
-  if (userId) {
-    const user = await User.findById(userId)
-      .select('+encryptedPersonalAiKeys +encryptedAiKeys')
-      .lean()
-    const encryptedPersonalKey = user?.encryptedPersonalAiKeys?.[provider] || user?.encryptedAiKeys?.[provider]
-    if (encryptedPersonalKey) {
-      try {
-        const apiKey = decrypt(encryptedPersonalKey)
-        return {
-          apiKey: typeof apiKey === 'string' ? apiKey.trim() : '',
-          source: 'personal'
-        }
-      } catch (error) {
-        console.error('Decryption failed')
-        console.error('Detailed Error:', error)
-      }
-    }
-  }
-
-  const globalConfig = await GlobalConfig.findOne({ key: 'default' }).lean()
-  const encryptedGlobalKey = globalConfig?.encryptedAiKeys?.[provider]
-  if (encryptedGlobalKey) {
-    try {
-      const apiKey = decrypt(encryptedGlobalKey)
-      return {
-        apiKey: typeof apiKey === 'string' ? apiKey.trim() : '',
-        source: 'global'
-      }
-    } catch (error) {
-      console.error('Decryption failed')
-      console.error('Detailed Error:', error)
-    }
+async function resolveAiApiKey(provider, { userId, roomId } = {}) {
+  const cachedApiKey = resolveCachedAiKey(provider, { userId, roomId })
+  if (cachedApiKey.apiKey) {
+    return cachedApiKey
   }
 
   const envApiKey = getEnvApiKey(provider)
@@ -348,14 +317,14 @@ async function resolveAiApiKey(provider, userId) {
 
 const PROVIDER_FALLBACK_ORDER = ['google', 'openai', 'anthropic', 'minimax']
 
-async function resolveAvailableAiProvider(requestedProvider, userId) {
+async function resolveAvailableAiProvider(requestedProvider, { userId, roomId } = {}) {
   const providerOrder = [
     requestedProvider,
     ...PROVIDER_FALLBACK_ORDER.filter(provider => provider !== requestedProvider)
   ].filter(Boolean)
 
   for (const provider of providerOrder) {
-    const resolved = await resolveAiApiKey(provider, userId)
+    const resolved = await resolveAiApiKey(provider, { userId, roomId })
     if (resolved.apiKey) {
       return {
         ...resolved,
@@ -634,7 +603,14 @@ async function generateWithGoogle(prompt, apiKey, models = GOOGLE_GEMINI_MODELS)
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null, userId = null } = cfg || {}
+  const {
+    numQuestions = 2,
+    difficulty = 'medium',
+    provider = 'minimax',
+    questionTypeMix = null,
+    userId = null,
+    roomId = null
+  } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -656,7 +632,7 @@ export async function generateQuestions(transcript, cfg) {
     provider: resolvedProvider,
     requestedProvider,
     usedFallbackProvider
-  } = await resolveAvailableAiProvider(provider, userId)
+  } = await resolveAvailableAiProvider(provider, { userId, roomId })
 
   if (!apiKey) {
     console.log(`[QUESTION_GENERATION] No API key found for requested provider ${provider} or any fallback provider`)

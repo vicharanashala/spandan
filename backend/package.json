@@ -7,9 +7,10 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "build": "echo 'Backend build complete'",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test": "node scripts/run-jest.cjs",
+    "test:watch": "node scripts/run-jest.cjs --watch",
+    "test:coverage": "node scripts/run-jest.cjs --coverage",
+    "test:localdb": "node scripts/run-jest.cjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
