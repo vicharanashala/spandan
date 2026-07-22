@@ -10,6 +10,7 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
+import CreateAnnouncementOverlay from '../components/CreateAnnouncementOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
@@ -85,6 +86,7 @@ function RoomDetailPage() {
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
+  const [showAnnouncementOverlay, setShowAnnouncementOverlay] = useState(false)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
   const [pastedText, setPastedText] = useState('') // preserved so a failed generation can reopen the popup with the text intact
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
@@ -174,34 +176,34 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -668,7 +670,7 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
@@ -766,10 +768,10 @@ function RoomDetailPage() {
     await processTranscriptionQueue()
 
     // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -1143,6 +1145,18 @@ function RoomDetailPage() {
     }
   }
 
+  const handleAnnouncement = (announcementData) => {
+    console.log('Announcement launched:', announcementData)
+    if (socket && isConnected) {
+      socket.emit('new_announcement', {
+        roomCode: room.code,
+        announcement: announcementData.announcement,
+        emails: announcementData.emails || [],
+        // fileName: announcementData.fileName || null
+      })
+    }
+    alert(`Announcement launched successfully! Target audience: ${announcementData.emails && announcementData.emails.length > 0 ? announcementData.emails.length + ' student(s)' : 'All students'}`)
+  }
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
@@ -1272,6 +1286,24 @@ function RoomDetailPage() {
                 cursor: isEnded ? 'not-allowed' : 'pointer'
               }}>
                 {copied ? '✓ Copied' : '📋 Copy'}
+              </button>
+              <button
+                onClick={() => setShowAnnouncementOverlay(true)}
+                style={{
+                  padding: '8px 16px',
+                  background: '#3b82f6',
+                  color: 'orange',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                Share Announcements
               </button>
             </div>
 
@@ -1609,72 +1641,72 @@ function RoomDetailPage() {
 
               {/* Mic controls (normal mode) */}
               {!isVideoMode && (
-              <>
-              {/* Mic Button */}
-              <button
-                onClick={toggleRecording}
-                disabled={isEnded}
-                style={{
-                  width: '80px',
-                  height: '80px',
-                  borderRadius: '50%',
-                  background: isEnded
-                    ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
-                    : (isRecording
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
-                  color: 'white',
-                  border: 'none',
-                  cursor: isEnded ? 'not-allowed' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '32px',
-                  boxShadow: isRecording
-                    ? '0 0 30px rgba(239, 68, 68, 0.5)'
-                    : '0 8px 25px rgba(16, 185, 129, 0.4)',
-                  transform: isRecording ? 'scale(1.05)' : 'scale(1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                {isRecording ? (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
-                  </svg>
-                ) : (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
-                  </svg>
-                )}
-              </button>
+                <>
+                  {/* Mic Button */}
+                  <button
+                    onClick={toggleRecording}
+                    disabled={isEnded}
+                    style={{
+                      width: '80px',
+                      height: '80px',
+                      borderRadius: '50%',
+                      background: isEnded
+                        ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
+                        : (isRecording
+                          ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                          : 'linear-gradient(135deg, #10b981, #059669)'),
+                      color: 'white',
+                      border: 'none',
+                      cursor: isEnded ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '32px',
+                      boxShadow: isRecording
+                        ? '0 0 30px rgba(239, 68, 68, 0.5)'
+                        : '0 8px 25px rgba(16, 185, 129, 0.4)',
+                      transform: isRecording ? 'scale(1.05)' : 'scale(1)',
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    {isRecording ? (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
+                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                      </svg>
+                    ) : (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" x2="12" y1="19" y2="22" />
+                      </svg>
+                    )}
+                  </button>
 
-              {/* Status Text */}
-              <div style={{ textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
-                  {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
-                </p>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {modelStatus}
-                </p>
-              </div>
+                  {/* Status Text */}
+                  <div style={{ textAlign: 'center' }}>
+                    <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
+                      {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
+                    </p>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {modelStatus}
+                    </p>
+                  </div>
 
-              {/* Live indicator */}
-              {isRecording && (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 12px',
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  borderRadius: '20px'
-                }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
-                </div>
-              )}
-              </>
+                  {/* Live indicator */}
+                  {isRecording && (
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 12px',
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      borderRadius: '20px'
+                    }}>
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                      <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
+                    </div>
+                  )}
+                </>
               )}
 
               {/* Settings Labels Below Mic */}
@@ -1812,150 +1844,150 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
-              <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                Session Questions
-              </span>
-              {generatedQuestions.length > 0 && (
-                <span style={{
-                  padding: '2px 10px',
-                  background: '#d1fae5',
-                  color: '#059669',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  fontWeight: '600'
-                }}>
-                  {generatedQuestions.length}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>📝</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Session Questions
                 </span>
-              )}
-            </div>
-
-            {generatedQuestions.length > 0 ? (
-              <div style={{ position: 'relative' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                {generatedQuestions.map((q, index) => (
-                  <div key={q._id || index} style={{
-                    padding: '14px 16px',
-                    background: 'var(--bg-primary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '12px'
+                {generatedQuestions.length > 0 && (
+                  <span style={{
+                    padding: '2px 10px',
+                    background: '#d1fae5',
+                    color: '#059669',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
                   }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
-                    }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
-                              }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                    {generatedQuestions.length}
+                  </span>
+                )}
+              </div>
+
+              {generatedQuestions.length > 0 ? (
+                <div style={{ position: 'relative' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                    {generatedQuestions.map((q, index) => (
+                      <div key={q._id || index} style={{
+                        padding: '14px 16px',
+                        background: 'var(--bg-primary)',
+                        borderRadius: '10px',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '12px'
                       }}>
-                        {answerCounts[q._id] || 0}/{totalParticipants}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
-                    </div>
+                        <span style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '50%',
+                          background: '#3b82f6',
+                          color: 'white',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          flexShrink: 0
+                        }}>
+                          {index + 1}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                              color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                            }}>
+                              {q.type}
+                            </span>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: '#fef3c7',
+                              color: '#92400e'
+                            }}>
+                              {q.points || 100} pts
+                            </span>
+                          </div>
+                          <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                            {q.question}
+                          </p>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {(q.options || []).map((opt, optIdx) => {
+                              const letter = String.fromCharCode(65 + optIdx)
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '8px 12px',
+                                  background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                  border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                  borderRadius: '6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                  fontSize: '13px',
+                                  color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
+                                }}>
+                                  <span style={{
+                                    width: '22px',
+                                    height: '22px',
+                                    borderRadius: '50%',
+                                    background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '11px',
+                                    fontWeight: '700',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
+                                  </span>
+                                  <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                    {opt.text}
+                                  </span>
+                                  {opt.isCorrect && (
+                                    <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                          <span style={{
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                            color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                          }}>
+                            {answerCounts[q._id] || 0}/{totalParticipants}
+                          </span>
+                          <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              {generatedQuestions.length > 6 && (
-                <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                  {generatedQuestions.length > 6 && (
+                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                  )}
+                </div>
+              ) : (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '32px',
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px'
+                }}>
+                  No questions generated yet. Start recording to auto-generate questions.
+                </div>
               )}
-              </div>
-            ) : (
-              <div style={{
-                textAlign: 'center',
-                padding: '32px',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}>
-                No questions generated yet. Start recording to auto-generate questions.
-              </div>
-            )}
             </div>
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
@@ -2027,6 +2059,13 @@ function RoomDetailPage() {
         />
       )}
 
+      {showAnnouncementOverlay && (
+        <CreateAnnouncementOverlay
+          isOpen={showAnnouncementOverlay}
+          onClose={() => setShowAnnouncementOverlay(false)}
+          onLaunch={handleAnnouncement}
+        />
+      )}
       {/* Text to Questions Popup */}
       {showTextToQuestions && (
         <TextToQuestionsPopup

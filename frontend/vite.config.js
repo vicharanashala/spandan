@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => {
     ? '/' + rawBase.replace(/^\//, '').replace(/\/+$/, '') + '/'
     : './'
 
+  const proxyPrefix = base !== './' ? base.slice(0, -1) : ''
+
   return {
     plugins: [react()],
     root: '.',
@@ -25,13 +27,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        '/api': {
+        [`${proxyPrefix}/api`]: {
           target: 'http://localhost:3001',
-          changeOrigin: true
+          changeOrigin: true,
+          rewrite: (path) => proxyPrefix ? path.replace(new RegExp(`^${proxyPrefix}`), '') : path
         },
-        '/socket.io': {
+        [`${proxyPrefix}/socket.io`]: {
           target: 'http://localhost:3001',
-          ws: true
+          ws: true,
+          rewrite: (path) => proxyPrefix ? path.replace(new RegExp(`^${proxyPrefix}`), '') : path
         }
       }
     }

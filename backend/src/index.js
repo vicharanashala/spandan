@@ -21,9 +21,11 @@ import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
+import notificationRoutes from './routes/notifications.js'
 
 // Import models for reference
 import './models/index.js'
+import Notification from './models/Notification.js'
 
 dotenv.config()
 
@@ -212,7 +214,7 @@ async function broadcastLeaderboard(roomId) {
 async function scheduleLeaderboardRefresh(roomId) {
   const id = String(roomId)
   if (redis.enabled) {
-    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => {})
+    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => { })
     ensureLbChecker(id)
     return
   }
@@ -357,11 +359,12 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
+app.use('/api/notifications', notificationRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     version: '0.5.0',
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
@@ -379,10 +382,11 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role email').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
+  socket.data.email = u?.email || null
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
 }
@@ -670,6 +674,86 @@ io.on('connection', (socket) => {
     socket.to(data.roomCode).emit('video:resume')
   })
 
+  // New announcement pushed by the teacher
+  socket.on('new_announcement', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
+      console.warn('new_announcement rejected — not the room owner:', socket.id)
+      return
+    }
+    if (data.announcement) {
+      const targetEmails = Array.isArray(data.emails) ? data.emails.map(e => e.toLowerCase()) : [];
+
+      let savedNotif = null;
+      try {
+        savedNotif = await Notification.create({
+          roomCode: data.roomCode,
+          announcement: data.announcement,
+          emails: targetEmails,
+          fileName: data.fileName || null,
+          clearedBy: []
+        });
+      } catch (err) {
+        console.error('[new_announcement] Failed to save notification to DB:', err);
+      }
+
+      const allSockets = io.of("/").sockets;
+
+      console.log(`[new_announcement] Broadcasting from room owner. Total connected sockets: ${allSockets.size}`);
+      console.log(`[new_announcement] Target emails count: ${targetEmails.length}, List:`, targetEmails);
+
+      for (const [id, clientSocket] of allSockets) {
+        const studentEmail = clientSocket.data?.email?.toLowerCase();
+        const userId = clientSocket.data?.userId;
+        const role = clientSocket.data?.role;
+
+        console.log(`[new_announcement] Checking socket ${id}: userId=${userId || 'N/A'}, email=${studentEmail || 'N/A'}, role=${role || 'N/A'}`);
+
+        // If target list is provided, filter. Otherwise broadcast to everyone connected.
+        const isTarget = targetEmails.length === 0 || (studentEmail && targetEmails.includes(studentEmail));
+
+        if (isTarget) {
+          console.log(`[new_announcement] Socket ${id} matches target. Emitting...`);
+          clientSocket.emit('new_announcement', {
+            _id: savedNotif?._id,
+            roomCode: data.roomCode,
+            announcement: data.announcement,
+            emails: data.emails,
+            fileName: data.fileName,
+            timestamp: savedNotif?.createdAt ? new Date(savedNotif.createdAt).toLocaleTimeString() : new Date().toLocaleTimeString()
+          });
+        } else {
+          console.log(`[new_announcement] Socket ${id} is NOT in the target list.`);
+        }
+      }
+    }
+  })
+
+  // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
+  // Teacher-only; students receive it and cannot forge it.
+  socket.on('video:progress', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const time = Number(data?.time)
+    if (!Number.isFinite(time)) return
+    const playing = !!data?.playing
+    videoProgress.set(data.roomCode, { time, playing })
+    socket.to(data.roomCode).emit('video:progress', { time, playing })
+  })
+
+  // Teacher's question popup opened → students hold their video paused for the whole popup window.
+  socket.on('video:pause', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, true)
+    socket.to(data.roomCode).emit('video:pause')
+  })
+
+  // Teacher's popup closed → students resume and jump to the live edge (handled client-side).
+  socket.on('video:resume', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, false)
+    socket.to(data.roomCode).emit('video:resume')
+  })
+
+
   socket.on('disconnect', () => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
@@ -681,7 +765,7 @@ io.on('connection', (socket) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err)
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
@@ -696,7 +780,7 @@ app.use((req, res) => {
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
+
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -706,7 +790,7 @@ const connectDB = async () => {
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
       minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
-    
+
     console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
@@ -719,7 +803,7 @@ const PORT = process.env.PORT || 3001
 // Start server
 const startServer = async () => {
   await connectDB()
-  
+
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
