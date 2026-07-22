@@ -12,8 +12,10 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
+import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -22,6 +24,7 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -45,6 +48,8 @@ function RoomDetailPage() {
   const transcriptionIntervalRef = useRef(null)
   const finalTranscriptRef = useRef('')
   const accumulatedTranscriptRef = useRef('')
+  // Aborts any in-flight generation poll (Phase 2D) when the page unmounts.
+  const genAbortRef = useRef(null)
   const segmentTranscriptRef = useRef('')
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
@@ -80,6 +85,7 @@ function RoomDetailPage() {
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [pastedText, setPastedText] = useState('') // preserved so a failed generation can reopen the popup with the text intact
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
@@ -119,6 +125,7 @@ function RoomDetailPage() {
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
+      genAbortRef.current?.abort() // stop any in-flight generation poll
     }
   }, [roomId])
 
@@ -151,18 +158,16 @@ function RoomDetailPage() {
     }
   }, [socket])
 
-  // Listen for response:new events to update answer counts
+  // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
+  // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
+  // debounce so its heavy recompute stays out of the answer burst.
   useEffect(() => {
     if (!socket) return
-    const handleNewResponse = (data) => {
-      console.log('[DEBUG] New response received:', data)
-      setAnswerCounts(prev => ({
-        ...prev,
-        [data.questionId]: (prev[data.questionId] || 0) + 1
-      }))
+    const handleCounts = (payload) => {
+      if (payload?.counts) setAnswerCounts(payload.counts)
     }
-    socket.on('response:new', handleNewResponse)
-    return () => socket.off('response:new', handleNewResponse)
+    socket.on('counts:updated', handleCounts)
+    return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
   const startQuestionTimer = (question) => {
@@ -360,85 +365,67 @@ function RoomDetailPage() {
       return
     }
 
-    // Save transcript to database before generating questions.
-    try {
-      await saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
-      console.log('[SEGMENT] Transcript saved to DB')
-    } catch (err) {
-      console.error('[SEGMENT] Failed to save transcript:', err)
-      window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
-      setGenerateQEnabled(true)
-      return
-    }
-
-    // Auto-generate questions
+    // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
+    // never gates generation — a failed/hung transcript POST used to abort the whole segment with no
+    // questions. We save the transcript only after questions are produced (below), fire-and-forget.
+    let generated = null
     try {
       console.log('[SEGMENT] Auto-generating questions...')
-      const questions = await generateQuestionsFromText(textToUse, currentSegment)
-      if (questions && questions.length > 0) {
-        setPendingQuestions(questions)
-        setShowQuestionPopup(true)
-        setIsPopupOpen(true)
-      }
+      generated = await generateQuestionsFromText(textToUse, currentSegment)
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
       // Auto-retry once
       try {
         console.log('[SEGMENT] Retrying question generation...')
-        const questions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (questions && questions.length > 0) {
-          setPendingQuestions(questions)
-          setShowQuestionPopup(true)
-          setIsPopupOpen(true)
-        }
+        generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
         window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
         setGenerateQEnabled(true) // Enable fail-safe manual button
+        return
       }
+    }
+
+    if (generated && generated.length > 0) {
+      setPendingQuestions(generated)
+      setShowQuestionPopup(true)
+      setIsPopupOpen(true)
+      // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
+      // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
+      // source defaults to 'audio' (real segment).
+      saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+        .catch((err) => console.error('[SEGMENT] Failed to save transcript (questions already generated):', err))
     }
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
-    return new Promise((resolve, reject) => {
-      setIsGeneratingQuestions(true)
-      fetch(`${API_URL}/questions/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
-          }
-        })
-      })
-      .then(response => response.json())
-      .then(data => {
-        setIsGeneratingQuestions(false)
+    setIsGeneratingQuestions(true)
+    // New controller per generation; aborted on unmount (see the [roomId] effect cleanup).
+    genAbortRef.current = new AbortController()
+    try {
+      // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
+      // job internally and returns the same { success, questions } shape either way.
+      const data = await requestQuestionGeneration(text, {
+        numQuestions: roomSettings.questionsPerSegment,
+        difficulty: roomSettings.difficulty,
+        provider: roomSettings.questionProvider || 'minimax',
+        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
+      }, { signal: genAbortRef.current.signal })
 
-        if (data.success && data.questions && data.questions.length > 0) {
-          const markedQuestions = data.questions.map(q => ({
-            ...q,
-            timeToAnswer: roomSettings.timeToAnswer,
-            points: roomSettings.points,
-            segmentIndex: segmentIndex
-          }))
-          resolve(markedQuestions) // Return questions for popup handling
-        } else {
-          reject(new Error(data.error || 'No questions generated'))
-        }
-      })
-      .catch(error => {
-        setIsGeneratingQuestions(false)
-        reject(error)
-      })
-    })
+      setIsGeneratingQuestions(false)
+      if (data.success && data.questions && data.questions.length > 0) {
+        return data.questions.map(q => ({
+          ...q,
+          timeToAnswer: roomSettings.timeToAnswer,
+          points: roomSettings.points,
+          segmentIndex
+        }))
+      }
+      throw new Error(data.error || 'No questions generated')
+    } catch (error) {
+      setIsGeneratingQuestions(false)
+      throw error
+    }
   }
 
   // Handle question generation from pasted text (TextToQuestionsPopup)
@@ -452,24 +439,15 @@ function RoomDetailPage() {
         ? { MCQ: 0, TF: 100, MSQ: 0 }
         : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
 
-      const response = await fetch(`${API_URL}/questions/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax',
-            questionTypeMix: typeMix
-          }
-        })
-      })
+      genAbortRef.current = new AbortController()
+      // Helper handles both the sync response and the async (jobId → poll) path.
+      const data = await requestQuestionGeneration(text, {
+        numQuestions: roomSettings.questionsPerSegment,
+        difficulty: roomSettings.difficulty,
+        provider: roomSettings.questionProvider || 'minimax',
+        questionTypeMix: typeMix
+      }, { signal: genAbortRef.current.signal })
 
-      const data = await response.json()
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
 
@@ -482,14 +460,28 @@ function RoomDetailPage() {
         }))
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
+        // Questions generated and the review popup is up — NOW persist the pasted source text,
+        // fire-and-forget so a slow/failed/hung save can never block or delay generation. A paste
+        // has no segment → source='paste' + sentinel segmentIndex -1 (never collides with audio).
+        saveTranscript(room._id, -1, text, 0, 'paste')
+          .catch((err) => console.error('[PASTE] Failed to save transcript (questions already generated):', err))
       } else {
+        // Generation failed — keep the pasted text and reopen the paste popup so the teacher can
+        // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
+        setPastedText(text)
+        setShowTextToQuestions(true)
         window.alert(data.error || 'Failed to generate questions. Please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      if (error.name !== 'AbortError') {
+        // Same as above — preserve the pasted text and reopen the popup for a retry.
+        setPastedText(text)
+        setShowTextToQuestions(true)
+        window.alert('Failed to generate questions. Please try again.')
+      }
     }
   }
 
@@ -516,17 +508,10 @@ function RoomDetailPage() {
 
   const loadQuestions = async (rid) => {
     try {
-      const response = await fetch(`${API_URL}/questions?roomId=${rid}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-      if (response.ok) {
-        const data = await response.json()
-        if (data.questions) {
-          setGeneratedQuestions(data.questions)
-        }
-      }
+      // Load ALL questions (pages past the API's 50/page cap) so large rooms show every question,
+      // not just the first 50.
+      const questions = await fetchAllRoomQuestions(rid)
+      setGeneratedQuestions(questions)
       // Also load answer counts
       const countsRes = await fetch(`${API_URL}/responses/counts/${rid}`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -828,12 +813,19 @@ function RoomDetailPage() {
     setGenerateQEnabled(false)
 
     try {
-      const questions = await generateQuestionsFromText(textToUse, currentSegment + 1)
+      // Manual "Generate Q" is the fail-safe RETRY of the CURRENT segment's automatic generation, so
+      // it targets `currentSegment` (matching handleSegmentComplete) and does NOT advance the counter
+      // — it re-does segment N, it does not move to N+1 (the next segment is bumped later by
+      // startRecording when the teacher resumes).
+      const questions = await generateQuestionsFromText(textToUse, currentSegment)
       if (questions && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
-        setCurrentSegment(prev => prev + 1)
+        // Persist the transcript only once questions exist — fire-and-forget so it never blocks.
+        // Live transcript → source 'audio'; segmentIndex matches the questions (currentSegment).
+        saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+          .catch((err) => console.error('[MANUAL] Failed to save transcript (questions already generated):', err))
       }
     } catch (error) {
       console.error('Manual question generation failed:', error)
@@ -1058,7 +1050,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -1080,7 +1072,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
           <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
             <h2 style={{ color: 'var(--text-primary)' }}>{error || 'Room not found'}</h2>
             <button onClick={() => navigate('/teacher')} style={{
@@ -1106,12 +1098,12 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
+        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1121,7 +1113,7 @@ function RoomDetailPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
               {error}
@@ -1133,10 +1125,15 @@ function RoomDetailPage() {
             display: 'flex',
             alignItems: 'center',
             gap: '12px',
+            flexWrap: 'wrap',
             background: 'var(--bg-card)',
-            borderRadius: '12px',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            boxShadow: 'var(--shadow-md)',
             padding: '12px 16px',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            maxWidth: '100%',
+            boxSizing: 'border-box'
           }}>
             <button onClick={() => navigate('/teacher')} style={{
               padding: '8px 12px',
@@ -1174,7 +1171,7 @@ function RoomDetailPage() {
               </button>
             </div>
 
-            <div style={{ flex: 1 }} />
+            <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
             {/* Segment Timer Display */}
             {isRecording && (
@@ -1243,7 +1240,7 @@ function RoomDetailPage() {
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
-                onClick={() => setShowTextToQuestions(true)}
+                onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
                 style={{
                   padding: '8px 16px',
                   background: '#10b981',
@@ -1363,14 +1360,16 @@ function RoomDetailPage() {
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
             {/* Microphone Card - 30% */}
             <div style={{
-              flex: '1 1 calc(30% - 10px)',
-              minWidth: '280px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+              minWidth: isMobile ? 0 : '280px',
               maxWidth: '100%',
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1483,11 +1482,14 @@ function RoomDetailPage() {
 
             {/* Transcription Card - 70% */}
             <div style={{
-              flex: '1 1 calc(70% - 10px)',
-              minWidth: '300px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
+              minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
+              minHeight: isMobile ? '260px' : undefined,
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1497,11 +1499,13 @@ function RoomDetailPage() {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
                 marginBottom: '12px',
                 paddingBottom: '12px',
                 borderBottom: '1px solid var(--border-color)'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                   <span style={{ fontSize: '18px' }}>🎙️</span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
@@ -1570,7 +1574,7 @@ function RoomDetailPage() {
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
-            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <span style={{ fontSize: '20px' }}>📝</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -1721,25 +1725,15 @@ function RoomDetailPage() {
               </div>
             )}
 
-            {(() => {
-              const currentSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) === (room?.sessionIndex || 1))
-              const pastSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) < (room?.sessionIndex || 1))
+            {generatedQuestions.length > 0 ? (
+              <div style={{ position: 'relative' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                  {(() => {
+                    const currentSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) === (room?.sessionIndex || 1))
+                    const pastSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) < (room?.sessionIndex || 1))
 
-              if (generatedQuestions.length === 0) {
-                return (
-                  <div style={{
-                    textAlign: 'center',
-                    padding: '32px',
-                    color: 'var(--text-secondary)',
-                    fontSize: '13px'
-                  }}>
-                    No questions generated yet. Start recording to auto-generate questions.
-                  </div>
-                )
-              }
-
-              const renderQuestionCard = (q, index) => {
-                return (
+                    const renderQuestionCard = (q, index) => {
+                      return (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
                     background: 'var(--bg-primary)',
@@ -1868,68 +1862,83 @@ function RoomDetailPage() {
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
                     </div>
                   </div>
-                )
-              }
+                      )
+                    }
 
-              return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  {/* Current Session Questions */}
-                  <div>
-                    <h3 style={{ margin: '0 0 12px 0', fontSize: '13px', fontWeight: '700', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      🟢 Current Session Questions ({currentSessionQuestions.length})
-                    </h3>
-                    {currentSessionQuestions.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {currentSessionQuestions.map((q, idx) => renderQuestionCard(q, idx))}
-                      </div>
-                    ) : (
-                      <div style={{ padding: '20px', border: '1.5px dashed var(--border-color)', borderRadius: '10px', color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center' }}>
-                        No questions launched in this session yet.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Past Sessions Accordion */}
-                  {pastSessionQuestions.length > 0 && (
-                    <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
-                      <button
-                        onClick={() => setShowPastQuestions(!showPastQuestions)}
-                        style={{
-                          width: '100%',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          padding: '12px 16px',
-                          background: 'var(--bg-secondary)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          fontWeight: '600',
-                          fontSize: '13px',
-                          cursor: 'pointer',
-                          outline: 'none',
-                          transition: 'background 0.2s'
-                        }}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          📁 Past Sessions' History ({pastSessionQuestions.length})
-                        </span>
-                        <span>{showPastQuestions ? '▲' : '▼'}</span>
-                      </button>
-
-                      {showPastQuestions && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
-                          {pastSessionQuestions.map((q, idx) => renderQuestionCard(q, currentSessionQuestions.length + idx))}
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        {/* Current Session Questions */}
+                        <div>
+                          <h3 style={{ margin: '0 0 12px 0', fontSize: '13px', fontWeight: '700', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            🟢 Current Session Questions ({currentSessionQuestions.length})
+                          </h3>
+                          {currentSessionQuestions.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              {currentSessionQuestions.map((q, idx) => renderQuestionCard(q, idx))}
+                            </div>
+                          ) : (
+                            <div style={{ padding: '20px', border: '1.5px dashed var(--border-color)', borderRadius: '10px', color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center' }}>
+                              No questions launched in this session yet.
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  )}
+
+                        {/* Past Sessions Accordion */}
+                        {pastSessionQuestions.length > 0 && (
+                          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                            <button
+                              onClick={() => setShowPastQuestions(!showPastQuestions)}
+                              style={{
+                                width: '100%',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '12px 16px',
+                                background: 'var(--bg-secondary)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '8px',
+                                color: 'var(--text-primary)',
+                                fontWeight: '600',
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                                outline: 'none',
+                                transition: 'background 0.2s'
+                              }}
+                            >
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                📁 Past Sessions' History ({pastSessionQuestions.length})
+                              </span>
+                              <span>{showPastQuestions ? '▲' : '▼'}</span>
+                            </button>
+
+                            {showPastQuestions && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
+                                {pastSessionQuestions.map((q, idx) => renderQuestionCard(q, currentSessionQuestions.length + idx))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
-              )
-            })()}
+                {generatedQuestions.length > 6 && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                )}
+              </div>
+            ) : (
+              <div style={{
+                textAlign: 'center',
+                padding: '32px',
+                color: 'var(--text-secondary)',
+                fontSize: '13px'
+              }}>
+                No questions generated yet. Start recording to auto-generate questions.
+              </div>
+            )}
             </div>
             {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span style={{ fontSize: '20px' }}>🏆</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -2004,6 +2013,7 @@ function RoomDetailPage() {
           onGenerate={handleTextToQuestionsGenerate}
           roomSettings={roomSettings}
           isGenerating={isGeneratingFromText}
+          initialText={pastedText}
         />
       )}
 

@@ -326,7 +326,14 @@ function parseQuestions(responseText, expectedTypes) {
       createdAt: new Date().toISOString()
     }))
   } catch (error) {
-    console.error('Failed to parse questions:', error)
+    // Log the RAW model text so a failure is diagnosable instead of a silent []. Truncate huge
+    // responses (keep head + tail) so logs stay readable.
+    const raw = typeof responseText === 'string' ? responseText : String(responseText ?? '')
+    const shown = raw.length > 2000
+      ? raw.slice(0, 1000) + `\n…[${raw.length - 2000} chars truncated]…\n` + raw.slice(-1000)
+      : raw
+    console.error('Failed to parse questions:', error?.message || error)
+    console.error(`[gen:parse-fail] raw model response (${raw.length} chars): ${shown}`)
     return []
   }
 }
@@ -386,7 +393,7 @@ async function generateWithMiniMax(prompt) {
         }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 8000
     })
   })
 
@@ -397,7 +404,23 @@ async function generateWithMiniMax(prompt) {
   }
 
   const data = await response.json()
-  return data.choices?.[0]?.message?.content || ''
+  const choice = data.choices?.[0]
+  const content = choice?.message?.content || ''
+  const reasoning = choice?.message?.reasoning_content || ''
+  const finish = choice?.finish_reason
+  const usage = data.usage || {}
+  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
+  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
+  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  const text = content || reasoning
+  if (!text) {
+    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
+      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+  } else if (!content && reasoning) {
+    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+  }
+  return text
 }
 
 // OpenAI API call
@@ -417,7 +440,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
         }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 8000
     })
   })
 
@@ -447,7 +470,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
           content: prompt
         }
       ],
-      max_tokens: 2000,
+      max_tokens: 8000,
       temperature: 0.7
     })
   })
@@ -480,7 +503,7 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2000
+        maxOutputTokens: 8000
       }
     })
   })
@@ -508,7 +531,7 @@ export async function generateQuestions(transcript, cfg) {
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
 
   let responseText
 
@@ -533,8 +556,13 @@ export async function generateQuestions(transcript, cfg) {
       throw new Error(`Unknown provider: ${provider}`)
   }
 
+  console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
   const questions = parseQuestions(responseText, questionTypes)
-  console.log(`Generated ${questions.length} questions successfully`)
+  if (questions.length === 0) {
+    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
+  } else {
+    console.log(`Generated ${questions.length} questions successfully`)
+  }
 
   return questions
 }
