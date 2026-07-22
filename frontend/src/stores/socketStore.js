@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_URL, BASE_PATH } from '../config.js'
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
@@ -19,9 +19,12 @@ export const useSocketStore = create((set, get) => ({
       return
     }
 
+    // Build socket.io path: /socket.io in dev, /spandan/socket.io in production
+    const socketPath = BASE_PATH ? `${BASE_PATH}/socket.io` : '/socket.io'
+
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: socketPath,
       transports: ['websocket', 'polling']
     })
 

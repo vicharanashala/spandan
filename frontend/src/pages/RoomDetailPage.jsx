@@ -18,6 +18,8 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { LiveTranscriptPanel } from '../components/transcript'
+import reTranscriptStore from '../stores/transcriptStore'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -41,41 +43,44 @@ function RoomDetailPage() {
   const transcriptRef = useRef(null)
 
   // Real-time transcription state
-  const [isRecording, setIsRecording] = useState(false)
-  const [transcript, setTranscript] = useState('')
-  const [isTranscribing, setIsTranscribing] = useState(false)
-  const [modelStatus, setModelStatus] = useState('Ready')
+  const [isRecording, setIsRecording] = reState(false)
+  const [transcript, setTranscript] = reState('')
+  const [isTranscribing, setIsTranscribing] = reState(false)
+  const [modelStatus, setModelStatus] = reState('Ready')
 
+  // New transcript store â€” keeps the enriched panel in sync with legacy state
+  const { segments: transcriptSegments } = reTranscriptStore()
+  
   // MediaRecorder refs for server-side Whisper transcription
-  const mediaRecorderRef = useRef(null)
-  const audioChunksRef = useRef([])
-  const streamRef = useRef(null)
-  const transcriptionIntervalRef = useRef(null)
-  const finalTranscriptRef = useRef('')
-  const accumulatedTranscriptRef = useRef('')
+  const mediaRecorderRef = reRef(null)
+  const audioChunksRef = reRef([])
+  const streamRef = reRef(null)
+  const transcriptionIntervalRef = reRef(null)
+  const finalTranscriptRef = reRef('')
+  const accumulatedTranscriptRef = reRef('')
   // Aborts any in-flight generation poll (Phase 2D) when the page unmounts.
-  const genAbortRef = useRef(null)
-  const segmentTranscriptRef = useRef('')
-  const recordingActiveRef = useRef(false)
-  const selectedMimeTypeRef = useRef('audio/webm')
-  const mediaRecorderStopPromiseRef = useRef(null)
+  const genAbortRef = reRef(null)
+  const segmentTranscriptRef = reRef('')
+  const recordingActiveRef = reRef(false)
+  const selectedMimeTypeRef = reRef('audio/webm')
+  const mediaRecorderStopPromiseRef = reRef(null)
 
   // Transcription queue for ordered processing
-  const transcriptionQueueRef = useRef([])
-  const nextSequenceRef = useRef(0)
-  const pendingSequenceRef = useRef(0)
-  const isProcessingQueueRef = useRef(false)
+  const transcriptionQueueRef = reRef([])
+  const nextSequenceRef = reRef(0)
+  const pendingSequenceRef = reRef(0)
+  const isProcessingQueueRef = reRef(false)
 
   // Segment tracking
-  const [currentSegment, setCurrentSegment] = useState(0)
-  const [segmentTranscript, setSegmentTranscript] = useState('')
-  const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
-  const segmentTimerRef = useRef(null)
+  const [currentSegment, setCurrentSegment] = reState(0)
+  const [segmentTranscript, setSegmentTranscript] = reState('')
+  const [segmentTimeLeft, setSegmentTimeLeft] = reState(0)
+  const segmentTimerRef = reRef(null)
 
   // Question timer for teacher visibility
-  const [activeQuestion, setActiveQuestion] = useState(null)
-  const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
-  const questionTimerRef = useRef(null)
+  const [activeQuestion, setActiveQuestion] = reState(null)
+  const [questionTimeLeft, setQuestionTimeLeft] = reState(0)
+  const questionTimerRef = reRef(null)
 
 
   // Question generation
@@ -95,21 +100,20 @@ function RoomDetailPage() {
   const [isSegmentPaused, setIsSegmentPaused] = useState(false)
   const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
   // Pending review state - when timer hits zero and questions auto-generated
-  const [isPendingReview, setIsPendingReview] = useState(false)
-  const [generateQEnabled, setGenerateQEnabled] = useState(true) // fail-safe button
-  const [roomSettings, setRoomSettings] = useState({
+  const [isPendingReview, setIsPendingReview] = reState(false)
+  const [generateQEnabled, setGenerateQEnabled] = reState(true) // fail-safe button
+  const [roomSettings, setRoomSettings] = reState({
     segmentTime: 2,
     questionsPerSegment: 2,
     difficulty: 'medium',
-    questionProvider: 'minimax',
-    questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
+    questionProvider: 'google',
     timeToAnswer: 30,
     points: 100
   })
-  const [totalParticipants, setTotalParticipants] = useState(0)
-  const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [totalParticipants, setTotalParticipants] = reState(0)
+  const [answerCounts, setAnswerCounts] = reState({}) // questionId -> count
 
-  useEffect(() => {
+  reEffect(() => {
     if (token) {
       setAuthToken(token)
       loadRoom()
@@ -118,7 +122,7 @@ function RoomDetailPage() {
 
     return () => {
       if (room?.code) {
-        leaveRoom(room.code, user?._id)
+        leaveRoom(room.code, rer?._id)
       }
       stopRecording()
       if (segmentTimerRef.current) {
@@ -128,14 +132,14 @@ function RoomDetailPage() {
     }
   }, [roomId])
 
-  useEffect(() => {
-    if (room?.code && user?._id) {
-      joinRoom(room.code, user._id)
+  reEffect(() => {
+    if (room?.code && rer?._id) {
+      joinRoom(room.code, rer._id)
     }
-  }, [room?.code, user?._id])
+  }, [room?.code, rer?._id])
 
   // Listen for room:joined event
-  useEffect(() => {
+  reEffect(() => {
     if (!socket) return
 
     const handleRoomJoined = (data) => {
@@ -160,7 +164,7 @@ function RoomDetailPage() {
   // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
   // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
   // debounce so its heavy recompute stays out of the answer burst.
-  useEffect(() => {
+  reEffect(() => {
     if (!socket) return
     const handleCounts = (payload) => {
       if (payload?.counts) setAnswerCounts(payload.counts)
@@ -170,7 +174,7 @@ function RoomDetailPage() {
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
-  useEffect(() => {
+  reEffect(() => {
     if (!socket) return
 
   const startQuestionTimer = (question) => {
@@ -211,15 +215,28 @@ function RoomDetailPage() {
     }
   }, [socket, roomSettings.timeToAnswer])
 
-  // Auto-scroll transcription
-  useEffect(() => {
+  // Auto-scroll transcription (legacy textarea)
+  reEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
     }
   }, [transcript])
 
+  // Sync new transcript store â†’ legacy transcript string for question generation
+  reEffect(() => {
+    if (transcriptSegments.length === 0) return
+    const fullText = transcriptSegments
+      .map((seg) => {
+        const time = new Date(seg.timestamp).toLocaleTimeString()
+        return `[${time}] ${seg.speaker}: ${seg.text}`
+      })
+      .join('\n\n')
+    setTranscript(fullText)
+    finalTranscriptRef.current = fullText
+  }, [transcriptSegments])
+
   // Start segment timer when recording
-  useEffect(() => {
+  reEffect(() => {
     console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
     // Only start timer if recording AND not pending review (popup shown)
     if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
@@ -232,15 +249,15 @@ function RoomDetailPage() {
   }, [isRecording, roomSettings.segmentTime, isPendingReview])
 
   // Close settings dropdown when clicking outside
-  useEffect(() => {
+  reEffect(() => {
     const handleClickOutside = (event) => {
       if (settingsRef.current && !settingsRef.current.contains(event.target)) {
         setShowSettings(false)
       }
     }
 
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('moredown', handleClickOutside)
+    return () => document.removeEventListener('moredown', handleClickOutside)
   }, [])
 
 
@@ -279,7 +296,7 @@ function RoomDetailPage() {
 
     let secondsLeft = totalSeconds
     setSegmentTimeLeft(secondsLeft)
-    setIsSegmentPaused(false)
+    setIsSegmentPared(false)
 
     console.log('[TIMER] Creating interval for', totalSeconds, 'seconds')
     segmentTimerRef.current = setInterval(() => {
@@ -304,17 +321,17 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const pauseSegmentTimer = () => {
+  const pareSegmentTimer = () => {
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
       segmentTimerRef.current = null
     }
-    setIsSegmentPaused(true)
-    console.log('[TIMER] Timer paused at', segmentTimeLeft, 'seconds')
+    setIsSegmentPared(true)
+    console.log('[TIMER] Timer pared at', segmentTimeLeft, 'seconds')
   }
 
   const resumeSegmentTimer = () => {
-    if (isSegmentPaused && segmentTimeLeft > 0) {
+    if (isSegmentPared && segmentTimeLeft > 0) {
       console.log('[TIMER] Resuming timer from', segmentTimeLeft, 'seconds')
       startSegmentTimer(segmentTimeLeft)
     }
@@ -324,7 +341,7 @@ function RoomDetailPage() {
   const handleSegmentComplete = async () => {
     console.log('[SEGMENT] Timer hit zero - handling segment completion')
 
-    // PAUSE: stop recording and flush the final complete audio window before using the transcript.
+    // PAre: stop recording and flush the final complete audio window before using the transcript.
     await stopRecording()
 
     if (segmentTimerRef.current) {
@@ -337,11 +354,11 @@ function RoomDetailPage() {
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
     // Capture transcript
-    const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
+    const textTore = segmentTranscriptRef.current.trim() || transcript.trim()
 
-    if (!textToUse || textToUse.length < 50) {
+    if (!textTore || textTore.length < 50) {
       console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
+      // Show warning toast - re window.alert for now since no toast library imported
       window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
 
       // Resume for next segment
@@ -372,7 +389,7 @@ function RoomDetailPage() {
         generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        window.alert('Failed to generate questions after retry. You can re the manual "Generate Q" button.')
         setGenerateQEnabled(true) // Enable fail-safe manual button
         return
       }
@@ -391,33 +408,6 @@ function RoomDetailPage() {
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
-    setIsGeneratingQuestions(true)
-    // New controller per generation; aborted on unmount (see the [roomId] effect cleanup).
-    genAbortRef.current = new AbortController()
-    try {
-      // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
-      // job internally and returns the same { success, questions } shape either way.
-      const data = await requestQuestionGeneration(text, {
-        numQuestions: roomSettings.questionsPerSegment,
-        difficulty: roomSettings.difficulty,
-        provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
-      }, { signal: genAbortRef.current.signal })
-
-      setIsGeneratingQuestions(false)
-      if (data.success && data.questions && data.questions.length > 0) {
-        return data.questions.map(q => ({
-          ...q,
-          timeToAnswer: roomSettings.timeToAnswer,
-          points: roomSettings.points,
-          segmentIndex
-        }))
-      }
-      throw new Error(data.error || 'No questions generated')
-    } catch (error) {
-      setIsGeneratingQuestions(false)
-      throw error
-    }
   }
 
   // Handle question generation from pasted text (TextToQuestionsPopup)
@@ -431,14 +421,22 @@ function RoomDetailPage() {
         ? { MCQ: 0, TF: 100, MSQ: 0 }
         : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
 
-      genAbortRef.current = new AbortController()
-      // Helper handles both the sync response and the async (jobId → poll) path.
-      const data = await requestQuestionGeneration(text, {
-        numQuestions: roomSettings.questionsPerSegment,
-        difficulty: roomSettings.difficulty,
-        provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: typeMix
-      }, { signal: genAbortRef.current.signal })
+      const response = await fetch(`${API_URL}/questions/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          transcript: text,
+          config: {
+            numQuestions: roomSettings.questionsPerSegment,
+            difficulty: roomSettings.difficulty,
+            provider: roomSettings.questionProvider || 'google',
+            questionTypeMix: typeMix
+          }
+        })
+      })
 
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
@@ -543,7 +541,7 @@ function RoomDetailPage() {
   }
 
   // Process transcription queue in order
-  const processTranscriptionQueue = useCallback(async () => {
+  const processTranscriptionQueue = reCallback(async () => {
     if (isProcessingQueueRef.current) return
     isProcessingQueueRef.current = true
 
@@ -577,14 +575,14 @@ function RoomDetailPage() {
   }, [])
 
   // Add transcription result to queue
-  const addToTranscriptionQueue = useCallback((sequence, text) => {
+  const addToTranscriptionQueue = reCallback((sequence, text) => {
     transcriptionQueueRef.current.push({ sequence, text })
     // Sort by sequence to maintain order
     transcriptionQueueRef.current.sort((a, b) => a.sequence - b.sequence)
     processTranscriptionQueue()
   }, [processTranscriptionQueue])
 
-  const sendForTranscription = useCallback(async (audioBlob, sequence) => {
+  const sendForTranscription = reCallback(async (audioBlob, sequence) => {
     if (!audioBlob || audioBlob.size < 5000) {
       console.log(`[TRANSCRIPTION] Skipping small audio: ${audioBlob?.size || 0} bytes`)
       addToTranscriptionQueue(sequence, '')
@@ -616,7 +614,7 @@ function RoomDetailPage() {
     }
   }, [room?._id, addToTranscriptionQueue])
 
-  const startTranscriptionWindow = useCallback(() => {
+  const startTranscriptionWindow = reCallback(() => {
     if (!recordingActiveRef.current || !streamRef.current) return
 
     const sequence = nextSequenceRef.current++
@@ -666,7 +664,7 @@ function RoomDetailPage() {
 
     try {
       // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getrerMedia({ audio: true })
       streamRef.current = stream
 
       // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
@@ -768,8 +766,8 @@ function RoomDetailPage() {
   }
 
   const handleManualGenerateQuestions = async () => {
-    const textToUse = segmentTranscript.trim() || transcript
-    if (!textToUse) {
+    const textTore = segmentTranscript.trim() || transcript
+    if (!textTore) {
       alert('No transcript available to generate questions from.')
       return
     }
@@ -991,7 +989,7 @@ function RoomDetailPage() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
-      <Sidebar user={user} />
+      <Sidebar rer={rer} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
@@ -1039,7 +1037,7 @@ function RoomDetailPage() {
               cursor: 'pointer',
               fontSize: '18px'
             }}>
-              ←
+              ⬅️ 
             </button>
 
             <div style={{
@@ -1119,7 +1117,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  ⏳ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1147,7 +1145,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  ⏳ Time's Up!
                 </span>
               </div>
             )}
@@ -1170,7 +1168,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1192,7 +1190,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ✏️ Create Q
               </button>
             )}
 
@@ -1353,7 +1351,7 @@ function RoomDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'google'}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
@@ -1379,7 +1377,7 @@ function RoomDetailPage() {
               </div>
             </div>
 
-            {/* Transcription Card - 70% */}
+            {/* Live Transcript Panel - 70% */}
             <div style={{
               flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
               minWidth: isMobile ? 0 : '300px',
@@ -1392,7 +1390,8 @@ function RoomDetailPage() {
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              position: 'relative',
             }}>
               <div style={{
                 display: 'flex',
@@ -1433,13 +1432,13 @@ function RoomDetailPage() {
                     onClick={handleManualGenerateQuestions}
                     disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
                     style={{
-                      padding: '4px 12px',
+                      padding: '6px 14px',
                       background: '#3b82f6',
                       color: 'white',
                       border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: '500',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
                       cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
                       opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
                       display: 'flex',
@@ -1450,23 +1449,13 @@ function RoomDetailPage() {
                     {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
                   </button>
                 </div>
-              </div>
-
-              <div ref={transcriptRef} style={{
-                flex: 1,
-                fontSize: '15px',
-                lineHeight: '1.8',
-                color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                overflowY: 'auto'
-              }}>
-                {transcript ? transcript : (
-                  <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
-                  </span>
-                )}
-              </div>
+              )}
+              <LiveTranscriptPanel
+                roomId={room._id}
+                lang="en-US"
+                defaultOpen={true}
+                style={{ flex: 1 }}
+              />
             </div>
           </div>
 
@@ -1660,7 +1649,7 @@ function RoomDetailPage() {
             // Resume recording for next segment
             startRecording({ resetSegment: false })
 
-            // Timer will auto-start via the useEffect since isPendingReview is now false
+            // Timer will auto-start via the reEffect since isPendingReview is now false
           }}
           onClose={() => {
             // Teacher manually closed popup - same as complete for next segment

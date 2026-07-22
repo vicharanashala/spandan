@@ -28,6 +28,7 @@
     "rate-limit-redis": "^4.3.1",
     "redis": "^4.7.1",
     "socket.io": "^4.7.5",
+    "socket.io-client": "^4.8.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

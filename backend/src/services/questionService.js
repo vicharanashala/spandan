@@ -376,53 +376,6 @@ function parseOptions(options, type) {
   }))
 }
 
-// MiniMax API call
-async function generateWithMiniMax(prompt) {
-  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.minimaxApiKey}`
-    },
-    body: JSON.stringify({
-      model: 'MiniMax-M2.7',
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 8000
-    })
-  })
-
-
-  if (!response.ok) {
-    const errorData = await response.text()
-    throw new Error(`MiniMax API error: ${response.status} - ${errorData}`)
-  }
-
-  const data = await response.json()
-  const choice = data.choices?.[0]
-  const content = choice?.message?.content || ''
-  const reasoning = choice?.message?.reasoning_content || ''
-  const finish = choice?.finish_reason
-  const usage = data.usage || {}
-  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
-  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
-  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
-  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
-  const text = content || reasoning
-  if (!text) {
-    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
-  } else if (!content && reasoning) {
-    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
-  }
-  return text
-}
-
 // OpenAI API call
 async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -509,8 +462,17 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   })
 
   if (!response.ok) {
-    const errorData = await response.text()
-    throw new Error(`Google API error: ${response.status} - ${errorData}`)
+    const errorText = await response.text()
+    try {
+      const errorJson = JSON.parse(errorText)
+      if (response.status === 429) {
+        throw new Error('Gemini API Quota Exceeded or Rate Limited. Please try again later or check your API key billing.')
+      }
+      throw new Error(`Google API error: ${errorJson.error?.message || response.statusText}`)
+    } catch (e) {
+      if (e.message.includes('Quota Exceeded')) throw e
+      throw new Error(`Google API error: ${response.status} - ${errorText}`)
+    }
   }
 
   const data = await response.json()
@@ -519,7 +481,7 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'google', questionTypeMix = null } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -536,10 +498,6 @@ export async function generateQuestions(transcript, cfg) {
   let responseText
 
   switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
     case 'openai':
       if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
       responseText = await generateWithOpenAI(prompt)
@@ -549,8 +507,52 @@ export async function generateQuestions(transcript, cfg) {
       responseText = await generateWithAnthropic(prompt)
       break
     case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      if (!config.googleApiKey) throw new Error('Google Gemini API key not configured')
       responseText = await generateWithGoogle(prompt)
+      break
+    case 'mock':
+      // Return a predefined JSON response for testing purposes
+      responseText = JSON.stringify({
+        questions: questionTypes.map((type, i) => {
+          if (type === 'MCQ') {
+            return {
+              type: 'MCQ',
+              question: `Mock Multiple Choice Question ${i + 1} (Difficulty: ${difficulty}) based on transcript.`,
+              options: [
+                { text: 'Correct Answer', isCorrect: true },
+                { text: 'Wrong Option 1', isCorrect: false },
+                { text: 'Wrong Option 2', isCorrect: false },
+                { text: 'Wrong Option 3', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for MCQ.'
+            }
+          } else if (type === 'TF') {
+            return {
+              type: 'TF',
+              question: `Mock True/False Question ${i + 1} (Difficulty: ${difficulty}).`,
+              options: [
+                { text: 'True', isCorrect: true },
+                { text: 'False', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for TF.'
+            }
+          } else {
+            return {
+              type: 'MSQ',
+              question: `Mock Multiple Select Question ${i + 1} (Difficulty: ${difficulty}).`,
+              options: [
+                { text: 'Correct Option A', isCorrect: true },
+                { text: 'Correct Option B', isCorrect: true },
+                { text: 'Wrong Option A', isCorrect: false },
+                { text: 'Wrong Option B', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for MSQ.'
+            }
+          }
+        })
+      })
+      // Add a slight delay to simulate network request
+      await new Promise(resolve => setTimeout(resolve, 1000))
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)

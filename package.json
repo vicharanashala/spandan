@@ -5,15 +5,17 @@
   "description": "Spandan - Poll Question Generator",
   "workspaces": [
     "frontend",
-    "backend"
+    "backend",
+    "ai-service"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:ai\"",
     "dev:frontend": "npm run dev --workspace=frontend",
     "dev:backend": "npm run dev --workspace=backend",
+    "dev:ai": "npm run dev --workspace=ai-service",
     "build": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
-    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
+    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend && npm install --workspace=ai-service"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

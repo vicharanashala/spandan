@@ -5,7 +5,6 @@ export const config = {
   smtpEmail: process.env.SMTP_EMAIL || '',
   smtpPassword: process.env.SMTP_PASSWORD || '',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
-  minimaxApiKey: process.env.MINIMAX_API_KEY || '',
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   googleApiKey: process.env.GOOGLE_API_KEY || '',
@@ -13,10 +12,10 @@ export const config = {
 }
 
 export const AI_PROVIDERS = {
-  minimax: {
-    name: 'MiniMax',
-    enabled: !!config.minimaxApiKey,
-    icon: '🔵'
+  google: {
+    name: 'Gemini',
+    enabled: !!config.googleApiKey,
+    icon: '✨'
   },
   openai: {
     name: 'OpenAI',
@@ -28,9 +27,9 @@ export const AI_PROVIDERS = {
     enabled: !!config.anthropicApiKey,
     icon: '🟠'
   },
-  google: {
-    name: 'Gemini',
-    enabled: !!config.googleApiKey,
-    icon: '🔴'
+  mock: {
+    name: 'Mock Data (Testing)',
+    enabled: true,
+    icon: '🧪'
   }
-}
+}

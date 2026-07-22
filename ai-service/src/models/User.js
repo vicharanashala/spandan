@@ -1,11 +1,5 @@
 import mongoose from 'mongoose'
-// @node-rs/bcrypt is a Rust implementation whose hash/compare run on libuv's background
-// thread pool, so password hashing no longer blocks the single event loop during login
-// storms. Output is standard bcrypt and cross-compatible with the previous bcryptjs
-// hashes, so existing passwords keep working (no reset needed).
-import { hash, compare } from '@node-rs/bcrypt'
-
-const BCRYPT_COST = Number(process.env.BCRYPT_COST) || 10
+import bcrypt from 'bcryptjs'
 
 const userSchema = new mongoose.Schema({
   name: {
@@ -120,7 +114,8 @@ userSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next()
   
   try {
-    this.password = await hash(this.password, BCRYPT_COST)
+    const salt = await bcrypt.genSalt(10)
+    this.password = await bcrypt.hash(this.password, salt)
     next()
   } catch (error) {
     next(error)
@@ -129,7 +124,7 @@ userSchema.pre('save', async function(next) {
 
 // Compare password method
 userSchema.methods.comparePassword = async function(candidatePassword) {
-  return compare(candidatePassword, this.password)
+  return bcrypt.compare(candidatePassword, this.password)
 }
 
 // Remove password from JSON output
