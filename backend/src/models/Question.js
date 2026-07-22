@@ -8,7 +8,7 @@ const questionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['MCQ', 'TF', 'MSQ'],
+    enum: ['MCQ', 'TF', 'MSQ', 'SHORT'],
     required: true
   },
   question: {
@@ -47,6 +47,14 @@ const questionSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+
+  // Precomputed Question-Level Aggregates
+  stats: {
+    answerDistribution: { type: Map, of: Number, default: {} }, // e.g., { "Option1": 15, "Option2": 2 }
+    averageTTAMs: { type: Number, default: 0 },
+    correctPercentage: { type: Number, default: 0 },
+    tabSwitchesDuringQuestion: { type: Number, default: 0 }
   }
 })
 

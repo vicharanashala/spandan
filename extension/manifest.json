@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Spandan Lockdown & Capture",
+  "version": "1.0",
+  "description": "Enforces network lockdown during exams and captures teacher session audio/video.",
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "desktopCapture",
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Spandan Controls"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://localhost/*"],
+      "js": ["content.js"]
+    }
+  ]
+}

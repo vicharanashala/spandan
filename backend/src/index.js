@@ -2,8 +2,6 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
-import { createServer } from 'http'
-import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
@@ -11,6 +9,8 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { computeRanked } from './services/leaderboardAgg.js'
+import compression from 'compression'
+import morgan from 'morgan'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -211,7 +211,7 @@ async function broadcastLeaderboard(roomId) {
 async function scheduleLeaderboardRefresh(roomId) {
   const id = String(roomId)
   if (redis.enabled) {
-    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => {})
+    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => { })
     ensureLbChecker(id)
     return
   }
@@ -323,8 +323,21 @@ const leaderboardLimiter = rateLimit({
 
 // Middleware
 app.use(helmet())
+app.use(compression())
+
+// HTTP Logging in production
+if (process.env.NODE_ENV !== 'test') {
+  app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
+}
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true)
+    if (CORS_ORIGINS.includes(origin)) return callback(null, true)
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true)
+    }
+    callback(new Error('Not allowed by CORS'))
+  },
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
@@ -347,8 +360,8 @@ app.use('/api/research', researchRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     version: '0.5.0',
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
@@ -358,55 +371,18 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-
-// Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
-// handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
-// Throws on an invalid/expired token.
-async function authenticateSocket(socket, token) {
-  const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
-  const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
-  socket.data.userId = decoded.userId
-  socket.data.role = u?.role || null
-  connectedUsers.set(socket.id, decoded.userId)
-  return socket.data
-}
-
-// Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
-async function verifyRoomOwner(socket, roomCode) {
-  if (socket.data?.role !== 'teacher' || !roomCode) return false
-  try {
-    const Room = (await import('./models/Room.js')).default
-    const room = await Room.findByCode(roomCode)
-    return !!room && room.teacher.toString() === String(socket.data.userId)
-  } catch {
-    return false
-  }
-}
-
-// Authenticate at connection time from the handshake token (client already sends auth:{token}),
-// so socket.data is populated BEFORE any event fires (no race). Unauthenticated sockets may still
-// connect, but privileged handlers reject them.
-io.use(async (socket, next) => {
-  const token = socket.handshake?.auth?.token
-  if (token) {
-    try { await authenticateSocket(socket, token) } catch { /* leave unauthenticated */ }
-  }
-  next()
-})
-
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
 
-  // Re-authenticate on demand (also covers clients that auth via this event, not the handshake).
-  socket.on('authenticate', async (data) => {
+  // Authenticate socket
+  socket.on('authenticate', (data) => {
     try {
-      if (!data?.token) {
+      if (!data.token) {
         socket.emit('authenticated', { success: false, error: 'No token provided' })
         return
       }
-      await authenticateSocket(socket, data.token)
+      const decoded = jwt.verify(data.token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      connectedUsers.set(socket.id, decoded.userId)
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -417,77 +393,112 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Join room — identity is taken from the AUTHENTICATED socket, not the client payload
-  // (so a client can't join/register as another user).
-  socket.on('room:join', async ({ roomCode }) => {
-    const userId = socket.data?.userId
-    const role = socket.data?.role
-    if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
-    if (!roomCode) return
+  // Join room
+  socket.on('room:join', async ({ roomCode, userId }) => {
     try {
       const Room = (await import('./models/Room.js')).default
+      const User = (await import('./models/User.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       socket.join(roomCode)
+      console.log(`Client ${socket.id} (user: ${userId}) joining room ${roomCode}`)
+
+      // Find user and room
+      const user = await User.findById(userId)
       const room = await Room.findByCode(roomCode)
 
       let participantCount = 0
-      if (room) {
-        // Only students are added to RoomMember (not teachers)
-        if (role === 'student') {
+
+      if (user && room) {
+        // Only students get added to RoomMember (not teachers)
+        if (user.role === 'student') {
+          // Upsert: add student to room members if not already there
           await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: userId },
-            { roomId: room._id, studentId: userId, joinedAt: new Date() },
+            { roomId: room._id, studentId: user._id },
+            { roomId: room._id, studentId: user._id, joinedAt: new Date() },
             { upsert: true, new: true }
           )
+          console.log(`Student ${userId} added to room members for room ${roomCode}`)
         }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+
+        // Count participants from RoomMember (excludes teacher)
+        const memberCount = await RoomMember.countDocuments({ roomId: room._id })
+        participantCount = memberCount
       }
 
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+      io.to(roomCode).emit('room:joined', {
+        roomCode,
+        userId,
+        participants: participantCount
+      })
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
+      io.to(roomCode).emit('room:joined', {
+        roomCode,
+        userId,
+        participants: 0
+      })
     }
   })
 
-  // Leave room — identity from the authenticated socket.
-  socket.on('room:leave', async ({ roomCode }) => {
-    const userId = socket.data?.userId
-    const role = socket.data?.role
-    if (!roomCode) return
+  // Leave room
+  socket.on('room:leave', async ({ roomCode, userId }) => {
     try {
       const Room = (await import('./models/Room.js')).default
+      const User = (await import('./models/User.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       socket.leave(roomCode)
+      console.log(`Client ${socket.id} (user: ${userId}) left room ${roomCode}`)
+
+      const user = await User.findById(userId)
       const room = await Room.findByCode(roomCode)
 
       let participantCount = 0
-      if (room) {
-        if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
-        }
+
+      if (user && room && user.role === 'student') {
+        // Remove student from room members
+        await RoomMember.deleteOne({ roomId: room._id, studentId: user._id })
+
+        // Recount remaining participants
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      io.to(roomCode).emit('room:left', {
+        roomCode,
+        participants: participantCount
+      })
     } catch (error) {
       console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
+      io.to(roomCode).emit('room:left', {
+        roomCode,
+        participants: 0
+      })
     }
   })
 
-  // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
-  // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) and the deferred
-  // leaderboard are now emitted server-side from the authenticated REST submit handler — see the
-  // scheduleCountsBroadcast()/scheduleLeaderboardRefresh() broadcasters above and routes/responses.js.
+  // Submit response (real-time)
+  socket.on('response:submit', (data) => {
+    io.to(data.roomCode).emit('response:new', {
+      questionId: data.questionId,
+      studentId: data.studentId,
+      selectedOption: data.selectedOption,
+      responseTime: data.responseTime
+    })
+  })
 
-  // Question events — teacher-only and restricted to the room's OWNER (server-verified),
-  // so a student can no longer forge question start/end or push a fake question to the room.
-  socket.on('question:start', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+  // Points update event (emitted after response is saved with calculated points)
+  socket.on('points:update', (data) => {
+    io.to(data.roomCode).emit('points:updated', {
+      questionId: data.questionId,
+      studentId: data.studentId,
+      points: data.points,
+      isCorrect: data.isCorrect
+    })
+  })
+
+  // Question events
+  socket.on('question:start', (data) => {
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
@@ -496,23 +507,28 @@ io.on('connection', (socket) => {
     })
   })
 
-  socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+  socket.on('question:end', (data) => {
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
   })
 
-  // New question pushed by the teacher (manually created)
-  socket.on('new_question', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
-      console.warn('new_question rejected — not the room owner:', socket.id)
-      return
+  // New question from teacher (manually created)
+  socket.on('new_question', (data) => {
+    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
+    const roomCode = data.roomCode
+    const question = data.question
+    if (roomCode && question) {
+      io.to(roomCode).emit('new_question', question)
+    } else {
+      console.error('new_question event missing roomCode or question:', data)
     }
-    if (data.question) {
-      io.to(data.roomCode).emit('new_question', data.question)
-    }
+  })
+
+  // Leaderboard update
+  socket.on('leaderboard:update', (data) => {
+    io.to(data.roomCode).emit('leaderboard:updated', data)
   })
 
   socket.on('disconnect', () => {
@@ -525,7 +541,7 @@ io.on('connection', (socket) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err)
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
@@ -536,11 +552,22 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' })
 })
 
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  })
+})
+
+const PORT = process.env.PORT || 3001
+
 // MongoDB connection
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
+
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -550,7 +577,7 @@ const connectDB = async () => {
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
       minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
-    
+
     console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
@@ -558,18 +585,17 @@ const connectDB = async () => {
   }
 }
 
-const PORT = process.env.PORT || 3001
-
 // Start server
 const startServer = async () => {
   await connectDB()
-  
-  httpServer.listen(PORT, () => {
+
+  app.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
+    startCleanupRoutine()
   })
 }
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app }

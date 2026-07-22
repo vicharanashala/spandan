@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { API_URL } from '../config.js'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
-import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -309,6 +308,7 @@ function DashboardPage() {
               }}>
                 {rooms.filter(r => !r.endedAt).map((room) => (
                   <div
+                    className="glass-panel interactive-hover"
                     key={room._id}
                     onClick={() => navigate(`/teacher/room/${room._id}`)}
                     onMouseEnter={(e) => {

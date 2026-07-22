@@ -96,6 +96,28 @@ const userSchema = new mongoose.Schema({
   lastLogin: {
     type: Date,
     default: null
+  },
+  // LMS Integrations
+  lmsIntegrations: {
+    googleClassroom: {
+      accessToken: String,
+      refreshToken: String,
+      expiryDate: Number
+    }
+  },
+  // Precomputed Student Aggregates (updated on session end)
+  studentStats: {
+    lifetimeScore: { type: Number, default: 0 },
+    questionsAnswered: { type: Number, default: 0 },
+    correctCount: { type: Number, default: 0 },
+    
+    // Weekly Rollup View Data (Bucket pattern)
+    weeklyRollup: [{
+      weekStartDate: Date,
+      questionsAnswered: Number,
+      accuracyPercentage: Number,
+      averageTTAMs: Number
+    }]
   }
 }, {
   timestamps: true

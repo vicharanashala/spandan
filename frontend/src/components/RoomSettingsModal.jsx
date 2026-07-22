@@ -243,7 +243,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             Question Generator
           </label>
           <select
-            value={localSettings.questionProvider || 'minimax'}
+            value={localSettings.questionProvider || 'google'}
             onChange={(e) => setLocalSettings(prev => ({ ...prev, questionProvider: e.target.value }))}
             style={{
               width: '100%',

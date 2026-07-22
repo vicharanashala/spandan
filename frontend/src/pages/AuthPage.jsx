@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
-import useSocketStore from '../stores/socketStore'
 import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
@@ -60,11 +60,10 @@ function AuthPage() {
     }))
   }
 
+  // Force logout when visiting the auth page to ensure portal always opens to login
   useEffect(() => {
-    if (isAuthenticated && token) {
-      navigate(user?.role === 'teacher' ? '/teacher' : '/student')
-    }
-  }, [isAuthenticated, token, navigate, user])
+    logout()
+  }, [logout])
 
   const validateForm = () => {
     if (!isLogin && formData.password !== formData.confirmPassword) {
@@ -684,15 +683,9 @@ function AuthPage() {
               </div>
             </form>
           )}
-        </div>
+        </motion.div>
       </div>
 
-      <style>{`
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   )
 }

@@ -208,7 +208,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         </>
       )
     }
-    
+
     return (
       <div key={entry.studentId} style={{
         display: 'flex',
@@ -222,12 +222,12 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         boxSizing: 'border-box',
         flexShrink: 0,
         background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
-                     entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
-                     entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' : 
-                     isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
+          entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
+            entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
+              isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
-        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` : 
-               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
+        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` :
+          isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
       }}>
         <span style={{
           width: '28px',

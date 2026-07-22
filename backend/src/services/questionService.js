@@ -27,11 +27,11 @@ export const createQuestion = async (data, createdBy) => {
 
 export const getQuestionById = async (id) => {
   const question = await Question.findById(id).populate('createdBy', 'name email')
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   return question
 }
 
@@ -41,38 +41,38 @@ export const getQuestionsByRoom = async (roomId) => {
 
 export const updateQuestion = async (questionId, updates, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Check ownership
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to update this question')
   }
-  
+
   Object.assign(question, updates)
   await question.save()
-  
+
   return question
 }
 
 export const deleteQuestion = async (questionId, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to delete this question')
   }
-  
+
   await Question.findByIdAndDelete(questionId)
-  
+
   // Also delete related responses
   await Response.deleteMany({ question: questionId })
-  
+
   return true
 }
 
@@ -82,36 +82,36 @@ export const setActiveQuestion = async (roomId, questionId) => {
     { roomId: roomId },
     { $set: { isActive: false } }
   )
-  
+
   // Activate the specified question
   const question = await Question.findByIdAndUpdate(
     questionId,
     { $set: { isActive: true } },
     { new: true }
   )
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Update room's currentQuestion
   await Room.findByIdAndUpdate(roomId, { currentQuestion: questionId })
-  
+
   return question
 }
 
 export const submitResponse = async (data, studentId) => {
   const { questionId, selectedOption, responseTime } = data
-  
+
   // Get the question to check correct answer
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   const isCorrect = selectedOption === question.correctOptionIndex
-  
+
   const response = new Response({
     question: questionId,
     roomId: question.roomId,
@@ -122,7 +122,7 @@ export const submitResponse = async (data, studentId) => {
   })
 
   await response.save()
-  
+
   return response
 }
 
@@ -140,9 +140,9 @@ export const getResponsesByRoom = async (roomId) => {
 
 export const getQuestionResults = async (questionId) => {
   const responses = await Response.find({ question: questionId })
-  
+
   const totalResponses = responses.length
-  
+
   if (totalResponses === 0) {
     return {
       totalResponses: 0,
@@ -150,19 +150,19 @@ export const getQuestionResults = async (questionId) => {
       correctPercentage: 0
     }
   }
-  
+
   const results = {}
   let correctCount = 0
-  
+
   responses.forEach(response => {
     const option = response.selectedOption
     results[option] = (results[option] || 0) + 1
-    
+
     if (response.isCorrect) {
       correctCount++
     }
   })
-  
+
   return {
     totalResponses,
     results,
@@ -173,7 +173,7 @@ export const getQuestionResults = async (questionId) => {
 // Question Type Mix helper
 function getQuestionTypeMix(numQuestions) {
   const types = []
-  
+
   if (numQuestions === 1) {
     types.push('MCQ')
   } else if (numQuestions === 2) {
@@ -184,12 +184,12 @@ function getQuestionTypeMix(numQuestions) {
     const mcqCount = Math.round(numQuestions * 0.5)
     const tfCount = Math.round(numQuestions * 0.3)
     const msqCount = numQuestions - mcqCount - tfCount
-    
+
     for (let i = 0; i < mcqCount; i++) types.push('MCQ')
     for (let i = 0; i < tfCount; i++) types.push('TF')
     for (let i = 0; i < msqCount; i++) types.push('MSQ')
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -206,18 +206,18 @@ function generateFromMix(questionTypeMix, numQuestions) {
   const mcqCount = Math.round((MCQ / total) * numQuestions)
   const tfCount = Math.round((TF / total) * numQuestions)
   const msqCount = numQuestions - mcqCount - tfCount
-  
+
   const types = []
   for (let i = 0; i < mcqCount; i++) types.push('MCQ')
   for (let i = 0; i < tfCount; i++) types.push('TF')
   for (let i = 0; i < msqCount; i++) types.push('MSQ')
-  
+
   // Shuffle to mix them up nicely
   for (let i = types.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [types[i], types[j]] = [types[j], types[i]]
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -302,20 +302,20 @@ IMPORTANT:
 function parseQuestions(responseText, expectedTypes) {
   try {
     let jsonStr = responseText
-    
+
     const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
     if (jsonMatch) {
       jsonStr = jsonMatch[1]
     }
-    
+
     const objMatch = jsonStr.match(/\{[\s\S]*\}/)
     if (!objMatch) {
       throw new Error('No JSON found in response')
     }
-    
+
     const parsed = JSON.parse(objMatch[0])
     const questions = parsed.questions || []
-    
+
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
@@ -345,7 +345,7 @@ function parseOptions(options, type) {
     if (Array.isArray(options) && options.length === 2) {
       const trueIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('true'))
       const falseIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('false'))
-      
+
       if (trueIdx !== -1 && falseIdx !== -1) {
         // Return with correct marking preserved
         return [
@@ -509,8 +509,17 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   })
 
   if (!response.ok) {
-    const errorData = await response.text()
-    throw new Error(`Google API error: ${response.status} - ${errorData}`)
+    const errorText = await response.text()
+    try {
+      const errorJson = JSON.parse(errorText)
+      if (response.status === 429) {
+        throw new Error('Gemini API Quota Exceeded or Rate Limited. Please try again later or check your API key billing.')
+      }
+      throw new Error(`Google API error: ${errorJson.error?.message || response.statusText}`)
+    } catch (e) {
+      if (e.message.includes('Quota Exceeded')) throw e
+      throw new Error(`Google API error: ${response.status} - ${errorText}`)
+    }
   }
 
   const data = await response.json()
@@ -519,14 +528,14 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'google', questionTypeMix = null } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
   }
 
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
@@ -536,10 +545,6 @@ export async function generateQuestions(transcript, cfg) {
   let responseText
 
   switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
     case 'openai':
       if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
       responseText = await generateWithOpenAI(prompt)
@@ -549,8 +554,52 @@ export async function generateQuestions(transcript, cfg) {
       responseText = await generateWithAnthropic(prompt)
       break
     case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      if (!config.googleApiKey) throw new Error('Google Gemini API key not configured')
       responseText = await generateWithGoogle(prompt)
+      break
+    case 'mock':
+      // Return a predefined JSON response for testing purposes
+      responseText = JSON.stringify({
+        questions: questionTypes.map((type, i) => {
+          if (type === 'MCQ') {
+            return {
+              type: 'MCQ',
+              question: `Mock Multiple Choice Question ${i + 1} (Difficulty: ${difficulty}) based on transcript.`,
+              options: [
+                { text: 'Correct Answer', isCorrect: true },
+                { text: 'Wrong Option 1', isCorrect: false },
+                { text: 'Wrong Option 2', isCorrect: false },
+                { text: 'Wrong Option 3', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for MCQ.'
+            }
+          } else if (type === 'TF') {
+            return {
+              type: 'TF',
+              question: `Mock True/False Question ${i + 1} (Difficulty: ${difficulty}).`,
+              options: [
+                { text: 'True', isCorrect: true },
+                { text: 'False', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for TF.'
+            }
+          } else {
+            return {
+              type: 'MSQ',
+              question: `Mock Multiple Select Question ${i + 1} (Difficulty: ${difficulty}).`,
+              options: [
+                { text: 'Correct Option A', isCorrect: true },
+                { text: 'Correct Option B', isCorrect: true },
+                { text: 'Wrong Option A', isCorrect: false },
+                { text: 'Wrong Option B', isCorrect: false }
+              ],
+              explanation: 'This is a mocked explanation for MSQ.'
+            }
+          }
+        })
+      })
+      // Add a slight delay to simulate network request
+      await new Promise(resolve => setTimeout(resolve, 1000))
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)

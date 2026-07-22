@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
-import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
@@ -18,12 +17,13 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { LiveTranscriptPanel } from '../components/transcript'
+import useTranscriptStore from '../stores/transcriptStore'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
   const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
@@ -45,6 +45,9 @@ function RoomDetailPage() {
   const [transcript, setTranscript] = useState('')
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [modelStatus, setModelStatus] = useState('Ready')
+
+  // New transcript store â€” keeps the enriched panel in sync with legacy state
+  const { segments: transcriptSegments } = useTranscriptStore()
 
   // MediaRecorder refs for server-side Whisper transcription
   const mediaRecorderRef = useRef(null)
@@ -101,13 +104,18 @@ function RoomDetailPage() {
     segmentTime: 2,
     questionsPerSegment: 2,
     difficulty: 'medium',
-    questionProvider: 'minimax',
+    questionProvider: 'google',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
     points: 100
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // Synchronize participants from hook
+  useEffect(() => {
+    setTotalParticipants(participants)
+  }, [participants])
 
   useEffect(() => {
     if (token) {
@@ -117,9 +125,6 @@ function RoomDetailPage() {
     }
 
     return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user?._id)
-      }
       stopRecording()
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
@@ -141,7 +146,6 @@ function RoomDetailPage() {
     const handleRoomJoined = (data) => {
       console.log('Teacher joined room successfully')
       setIsRoomJoined(true)
-      if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
 
     const handleRoomLeft = (data) => {
@@ -173,34 +177,34 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -217,6 +221,19 @@ function RoomDetailPage() {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
     }
   }, [transcript])
+
+  // Sync new transcript store â†’ legacy transcript string for question generation
+  useEffect(() => {
+    if (transcriptSegments.length === 0) return
+    const fullText = transcriptSegments
+      .map((seg) => {
+        const time = new Date(seg.timestamp).toLocaleTimeString()
+        return `[${time}] ${seg.speaker}: ${seg.text}`
+      })
+      .join('\n\n')
+    setTranscript(fullText)
+    finalTranscriptRef.current = fullText
+  }, [transcriptSegments])
 
   // Start segment timer when recording
   useEffect(() => {
@@ -660,7 +677,7 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
@@ -738,10 +755,10 @@ function RoomDetailPage() {
     await processTranscriptionQueue()
 
     // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -825,13 +842,15 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to students via socket
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        // Push via polling API
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       }
     } catch (error) {
       console.error('Failed to save question:', error)
@@ -868,12 +887,14 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       }
     } catch (error) {
       console.error('Failed to save text question:', error)
@@ -912,18 +933,15 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to socket for students to receive (include roomCode)
-        console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
-        console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-          console.log('new_question event emitted successfully')
-        } else {
-          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
-        }
+        // Push via polling API
+        pushQuestion({
+          questionId: data.question._id,
+          text: data.question.question,
+          type: data.question.type,
+          options: data.question.options,
+          duration: (data.question.timeToAnswer || roomSettings.timeToAnswer || 30) * 1000
+        })
+        startQuestionTimer(data.question)
       } else {
         const errorData = await response.json()
         console.error('Failed to save question:', errorData)
@@ -1039,7 +1057,7 @@ function RoomDetailPage() {
               cursor: 'pointer',
               fontSize: '18px'
             }}>
-              ←
+              ⬅️
             </button>
 
             <div style={{
@@ -1119,7 +1137,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  ⏳ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1147,7 +1165,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  ⏳ Time's Up!
                 </span>
               </div>
             )}
@@ -1170,7 +1188,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1192,7 +1210,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ✏️ Create Q
               </button>
             )}
 
@@ -1288,8 +1306,8 @@ function RoomDetailPage() {
                   background: isEnded
                     ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
                     : (isRecording
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
+                      ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                      : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
                   cursor: isEnded ? 'not-allowed' : 'pointer',
@@ -1306,13 +1324,13 @@ function RoomDetailPage() {
               >
                 {isRecording ? (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
                 ) : (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
                   </svg>
                 )}
               </button>
@@ -1353,7 +1371,7 @@ function RoomDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'google'}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Time/Answer:</span>
@@ -1379,7 +1397,7 @@ function RoomDetailPage() {
               </div>
             </div>
 
-            {/* Transcription Card - 70% */}
+            {/* Live Transcript Panel - 70% */}
             <div style={{
               flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
               minWidth: isMobile ? 0 : '300px',
@@ -1392,7 +1410,8 @@ function RoomDetailPage() {
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              position: 'relative',
             }}>
               <div style={{
                 display: 'flex',
@@ -1433,13 +1452,13 @@ function RoomDetailPage() {
                     onClick={handleManualGenerateQuestions}
                     disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
                     style={{
-                      padding: '4px 12px',
+                      padding: '6px 14px',
                       background: '#3b82f6',
                       color: 'white',
                       border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: '500',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
                       cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
                       opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
                       display: 'flex',
@@ -1450,23 +1469,13 @@ function RoomDetailPage() {
                     {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
                   </button>
                 </div>
-              </div>
-
-              <div ref={transcriptRef} style={{
-                flex: 1,
-                fontSize: '15px',
-                lineHeight: '1.8',
-                color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                overflowY: 'auto'
-              }}>
-                {transcript ? transcript : (
-                  <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
-                  </span>
-                )}
-              </div>
+              )}
+              <LiveTranscriptPanel
+                roomId={room._id}
+                lang="en-US"
+                defaultOpen={true}
+                style={{ flex: 1 }}
+              />
             </div>
           </div>
 
@@ -1506,86 +1515,117 @@ function RoomDetailPage() {
                     alignItems: 'flex-start',
                     gap: '12px'
                   }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
+                    {generatedQuestions.length}
+                  </span>
+                )}
+              </div>
+
+              {generatedQuestions.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {generatedQuestions.map((q, index) => (
+                    <div key={q._id || index} style={{
+                      padding: '14px 16px',
+                      background: 'var(--bg-primary)',
+                      borderRadius: '10px',
+                      border: '1px solid var(--border-color)',
                       display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
+                      alignItems: 'flex-start',
+                      gap: '12px'
                     }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
+                      <span style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: '#3b82f6',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        flexShrink: 0
+                      }}>
+                        {index + 1}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                            color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                          }}>
+                            {q.type}
+                          </span>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: '#fef3c7',
+                            color: '#92400e'
+                          }}>
+                            {q.points || 100} pts
+                          </span>
+                        </div>
+                        <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                          {q.question}
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {(q.options || []).map((opt, optIdx) => {
+                            const letter = String.fromCharCode(65 + optIdx)
+                            return (
+                              <div key={optIdx} style={{
+                                padding: '8px 12px',
+                                background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                borderRadius: '6px',
                                 display: 'flex',
                                 alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
+                                gap: '8px',
+                                fontSize: '13px',
+                                color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
                               }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
+                                <span style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '50%',
+                                  background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                  color: 'white',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '11px',
+                                  fontWeight: '700',
+                                  flexShrink: 0
+                                }}>
+                                  {letter}
+                                </span>
+                                <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                  {opt.text}
+                                </span>
+                                {opt.isCorrect && (
+                                  <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                          color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                        }}>
+                          {answerCounts[q._id] || 0}/{totalParticipants}
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
@@ -1627,7 +1667,7 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <Leaderboard roomId={room?._id} token={token} />
             </div>
           </div>
         </div>

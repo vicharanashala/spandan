@@ -25,49 +25,24 @@ function StudentDashboard() {
     average: 0
   })
 
-  useEffect(() => {
-    if (token) {
-      setAuthToken(token)
-      fetchStudentStats()
-      fetchActiveRooms()
-    }
-  }, [token])
-
-  const fetchStudentStats = async () => {
+  const fetchStudentData = async () => {
     try {
-      const res = await fetch(`${API_URL}/responses/stats/student/${user._id}`, {
+      const { token } = useAuthStore.getState();
+      const res = await fetch(`${API_URL}/dashboard/student`, {
         headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      if (data.stats) {
-        setStats({
-          totalRooms: data.stats.totalRooms || 0,
-          pollsTaken: data.stats.pollsTaken || 0,
-          pollsMissed: data.stats.pollsMissed || 0,
-          average: data.stats.average || 0
-        })
-      }
-    } catch (err) {
-      console.error('Failed to fetch student stats:', err)
-    }
-  }
+      });
+      if (!res.ok) throw new Error('Backend down');
 
-  const handleJoinRoom = async () => {
-    if (!roomCode.trim()) return
-    setIsJoining(true)
-    try {
-      // First validate the room exists via API
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      // Then join via socket
-      joinRoom(room.code, user._id)
-      // Then navigate to session
-      navigate(`/student/session/${room.code}`)
-    } catch (err) {
-      console.error('Failed to join room:', err)
+      const realData = await res.json();
+      setData(realData);
+    } catch (e) {
+      console.error(e);
+      // Fallback to empty real data so the page doesn't crash entirely if no data exists yet
+      setData({ studentStats: { lifetimeScore: 0, questionsAnswered: 0, correctCount: 0, weeklyRollup: [] } });
     } finally {
-      setIsJoining(false)
+      setLoading(false);
     }
-  }
+  };
 
   const statCards = [
     { icon: '📚', value: stats.totalRooms, label: 'Total Rooms', tint: '#3b82f6' },
@@ -305,14 +280,29 @@ function StudentDashboard() {
                       🔄 Rejoin Room →
                     </button>
                   </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+                </td>
+                <td className="p-6 text-gray-600 font-medium">{(week.averageTTAMs / 1000).toFixed(1)} sec</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </motion.section>
+    </motion.div>
+  );
+};
 
-export default StudentDashboard
+const StatCard = ({ icon, label, value }) => (
+  <motion.div 
+    whileHover={{ y: -5, boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1)" }}
+    className="bg-white border border-gray-200 rounded-2xl p-8 flex flex-col gap-2 shadow-sm relative overflow-hidden group"
+  >
+    <div className="absolute -right-6 -top-6 text-indigo-50 opacity-40 transform scale-150 group-hover:scale-110 transition-transform duration-500">
+      {icon}
+    </div>
+    <div className="text-indigo-600 z-10">{icon}</div>
+    <p className="text-sm font-bold uppercase tracking-wider text-gray-500 z-10 mt-4">{label}</p>
+    <p className="text-5xl font-black text-gray-900 z-10 tracking-tight">{value}</p>
+  </motion.div>
+);
+
+export default StudentDashboard;

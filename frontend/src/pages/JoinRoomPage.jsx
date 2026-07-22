@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
-import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
@@ -11,7 +10,6 @@ import useIsMobile from '../hooks/useIsMobile'
 function JoinRoomPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
@@ -39,7 +37,6 @@ function JoinRoomPage() {
     try {
       const room = await joinRoomByCode(roomCode.trim().toUpperCase())
       setJoinedRoom(room)
-      joinRoom(room.code, user._id)
       navigate(`/student/session/${room.code}`)
     } catch (err) {
       setError(err.message || 'Failed to join room. Please check the code and try again.')
@@ -50,7 +47,6 @@ function JoinRoomPage() {
 
   const handleLeaveRoom = () => {
     if (joinedRoom) {
-      leaveRoom(joinedRoom.code, user._id)
       setJoinedRoom(null)
     }
   }

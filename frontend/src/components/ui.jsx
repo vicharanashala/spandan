@@ -1,12 +1,10 @@
 import React from 'react'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
-import useSocketStore from '../stores/socketStore'
 import { useNavigate } from 'react-router-dom'
 
 export function Header({ title, subtitle }) {
   const { user, logout } = useAuthStore()
-  const { isConnected } = useSocketStore()
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -48,9 +46,9 @@ export function Header({ title, subtitle }) {
             width: '8px',
             height: '8px',
             borderRadius: '50%',
-            background: isConnected ? '#10b981' : '#ef4444'
+            background: '#10b981'
           }}></div>
-          <span style={{ fontSize: '14px' }}>{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <span style={{ fontSize: '14px' }}>Online</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span style={{ fontSize: '14px' }}>{user?.name}</span>

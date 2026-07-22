@@ -14,6 +14,9 @@ const roomMemberSchema = new mongoose.Schema({
   joinedAt: {
     type: Date,
     default: Date.now
+  },
+  leftAt: {
+    type: Date
   }
 })
 

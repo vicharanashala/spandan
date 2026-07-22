@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
-import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import { useLiveRoom } from '../hooks/useLiveRoom'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -20,14 +20,12 @@ function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
-  const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
@@ -41,67 +39,22 @@ function StudentRoomPage() {
   const resultsNavTimerRef = useRef(null)
 
   useEffect(() => {
-    if (!token || !socket) return
+    if (!token) return
     setAuthToken(token)
     joinSession()
-    return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user._id)
-      }
-    }
-  }, [token, socket])
-
-
+  }, [token])
 
   useEffect(() => {
-    if (!socket) return
-
-    const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+    // When a new poll starts
+    if (activePoll && activePoll.questionId !== prevPollId) {
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
-      
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
+      setPrevPollId(activePoll.questionId)
     }
-
-    const handleQuestionEnded = (data) => {
-      // Clear timer if running
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      // Only fetch if room and user are available
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
-      }
-      setResults(data?.results || null)
-      setCurrentQuestion(null)
+    // When poll ends
+    if (!activePoll && prevPollId && room?._id && user?._id) {
+      fetchPastResponses(room._id, user._id)
+      setPrevPollId(null)
     }
 
     const handleNewQuestion = (question) => {
@@ -111,12 +64,12 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -172,27 +125,9 @@ function StudentRoomPage() {
     try {
       const roomData = await joinRoomByCode(roomCode)
       setRoom(roomData)
-      if (user?._id && socket) {
-        // Join via socket - room:joined confirms the student was added to RoomMember
-        return new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            socket.off('room:joined', handleRoomJoined)
-            // Still fetch even if timeout - RoomMember should already exist from HTTP join
-            fetchPastResponses(roomData._id, user._id)
-            resolve()
-          }, 3000)
-
-          const handleRoomJoined = (data) => {
-            if (data.roomCode === roomData.code) {
-              clearTimeout(timeout)
-              socket.off('room:joined', handleRoomJoined)
-              fetchPastResponses(roomData._id, user._id)
-              resolve()
-            }
-          }
-          socket.on('room:joined', handleRoomJoined)
-          joinRoom(roomData.code, user._id)
-        })
+      await joinRoom(roomCode)
+      if (roomData?._id && user?._id) {
+        fetchPastResponses(roomData._id, user._id)
       }
     } catch (err) {
       setError(err.message)
@@ -200,7 +135,7 @@ function StudentRoomPage() {
       setIsLoading(false)
     }
   }
-  
+
   const fetchPastResponses = async (roomId, studentId) => {
     // Defensive: don't call if room or user not ready
     if (!roomId || !studentId) {
@@ -232,7 +167,7 @@ function StudentRoomPage() {
   }
 
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    if (selectedOptions.length === 0 || submitted || !activePoll) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -294,10 +229,15 @@ function StudentRoomPage() {
     }
   }
 
-  const leaveSession = () => {
-    if (room?.code) {
-      leaveRoom(room.code, user._id)
-    }
+  const leaveSession = async () => {
+    try {
+      if (room?.code) {
+        await fetch(`${API_URL}/live/${room.code}/leave`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      }
+    } catch (e) { }
     navigate('/student')
   }
 
@@ -444,10 +384,10 @@ function StudentRoomPage() {
                 width: '12px',
                 height: '12px',
                 borderRadius: '50%',
-                background: isConnected ? '#10b981' : '#ef4444'
+                background: '#10b981'
               }} />
               <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
-                {isConnected ? 'Connected' : 'Reconnecting...'}
+                Connected
               </span>
             </div>
             <button
@@ -471,7 +411,7 @@ function StudentRoomPage() {
           </div>
 
           {/* Live Question */}
-          {currentQuestion ? (
+          {activePoll ? (
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
               borderRadius: 'var(--radius-lg)',
@@ -493,7 +433,7 @@ function StudentRoomPage() {
                   justifyContent: 'center',
                   margin: '0 auto 16px'
                 }}>
-                  <span style={{ fontSize: '36px', fontWeight: '700' }}>{timeLeft}</span>
+                  <span style={{ fontSize: '36px', fontWeight: '700' }}>{Math.ceil(remainingTime / 1000)}</span>
                 </div>
                 <p style={{ fontSize: '14px', opacity: 0.9 }}>seconds remaining</p>
               </div>
@@ -505,20 +445,20 @@ function StudentRoomPage() {
 
               {/* Options */}
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
-                {currentQuestion.options && currentQuestion.options.map((option, index) => {
-                  const isMSQ = currentQuestion.type === 'MSQ'
-                  const isSelected = isMSQ 
+                {activePoll.options && activePoll.options.map((option, index) => {
+                  const isMSQ = activePoll.type === 'MSQ'
+                  const isSelected = isMSQ
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
                   const optionText = typeof option === 'string' ? option : option.text
                   const optionLabel = String.fromCharCode(65 + index)
-                  
+
                   const handleOptionClick = () => {
                     if (submitted) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
-                      setSelectedOptions(prev => 
-                        prev.includes(index) 
+                      setSelectedOptions(prev =>
+                        prev.includes(index)
                           ? prev.filter(i => i !== index)
                           : [...prev, index]
                       )
@@ -527,7 +467,7 @@ function StudentRoomPage() {
                       setSelectedOptions([index])
                     }
                   }
-                  
+
                   return (
                     <button
                       key={index}
@@ -779,32 +719,86 @@ function StudentRoomPage() {
                                 alignItems: 'center',
                                 gap: '12px'
                               }}>
-                                <span style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '50%',
-                                  background: isCorrect ? '#059669' : 'var(--border-color)',
-                                  color: 'white',
+                                ✗ Incorrect (+{q.pointsEarned || 0})
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Question text */}
+                          <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
+                            {q.question || 'Question'}
+                          </p>
+
+                          {/* All options - always shown */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                            {(q.options || []).map((option, optIdx) => {
+                              const isSelected = q.selectedOptions?.includes(optIdx)
+                              const isCorrect = option.isCorrect
+                              const letter = String.fromCharCode(65 + optIdx)
+
+                              let bgColor = 'var(--bg-secondary)'
+                              let borderColor = 'var(--border-color)'
+                              let textColor = 'var(--text-primary)'
+                              let label = ''
+
+                              if (q.answered && isSelected && isCorrect) {
+                                bgColor = '#d1fae5'
+                                borderColor = '#059669'
+                                label = ' (Your correct answer)'
+                              } else if (q.answered && isSelected && !isCorrect) {
+                                bgColor = '#fee2e2'
+                                borderColor = '#dc2626'
+                                label = ' (Your wrong answer)'
+                              } else if (!q.answered && isCorrect) {
+                                bgColor = '#d1fae5'
+                                borderColor = '#059669'
+                                label = ' (Correct answer)'
+                              }
+
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '12px 16px',
+                                  background: bgColor,
+                                  border: `2px solid ${borderColor}`,
+                                  borderRadius: '8px',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  gap: '12px'
                                 }}>
-                                  {letter}
-                                </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
-                                </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
+                                  <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: '700',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
                                   </span>
-                                )}
-                              </div>
-                            )
-                          })}
+                                  <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                    {option.text || option}
+                                  </span>
+                                  {label && (
+                                    <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                      {label}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          {/* Missed question notice */}
+                          {!q.answered && (
+                            <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
+                              ⚠️ You did not answer this question
+                            </p>
+                          )}
                         </div>
                         
                         {/* Missed question notice */}
