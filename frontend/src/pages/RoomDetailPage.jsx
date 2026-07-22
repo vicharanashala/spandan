@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -24,7 +25,11 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
+  // Room code + participant count use a deep blue on light, but that reads too dark on the dark card;
+  // switch to white in dark mode for clean, high contrast.
+  const codeColor = isDark ? '#ffffff' : '#1e40af'
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -756,6 +761,8 @@ function RoomDetailPage() {
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
+      // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
+      if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
       // Apply room settings if they exist
       if (roomData.settings) {
         setRoomSettings(prev => ({
@@ -1355,6 +1362,7 @@ function RoomDetailPage() {
             <button onClick={() => navigate('/teacher')} style={{
               padding: '8px 12px',
               background: 'var(--nav-hover)',
+              color: 'var(--text-primary)',
               border: 'none',
               borderRadius: '8px',
               cursor: 'pointer',
@@ -1372,7 +1380,7 @@ function RoomDetailPage() {
               border: '2px solid var(--border-color)',
               borderRadius: '10px'
             }}>
-              <span style={{ fontSize: '28px', fontWeight: '700', color: '#1e40af', letterSpacing: '4px' }}>
+              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor, letterSpacing: '4px' }}>
                 {room.code}
               </span>
               <button onClick={copyRoomCode} disabled={isEnded} style={{
@@ -1386,6 +1394,25 @@ function RoomDetailPage() {
               }}>
                 {copied ? '✓ Copied' : '📋 Copy'}
               </button>
+            </div>
+
+            {/* Live participant count — seeded on load, kept current by room:joined / room:left */}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px',
+              padding: '8px 20px',
+              border: '2px solid var(--border-color)',
+              borderRadius: '10px'
+            }}>
+              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor }}>
+                {totalParticipants}
+              </span>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                👥 Participants
+              </span>
             </div>
 
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
