@@ -25,6 +25,7 @@ function StudentRoomPage() {
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
+
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -74,6 +75,36 @@ function StudentRoomPage() {
       p.playVideo?.()
     }
   }, [teacherVideoPaused, currentQuestion, isVideoMode, isLiveStream])
+  const [toastMessage, setToastMessage] = useState('')
+  const toastTimeoutRef = useRef(null)
+  const isMouseDownRef = useRef(false)
+  const dragTriggeredRef = useRef(false)
+
+  const triggerCopyWarning = (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    setToastMessage('Copying question text is not allowed!')
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage('')
+    }, 3000)
+  }
+
+  const handleMouseDown = () => {
+    isMouseDownRef.current = true
+    dragTriggeredRef.current = false
+  }
+
+  const handleMouseMove = (e) => {
+    if (isMouseDownRef.current && !dragTriggeredRef.current) {
+      dragTriggeredRef.current = true
+      triggerCopyWarning(e)
+    }
+  }
+
+  const handleMouseUp = () => {
+    isMouseDownRef.current = false
+    dragTriggeredRef.current = false
+  }
 
   useEffect(() => {
     if (!token || !socket) return
@@ -96,17 +127,17 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
-      
+
       if (data.question && data.question.timeToAnswer) {
         setTimeLeft(data.question.timeToAnswer)
       }
-      
+
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -130,7 +161,7 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       // Only fetch if room and user are available
       if (room?._id && user?._id) {
         fetchPastResponses(room._id, user._id)
@@ -146,12 +177,12 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -250,7 +281,7 @@ function StudentRoomPage() {
       setIsLoading(false)
     }
   }
-  
+
   const fetchPastResponses = async (roomId, studentId) => {
     // Defensive: don't call if room or user not ready
     if (!roomId || !studentId) {
@@ -453,8 +484,32 @@ function StudentRoomPage() {
       maxWidth: '100vw',
       overflowX: 'hidden'
     }}>
+      {/* Warning Toast Notification */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          top: '24px',
+          right: '24px',
+          zIndex: 9999,
+          background: '#ef4444',
+          color: '#ffffff',
+          padding: '12px 20px',
+          borderRadius: '10px',
+          boxShadow: '0 10px 25px rgba(239, 68, 68, 0.4)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          fontWeight: '600',
+          fontSize: '14px',
+          border: '1px solid rgba(255, 255, 255, 0.2)'
+        }}>
+          <span style={{ fontSize: '18px' }}>⚠️</span>
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       <Sidebar user={user} />
-      
+
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
@@ -557,15 +612,23 @@ function StudentRoomPage() {
 
           {/* Live Question */}
           {currentQuestion ? (
-            <div style={{
-              background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-              borderRadius: 'var(--radius-lg)',
-              padding: isMobile ? '20px 16px' : '32px',
-              color: 'white',
-              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
-              maxWidth: '100%',
-              boxSizing: 'border-box'
-            }}>
+            <div
+              onCopy={triggerCopyWarning}
+              onSelectStart={triggerCopyWarning}
+              onContextMenu={triggerCopyWarning}
+              style={{
+                background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+                borderRadius: 'var(--radius-lg)',
+                padding: isMobile ? '20px 16px' : '32px',
+                color: 'white',
+                boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
+                maxWidth: '100%',
+                boxSizing: 'border-box',
+                userSelect: 'none',
+                WebkitUserSelect: 'none',
+                MozUserSelect: 'none',
+                msUserSelect: 'none'
+              }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -584,7 +647,23 @@ function StudentRoomPage() {
               </div>
 
               {/* Question */}
-              <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
+              <h2
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                onSelectStart={triggerCopyWarning}
+                onCopy={triggerCopyWarning}
+                onContextMenu={triggerCopyWarning}
+                onDragStart={triggerCopyWarning}
+                style={{
+                  fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word',
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
+                  MozUserSelect: 'none',
+                  msUserSelect: 'none',
+                  cursor: 'default'
+                }}>
                 {currentQuestion.question}
               </h2>
 
@@ -592,18 +671,18 @@ function StudentRoomPage() {
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
                 {currentQuestion.options && currentQuestion.options.map((option, index) => {
                   const isMSQ = currentQuestion.type === 'MSQ'
-                  const isSelected = isMSQ 
+                  const isSelected = isMSQ
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
                   const optionText = typeof option === 'string' ? option : option.text
                   const optionLabel = String.fromCharCode(65 + index)
-                  
+
                   const handleOptionClick = () => {
                     if (submitted) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
-                      setSelectedOptions(prev => 
-                        prev.includes(index) 
+                      setSelectedOptions(prev =>
+                        prev.includes(index)
                           ? prev.filter(i => i !== index)
                           : [...prev, index]
                       )
@@ -612,7 +691,7 @@ function StudentRoomPage() {
                       setSelectedOptions([index])
                     }
                   }
-                  
+
                   return (
                     <button
                       key={index}
@@ -713,34 +792,34 @@ function StudentRoomPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
               {!isVideoMode && (
-              <div style={{
-                background: 'var(--bg-card)',
-                borderRadius: 'var(--radius-lg)',
-                padding: isMobile ? '32px 20px' : '48px',
-                boxShadow: 'var(--shadow-md)',
-                border: '1px solid var(--border-color)',
-                textAlign: 'center'
-              }}>
                 <div style={{
-                  width: '80px',
-                  height: '80px',
-                  background: '#eff6ff',
-                  borderRadius: '50%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  margin: '0 auto 24px',
-                  fontSize: '40px'
+                  background: 'var(--bg-card)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: isMobile ? '32px 20px' : '48px',
+                  boxShadow: 'var(--shadow-md)',
+                  border: '1px solid var(--border-color)',
+                  textAlign: 'center'
                 }}>
-                  ⏳
+                  <div style={{
+                    width: '80px',
+                    height: '80px',
+                    background: '#eff6ff',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    margin: '0 auto 24px',
+                    fontSize: '40px'
+                  }}>
+                    ⏳
+                  </div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
+                    Waiting for Next Question
+                  </h2>
+                  <p style={{ color: 'var(--text-secondary)', marginBottom: '0' }}>
+                    The teacher will start a poll soon. Stay tuned!
+                  </p>
                 </div>
-                <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
-                  Waiting for Next Question
-                </h2>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '0' }}>
-                  The teacher will start a poll soon. Stay tuned!
-                </p>
-              </div>
               )}
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
@@ -750,204 +829,204 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
-                {pastResponses.length === 0 ? (
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
-                    No questions answered yet. Questions you answer will appear here.
-                  </p>
-                ) : (
-                  <div style={{ position: 'relative' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                    {pastResponses.map((q, index) => (
-                      <div key={`past-${index}`} style={{
-                        padding: '20px',
-                        background: 'var(--bg-primary)',
-                        borderRadius: '12px',
-                        border: '1px solid var(--border-color)',
-                        opacity: q.answered ? 1 : 0.8
-                      }}>
-                        {/* Header with status badges */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: q.answered ? '#d1fae5' : (q.resultPending ? '#eff6ff' : '#fee2e2'),
-                              color: q.answered ? '#059669' : (q.resultPending ? '#3b82f6' : '#dc2626'),
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.answered ? 'Answered' : (q.resultPending ? 'Live' : 'Missed')}
-                            </span>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: '#eff6ff',
-                              color: '#3b82f6',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.type}
-                            </span>
-                            <span style={{
-                              padding: '2px 10px',
-                              background: '#fef3c7',
-                              color: '#d97706',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              {q.resultPending ? '—' : (q.answered ? (q.pointsEarned || 0) : 0)}/{q.maxPoints || 100} pts
-                            </span>
-                          </div>
-                          {/* Live poll: result withheld until the poll closes — show a neutral badge, never correct/incorrect. */}
-                          {q.resultPending && q.answered && (
-                            <span style={{
-                              padding: '4px 12px',
-                              background: '#3b82f6',
-                              color: 'white',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              ⏳ Answer submitted
-                            </span>
-                          )}
-                          {!q.resultPending && q.answered && q.isCorrect && (
-                            <span style={{
-                              padding: '4px 12px',
-                              background: '#10b981',
-                              color: 'white',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              ✓ Correct (+{q.pointsEarned || 0})
-                            </span>
-                          )}
-                          {!q.resultPending && q.answered && !q.isCorrect && (
-                            <span style={{
-                              padding: '4px 12px',
-                              background: '#ef4444',
-                              color: 'white',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}>
-                              ✗ Incorrect (+{q.pointsEarned || 0})
-                            </span>
-                          )}
-                        </div>
-                        
-                        {/* Question text */}
-                        <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
-                          {q.question || 'Question'}
-                        </p>
-                        
-                        {/* All options - always shown */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
-                          {(q.options || []).map((option, optIdx) => {
-                            const pending = !!q.resultPending
-                            const isSelected = q.selectedOptions?.includes(optIdx)
-                            const isCorrect = option.isCorrect
-                            const letter = String.fromCharCode(65 + optIdx)
-
-                            let bgColor = 'var(--bg-secondary)'
-                            let borderColor = 'var(--border-color)'
-                            let textColor = 'var(--text-primary)'
-                            let letterBg = 'var(--border-color)'
-                            let label = ''
-
-                            if (pending) {
-                              // Live poll: NEVER reveal the correct option. Only mark what the student
-                              // picked, in blue — the correct/incorrect result comes after it closes.
-                              if (q.answered && isSelected) {
-                                bgColor = '#eff6ff'
-                                borderColor = '#3b82f6'
-                                letterBg = '#3b82f6'
-                                // The highlight bg is a fixed light pastel, so text must be a dark
-                                // accent (not var(--text-primary), which is white in dark mode and
-                                // would wash out over the pastel). Mirrors the teacher side.
-                                textColor = '#1e40af'
-                                label = ' (Your answer)'
-                              }
-                            } else if (q.answered && isSelected && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
-                              letterBg = '#059669'
-                              textColor = '#065f46'
-                              label = ' (Your correct answer)'
-                            } else if (q.answered && isSelected && !isCorrect) {
-                              bgColor = '#fee2e2'
-                              borderColor = '#dc2626'
-                              textColor = '#991b1b'
-                              label = ' (Your wrong answer)'
-                            } else if (!q.answered && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
-                              letterBg = '#059669'
-                              textColor = '#065f46'
-                              label = ' (Correct answer)'
-                            } else if (isCorrect) {
-                              letterBg = '#059669'
-                            }
-                            
-                            return (
-                              <div key={optIdx} style={{
-                                padding: '12px 16px',
-                                background: bgColor,
-                                border: `2px solid ${borderColor}`,
-                                borderRadius: '8px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px'
-                              }}>
+                  {pastResponses.length === 0 ? (
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
+                      No questions answered yet. Questions you answer will appear here.
+                    </p>
+                  ) : (
+                    <div style={{ position: 'relative' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                        {pastResponses.map((q, index) => (
+                          <div key={`past-${index}`} style={{
+                            padding: '20px',
+                            background: 'var(--bg-primary)',
+                            borderRadius: '12px',
+                            border: '1px solid var(--border-color)',
+                            opacity: q.answered ? 1 : 0.8
+                          }}>
+                            {/* Header with status badges */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                                 <span style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '50%',
-                                  background: letterBg,
-                                  color: 'white',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  padding: '2px 10px',
+                                  background: q.answered ? '#d1fae5' : (q.resultPending ? '#eff6ff' : '#fee2e2'),
+                                  color: q.answered ? '#059669' : (q.resultPending ? '#3b82f6' : '#dc2626'),
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
                                 }}>
-                                  {letter}
+                                  {q.answered ? 'Answered' : (q.resultPending ? 'Live' : 'Missed')}
                                 </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
+                                <span style={{
+                                  padding: '2px 10px',
+                                  background: '#eff6ff',
+                                  color: '#3b82f6',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
+                                }}>
+                                  {q.type}
                                 </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
-                                  </span>
-                                )}
+                                <span style={{
+                                  padding: '2px 10px',
+                                  background: '#fef3c7',
+                                  color: '#d97706',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
+                                }}>
+                                  {q.resultPending ? '—' : (q.answered ? (q.pointsEarned || 0) : 0)}/{q.maxPoints || 100} pts
+                                </span>
                               </div>
-                            )
-                          })}
-                        </div>
-                        
-                        {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
-                        {q.resultPending && (
-                          <p style={{ fontSize: '13px', color: '#3b82f6', margin: 0, fontStyle: 'italic' }}>
-                            ⏳ Result will be shown once this poll closes
-                          </p>
-                        )}
-                        {!q.resultPending && !q.answered && (
-                          <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
-                            ⚠️ You did not answer this question
-                          </p>
-                        )}
+                              {/* Live poll: result withheld until the poll closes — show a neutral badge, never correct/incorrect. */}
+                              {q.resultPending && q.answered && (
+                                <span style={{
+                                  padding: '4px 12px',
+                                  background: '#3b82f6',
+                                  color: 'white',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
+                                }}>
+                                  ⏳ Answer submitted
+                                </span>
+                              )}
+                              {!q.resultPending && q.answered && q.isCorrect && (
+                                <span style={{
+                                  padding: '4px 12px',
+                                  background: '#10b981',
+                                  color: 'white',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
+                                }}>
+                                  ✓ Correct (+{q.pointsEarned || 0})
+                                </span>
+                              )}
+                              {!q.resultPending && q.answered && !q.isCorrect && (
+                                <span style={{
+                                  padding: '4px 12px',
+                                  background: '#ef4444',
+                                  color: 'white',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: '600'
+                                }}>
+                                  ✗ Incorrect (+{q.pointsEarned || 0})
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Question text */}
+                            <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
+                              {q.question || 'Question'}
+                            </p>
+
+                            {/* All options - always shown */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                              {(q.options || []).map((option, optIdx) => {
+                                const pending = !!q.resultPending
+                                const isSelected = q.selectedOptions?.includes(optIdx)
+                                const isCorrect = option.isCorrect
+                                const letter = String.fromCharCode(65 + optIdx)
+
+                                let bgColor = 'var(--bg-secondary)'
+                                let borderColor = 'var(--border-color)'
+                                let textColor = 'var(--text-primary)'
+                                let letterBg = 'var(--border-color)'
+                                let label = ''
+
+                                if (pending) {
+                                  // Live poll: NEVER reveal the correct option. Only mark what the student
+                                  // picked, in blue — the correct/incorrect result comes after it closes.
+                                  if (q.answered && isSelected) {
+                                    bgColor = '#eff6ff'
+                                    borderColor = '#3b82f6'
+                                    letterBg = '#3b82f6'
+                                    // The highlight bg is a fixed light pastel, so text must be a dark
+                                    // accent (not var(--text-primary), which is white in dark mode and
+                                    // would wash out over the pastel). Mirrors the teacher side.
+                                    textColor = '#1e40af'
+                                    label = ' (Your answer)'
+                                  }
+                                } else if (q.answered && isSelected && isCorrect) {
+                                  bgColor = '#d1fae5'
+                                  borderColor = '#059669'
+                                  letterBg = '#059669'
+                                  textColor = '#065f46'
+                                  label = ' (Your correct answer)'
+                                } else if (q.answered && isSelected && !isCorrect) {
+                                  bgColor = '#fee2e2'
+                                  borderColor = '#dc2626'
+                                  textColor = '#991b1b'
+                                  label = ' (Your wrong answer)'
+                                } else if (!q.answered && isCorrect) {
+                                  bgColor = '#d1fae5'
+                                  borderColor = '#059669'
+                                  letterBg = '#059669'
+                                  textColor = '#065f46'
+                                  label = ' (Correct answer)'
+                                } else if (isCorrect) {
+                                  letterBg = '#059669'
+                                }
+
+                                return (
+                                  <div key={optIdx} style={{
+                                    padding: '12px 16px',
+                                    background: bgColor,
+                                    border: `2px solid ${borderColor}`,
+                                    borderRadius: '8px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '12px'
+                                  }}>
+                                    <span style={{
+                                      width: '28px',
+                                      height: '28px',
+                                      borderRadius: '50%',
+                                      background: letterBg,
+                                      color: 'white',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontWeight: '700',
+                                      fontSize: '14px',
+                                      flexShrink: 0
+                                    }}>
+                                      {letter}
+                                    </span>
+                                    <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                      {option.text || option}
+                                    </span>
+                                    {label && (
+                                      <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                        {label}
+                                      </span>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+
+                            {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
+                            {q.resultPending && (
+                              <p style={{ fontSize: '13px', color: '#3b82f6', margin: 0, fontStyle: 'italic' }}>
+                                ⏳ Result will be shown once this poll closes
+                              </p>
+                            )}
+                            {!q.resultPending && !q.answered && (
+                              <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
+                                ⚠️ You did not answer this question
+                              </p>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                  {pastResponses.length > 3 && (
-                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 12px 12px' }} />
+                      {pastResponses.length > 3 && (
+                        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 12px 12px' }} />
+                      )}
+                    </div>
                   )}
-                  </div>
-                )}
                 </div>
                 {/* Leaderboard - flexible width */}
                 <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
