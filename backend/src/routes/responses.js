@@ -1,6 +1,8 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
+import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { debug } from '../utils/debug.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -46,6 +48,43 @@ async function getQuestionCached(Question, questionId) {
     questionCache.set(id, { q, expiresAt: Date.now() + QUESTION_TTL_MS })
   }
   return q
+}
+
+// The GET /responses/room/:id/student/:id read path fetches the room's FULL approved-question list.
+// That list is student-INDEPENDENT (identical for everyone in the room), yet every student hits the
+// endpoint when their poll timer expires — at classroom scale that is hundreds of identical
+// Question.find + serializations per poll transition. Cache the list per room so the herd collapses
+// to ~one query per TTL per instance. The per-student response merge in the handler stays fresh (it
+// comes from a separate Response.find); the cached array is only ever read, never mutated. Staleness
+// is bounded by the TTL and benign: a question is approved at launch (~a poll-length before its poll
+// ends), so it is always in the cache by the time students read; the live question arrives via the
+// new_question socket, not this endpoint.
+const ROOM_QUESTIONS_TTL_MS = Number(process.env.ROOM_QUESTIONS_CACHE_TTL_MS) || 10000
+const roomQuestionsCache = new Map()    // roomId(str) -> { questions, expiresAt(ms) }
+const roomQuestionsInflight = new Map() // roomId(str) -> Promise<questions>  (single-flight)
+
+async function getRoomQuestionsCached(Question, roomObjectId) {
+  const key = String(roomObjectId)
+  const hit = roomQuestionsCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.questions
+  // Single-flight: if a query for this room is already running, share it instead of firing another.
+  // This matters most at a congested transition where the whole room misses at once and the first
+  // query is slow — without this, everyone who arrives before it returns would each hit Mongo.
+  const inflight = roomQuestionsInflight.get(key)
+  if (inflight) return inflight
+  const p = (async () => {
+    try {
+      const questions = await Question.find({ roomId: roomObjectId, status: 'approved' })
+        .sort({ createdAt: -1 }).lean()
+      if (roomQuestionsCache.size > 50000) roomQuestionsCache.clear()
+      roomQuestionsCache.set(key, { questions, expiresAt: Date.now() + ROOM_QUESTIONS_TTL_MS })
+      return questions
+    } finally {
+      roomQuestionsInflight.delete(key)
+    }
+  })()
+  roomQuestionsInflight.set(key, p)
+  return p
 }
 // ----------------------------------------------------------------------------------------------
 
@@ -280,7 +319,11 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const roomIdsMember = roomMemberships.map(m => m.roomId)
     const uniqueRoomIdsFromResponse = await Response.distinct('roomId', { studentId })
     const allRoomIds = [...new Set([...roomIdsMember.map(id => id.toString()), ...uniqueRoomIdsFromResponse.map(id => id.toString())])]
-    const totalRooms = allRoomIds.length
+    // Count only rooms that still exist. A deleted room leaves orphaned membership/response
+    // records whose roomId would otherwise inflate totalRooms (and the launched-poll count below),
+    // making the dashboard "Total Rooms" disagree with the existence-checked Room History list.
+    const existingRoomIds = (await Room.distinct('_id', { _id: { $in: allRoomIds } })).map(id => id.toString())
+    const totalRooms = existingRoomIds.length
     const roomIds = roomMemberships.map(m => m.roomId)
     
     // Total responses (polls taken)
@@ -292,9 +335,9 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
 
     // Count launched polls: questions with 'approved' status (approved & launched to students)
-    // Use allRoomIds (RoomMember + Response unique) to count ALL rooms student participated in
+    // Use existingRoomIds (rooms that still exist) to count polls across the student's rooms.
     const launchedCount = await Question.countDocuments({
-      roomId: { $in: allRoomIds },
+      roomId: { $in: existingRoomIds },
       status: 'approved'
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
@@ -336,44 +379,62 @@ router.get('/stats/room/:roomId', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
     }
 
-    // Total responses for this room
-    const totalResponses = await Response.countDocuments({ roomId })
+    // Ended rooms serve stats from the shared snapshot (built once at room end). A miss (live room,
+    // Redis off, cache error) falls through to a direct compute that uses ONE grouped aggregation
+    // for the per-question counts — no per-question N+1 find loop.
+    const ended = !!room?.endedAt
+    const cachedStats = await resultsSnapshot.getStats(roomId, { ended })
+    if (cachedStats) {
+      return res.json({ success: true, stats: cachedStats })
+    }
 
-    // Get unique students who responded
-    const uniqueStudents = await Response.distinct('studentId', { roomId })
+    const mongoose = (await import('mongoose')).default
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
 
-    // Total students who JOINED the room (the roster) — always >= responders. This is what the
-    // teacher results page shows as "Total Students".
-    const totalJoined = await RoomMember.countDocuments({ roomId })
-    
-    // Get total questions in this room
-    const totalQuestions = await Question.countDocuments({ roomId })
+    // One pass for the counts (grouped by question × selected option) plus the light room-wide
+    // totals, all in parallel — replaces the old N+1 (one Response.find per question).
+    const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
+      Response.countDocuments({ roomId }),
+      Response.distinct('studentId', { roomId }),
+      RoomMember.countDocuments({ roomId }),
+      Question.find({ roomId }).lean(),
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        { $group: { _id: { q: '$questionId', opt: '$selectedOption' }, count: { $sum: 1 } } }
+      ])
+    ])
 
-    // Get question-level breakdown
-    const questionStats = await Question.find({ roomId }).lean()
-    const stats = await Promise.all(questionStats.map(async (q) => {
-      const responses = await Response.find({ roomId, questionId: q._id })
+    // Index grouped counts: questionId -> per-option counts, and questionId -> total responses
+    // (all responses for the question, matching the old responses.length).
+    const countsByQuestion = new Map()
+    const totalByQuestion = new Map()
+    for (const g of grouped) {
+      const qid = g._id.q ? g._id.q.toString() : null
+      if (!qid) continue
+      let m = countsByQuestion.get(qid)
+      if (!m) { m = new Map(); countsByQuestion.set(qid, m) }
+      m.set(g._id.opt, g.count)
+      totalByQuestion.set(qid, (totalByQuestion.get(qid) || 0) + g.count)
+    }
+
+    const questionStats = questions.map((q) => {
+      const perOption = countsByQuestion.get(q._id.toString()) || new Map()
       const answerCounts = {}
       let correctCount = 0
-      
       q.options.forEach((opt, idx) => {
-        const countForOption = responses.filter(r => r.selectedOption === idx).length
-        answerCounts[idx] = countForOption
-        // If this option is correct, add to correctCount
-        if (opt.isCorrect) {
-          correctCount += countForOption
-        }
+        const c = perOption.get(idx) || 0
+        answerCounts[idx] = c
+        if (opt.isCorrect) correctCount += c
       })
-      
       return {
         questionId: q._id,
         question: q.question,
         type: q.type,
-        totalResponses: responses.length,
+        totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
         answerCounts
       }
-    }))
+    })
 
     res.json({
       success: true,
@@ -381,8 +442,8 @@ router.get('/stats/room/:roomId', async (req, res) => {
         totalResponses,
         totalStudents: uniqueStudents.length,
         totalJoined,
-        totalQuestions,
-        questionStats: stats
+        totalQuestions: questions.length,
+        questionStats
       }
     })
   } catch (error) {
@@ -426,6 +487,16 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       }
     }
 
+    // Ended rooms serve this student's per-question breakdown from the shared snapshot — an O(1)
+    // hash lookup instead of re-reading their responses + all questions on every results-page load.
+    // A miss (live room, Redis off, or a non-responder not stored in the snapshot) falls through to
+    // the direct compute below, which yields the identical payload.
+    const ended = !!room?.endedAt
+    const snap = await resultsSnapshot.getStudent(roomId, studentId, { ended })
+    if (snap.hit) {
+      return res.json({ success: true, questions: snap.questions })
+    }
+
     // Convert to ObjectId if valid format
     const toObjectId = (id) => {
       if (mongoose.Types.ObjectId.isValid(id)) {
@@ -444,7 +515,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     }).lean()
     
     // Debug log
-    console.log(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
+    debug(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
     
     // Create a map of questionId -> response for quick lookup
     // Use a helper to safely convert any ID to string
@@ -459,17 +530,16 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const responseMap = {}
     responses.forEach(r => {
       const qId = toIdString(r.questionId)
-      console.log(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
+      debug(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
       responseMap[qId] = r
     })
 
-    // Get all approved questions for this room (launched to students)
-    const questions = await Question.find({ 
-      roomId: roomObjectId, 
-      status: 'approved'
-    }).sort({ createdAt: -1 }).lean()  // Sort by newest first (latest asked question on top)
+    // Get all approved questions for this room (launched to students). Cached per-room (short TTL)
+    // because this list is identical for every student and the whole room hits this endpoint at once
+    // when a poll ends — see getRoomQuestionsCached. Sorted newest-first (latest asked on top).
+    const questions = await getRoomQuestionsCached(Question, roomObjectId)
 
-    console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
+    debug(`[responses] Found ${questions.length} questions for room ${roomId}`)
 
     // Merge questions with response data
     const questionsWithResponses = questions.map(q => {
@@ -477,7 +547,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       const studentResponse = responseMap[qIdStr]
       
       if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
+        debug(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
       }
       
       return {
@@ -572,38 +642,47 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
-    // Aggregate points per student
-    const leaderboardData = await Response.aggregate([
-      { $match: { roomId: toObjectId(roomId) } },
-      { $group: {
-        _id: '$studentId',
-        totalPoints: { $sum: '$points' },
-        correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-        totalAnswered: { $sum: 1 }
-      }},
-      { $sort: { totalPoints: -1 } }
-    ])
+    // Ended rooms serve the ranked board from the shared results snapshot, so a stampede of
+    // results-page loads all read one cached board instead of each running this full-room
+    // aggregation. On any miss (live room, Redis off, cache error) this is null and we compute
+    // directly below — identical result, just not cached.
+    const ended = !!room?.endedAt
+    let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
-    // Resolve student names in a SINGLE batched query instead of one findById per
-    // participant. The old N+1 loop issued up to 1000 user lookups per leaderboard
-    // request, and this endpoint is polled heavily during live sessions.
-    const studentIds = leaderboardData.map(entry => entry._id)
-    const users = await User.find({ _id: { $in: studentIds } })
-      .select('name email')
-      .lean()
-    const userById = new Map(users.map(u => [u._id.toString(), u]))
+    if (!leaderboard) {
+      // Aggregate points per student
+      const leaderboardData = await Response.aggregate([
+        { $match: { roomId: toObjectId(roomId) } },
+        { $group: {
+          _id: '$studentId',
+          totalPoints: { $sum: '$points' },
+          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+          totalAnswered: { $sum: 1 }
+        }},
+        { $sort: { totalPoints: -1 } }
+      ])
 
-    const leaderboard = leaderboardData.map((entry, index) => {
-      const user = userById.get(entry._id.toString())
-      return {
-        rank: index + 1,
-        studentId: entry._id.toHexString(),
-        studentName: user?.name || user?.email || 'Unknown Student',
-        totalPoints: entry.totalPoints,
-        correctCount: entry.correctCount,
-        totalAnswered: entry.totalAnswered
-      }
-    })
+      // Resolve student names in a SINGLE batched query instead of one findById per
+      // participant. The old N+1 loop issued up to 1000 user lookups per leaderboard
+      // request, and this endpoint is polled heavily during live sessions.
+      const studentIds = leaderboardData.map(entry => entry._id)
+      const users = await User.find({ _id: { $in: studentIds } })
+        .select('name email')
+        .lean()
+      const userById = new Map(users.map(u => [u._id.toString(), u]))
+
+      leaderboard = leaderboardData.map((entry, index) => {
+        const user = userById.get(entry._id.toString())
+        return {
+          rank: index + 1,
+          studentId: entry._id.toHexString(),
+          studentName: user?.name || user?.email || 'Unknown Student',
+          totalPoints: entry.totalPoints,
+          correctCount: entry.correctCount,
+          totalAnswered: entry.totalAnswered
+        }
+      })
+    }
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
@@ -638,6 +717,80 @@ router.get('/leaderboard/:roomId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching leaderboard:', error)
     res.status(500).json({ error: 'Failed to fetch leaderboard' })
+  }
+})
+
+// Teacher CSV export of a room's complete results — a gradebook matrix
+// (one row per student, one column per question). Reuses buildSnapshot (a single
+// aggregation pass = the exact data the results page renders), so it adds no new heavy
+// queries; a one-off download does not need the stampede cache. Rows are streamed.
+router.get('/room/:roomId/export', async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const User = (await import('../models/User.js')).default
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    const room = await Room.findById(roomId).lean()
+    if (!room) return res.status(404).json({ error: 'Room not found' })
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to export this room' })
+    }
+
+    const { leaderboard, byStudent, stats } = await resultsSnapshot.buildSnapshot(roomId)
+
+    // Question columns in chronological order (Q1 = first asked). Every byStudent array holds the
+    // same approved-question set in newest-first order, so take one and reverse.
+    const anySid = Object.keys(byStudent)[0]
+    const qCols = anySid ? [...byStudent[anySid]].reverse() : []
+    const statsByQid = new Map((stats.questionStats || []).map((q) => [q.questionId, q]))
+
+    // Emails for the participant set — one query.
+    const sids = leaderboard.map((e) => String(e.studentId))
+    const users = await User.find({ _id: { $in: sids } }).select('email').lean()
+    const emailById = new Map(users.map((u) => [u._id.toString(), u.email || '']))
+
+    const esc = (v) => {
+      const s = v == null ? '' : String(v)
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const row = (arr) => arr.map(esc).join(',') + '\n'
+
+    const safeName = (room.name || 'room').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 60)
+    const date = room.endedAt ? new Date(room.endedAt).toISOString().slice(0, 10) : 'session'
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="Spandan_${safeName}_${date}.csv"`)
+    res.write('\uFEFF') // UTF-8 BOM so Excel renders names, emails and the check marks correctly
+
+    const qHeaders = qCols.map((_, i) => `Q${i + 1}`)
+    res.write(row(['student', 'email', 'points', 'rank', 'correct', 'accuracy', ...qHeaders]))
+
+    for (const e of leaderboard) {
+      const byQid = new Map((byStudent[String(e.studentId)] || []).map((q) => [q._id, q]))
+      const acc = e.totalAnswered ? (e.correctCount / e.totalAnswered).toFixed(2) : ''
+      const cells = qCols.map((qc) => {
+        const q = byQid.get(qc._id)
+        return !q || !q.answered ? '' : (q.isCorrect ? '✓' : '✗')
+      })
+      res.write(row([
+        e.studentName || '', emailById.get(String(e.studentId)) || '',
+        e.totalPoints, e.rank, `${e.correctCount}/${e.totalAnswered}`, acc, ...cells
+      ]))
+    }
+
+    // Question legend so Q1..Qn are identifiable.
+    res.write('\n')
+    res.write(row(['Question', 'Text', 'Type', 'Responses', 'Correct %']))
+    qCols.forEach((qc, i) => {
+      const s = statsByQid.get(qc._id)
+      const pct = s && s.totalResponses ? Math.round((s.correctCount / s.totalResponses) * 100) + '%' : ''
+      res.write(row([`Q${i + 1}`, qc.question, qc.type, s ? s.totalResponses : '', pct]))
+    })
+    res.end()
+  } catch (error) {
+    console.error('CSV export error:', error)
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to export results' })
+    else res.end()
   }
 })
 
