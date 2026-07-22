@@ -172,7 +172,10 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
             currentTime: 0,
             teacherDisconnected: false,
             hasCaptions,
-            lastUpdated: Date.now()
+            lastUpdated: Date.now(),
+            emittedCaptionIndices: new Set(),
+            lastTime: 0,
+            segmentEntries: []
           })
         }
         io.to(room.code).emit('media:updated', { 

@@ -195,5 +195,33 @@ export const VideoTranscriptCoordinator = {
     }
 
     entry.lastProcessedCaptionIndex = lastIndex;
+  },
+
+  /**
+   * Retrieves any new captions that overlap with the played range [startTime, endTime]
+   * and have not been emitted yet (tracked via a Set of emitted indices).
+   */
+  getNewCaptionsForRange(roomId, startTime, endTime, emittedIndices) {
+    const entry = transcriptCache.get(String(roomId));
+    if (!entry || !entry.hasCaptions || entry.transcript.length === 0) {
+      return [];
+    }
+
+    const newCaptions = [];
+    entry.transcript.forEach((caption, index) => {
+      // Caption is considered played if its start time falls within [startTime, endTime]
+      if (caption.start >= startTime && caption.start <= endTime) {
+        if (!emittedIndices.has(index)) {
+          emittedIndices.add(index);
+          newCaptions.push({
+            text: caption.text,
+            start: caption.start,
+            duration: caption.duration
+          });
+        }
+      }
+    });
+
+    return newCaptions;
   }
 };

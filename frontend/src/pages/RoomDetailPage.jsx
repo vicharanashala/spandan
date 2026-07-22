@@ -67,6 +67,40 @@ function RoomDetailPage() {
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
+  // Unified segment entries
+  const [segmentEntries, setSegmentEntries] = useState([])
+  const segmentEntriesRef = useRef([])
+
+  useEffect(() => {
+    segmentEntriesRef.current = segmentEntries
+  }, [segmentEntries])
+
+  const addTranscriptEntry = useCallback((text, source) => {
+    if (!text || !text.trim()) return
+    const cleanedText = text.trim()
+    setSegmentEntries(prev => {
+      const newEntry = {
+        text: cleanedText,
+        source, // 'video' | 'mic'
+        timestamp: Date.now()
+      }
+      return [...prev, newEntry]
+    })
+  }, [])
+
+  const groupedEntries = React.useMemo(() => {
+    const groups = []
+    for (const entry of segmentEntries) {
+      const last = groups[groups.length - 1]
+      if (last && last.source === entry.source) {
+        last.chunks.push(entry.text)
+      } else {
+        groups.push({ source: entry.source, chunks: [entry.text] })
+      }
+    }
+    return groups
+  }, [segmentEntries])
+
   // Question timer for teacher visibility
   const [activeQuestion, setActiveQuestion] = useState(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
@@ -328,8 +362,13 @@ function RoomDetailPage() {
 
     const handleVideoState = (data) => {
       console.log('[VIDEO STATE] Received:', data)
-      if (data && data.hasCaptions !== undefined) {
-        setHasCaptions(data.hasCaptions)
+      if (data) {
+        if (data.hasCaptions !== undefined) {
+          setHasCaptions(data.hasCaptions)
+        }
+        if (data.segmentEntries !== undefined) {
+          setSegmentEntries(data.segmentEntries)
+        }
       }
     }
 
@@ -338,11 +377,13 @@ function RoomDetailPage() {
       if (data && data.hasCaptions !== undefined) {
         setHasCaptions(data.hasCaptions)
       }
+      clearTranscript()
     }
 
     const handleMediaRemoved = () => {
       console.log('[MEDIA REMOVED]')
       setHasCaptions(false)
+      clearTranscript()
     }
 
     const handleQuestionsGenerated = (data) => {
@@ -357,15 +398,10 @@ function RoomDetailPage() {
       }
     }
 
-    const handleSegmentSync = (data) => {
-      if (data && data.timeLeft !== undefined) {
-        setSegmentTimeLeft(data.timeLeft)
-      }
-    }
-
-    const handleTranscriptUpdate = (data) => {
-      if (data && data.transcript !== undefined) {
-        setTranscript(data.transcript)
+    const handleTranscriptChunk = (data) => {
+      console.log('[VIDEO TRANSCRIPT CHUNK] Received:', data)
+      if (data && data.text) {
+        addTranscriptEntry(data.text, 'video')
       }
     }
 
@@ -373,18 +409,16 @@ function RoomDetailPage() {
     socket.on('media:updated', handleMediaUpdated)
     socket.on('media:removed', handleMediaRemoved)
     socket.on('video:questions-generated', handleQuestionsGenerated)
-    socket.on('video:segment-sync', handleSegmentSync)
-    socket.on('video:transcript-update', handleTranscriptUpdate)
+    socket.on('video:transcript-chunk', handleTranscriptChunk)
 
     return () => {
       socket.off('video:state', handleVideoState)
       socket.off('media:updated', handleMediaUpdated)
       socket.off('media:removed', handleMediaRemoved)
       socket.off('video:questions-generated', handleQuestionsGenerated)
-      socket.off('video:segment-sync', handleSegmentSync)
-      socket.off('video:transcript-update', handleTranscriptUpdate)
+      socket.off('video:transcript-chunk', handleTranscriptChunk)
     }
-  }, [socket])
+  }, [socket, addTranscriptEntry])
 
   // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
   // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
@@ -445,14 +479,13 @@ function RoomDetailPage() {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
     }
-  }, [transcript])
+  }, [segmentEntries])
 
   // Start segment timer when recording OR when video is playing
   useEffect(() => {
-    const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
-    
-    if (isVideoMode) {
-      if (isVideoPlaying && roomSettings.segmentTime > 0 && !isPendingReview) {
+    if (roomSettings.segmentTime > 0 && !isPendingReview && !room?.endedAt) {
+      const shouldRun = isRecording || isVideoPlaying
+      if (shouldRun) {
         if (!segmentTimerRef.current) {
           startSegmentTimer(segmentTimeLeft > 0 ? segmentTimeLeft : roomSettings.segmentTime * 60)
         }
@@ -460,19 +493,12 @@ function RoomDetailPage() {
         pauseSegmentTimer()
       }
     } else {
-      // Audio mode
-      if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
-        if (!segmentTimerRef.current) {
-          startSegmentTimer(segmentTimeLeft > 0 ? segmentTimeLeft : roomSettings.segmentTime * 60)
-        }
-      } else {
-        if (segmentTimerRef.current) {
-          clearInterval(segmentTimerRef.current)
-          segmentTimerRef.current = null
-        }
+      if (segmentTimerRef.current) {
+        clearInterval(segmentTimerRef.current)
+        segmentTimerRef.current = null
       }
     }
-  }, [isRecording, isVideoPlaying, roomSettings.segmentTime, isPendingReview, room?.mode, room?.sharedMedia?.url])
+  }, [isRecording, isVideoPlaying, roomSettings.segmentTime, isPendingReview, room?.endedAt])
 
   // Close settings dropdown when clicking outside
   useEffect(() => {
@@ -532,29 +558,13 @@ function RoomDetailPage() {
 
       if (secondsLeft <= 0) {
         console.log('[TIMER] Timer reached 0!')
-        console.log('[TIMER] Clearing interval')
         clearInterval(segmentTimerRef.current)
         segmentTimerRef.current = null
 
-        const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
-        if (isVideoMode) {
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
-            ytPlayerRef.current.pauseVideo()
-          }
-          setIsPendingReview(true)
-          setGenerateQEnabled(false)
-          setTimeout(() => {
-            handleManualGenerateQuestions()
-          }, 500)
-        } else {
-          console.log('[TIMER] Calling handleSegmentComplete')
-          try {
-            handleSegmentComplete()
-            console.log('[TIMER] handleSegmentComplete called successfully')
-          } catch (e) {
-            console.error('[TIMER] Error calling handleSegmentComplete:', e)
-          }
-        }
+        console.log('[TIMER] Calling handleSegmentComplete')
+        handleSegmentComplete().catch(err => {
+          console.error('[TIMER] handleSegmentComplete error:', err)
+        })
       }
     }, 1000)
   }
@@ -579,8 +589,20 @@ function RoomDetailPage() {
   const handleSegmentComplete = async () => {
     console.log('[SEGMENT] Timer hit zero - handling segment completion')
 
-    // PAUSE: stop recording and flush the final complete audio window before using the transcript.
-    await stopRecording()
+    // 1. Pause video if playing
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+      try {
+        ytPlayerRef.current.pauseVideo()
+      } catch (err) {
+        console.warn('Failed to pause video on segment complete:', err)
+      }
+    }
+
+    // 2. Stop recording and flush final audio chunk/grace period
+    const wasRecording = recordingActiveRef.current
+    if (wasRecording) {
+      await stopRecording()
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -591,44 +613,43 @@ function RoomDetailPage() {
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
-    // Capture transcript
-    const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
+    // Wait a brief moment to allow in-flight transcripts to update segmentEntries state
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // 3. Compute combinedTranscriptText from the segmentEntries state
+    const textToUse = segmentEntriesRef.current.map(e => e.text).join(' ').trim()
 
     if (!textToUse || textToUse.length < 50) {
       console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
-      window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
+      window.alert('Transcription too short. Please speak more or play video to trigger questions.')
 
       // Resume for next segment
       setIsPendingReview(false)
       setGenerateQEnabled(true)
       setCurrentSegment(prev => prev + 1)
-      setTranscript('')
-      setSegmentTranscript('')
-      segmentTranscriptRef.current = ''
-      finalTranscriptRef.current = ''
-      accumulatedTranscriptRef.current = ''
-      startRecording({ resetSegment: false })
+      
+      resetSegmentState()
+
+      if (wasRecording) {
+        startRecording({ resetSegment: false })
+      }
       return
     }
 
-    // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
-    // never gates generation — a failed/hung transcript POST used to abort the whole segment with no
-    // questions. We save the transcript only after questions are produced (below), fire-and-forget.
+    // Auto-generate questions
     let generated = null
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       generated = await generateQuestionsFromText(textToUse, currentSegment)
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
-      // Auto-retry once
       try {
         console.log('[SEGMENT] Retrying question generation...')
         generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
         window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
-        setGenerateQEnabled(true) // Enable fail-safe manual button
+        setGenerateQEnabled(true)
         return
       }
     }
@@ -637,11 +658,9 @@ function RoomDetailPage() {
       setPendingQuestions(generated)
       setShowQuestionPopup(true)
       setIsPopupOpen(true)
-      // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
-      // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
-      // source defaults to 'audio' (real segment).
+      // Save transcript
       saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
-        .catch((err) => console.error('[SEGMENT] Failed to save transcript (questions already generated):', err))
+        .catch((err) => console.error('[SEGMENT] Failed to save transcript:', err))
     }
   }
 
@@ -846,6 +865,15 @@ function RoomDetailPage() {
       if (nextItem.text && nextItem.text.trim()) {
         const text = nextItem.text.trim()
         console.log(`[TRANSCRIPTION] Processing sequence ${nextItem.sequence}: "${text.substring(0, 50)}..."`)
+        
+        // 1. Add locally to unified segment entries
+        addTranscriptEntry(text, 'mic')
+
+        // 2. Emit to backend socket to cache in segmentEntries
+        if (socket && isConnected && room?.code) {
+          socket.emit('mic:transcript-chunk', { roomCode: room.code, text })
+        }
+
         finalTranscriptRef.current += text + ' '
         accumulatedTranscriptRef.current += text + ' '
         setTranscript(finalTranscriptRef.current)
@@ -857,7 +885,7 @@ function RoomDetailPage() {
     }
 
     isProcessingQueueRef.current = false
-  }, [])
+  }, [addTranscriptEntry, socket, isConnected, room?.code])
 
   // Add transcription result to queue
   const addToTranscriptionQueue = useCallback((sequence, text) => {
@@ -944,7 +972,7 @@ function RoomDetailPage() {
     }, 10000)
   }, [sendForTranscription])
   
-  const startRecording = async ({ resetSegment = true } = {}) => {
+  const startRecording = async ({ resetSegment = false } = {}) => {
     if (recordingActiveRef.current) return
 
     try {
@@ -971,6 +999,10 @@ function RoomDetailPage() {
       selectedMimeTypeRef.current = selectedMimeType
 
       // Initialize segment
+      if (resetSegment) {
+        setSegmentEntries([])
+        segmentEntriesRef.current = []
+      }
       setTranscript('')
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
@@ -1039,19 +1071,26 @@ function RoomDetailPage() {
     if (isRecording) {
       stopRecording()
     } else {
-      startRecording()
+      startRecording({ resetSegment: false })
     }
   }
 
-  const clearTranscript = () => {
+  const resetSegmentState = useCallback(() => {
+    setSegmentEntries([])
+    segmentEntriesRef.current = []
     setTranscript('')
-    finalTranscriptRef.current = ''
     setSegmentTranscript('')
     segmentTranscriptRef.current = ''
+    finalTranscriptRef.current = ''
+    accumulatedTranscriptRef.current = ''
+  }, [])
+
+  const clearTranscript = () => {
+    resetSegmentState()
   }
 
   const handleManualGenerateQuestions = async () => {
-    const textToUse = segmentTranscript.trim() || transcript
+    const textToUse = segmentEntries.map(e => e.text).join(' ').trim()
     if (!textToUse) {
       alert('No transcript available to generate questions from.')
       return
@@ -1902,7 +1941,7 @@ function RoomDetailPage() {
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    {transcript && (
+                    {segmentEntries.length > 0 && (
                       <button onClick={clearTranscript} style={{
                         padding: '4px 12px',
                         background: 'transparent',
@@ -1917,7 +1956,7 @@ function RoomDetailPage() {
                     )}
                     <button
                       onClick={handleManualGenerateQuestions}
-                      disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
+                      disabled={isGeneratingQuestions || segmentEntries.length === 0 || !generateQEnabled}
                       style={{
                         padding: '4px 12px',
                         background: '#3b82f6',
@@ -1926,8 +1965,8 @@ function RoomDetailPage() {
                         borderRadius: '6px',
                         fontSize: '12px',
                         fontWeight: '500',
-                        cursor: isGeneratingQuestions || !transcript || !generateQEnabled ? 'not-allowed' : 'pointer',
-                        opacity: isGeneratingQuestions || !transcript || !generateQEnabled ? 0.6 : 1,
+                        cursor: isGeneratingQuestions || segmentEntries.length === 0 || !generateQEnabled ? 'not-allowed' : 'pointer',
+                        opacity: isGeneratingQuestions || segmentEntries.length === 0 || !generateQEnabled ? 0.6 : 1,
                         display: 'flex',
                         alignItems: 'center',
                         gap: '4px'
@@ -1942,13 +1981,38 @@ function RoomDetailPage() {
                   flex: 1,
                   fontSize: '15px',
                   lineHeight: '1.8',
-                  color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
                   overflowY: 'auto'
                 }}>
-                  {transcript ? transcript : (
-                    <span style={{ fontStyle: 'italic' }}>
+                  {groupedEntries.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {groupedEntries.map((group, idx) => (
+                        <div key={idx} style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '8px',
+                          padding: '6px 10px',
+                          borderRadius: '8px',
+                          background: group.source === 'video' ? 'rgba(59, 130, 246, 0.05)' : 'rgba(16, 185, 129, 0.05)',
+                          borderLeft: `3px solid ${group.source === 'video' ? '#3b82f6' : '#10b981'}`
+                        }}>
+                          <span style={{
+                            fontSize: '10px',
+                            textTransform: 'uppercase',
+                            fontWeight: 'bold',
+                            color: group.source === 'video' ? '#3b82f6' : '#10b981',
+                            minWidth: '45px',
+                            marginTop: '3px'
+                          }}>
+                            {group.source}
+                          </span>
+                          <span style={{ color: 'var(--text-primary)', flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {group.chunks.join(' ')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>
                       {room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
                         ? 'Video transcript will appear here when the segment is complete.'
                         : 'Click the microphone to start real-time transcription.'}
@@ -2136,10 +2200,7 @@ function RoomDetailPage() {
             setPendingQuestions([])
 
             // Clear segment transcript for fresh start
-            setSegmentTranscript('')
-            segmentTranscriptRef.current = ''
-            finalTranscriptRef.current = ''
-            setTranscript('')
+            resetSegmentState()
 
             // Reset pending review flag
             setIsPendingReview(false)
@@ -2148,16 +2209,21 @@ function RoomDetailPage() {
             // Reset segment timer
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
 
+            // Commit segment to backend to clear segmentEntries and update playhead
+            if (socket) {
+              const videoTime = ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function'
+                ? ytPlayerRef.current.getCurrentTime()
+                : 0
+              socket.emit('video:commit-segment', {
+                roomCode: room.code,
+                currentTime: videoTime
+              })
+            }
+
+            setCurrentSegment(prev => prev + 1)
+
             const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
-            if (isVideoMode) {
-              if (socket && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
-                socket.emit('video:commit-segment', {
-                  roomCode: room.code,
-                  currentTime: ytPlayerRef.current.getCurrentTime()
-                })
-              }
-              setCurrentSegment(prev => prev + 1)
-            } else {
+            if (!isVideoMode) {
               // Resume recording for next segment
               startRecording({ resetSegment: false })
             }
@@ -2167,24 +2233,28 @@ function RoomDetailPage() {
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
             setPendingQuestions([])
-            setSegmentTranscript('')
-            segmentTranscriptRef.current = ''
-            finalTranscriptRef.current = ''
-            setTranscript('')
+
+            resetSegmentState()
+
             setIsPendingReview(false)
             setGenerateQEnabled(true)
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
 
+            // Commit segment to backend to clear segmentEntries and update playhead
+            if (socket) {
+              const videoTime = ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function'
+                ? ytPlayerRef.current.getCurrentTime()
+                : 0
+              socket.emit('video:commit-segment', {
+                roomCode: room.code,
+                currentTime: videoTime
+              })
+            }
+
+            setCurrentSegment(prev => prev + 1)
+
             const isVideoMode = room?.mode === 'video' || (room?.sharedMedia && room.sharedMedia.url)
-            if (isVideoMode) {
-              if (socket && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
-                socket.emit('video:commit-segment', {
-                  roomCode: room.code,
-                  currentTime: ytPlayerRef.current.getCurrentTime()
-                })
-              }
-              setCurrentSegment(prev => prev + 1)
-            } else {
+            if (!isVideoMode) {
               startRecording({ resetSegment: false })
             }
           }}

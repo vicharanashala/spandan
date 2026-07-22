@@ -378,6 +378,7 @@ function parseOptions(options, type) {
 
 // MiniMax API call
 async function generateWithMiniMax(prompt) {
+  console.log(`[MiniMax] config.minimaxApiKey is defined: ${!!config.minimaxApiKey}, length: ${config.minimaxApiKey?.length || 0}`);
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
@@ -385,7 +386,7 @@ async function generateWithMiniMax(prompt) {
       'Authorization': `Bearer ${config.minimaxApiKey}`
     },
     body: JSON.stringify({
-      model: 'MiniMax-M3',
+      model: 'MiniMaxAI/MiniMax-M2.7',
       messages: [
         {
           role: 'user',
