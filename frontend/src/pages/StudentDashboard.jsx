@@ -1,12 +1,29 @@
-import React, { useState, useEffect } from 'react';
-import { Target, Zap, Award, TrendingUp } from 'lucide-react';
-import { motion } from 'framer-motion';
-import useAuthStore from '../stores/authStore';
-import { API_URL } from '../config';
+import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import useAuthStore from '../stores/authStore'
+import useSocketStore from '../stores/socketStore'
+import useRoomStore from '../stores/roomStore'
+import Sidebar from '../components/Sidebar'
+import ThemeToggle from '../components/ThemeToggle'
+import ProfileDropdown from '../components/ProfileDropdown'
+import { API_URL } from '../config.js'
+import useIsMobile from '../hooks/useIsMobile'
 
-const StudentDashboard = () => {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+function StudentDashboard() {
+  const isMobile = useIsMobile()
+  const navigate = useNavigate()
+  const { user, token } = useAuthStore()
+  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
+  
+  const [roomCode, setRoomCode] = useState('')
+  const [isJoining, setIsJoining] = useState(false)
+  const [stats, setStats] = useState({
+    totalRooms: 0,
+    pollsTaken: 0,
+    pollsMissed: 0,
+    average: 0
+  })
 
   const fetchStudentData = async () => {
     try {
@@ -27,73 +44,241 @@ const StudentDashboard = () => {
     }
   };
 
-  useEffect(() => {
-    fetchStudentData();
-  }, []);
-
-  if (loading) return <div className="p-8 text-center font-medium">Loading Student Dashboard...</div>;
-  if (!data) return <div className="p-8 text-center text-red-500">Failed to load data</div>;
-
-  const { studentStats } = data;
-  const overallAccuracy = ((studentStats.correctCount / studentStats.questionsAnswered) * 100) || 0;
+  const statCards = [
+    { icon: '📚', value: stats.totalRooms, label: 'Total Rooms', tint: '#3b82f6' },
+    { icon: '✅', value: stats.pollsTaken, label: 'Polls Taken', tint: '#10b981' },
+    { icon: '❌', value: stats.pollsMissed, label: 'Polls Missed', tint: '#ef4444' },
+    { icon: '📈', value: `${stats.average}%`, label: 'Earned Points %', tint: '#8b5cf6' }
+  ]
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6 }}
-      className="p-8 max-w-6xl mx-auto space-y-10 min-h-screen"
-    >
-      <header>
-        <h1 className="text-4xl font-bold text-gray-900 tracking-tight">My Performance</h1>
-        <p className="text-gray-500 mt-2 font-medium text-lg">Lifetime analytics and weekly trends</p>
-      </header>
+    <div style={{
+      display: 'flex',
+      minHeight: '100vh',
+      background: 'var(--bg-primary)',
+      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+      maxWidth: '100%',
+      boxSizing: 'border-box'
+    }}>
+      <Sidebar user={user} />
 
-      {/* Lifetime Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard icon={<Award size={32} />} label="Lifetime Score" value={studentStats.lifetimeScore.toLocaleString()} />
-        <StatCard icon={<Target size={32} />} label="Total Answered" value={studentStats.questionsAnswered} />
-        <StatCard icon={<Zap size={32} />} label="Overall Accuracy" value={`${overallAccuracy.toFixed(1)}%`} />
-      </div>
+      {/* Main Content */}
+      <div style={{
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        marginLeft: 'var(--sidebar-width, 240px)',
+        transition: 'margin-left 0.2s ease'
+      }}>
+        {/* Header - Blue gradient bar */}
+        <header style={{
+          background: 'var(--header-bg)',
+          color: 'white',
+          padding: isMobile ? '20px 16px' : '28px 32px',
+          paddingLeft: isMobile ? '64px' : '32px',
+          boxShadow: 'var(--shadow-md)'
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '12px',
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{
+                margin: 0,
+                fontSize: isMobile ? '20px' : '26px',
+                fontWeight: '700',
+                letterSpacing: '-0.02em'
+              }}>
+                Welcome, {user?.name || 'Student'}!
+              </h1>
+              <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '14px' }}>
+                Join rooms and participate in polls
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+              <ThemeToggle />
+              <ProfileDropdown />
+            </div>
+          </div>
+        </header>
 
-      {/* Weekly Rollup Trend */}
-      <motion.section 
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.2, duration: 0.5 }}
-        className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden mt-12"
-      >
-        <div className="p-6 border-b border-gray-100 bg-gray-50/50">
-          <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800">
-            <TrendingUp className="text-indigo-600" /> Weekly Rollup
-          </h2>
-        </div>
-        
-        <table className="w-full text-left">
-          <thead className="bg-white border-b border-gray-100">
-            <tr>
-              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Week Of</th>
-              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Questions</th>
-              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Accuracy</th>
-              <th className="p-6 font-bold text-xs uppercase tracking-wider text-gray-500">Avg TTA (Time to Answer)</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {studentStats.weeklyRollup.map((week, i) => (
-              <tr key={i} className="hover:bg-indigo-50/30 transition-colors">
-                <td className="p-6 font-bold text-gray-800">
-                  {new Date(week.weekStartDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                </td>
-                <td className="p-6 text-gray-600 font-medium">{week.questionsAnswered}</td>
-                <td className="p-6">
-                  <div className="flex items-center gap-4">
-                    <span className="font-bold text-gray-700 w-12 text-right">{week.accuracyPercentage}%</span>
-                    <div className="flex-1 h-2.5 bg-gray-100 rounded-full max-w-[120px] overflow-hidden">
-                      <div 
-                        className={`h-full rounded-full transition-all duration-1000 ${week.accuracyPercentage >= 80 ? 'bg-green-500' : week.accuracyPercentage > 50 ? 'bg-indigo-500' : 'bg-amber-500'}`}
-                        style={{ width: `${week.accuracyPercentage}%` }}
-                      />
+        {/* Dashboard content */}
+        <div style={{
+          flex: 1,
+          padding: isMobile ? '16px' : '32px',
+          maxWidth: '100%',
+          boxSizing: 'border-box'
+        }}>
+          {/* Stats Cards */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
+            gap: isMobile ? '12px' : '20px',
+            marginBottom: isMobile ? '24px' : '32px'
+          }}>
+            {statCards.map((card) => (
+              <div key={card.label} style={{
+                background: 'var(--bg-card)',
+                borderRadius: 'var(--radius-lg)',
+                padding: '24px',
+                boxShadow: 'var(--shadow-md)',
+                border: '1px solid var(--border-color)',
+                minWidth: 0,
+                boxSizing: 'border-box'
+              }}>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '24px',
+                  marginBottom: '12px',
+                  background: `${card.tint}1a`
+                }}>{card.icon}</div>
+                <div style={{
+                  fontSize: isMobile ? '26px' : '30px',
+                  fontWeight: '700',
+                  color: 'var(--text-primary)',
+                  letterSpacing: '-0.02em'
+                }}>{card.value}</div>
+                <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>{card.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Quick Join Section */}
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: 'var(--radius-lg)',
+            padding: isMobile ? '20px' : '24px',
+            boxShadow: 'var(--shadow-md)',
+            border: '1px solid var(--border-color)',
+            marginBottom: isMobile ? '24px' : '32px',
+            boxSizing: 'border-box'
+          }}>
+            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+              Quick Join
+            </h2>
+
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              flexDirection: isMobile ? 'column' : 'row'
+            }}>
+              <input
+                type="text"
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="Enter room code..."
+                maxLength={8}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  padding: '12px 16px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '15px',
+                  outline: 'none',
+                  background: 'var(--input-bg)',
+                  color: 'var(--text-primary)',
+                  letterSpacing: '2px',
+                  fontWeight: '600',
+                  boxSizing: 'border-box'
+                }}
+              />
+
+              <button
+                onClick={handleJoinRoom}
+                disabled={isJoining || !roomCode.trim()}
+                style={{
+                  padding: '11px 24px',
+                  background: (isJoining || !roomCode.trim()) ? 'var(--border-color)' : 'var(--accent-gradient)',
+                  color: (isJoining || !roomCode.trim()) ? 'var(--text-secondary)' : '#fff',
+                  border: 'none',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '15px',
+                  fontWeight: '600',
+                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  transition: 'transform 0.15s ease, box-shadow 0.15s ease'
+                }}
+              >
+                {isJoining ? 'Joining...' : 'Join Room'}
+              </button>
+            </div>
+          </div>
+
+          {/* Active Joined Rooms Section */}
+          {activeRooms.length > 0 && (
+            <>
+              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                🟢 Previously Joined Active Rooms
+              </h2>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: '16px',
+                marginBottom: isMobile ? '24px' : '32px'
+              }}>
+                {activeRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-2px)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = 'translateY(0)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                    }}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '20px',
+                      background: 'var(--bg-card)',
+                      borderRadius: 'var(--radius-lg)',
+                      border: '1px solid var(--border-color)',
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                      transition: 'transform 0.15s ease, box-shadow 0.15s ease'
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
+                      </p>
                     </div>
+                    <button
+                      onClick={() => navigate(`/student/session/${room.code}`)}
+                      style={{
+                        marginTop: '16px',
+                        padding: '11px 18px',
+                        background: 'var(--accent-gradient)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 'var(--radius)',
+                        fontSize: '14px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        transition: 'transform 0.15s ease'
+                      }}
+                    >
+                      🔄 Rejoin Room →
+                    </button>
                   </div>
                 </td>
                 <td className="p-6 text-gray-600 font-medium">{(week.averageTTAMs / 1000).toFixed(1)} sec</td>

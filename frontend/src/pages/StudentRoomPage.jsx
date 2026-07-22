@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
@@ -20,7 +21,7 @@ function StudentRoomPage() {
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
-  const { joinRoom, activePoll, remainingTime, hasAnswered, submitAnswer, recordTabSwitch } = useLiveRoom(roomCode, token, 'student')
+  const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -249,7 +250,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -276,7 +277,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
@@ -314,7 +315,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -343,16 +344,17 @@ function StudentRoomPage() {
       overflowX: 'hidden'
     }}>
       <Sidebar user={user} />
-
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
           color: 'white',
-          padding: '24px 32px'
+          padding: isMobile ? '20px 16px' : '24px 32px',
+          paddingLeft: isMobile ? '64px' : '32px'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
             </div>
@@ -364,7 +366,7 @@ function StudentRoomPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {/* Connection Status */}
           <div style={{
             background: 'var(--bg-card)',
@@ -412,10 +414,12 @@ function StudentRoomPage() {
           {activePoll ? (
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-              borderRadius: '16px',
-              padding: '32px',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '20px 16px' : '32px',
               color: 'white',
-              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
+              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
             }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
@@ -435,8 +439,8 @@ function StudentRoomPage() {
               </div>
 
               {/* Question */}
-              <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
-                {activePoll.text}
+              <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
+                {currentQuestion.question}
               </h2>
 
               {/* Options */}
@@ -470,19 +474,22 @@ function StudentRoomPage() {
                       onClick={handleOptionClick}
                       disabled={submitted}
                       style={{
-                        padding: '20px 24px',
+                        width: '100%',
+                        minHeight: '48px',
+                        boxSizing: 'border-box',
+                        padding: isMobile ? '14px 16px' : '20px 24px',
                         background: submitted
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
                         borderRadius: '12px',
                         color: 'white',
-                        fontSize: '18px',
+                        fontSize: isMobile ? '16px' : '18px',
                         textAlign: 'left',
                         cursor: submitted ? 'default' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '16px'
+                        gap: isMobile ? '12px' : '16px'
                       }}
                     >
                       {isMSQ && (
@@ -496,7 +503,8 @@ function StudentRoomPage() {
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: isSelected ? '#1f2937' : 'white',
-                          fontSize: '14px'
+                          fontSize: '14px',
+                          flexShrink: 0
                         }}>
                           {isSelected ? '✓' : ''}
                         </span>
@@ -511,11 +519,12 @@ function StudentRoomPage() {
                         justifyContent: 'center',
                         fontWeight: '700',
                         color: isSelected ? '#1f2937' : 'white',
-                        fontSize: '16px'
+                        fontSize: '16px',
+                        flexShrink: 0
                       }}>
                         {optionLabel}
                       </span>
-                      <span>{optionText}</span>
+                      <span style={{ minWidth: 0, wordBreak: 'break-word' }}>{optionText}</span>
                     </button>
                   )
                 })}
@@ -560,9 +569,9 @@ function StudentRoomPage() {
               {/* Active question area placeholder */}
               <div style={{
                 background: 'var(--bg-card)',
-                borderRadius: '16px',
-                padding: '48px',
-                boxShadow: 'var(--card-shadow)',
+                borderRadius: 'var(--radius-lg)',
+                padding: isMobile ? '32px 20px' : '48px',
+                boxShadow: 'var(--shadow-md)',
                 border: '1px solid var(--border-color)',
                 textAlign: 'center'
               }}>
@@ -590,78 +599,125 @@ function StudentRoomPage() {
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
-                <div style={{ flex: '1 1 calc(70% - 8px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
-                  {pastResponses.length === 0 ? (
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
-                      No questions answered yet. Questions you answer will appear here.
-                    </p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {pastResponses.map((q, index) => (
-                        <div key={`past-${index}`} style={{
-                          padding: '20px',
-                          background: 'var(--bg-primary)',
-                          borderRadius: '12px',
-                          border: '1px solid var(--border-color)',
-                          opacity: q.answered ? 1 : 0.8
-                        }}>
-                          {/* Header with status badges */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                              <span style={{
-                                padding: '2px 10px',
-                                background: q.answered ? '#d1fae5' : '#fee2e2',
-                                color: q.answered ? '#059669' : '#dc2626',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                {q.answered ? 'Answered' : 'Missed'}
-                              </span>
-                              <span style={{
-                                padding: '2px 10px',
-                                background: '#eff6ff',
-                                color: '#3b82f6',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                {q.type}
-                              </span>
-                              <span style={{
-                                padding: '2px 10px',
-                                background: '#fef3c7',
-                                color: '#d97706',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
-                              </span>
-                            </div>
-                            {q.answered && q.isCorrect && (
-                              <span style={{
-                                padding: '4px 12px',
-                                background: '#10b981',
-                                color: 'white',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                ✓ Correct (+{q.pointsEarned || 0})
-                              </span>
-                            )}
-                            {q.answered && !q.isCorrect && (
-                              <span style={{
-                                padding: '4px 12px',
-                                background: '#ef4444',
-                                color: 'white',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: '600'
+                {pastResponses.length === 0 ? (
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
+                    No questions answered yet. Questions you answer will appear here.
+                  </p>
+                ) : (
+                  <div style={{ position: 'relative' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                    {pastResponses.map((q, index) => (
+                      <div key={`past-${index}`} style={{
+                        padding: '20px',
+                        background: 'var(--bg-primary)',
+                        borderRadius: '12px',
+                        border: '1px solid var(--border-color)',
+                        opacity: q.answered ? 1 : 0.8
+                      }}>
+                        {/* Header with status badges */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span style={{
+                              padding: '2px 10px',
+                              background: q.answered ? '#d1fae5' : '#fee2e2',
+                              color: q.answered ? '#059669' : '#dc2626',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              {q.answered ? 'Answered' : 'Missed'}
+                            </span>
+                            <span style={{
+                              padding: '2px 10px',
+                              background: '#eff6ff',
+                              color: '#3b82f6',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              {q.type}
+                            </span>
+                            <span style={{
+                              padding: '2px 10px',
+                              background: '#fef3c7',
+                              color: '#d97706',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
+                            </span>
+                          </div>
+                          {q.answered && q.isCorrect && (
+                            <span style={{
+                              padding: '4px 12px',
+                              background: '#10b981',
+                              color: 'white',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              ✓ Correct (+{q.pointsEarned || 0})
+                            </span>
+                          )}
+                          {q.answered && !q.isCorrect && (
+                            <span style={{
+                              padding: '4px 12px',
+                              background: '#ef4444',
+                              color: 'white',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              ✗ Incorrect (+{q.pointsEarned || 0})
+                            </span>
+                          )}
+                        </div>
+                        
+                        {/* Question text */}
+                        <p style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', lineHeight: '1.5' }}>
+                          {q.question || 'Question'}
+                        </p>
+                        
+                        {/* All options - always shown */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                          {(q.options || []).map((option, optIdx) => {
+                            const isSelected = q.selectedOptions?.includes(optIdx)
+                            const isCorrect = option.isCorrect
+                            const letter = String.fromCharCode(65 + optIdx)
+                            
+                            let bgColor = 'var(--bg-secondary)'
+                            let borderColor = 'var(--border-color)'
+                            let textColor = 'var(--text-primary)'
+                            let label = ''
+                            
+                            if (q.answered && isSelected && isCorrect) {
+                              bgColor = '#d1fae5'
+                              borderColor = '#059669'
+                              label = ' (Your correct answer)'
+                            } else if (q.answered && isSelected && !isCorrect) {
+                              bgColor = '#fee2e2'
+                              borderColor = '#dc2626'
+                              label = ' (Your wrong answer)'
+                            } else if (!q.answered && isCorrect) {
+                              bgColor = '#d1fae5'
+                              borderColor = '#059669'
+                              label = ' (Correct answer)'
+                            }
+                            
+                            return (
+                              <div key={optIdx} style={{
+                                padding: '12px 16px',
+                                background: bgColor,
+                                border: `2px solid ${borderColor}`,
+                                borderRadius: '8px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px'
                               }}>
                                 ✗ Incorrect (+{q.pointsEarned || 0})
                               </span>
@@ -744,12 +800,24 @@ function StudentRoomPage() {
                             </p>
                           )}
                         </div>
-                      ))}
-                    </div>
+                        
+                        {/* Missed question notice */}
+                        {!q.answered && (
+                          <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
+                            ⚠️ You did not answer this question
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {pastResponses.length > 3 && (
+                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 12px 12px' }} />
                   )}
+                  </div>
+                )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>

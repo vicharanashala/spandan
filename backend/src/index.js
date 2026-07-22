@@ -19,13 +19,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
-import dashboardRoutes from './routes/dashboard.js'
-import reportsRoutes from './routes/reports.js'
-import lmsAuthRoutes from './routes/lmsAuth.js'
-import liveRoutes from './routes/live.js'
-
-// Import services
-import { startCleanupRoutine } from './services/roomStateService.js'
+import researchRoutes from './routes/research.js'
 
 // Import models for reference
 import './models/index.js'
@@ -362,10 +356,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
-app.use('/api/dashboard', dashboardRoutes)
-app.use('/api/reports', reportsRoutes)
-app.use('/api/lms', lmsAuthRoutes)
-app.use('/api/live', liveRoutes)
+app.use('/api/research', researchRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -552,7 +543,7 @@ app.use((err, req, res, next) => {
   console.error('Error:', err)
   res.status(500).json({
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
 })
 
