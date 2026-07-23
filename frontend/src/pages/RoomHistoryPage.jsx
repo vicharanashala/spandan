@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -14,6 +14,7 @@ function RoomHistoryPage() {
   const { user, token } = useAuthStore()
   const { rooms, isLoading, fetchRooms, setAuthToken } = useRoomStore()
   const [downloadingId, setDownloadingId] = React.useState(null)
+  const [searchTerm, setSearchTerm] = useState("")
 
   // Download a room's complete results as a CSV (teacher-only endpoint; needs the auth
   // header, so we fetch as a Blob and trigger the download rather than using a plain link).
@@ -54,6 +55,10 @@ function RoomHistoryPage() {
 
   // Filter ended rooms for teacher view
   const endedRooms = rooms?.filter(r => r.endedAt) || []
+  const filteredRooms = endedRooms.filter((room) =>
+  room.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  room.code.toLowerCase().includes(searchTerm.toLowerCase())
+)
 
   return (
     <div style={{
@@ -116,6 +121,25 @@ function RoomHistoryPage() {
           }}>
             Ended Rooms
           </h2>
+          <div style={{ marginBottom: '20px' }}>
+            <input
+              type="text"
+              placeholder="🔍 Search by room name or code..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                fontSize: '14px',
+                outline: 'none',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                boxSizing: 'border-box'
+              }}
+            />
+          </div>
 
           {isLoading ? (
             <div style={{
@@ -129,13 +153,13 @@ function RoomHistoryPage() {
             }}>
               Loading rooms...
             </div>
-          ) : endedRooms.length > 0 ? (
+          ) : filteredRooms.length > 0 ? (
             <div style={{
               display: 'grid',
               gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
               gap: '16px'
             }}>
-              {endedRooms.map((room) => (
+              {filteredRooms.map((room) => (
                 <div
                   key={room._id}
                   onMouseEnter={(e) => {
