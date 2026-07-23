@@ -111,4 +111,25 @@ export const stripObject = (obj) => {
   return obj
 }
 
-export default { sanitize, sanitizeObject, stripHtml, stripObject }
+/**
+ * Strip the answer key (options[].isCorrect, explanation) from a question doc.
+ * A student must never receive these for a question they have not answered yet —
+ * doing so lets a client read the correct option straight off the wire instead of
+ * answering it (see security-poc/leaderboard_bot.mjs, finding #7). Call with
+ * reveal=true for a teacher, or a student who has already submitted a response.
+ * @param {object} q - a lean Question document (or question-shaped object)
+ * @param {boolean} reveal - false hides the key; true passes the doc through
+ * @returns {object} q unchanged, or a shallow copy with the key removed
+ */
+export const stripAnswerKey = (q, reveal) => {
+  if (!q || reveal) return q
+  const { explanation, ...rest } = q
+  return {
+    ...rest,
+    options: Array.isArray(q.options)
+      ? q.options.map(({ isCorrect, ...opt }) => opt)
+      : q.options
+  }
+}
+
+export default { sanitize, sanitizeObject, stripHtml, stripObject, stripAnswerKey }

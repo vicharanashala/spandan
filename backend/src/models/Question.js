@@ -32,6 +32,14 @@ const questionSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
   },
+  // Set the moment the question is created with status 'approved' — today that IS the launch
+  // moment (POST /api/questions creates the doc and broadcasts it to students in the same
+  // request). This is the clock POST /api/responses checks the answer window against. Null on
+  // documents written before this field existed; those fall back to createdAt (see responses.js).
+  launchedAt: {
+    type: Date,
+    default: null
+  },
   timeToAnswer: {
     type: Number,
     default: 30
