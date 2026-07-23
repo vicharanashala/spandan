@@ -2,6 +2,8 @@ import Room from '../models/Room.js'
 import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
+import Transcript from '../models/Transcript.js'
+import { invalidateRoomLive } from './roomLiveCache.js'
 
 export const createRoom = async (name, teacherId, settings = {}, bossOptions = {}) => {
   const room = new Room({
@@ -60,11 +62,18 @@ export const updateRoom = async (roomId, updates) => {
     { $set: updates },
     { new: true, runValidators: true }
   )
-  
+
   if (!room) {
     throw new Error('Room not found')
   }
-  
+
+  // If this update ends the room, drop the room-live cache so POST /responses re-reads Mongo, sees
+  // endedAt, and refuses further submits (Phase 3). This is the real end path (PUT /rooms/:id with
+  // isActive:false / endedAt). Non-fatal if Redis is unavailable.
+  if (updates && (updates.isActive === false || updates.endedAt)) {
+    await invalidateRoomLive(roomId)
+  }
+
   return room
 }
 
@@ -73,6 +82,21 @@ export const deleteRoom = async (roomId) => {
   if (!room) {
     throw new Error('Room not found')
   }
+  // Cascade-delete everything tied to this room so no orphaned records are left behind.
+  // Orphans (e.g. a Response whose room is gone) otherwise break student room-history and
+  // skew per-room queries. The room doc is removed first (fail-fast on not-found); if a
+  // cascade delete were to partially fail, the null-guards in the read paths still cope.
+  const [responses, members, questions, transcripts] = await Promise.all([
+    Response.deleteMany({ roomId }),
+    RoomMember.deleteMany({ roomId }),
+    Question.deleteMany({ roomId }),
+    Transcript.deleteMany({ roomId })
+  ])
+  console.log(
+    `[rooms] deleted room ${roomId} + cascade: ` +
+    `${responses.deletedCount} responses, ${members.deletedCount} members, ` +
+    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts`
+  )
   return room
 }
 
@@ -96,11 +120,15 @@ export const deactivateRoom = async (roomId) => {
     { $set: { isActive: false, endedAt: new Date() } },
     { new: true, runValidators: true }
   )
-  
+
   if (!room) {
     throw new Error('Room not found')
   }
-  
+
+  // Drop the room-live cache so POST /responses re-reads Mongo and sees endedAt → refuses further
+  // submits (Phase 3 response-window). Non-fatal if Redis is unavailable.
+  await invalidateRoomLive(roomId)
+
   return room
 }
 
@@ -109,9 +137,11 @@ export const getRoomsByStudent = async (studentId) => {
   const memberships = await RoomMember.find({ studentId }).populate('roomId')
   const memberRooms = memberships.filter(m => m.roomId).map(m => m.roomId)
   
-  // Also get rooms from Response (where student answered) - includes rooms student left
+  // Also get rooms from Response (where student answered) - includes rooms student left.
+  // Guard against orphan responses whose room was deleted (roomId populates to null) —
+  // otherwise a single orphan throws and the student's whole room history 500s.
   const responseRooms = await Response.find({ studentId }).populate('roomId')
-  const uniqueResponseRoomIds = [...new Set(responseRooms.map(r => r.roomId._id.toString()))]
+  const uniqueResponseRoomIds = [...new Set(responseRooms.filter(r => r.roomId).map(r => r.roomId._id.toString()))]
   
   // Get full room objects for Response rooms that aren't in RoomMember
   const responseRoomIds = uniqueResponseRoomIds.filter(id => !memberRooms.some(r => r._id.toString() === id))

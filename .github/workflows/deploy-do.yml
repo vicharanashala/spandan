@@ -1,0 +1,46 @@
+name: Deploy to DigitalOcean (manual)
+
+# Manually-triggered deploy for the dedicated DigitalOcean Droplet (159.89.169.149).
+# Separate from deploy.yml (which targets the old shared host). Run from the
+# GitHub Actions tab -> "Deploy to DigitalOcean (manual)" -> Run workflow.
+#
+# Required secret: DO_SSH_KEY = private half of the deploy key whose public half
+# is in the `spandan` user's ~/.ssh/authorized_keys on the Droplet.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: SSH Deploy (DO Droplet)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 159.89.169.149 >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/id_ed25519 spandan@159.89.169.149 bash << 'DEPLOY'
+            set -e
+            cd /var/www/spandan
+
+            echo "==> Pulling latest code..."
+            git pull origin main
+
+            echo "==> Installing dependencies (workspaces)..."
+            npm install --no-audit --no-fund
+
+            echo "==> Building frontend..."
+            npm run build
+
+            echo "==> Restarting pm2 processes..."
+            npx pm2 restart all --update-env
+
+            echo "==> Deployment complete."
+            npx pm2 status
+          DEPLOY

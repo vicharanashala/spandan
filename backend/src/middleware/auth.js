@@ -5,27 +5,52 @@ import User from '../models/User.js'
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '7d'
 
+// Short-TTL in-memory cache of authenticated users. Every protected request used to
+// issue a User.findById; during a live session students poll constantly, so that was
+// thousands of redundant _id lookups/sec purely for auth. Caching the resolved user
+// for a few seconds collapses those to one lookup per user per TTL window while keeping
+// the full Mongoose document (so /auth/me and req.user.model keep working).
+// Trade-off: a role change or account deletion takes up to TTL to be reflected.
+// NOTE: this is per-process; when moving to multiple instances, switch to Redis or
+// stateless token claims (see scalability audit, Phase 2).
+const USER_CACHE_TTL_MS = Number(process.env.AUTH_CACHE_TTL_MS) || 60000
+const USER_CACHE_MAX = Number(process.env.AUTH_CACHE_MAX) || 20000
+const userCache = new Map() // userId -> { user, expires }
+
+export const clearUserCache = () => userCache.clear()
+
 export const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Authentication required',
-        message: 'Please provide a valid token' 
+        message: 'Please provide a valid token'
       })
     }
 
     const token = authHeader.split(' ')[1]
-    
+
     const decoded = jwt.verify(token, JWT_SECRET)
-    
-    const user = await User.findById(decoded.userId).select('-password')
-    
+
+    let user
+    const cached = userCache.get(decoded.userId)
+    if (cached && cached.expires > Date.now()) {
+      user = cached.user
+    } else {
+      user = await User.findById(decoded.userId).select('-password')
+      if (user) {
+        // Crude bound on cache size: clear wholesale rather than track LRU.
+        if (userCache.size >= USER_CACHE_MAX) userCache.clear()
+        userCache.set(decoded.userId, { user, expires: Date.now() + USER_CACHE_TTL_MS })
+      }
+    }
+
     if (!user) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'User not found',
-        message: 'The user associated with this token no longer exists' 
+        message: 'The user associated with this token no longer exists'
       })
     }
 
