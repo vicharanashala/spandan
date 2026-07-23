@@ -3,6 +3,8 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { debug } from '../utils/debug.js'
+import { stripAnswerKey } from '../utils/sanitize.js'
+import { secondsSinceLaunch, isWithinAnswerWindow, resolveResponseTime } from '../utils/answerWindow.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -115,6 +117,15 @@ router.post('/', authorize('student'), async (req, res) => {
       return res.status(404).json({ error: 'Question not found' })
     }
 
+    // Answer window: reject anything submitted after the question's timeToAnswer (+ grace) has
+    // elapsed since it launched. launchedAt is set at creation for every question created today;
+    // fall back to createdAt for documents written before this field existed.
+    const tta = question.timeToAnswer || 30
+    const elapsedS = secondsSinceLaunch(question.launchedAt || question.createdAt)
+    if (!isWithinAnswerWindow(elapsedS, tta)) {
+      return res.status(410).json({ error: 'This question is no longer accepting answers' })
+    }
+
     // Check if answer is correct based on question type
     let isCorrect = false
     
@@ -142,8 +153,10 @@ router.post('/', authorize('student'), async (req, res) => {
     // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)
     const maxPoints = question.points || 100
-    const tta = question.timeToAnswer || 30
-    const respTime = responseTime || 0
+    // responseTime is client-reported and can be forged (see security-poc/leaderboard_bot.mjs) —
+    // floor it to what the server itself observed elapsed, so a claimed value can never read as
+    // *faster* than physically possible.
+    const respTime = resolveResponseTime(responseTime, elapsedS)
     let points = 0
     
     if (isCorrect) {
@@ -549,12 +562,26 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       if (studentResponse) {
         debug(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
       }
-      
+
+      // Answer-key protection: this endpoint is polled by every student's client on load and on
+      // every poll transition. Unconditionally sending options[].isCorrect here — even for a
+      // question the student hasn't answered — hands out the correct answer for free (this is
+      // exactly what security-poc/leaderboard_bot.mjs reads to auto-answer every question). Reveal
+      // once the student has answered (so the "your answer was right/wrong" badges work), OR once
+      // the question's own answer window has genuinely closed (so the "Missed — correct answer
+      // was X" review still works for questions no longer live) — never while it's still live and
+      // unanswered. Teachers always get it.
+      const answerWindowClosed = !isWithinAnswerWindow(
+        secondsSinceLaunch(q.launchedAt || q.createdAt),
+        q.timeToAnswer || 30
+      )
+      const safe = stripAnswerKey(q, isTeacher || !!studentResponse || answerWindowClosed)
+
       return {
         _id: qIdStr,
         question: q.question,
         type: q.type,
-        options: q.options,
+        options: safe.options,
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,

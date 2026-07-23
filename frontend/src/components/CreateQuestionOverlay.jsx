@@ -1,14 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
-  const [questionType, setQuestionType] = useState(defaultType)
-  const [question, setQuestion] = useState('')
-  const [options, setOptions] = useState([
+// Default option set for a freshly opened / freshly reset question of the given type.
+function defaultOptionsFor(type) {
+  if (type === 'TF') {
+    return [
+      { text: 'True', isCorrect: true },
+      { text: 'False', isCorrect: false }
+    ]
+  }
+  if (type === 'MSQ') {
+    // at least 2 correct by default
+    return [
+      { text: '', isCorrect: true },
+      { text: '', isCorrect: true },
+      { text: '', isCorrect: false },
+      { text: '', isCorrect: false }
+    ]
+  }
+  return [
     { text: '', isCorrect: true },
     { text: '', isCorrect: false },
     { text: '', isCorrect: false },
     { text: '', isCorrect: false }
-  ])
+  ]
+}
+
+function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
+  const [questionType, setQuestionType] = useState(defaultType)
+  const [question, setQuestion] = useState('')
+  const [options, setOptions] = useState(defaultOptionsFor(defaultType))
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [points, setPoints] = useState(100)
 
@@ -16,32 +36,23 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   const [isLaunched, setIsLaunched] = useState(false)
   const [launchedTimeLeft, setLaunchedTimeLeft] = useState(0)
   const launchedTimerRef = useRef(null)
+  // Brief banner shown after a question's timer ends, so it's obvious the form is ready for the
+  // next one rather than just silently going blank.
+  const [showReadyBanner, setShowReadyBanner] = useState(false)
+  const readyBannerTimerRef = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      if (launchedTimerRef.current) clearInterval(launchedTimerRef.current)
+      if (readyBannerTimerRef.current) clearTimeout(readyBannerTimerRef.current)
+    }
+  }, [])
 
   if (!isOpen) return null
 
   const handleTypeChange = (newType) => {
     setQuestionType(newType)
-    if (newType === 'TF') {
-      setOptions([
-        { text: 'True', isCorrect: true },
-        { text: 'False', isCorrect: false }
-      ])
-    } else if (newType === 'MCQ') {
-      setOptions([
-        { text: '', isCorrect: true },
-        { text: '', isCorrect: false },
-        { text: '', isCorrect: false },
-        { text: '', isCorrect: false }
-      ])
-    } else {
-      // MSQ - at least 2 correct by default
-      setOptions([
-        { text: '', isCorrect: true },
-        { text: '', isCorrect: true },
-        { text: '', isCorrect: false },
-        { text: '', isCorrect: false }
-      ])
-    }
+    setOptions(defaultOptionsFor(newType))
   }
 
   const handleOptionChange = (index, text) => {
@@ -117,9 +128,11 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
         if (prev <= 1) {
           clearInterval(launchedTimerRef.current)
           launchedTimerRef.current = null
-          // Auto-close when timer hits 0
+          // Reset the form for the next question, but stay open — a teacher creating questions
+          // one at a time otherwise has to close this overlay and reopen it from the room page
+          // for every single question.
           setTimeout(() => {
-            handleCloseAndReset()
+            resetFormForNextQuestion()
           }, 500)
           return 0
         }
@@ -128,21 +141,33 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     }, 1000)
   }
 
+  // Blank the question/options for the next one, keep timeToAnswer/points/type as-is (a teacher
+  // firing off several questions in a row usually wants the same settings), and stay open.
+  const resetFormForNextQuestion = () => {
+    setIsLaunched(false)
+    setLaunchedTimeLeft(0)
+    setQuestion('')
+    setOptions(defaultOptionsFor(questionType))
+
+    setShowReadyBanner(true)
+    if (readyBannerTimerRef.current) clearTimeout(readyBannerTimerRef.current)
+    readyBannerTimerRef.current = setTimeout(() => setShowReadyBanner(false), 4000)
+  }
+
   const handleCloseAndReset = () => {
     if (launchedTimerRef.current) {
       clearInterval(launchedTimerRef.current)
       launchedTimerRef.current = null
     }
+    if (readyBannerTimerRef.current) {
+      clearTimeout(readyBannerTimerRef.current)
+      readyBannerTimerRef.current = null
+    }
     setIsLaunched(false)
     setLaunchedTimeLeft(0)
-    // Reset form
+    setShowReadyBanner(false)
     setQuestion('')
-    setOptions([
-      { text: '', isCorrect: true },
-      { text: '', isCorrect: false },
-      { text: '', isCorrect: false },
-      { text: '', isCorrect: false }
-    ])
+    setOptions(defaultOptionsFor(questionType))
     setTimeToAnswer(30)
     setPoints(100)
     onClose()
@@ -194,6 +219,21 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
             <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#3b82f6' }}>
               ✍️ Create Question
             </h2>
+            {showReadyBanner && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '6px 14px',
+                borderRadius: '20px',
+                background: 'rgba(59, 130, 246, 0.15)',
+                border: '2px solid #3b82f6'
+              }}>
+                <span style={{ fontSize: '13px', color: '#3b82f6', fontWeight: '600' }}>
+                  ✓ Question closed — ready for the next one
+                </span>
+              </div>
+            )}
             {isLaunched && (
               <div style={{
                 display: 'flex',

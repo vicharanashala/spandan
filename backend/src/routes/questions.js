@@ -2,7 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
-import { stripObject } from '../utils/sanitize.js'
+import { stripObject, stripAnswerKey } from '../utils/sanitize.js'
 
 const router = express.Router()
 
@@ -131,6 +131,13 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // literally (e.g. &quot;) on the student side.
     const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
 
+    // status defaults to 'approved' (see destructure above) and every caller in this app creates
+    // a question already-approved — that POST is the launch moment, so stamp it here. The answer
+    // window in POST /api/responses is measured from this timestamp.
+    if (sanitizedData.status === 'approved') {
+      sanitizedData.launchedAt = new Date()
+    }
+
     const newQuestion = new Question(sanitizedData)
 
     await newQuestion.save()
@@ -178,10 +185,21 @@ router.get('/', async (req, res) => {
       Question.find({ roomId }).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
       Question.countDocuments({ roomId })
     ])
-    
+
+    // Teachers always get the full doc. A student gets the answer key only for questions they
+    // have already answered — otherwise this listing hands them options[].isCorrect for a
+    // question that's still live (or hasn't been attempted), same leak as the /responses route.
+    let safeQuestions = questions
+    if (!isTeacher) {
+      const Response = (await import('../models/Response.js')).default
+      const answeredIds = await Response.distinct('questionId', { roomId, studentId: currentUser._id })
+      const answered = new Set(answeredIds.map((id) => id.toString()))
+      safeQuestions = questions.map((q) => stripAnswerKey(q, answered.has(q._id.toString())))
+    }
+
     res.json({
       success: true,
-      questions,
+      questions: safeQuestions,
       pagination: {
         page: pageNum,
         limit: limitNum,
