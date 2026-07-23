@@ -430,18 +430,18 @@ function RoomResultsPage() {
                           </p>
 
                           {/* Options - show differently for teacher vs student */}
-                          <div style={{ display: 'grid', gap: '8px' }}>
+                           <div style={{ display: 'grid', gap: '8px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
 
-                              // For student: highlight their selection. For teacher: highlight correct answer
+                              // For student: only highlight their selection. For teacher: highlight correct answer
                               const showAsSelected = isTeacher ? isCorrect : isSelected
                               const highlightStyle = showAsSelected
-                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
+                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'var(--bg-card)')
                                 : 'var(--bg-card)'
                               const borderStyle = showAsSelected
-                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
+                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '1px solid var(--border-color)'))
                                 : '1px solid var(--border-color)'
 
                               return (
@@ -459,8 +459,8 @@ function RoomResultsPage() {
                                     width: '24px',
                                     height: '24px',
                                     borderRadius: '50%',
-                                    background: isCorrect ? '#059669' : 'var(--border-color)',
-                                    color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                    background: (isTeacher && isCorrect) ? '#059669' : 'var(--border-color)',
+                                    color: (isTeacher && isCorrect) ? 'white' : 'var(--text-secondary)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
@@ -473,7 +473,7 @@ function RoomResultsPage() {
                                   <span style={{
                                     fontSize: '14px',
                                     color: 'var(--text-primary)',
-                                    fontWeight: isCorrect ? 600 : 400,
+                                    fontWeight: (isTeacher && isCorrect) ? 600 : 400,
                                     minWidth: 0
                                   }}>
                                     {opt.text}
@@ -483,9 +483,6 @@ function RoomResultsPage() {
                                   )}
                                   {!isTeacher && isSelected && (
                                     <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
-                                  )}
-                                  {!isTeacher && isCorrect && !isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
                                   )}
                                 </div>
                               )

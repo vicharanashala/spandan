@@ -763,10 +763,6 @@ function StudentRoomPage() {
                               bgColor = '#fee2e2'
                               borderColor = '#dc2626'
                               label = ' (Your wrong answer)'
-                            } else if (!q.answered && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
-                              label = ' (Correct answer)'
                             }
                             
                             return (
@@ -783,7 +779,7 @@ function StudentRoomPage() {
                                   width: '28px',
                                   height: '28px',
                                   borderRadius: '50%',
-                                  background: isCorrect ? '#059669' : 'var(--border-color)',
+                                  background: (q.answered && isCorrect) ? '#059669' : 'var(--border-color)',
                                   color: 'white',
                                   display: 'flex',
                                   alignItems: 'center',
@@ -794,7 +790,7 @@ function StudentRoomPage() {
                                 }}>
                                   {letter}
                                 </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                <span style={{ fontSize: '14px', color: textColor, fontWeight: (q.answered && isCorrect) ? '600' : '400' }}>
                                   {option.text || option}
                                 </span>
                                 {label && (

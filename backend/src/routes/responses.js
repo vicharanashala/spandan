@@ -187,7 +187,6 @@ router.post('/', authorize('student'), async (req, res) => {
             existingResponse: existingResponse ? {
               selectedOption: existingResponse.selectedOption,
               selectedOptions: existingResponse.selectedOptions,
-              isCorrect: existingResponse.isCorrect,
               points: existingResponse.points
             } : undefined
           })
@@ -494,7 +493,11 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const ended = !!room?.endedAt
     const snap = await resultsSnapshot.getStudent(roomId, studentId, { ended })
     if (snap.hit) {
-      return res.json({ success: true, questions: snap.questions })
+      const safeQuestions = isTeacher ? snap.questions : snap.questions.map(({ options, ...rest }) => ({
+        ...rest,
+        options: (options || []).map(({ isCorrect, ...opt }) => opt)
+      }))
+      return res.json({ success: true, questions: safeQuestions })
     }
 
     // Convert to ObjectId if valid format
@@ -554,7 +557,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         _id: qIdStr,
         question: q.question,
         type: q.type,
-        options: q.options,
+        options: isTeacher ? q.options : (q.options || []).map(({ isCorrect, ...opt }) => opt),
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,

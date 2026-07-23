@@ -178,10 +178,15 @@ router.get('/', async (req, res) => {
       Question.find({ roomId }).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
       Question.countDocuments({ roomId })
     ])
-    
+
+    const safeQuestions = isTeacher ? questions : questions.map(({ options, explanation, ...rest }) => ({
+      ...rest,
+      options: (options || []).map(({ isCorrect, ...opt }) => opt)
+    }))
+
     res.json({
       success: true,
-      questions,
+      questions: safeQuestions,
       pagination: {
         page: pageNum,
         limit: limitNum,
