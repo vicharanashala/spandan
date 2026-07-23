@@ -4,6 +4,7 @@ import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsBySt
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 
 const router = express.Router()
 
@@ -71,6 +72,11 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     res.json({ room })
+    // Seed the live participant count so a teacher opening/refreshing the room sees the current
+    // number immediately (the room:joined/room:left socket events keep it updated after load).
+    const participants = await RoomMember.countDocuments({ roomId: req.params.id })
+
+    res.json({ room, participants })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -148,6 +154,10 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       generateAutoNoteForRoom(room._id, req.user._id).catch(err =>
         console.error(`[auto-note] failed for room ${room._id}:`, err.message)
       )
+      // Pre-warm the results snapshot so the ~N students about to open the results page all read a
+      // shared cache instead of each triggering full-room aggregations (the end-session stampede).
+      // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
+      rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
 
     res.json({ message: 'Room updated successfully', room: updatedRoom })

@@ -113,7 +113,16 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   const renderRank = (entry, index) => {
     const rank = entry.rank
     const isCurrentUser = entry.isCurrentUser
-    
+
+    // Top-3 and the current-user row always render on a LIGHT gradient background in BOTH
+    // themes (gold/silver/bronze/blue). var(--text-primary) flips to near-white in dark mode,
+    // which made these rows unreadable. Pin their text to the light-mode dark values so light
+    // mode is unchanged and dark mode stays legible.
+    const isHighlighted = rank <= 3 || isCurrentUser
+    const nameColor = isHighlighted ? '#1f2937' : 'var(--text-primary)'
+    const subColor = isHighlighted ? '#6b7280' : 'var(--text-secondary)'
+    const pointsColor = rank === 1 ? '#f59e0b' : isHighlighted ? '#1f2937' : 'var(--text-primary)'
+
     // If not teacher and there's a gap between current entry and previous
     // AND this entry is the user's rank (and not in top 10 shown), show ellipsis before
     if (!isTeacher && index === 10 && userRank && userRank > 10) {
@@ -126,7 +135,8 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             justifyContent: 'center',
             padding: '8px 0',
             color: 'var(--text-secondary)',
-            fontSize: '12px'
+            fontSize: '12px',
+            flexShrink: 0
           }}>
             •••
           </div>
@@ -143,7 +153,8 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             borderRadius: '10px',
             border: '2px solid #3b82f6',
             boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
-            boxSizing: 'border-box'
+            boxSizing: 'border-box',
+            flexShrink: 0
           }}>
             <span style={{
               width: '28px',
@@ -164,7 +175,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
               <div style={{
                 fontSize: '14px',
                 fontWeight: '600',
-                color: 'var(--text-primary)',
+                color: '#1f2937',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -174,7 +185,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
               </div>
               <div style={{
                 fontSize: '11px',
-                color: 'var(--text-secondary)',
+                color: '#6b7280',
                 marginTop: '2px'
               }}>
                 {entry.correctCount}/{entry.totalAnswered} correct
@@ -209,6 +220,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         maxWidth: '100%',
         overflow: 'hidden',
         boxSizing: 'border-box',
+        flexShrink: 0,
         background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
                      entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
                      entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' : 
@@ -237,7 +249,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
           <div style={{
             fontSize: '14px',
             fontWeight: '600',
-            color: 'var(--text-primary)',
+            color: nameColor,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -247,7 +259,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
           </div>
           <div style={{
             fontSize: '11px',
-            color: 'var(--text-secondary)',
+            color: subColor,
             marginTop: '2px'
           }}>
             {entry.correctCount}/{entry.totalAnswered} correct
@@ -257,7 +269,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         <div style={{
           fontSize: '16px',
           fontWeight: '700',
-          color: entry.rank === 1 ? '#f59e0b' : 'var(--text-primary)',
+          color: pointsColor,
           textAlign: 'right',
           flexShrink: 0,
           minWidth: '45px',
@@ -272,28 +284,36 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   }
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      gap: '8px', 
-      width: '100%', 
-      minWidth: 0,
-      maxWidth: '100%',
-      overflowX: 'hidden', 
-      boxSizing: 'border-box' 
-    }}>
-      {leaderboard.map((entry, index) => renderRank(entry, index))}
-      
-      {/* Show total participants count */}
-      {!isTeacher && totalParticipants > 10 && (
-        <div style={{
-          textAlign: 'center',
-          padding: '8px',
-          color: 'var(--text-secondary)',
-          fontSize: '11px'
-        }}>
-          {totalParticipants} students in session
-        </div>
+    <div style={{ position: 'relative', width: '100%', minWidth: 0, maxWidth: '100%' }}>
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        width: '100%',
+        minWidth: 0,
+        maxWidth: '100%',
+        overflowX: 'hidden',
+        overflowY: 'auto',
+        maxHeight: '60vh',
+        boxSizing: 'border-box'
+      }}>
+        {leaderboard.map((entry, index) => renderRank(entry, index))}
+
+        {/* Show total participants count */}
+        {!isTeacher && totalParticipants > 10 && (
+          <div style={{
+            textAlign: 'center',
+            padding: '8px',
+            color: 'var(--text-secondary)',
+            fontSize: '11px'
+          }}>
+            {totalParticipants} students in session
+          </div>
+        )}
+      </div>
+      {/* Fade hint when the board overflows */}
+      {leaderboard.length > 8 && (
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '32px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none' }} />
       )}
     </div>
   )
