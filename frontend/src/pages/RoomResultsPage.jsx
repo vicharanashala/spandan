@@ -17,6 +17,7 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const [xpAwarded, setXpAwarded] = useState(null)
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -28,6 +29,24 @@ function RoomResultsPage() {
     if (token) {
       setAuthToken(token)
       fetchRoomData()
+      // Finalize session XP for students (fires once, server is idempotent)
+      if (user?.role === 'student' && roomId) {
+        fetch(`${API_URL}/store/xp/finalize`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ roomId })
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (data.success && data.xpAwarded > 0) {
+              setXpAwarded(data.xpAwarded)
+            }
+          })
+          .catch(e => console.error('XP finalize error:', e))
+      }
     }
   }, [token, roomId])
 
@@ -207,6 +226,27 @@ function RoomResultsPage() {
 
         {/* Content */}
         <div style={{ flex: 1, padding: '32px' }}>
+
+          {/* XP Earned Banner - only shows for students who earned XP this session */}
+          {xpAwarded !== null && xpAwarded > 0 && (
+            <div style={{
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              color: 'white',
+              borderRadius: '12px',
+              padding: '16px 24px',
+              marginBottom: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              fontWeight: '600',
+              fontSize: '15px',
+              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
+            }}>
+              <span style={{ fontSize: '22px' }}>+</span>
+              <span>{xpAwarded} XP added to your Avatar Store wallet — session average awarded!</span>
+            </div>
+          )}
+
           {/* Back Button */}
           <button
             onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}

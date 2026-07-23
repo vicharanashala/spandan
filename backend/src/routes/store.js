@@ -111,4 +111,60 @@ router.post('/avatars/equip', authenticate, async (req, res) => {
   }
 })
 
+// POST /api/store/xp/finalize - Award session average XP at session end
+// Called once by the student when the results page loads.
+// Calculates: floor(totalPointsEarned / totalQuestionsInRoom) and adds to personalXp.
+// Idempotent: uses a Set of processed roomIds on the user to prevent double-awarding.
+router.post('/xp/finalize', authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.body
+    if (!roomId) return res.status(400).json({ error: 'roomId is required' })
+
+    const userId = req.user.userId || req.user.id
+
+    // Check if XP for this session was already finalized to prevent double-awarding
+    const user = await User.findById(userId)
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    if (user.finalizedRooms && user.finalizedRooms.includes(roomId)) {
+      return res.json({ success: true, xpAwarded: 0, newBalance: user.personalXp, alreadyFinalized: true })
+    }
+
+    // Dynamically import models to avoid circular deps
+    const Response = (await import('../models/Response.js')).default
+    const Room = (await import('../models/Room.js')).default
+
+    // Count total questions in the room
+    const Question = (await import('../models/Question.js')).default
+    const totalQuestions = await Question.countDocuments({ roomId })
+    if (totalQuestions === 0) {
+      return res.json({ success: true, xpAwarded: 0, newBalance: user.personalXp })
+    }
+
+    // Sum all points earned by this student in this room
+    const responses = await Response.find({ roomId, studentId: userId, isCorrect: true })
+    const totalPointsEarned = responses.reduce((sum, r) => sum + (r.points || 0), 0)
+
+    // Average XP = total points earned / total questions in the session (rounded down)
+    const xpAwarded = Math.floor(totalPointsEarned / totalQuestions)
+
+    // Atomically update: add xp and mark this room as finalized
+    await User.updateOne(
+      { _id: userId },
+      {
+        $inc: { personalXp: xpAwarded },
+        $push: { finalizedRooms: roomId }
+      }
+    )
+
+    const updatedUser = await User.findById(userId, 'personalXp')
+    console.log(`[XP] Finalized session for user ${userId} in room ${roomId}: +${xpAwarded} XP (${totalPointsEarned} pts / ${totalQuestions} questions)`)
+
+    res.json({ success: true, xpAwarded, newBalance: updatedUser.personalXp })
+  } catch (error) {
+    console.error('Error finalizing session XP:', error)
+    res.status(500).json({ error: 'Failed to finalize session XP' })
+  }
+})
+
 export default router

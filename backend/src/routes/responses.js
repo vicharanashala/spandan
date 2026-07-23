@@ -99,10 +99,6 @@ router.post('/', authorize('student'), async (req, res) => {
     await response.save()
 
     if (isCorrect && points > 0) {
-      // Fire-and-forget to update personal XP without blocking the response
-      const User = (await import('../models/User.js')).default
-      User.updateOne({ _id: studentId }, { $inc: { personalXp: points } }).catch(e => console.error('Error updating personal XP:', e))
-      
       // Boss Battle Logic
       if (room.isBossMode && room.bossHealth > 0) {
         const damage = points
