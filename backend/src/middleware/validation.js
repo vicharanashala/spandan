@@ -21,13 +21,26 @@ export const loginSchema = z.object({
 })
 
 // Room validation schemas
+const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$/
+
 export const createRoomSchema = z.object({
   name: z.string().min(1, 'Room name is required').max(200),
+  mode: z.enum(['audio', 'video']).optional(),
+  videoUrl: z.string().optional().nullable(),
   settings: z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),
     requireCorrectAnswer: z.boolean().optional()
   }).optional()
+}).refine(data => {
+  if (data.mode === 'video') {
+    if (!data.videoUrl) return false;
+    return youtubeRegex.test(data.videoUrl);
+  }
+  return true;
+}, {
+  message: 'A valid YouTube URL is required for video rooms',
+  path: ['videoUrl']
 })
 
 // Settings validation schema for room settings update

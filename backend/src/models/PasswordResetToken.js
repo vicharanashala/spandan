@@ -15,8 +15,7 @@ const passwordResetSchema = new mongoose.Schema({
   },
   expires: {
     type: Date,
-    required: true,
-    index: true
+    required: true
   },
   used: {
     type: Boolean,

@@ -357,6 +357,8 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const roomVideoStates = new Map() // roomCode -> { isPlaying, currentTime, lastUpdated }
+app.set('roomVideoStates', roomVideoStates)
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -493,10 +495,74 @@ io.on('connection', (socket) => {
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+      io.to(roomCode).emit('room:joined', { 
+        roomCode, 
+        userId,
+        participants: participantCount 
+      })
+
+      // If teacher reconnects, clear their disconnected status in memory and notify room
+      if (role === 'teacher' && room && String(room.teacher) === String(userId)) {
+        const cachedState = roomVideoStates.get(roomCode)
+        if (cachedState && cachedState.teacherDisconnected) {
+          roomVideoStates.set(roomCode, {
+            ...cachedState,
+            teacherDisconnected: false,
+            lastUpdated: Date.now()
+          })
+          io.to(roomCode).emit('video:teacher-reconnect')
+        }
+      }
+
+      // Late-joining students or teacher: check if there's a cached play state or load from DB info
+      let cachedVideoState = roomVideoStates.get(roomCode)
+      const mediaUrl = room?.mode === 'video' ? room?.videoUrl : room?.sharedMedia?.url
+      if (!cachedVideoState && room) {
+        let hasCaptions = false
+        if (mediaUrl) {
+          const { VideoTranscriptCoordinator } = await import('./services/videoTranscriptCoordinator.js')
+          
+          let status = VideoTranscriptCoordinator.getTranscriptStatus(room._id)
+          hasCaptions = status.hasCaptions
+          if (!hasCaptions) {
+            console.log(`[YT AI] Initializing transcript on room join for room ${room._id}...`)
+            const initRes = await VideoTranscriptCoordinator.initializeTranscript(
+              room._id,
+              mediaUrl,
+              (room.mode === 'video' ? 'youtube' : room.sharedMedia?.provider) || 'youtube'
+            )
+            hasCaptions = initRes.hasCaptions
+          }
+        }
+
+        // If room has media loaded in DB but not active in socket state, assume teacher is offline
+        cachedVideoState = {
+          isPlaying: false,
+          currentTime: 0,
+          teacherDisconnected: true,
+          hasCaptions,
+          lastUpdated: Date.now(),
+          emittedCaptionIndices: new Set(),
+          lastTime: 0,
+          segmentEntries: []
+        }
+        roomVideoStates.set(roomCode, cachedVideoState)
+      }
+
+      if (cachedVideoState) {
+        const { emittedCaptionIndices, ...serializableState } = cachedVideoState
+        socket.emit('video:state', {
+          ...serializableState,
+          segmentEntries: cachedVideoState.segmentEntries || []
+        })
+      }
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
+      io.to(roomCode).emit('room:joined', { 
+        roomCode, 
+        userId,
+        participants: 0 
+      })
     }
   })
 
@@ -569,10 +635,257 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('disconnect', () => {
-    const userId = connectedUsers.get(socket.id)
+  // Helper to handle teacher playback progress and track played ranges for real-time transcription chunks
+  const processVideoPlaybackDelta = async (socket, io, room, currentTime, isSeeking = false) => {
+    try {
+      const roomCode = room.code
+      const state = roomVideoStates.get(roomCode)
+      if (!state) return
+
+      const mediaUrl = room.mode === 'video' ? room.videoUrl : room.sharedMedia?.url
+      if (!mediaUrl) return
+
+      const { VideoTranscriptCoordinator } = await import('./services/videoTranscriptCoordinator.js')
+
+      // Ensure transcript is initialized
+      let status = VideoTranscriptCoordinator.getTranscriptStatus(room._id)
+      if (!status.hasCaptions) {
+        console.log(`[YT AI] Initializing transcript for room ${room._id}...`)
+        const initRes = await VideoTranscriptCoordinator.initializeTranscript(
+          room._id,
+          mediaUrl,
+          (room.mode === 'video' ? 'youtube' : room.sharedMedia?.provider) || 'youtube'
+        )
+        status.hasCaptions = initRes.hasCaptions
+      }
+
+      // Initialize state tracking properties if not present
+      if (!state.emittedCaptionIndices) {
+        state.emittedCaptionIndices = new Set()
+      }
+      if (state.lastTime === undefined) {
+        state.lastTime = currentTime
+      }
+      if (!state.segmentEntries) {
+        state.segmentEntries = []
+      }
+
+      // If this is a regular playing step and we aren't seeking, check for new captions
+      if (!isSeeking && state.isPlaying) {
+        const prevTime = state.lastTime
+        const diff = currentTime - prevTime
+
+        // Only count as played if currentTime progressed normally (forward by 0 to 12 seconds)
+        if (diff > 0 && diff <= 12) {
+          const newCaptions = VideoTranscriptCoordinator.getNewCaptionsForRange(
+            room._id,
+            prevTime,
+            currentTime,
+            state.emittedCaptionIndices
+          )
+
+          // Emit new captions and cache them
+          for (const caption of newCaptions) {
+            const entry = {
+              text: caption.text,
+              source: 'video',
+              timestamp: Date.now()
+            }
+            state.segmentEntries.push(entry)
+            socket.emit('video:transcript-chunk', entry)
+          }
+        }
+      }
+
+      // Update tracking properties
+      state.lastTime = currentTime
+
+    } catch (error) {
+      console.error('[VIDEO TRANSCRIBE] Failed to process video playback delta:', error.message)
+    }
+  }
+
+  // Video synchronization events
+  socket.on('video:play', async (data) => {
+    const { roomCode, currentTime } = data
+    if (roomCode) {
+      const isOwner = await verifyRoomOwner(socket, roomCode)
+      const currentDynamic = roomVideoStates.get(roomCode) || {}
+      
+      const isPlayingChanged = !currentDynamic.isPlaying
+      
+      roomVideoStates.set(roomCode, {
+        ...currentDynamic,
+        isPlaying: true,
+        currentTime: currentTime || 0,
+        lastUpdated: Date.now()
+      })
+      socket.to(roomCode).emit('video:played', { currentTime })
+
+      if (isOwner) {
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (room) {
+          await processVideoPlaybackDelta(socket, io, room, currentTime || 0, isPlayingChanged)
+        }
+      }
+    }
+  })
+
+  socket.on('video:pause', async (data) => {
+    const { roomCode, currentTime } = data
+    if (roomCode) {
+      const isOwner = await verifyRoomOwner(socket, roomCode)
+      const currentDynamic = roomVideoStates.get(roomCode) || {}
+      roomVideoStates.set(roomCode, {
+        ...currentDynamic,
+        isPlaying: false,
+        currentTime: currentTime || 0,
+        lastUpdated: Date.now()
+      })
+      socket.to(roomCode).emit('video:paused', { currentTime })
+      if (isOwner) {
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (room) {
+          await processVideoPlaybackDelta(socket, io, room, currentTime || 0, false)
+        }
+      }
+    }
+  })
+
+  socket.on('video:seek', async (data) => {
+    const { roomCode, currentTime } = data
+    if (roomCode) {
+      const isOwner = await verifyRoomOwner(socket, roomCode)
+      const currentDynamic = roomVideoStates.get(roomCode) || { isPlaying: false }
+      roomVideoStates.set(roomCode, {
+        ...currentDynamic,
+        currentTime: currentTime || 0,
+        lastUpdated: Date.now()
+      })
+      socket.to(roomCode).emit('video:seeked', { currentTime })
+
+      if (isOwner) {
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (room) {
+          await processVideoPlaybackDelta(socket, io, room, currentTime || 0, true)
+        }
+      }
+    }
+  })
+
+  socket.on('video:sync', async (data) => {
+    const { roomCode, currentTime, isPlaying } = data
+    if (roomCode) {
+      const isOwner = await verifyRoomOwner(socket, roomCode)
+      const currentDynamic = roomVideoStates.get(roomCode) || {}
+      roomVideoStates.set(roomCode, {
+        ...currentDynamic,
+        isPlaying: !!isPlaying,
+        currentTime: currentTime || 0,
+        lastUpdated: Date.now()
+      })
+      socket.to(roomCode).emit('video:synced', { currentTime, isPlaying })
+
+      if (isOwner) {
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (room) {
+          await processVideoPlaybackDelta(socket, io, room, currentTime || 0, false)
+        }
+      }
+    }
+  })
+
+  socket.on('mic:transcript-chunk', async (data) => {
+    const { roomCode, text } = data
+    if (roomCode && text) {
+      try {
+        const isOwner = await verifyRoomOwner(socket, roomCode)
+        if (!isOwner) return
+
+        const state = roomVideoStates.get(roomCode)
+        if (state) {
+          if (!state.segmentEntries) {
+            state.segmentEntries = []
+          }
+          const newEntry = {
+            text: text.trim(),
+            source: 'mic',
+            timestamp: Date.now()
+          }
+          state.segmentEntries.push(newEntry)
+        }
+      } catch (error) {
+        console.error('[MIC TRANSCRIBE] Failed to cache mic chunk:', error.message)
+      }
+    }
+  })
+
+  socket.on('video:commit-segment', async (data) => {
+    const { roomCode, currentTime } = data
+    if (roomCode) {
+      try {
+        const isOwner = await verifyRoomOwner(socket, roomCode)
+        if (!isOwner) return
+
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (!room) return
+
+        // 1. Commit segment in coordinator if in video mode
+        const isVideoMode = room.mode === 'video' || (room.sharedMedia && room.sharedMedia.url)
+        if (isVideoMode) {
+          const { VideoTranscriptCoordinator } = await import('./services/videoTranscriptCoordinator.js')
+          VideoTranscriptCoordinator.commitSegment(room._id, currentTime)
+          console.log(`[YT AI] Committed segment up to currentTime: ${currentTime} in room ${room._id}`)
+        }
+
+        // 2. Clear cached segmentEntries in room state
+        const state = roomVideoStates.get(roomCode)
+        if (state) {
+          state.segmentEntries = []
+        }
+      } catch (error) {
+        console.error('[YT AI] Failed to commit segment:', error.message)
+      }
+    }
+  })
+
+  socket.on('disconnect', async () => {
+    const userId = socket.data?.userId
+    const role = socket.data?.role
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
+
+    // Handle teacher disconnection: pause students' videos and show status overlay
+    if (role === 'teacher' && userId) {
+      try {
+        const Room = (await import('./models/Room.js')).default
+        // Find all active rooms owned by this teacher
+        const activeRooms = await Room.find({ teacher: userId, isActive: true })
+        for (const room of activeRooms) {
+          const currentState = roomVideoStates.get(room.code)
+          if (currentState) {
+            roomVideoStates.set(room.code, {
+              ...currentState,
+              isPlaying: false,
+              teacherDisconnected: true,
+              lastUpdated: Date.now()
+            })
+            // Broadcast pause and teacher disconnect events to the room
+            io.to(room.code).emit('video:teacher-disconnect', {
+              message: "Teacher disconnected. Waiting for instructor..."
+            })
+            io.to(room.code).emit('video:paused', { currentTime: currentState.currentTime })
+          }
+        }
+      } catch (error) {
+        console.error('Error handling teacher disconnect:', error)
+      }
+    }
   })
 })
 

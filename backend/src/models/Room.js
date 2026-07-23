@@ -24,6 +24,15 @@ const roomSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  mode: {
+    type: String,
+    enum: ['audio', 'video'],
+    default: 'audio'
+  },
+  videoUrl: {
+    type: String,
+    default: null
+  },
   currentQuestion: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
@@ -43,6 +52,17 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
+    }
+  },
+  sharedMedia: {
+    provider: {
+      type: String,
+      enum: ['youtube'],
+      default: null
+    },
+    url: {
+      type: String,
+      default: null
     }
   }
 }, {
