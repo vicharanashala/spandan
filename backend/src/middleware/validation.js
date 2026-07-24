@@ -1,12 +1,24 @@
 import { z } from 'zod'
+import { isDomainAllowed } from '../utils/domainValidator.js'
 
 // Auth validation schemas
 // Strong password: min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char
 const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/
 
+// Email schema with domain regex verification from file
+export const emailSchema = z.string()
+  .email('Please enter a valid email')
+  .refine(
+    val => isDomainAllowed(val),
+    val => {
+      const domain = val && val.includes('@') ? val.split('@').pop() : val
+      return { message: `Email domain '${domain}' is not allowed` }
+    }
+  )
+
 export const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters').max(100),
-  email: z.string().email('Please enter a valid email'),
+  email: emailSchema,
   password: z.string()
     .min(8, 'Password must be at least 8 characters')
     .refine(val => passwordRegex.test(val), 'Password must contain: 1 uppercase, 1 lowercase, 1 digit, 1 special character'),
@@ -23,7 +35,7 @@ export const loginSchema = z.object({
 // Email-OTP registration: step 1 requests a code (email only; name optional for the greeting),
 // step 2 submits the full registration form plus the 6-digit code.
 export const sendOtpSchema = z.object({
-  email: z.string().email('Please enter a valid email'),
+  email: emailSchema,
   name: z.string().min(2, 'Name must be at least 2 characters').max(100).optional()
 })
 
