@@ -46,7 +46,7 @@ function ManageRoomPage() {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)',
+        marginLeft: 'var(--sidebar-width)',
         minWidth: 0,
         maxWidth: '100%',
         boxSizing: 'border-box'

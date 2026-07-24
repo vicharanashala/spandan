@@ -310,7 +310,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -337,7 +337,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', padding: '32px' }}>
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
@@ -375,7 +375,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -405,7 +405,7 @@ function StudentRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width))', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
@@ -805,37 +805,69 @@ function StudentRoomPage() {
                             }
                             
                             return (
-                              <div key={optIdx} style={{
-                                padding: '12px 16px',
-                                background: bgColor,
-                                border: `2px solid ${borderColor}`,
-                                borderRadius: '8px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px'
-                              }}>
-                                <span style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '50%',
-                                  background: letterBg,
-                                  color: 'white',
+                              <div key={optIdx}>
+                                <div style={{
+                                  padding: '12px 16px',
+                                  background: bgColor,
+                                  border: `2px solid ${borderColor}`,
+                                  borderRadius: '8px',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  gap: '12px'
                                 }}>
-                                  {letter}
-                                </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
-                                </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
+                                  <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: letterBg,
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: '700',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
                                   </span>
+                                  <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                    {option.text || option}
+                                  </span>
+                                  {label && (
+                                    <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                      {label}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Explanation under correct option when student answered WRONG */}
+                                {isCorrect && q.answered && !q.isCorrect && q.explanation && (
+                                  <div style={{
+                                    margin: '4px 0 2px 0',
+                                    padding: '8px 12px',
+                                    background: '#eff6ff',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: '#1e40af',
+                                    lineHeight: '1.5'
+                                  }}>
+                                    💡 {q.explanation}
+                                  </div>
+                                )}
+
+                                {/* Explanation under correct option when student MISSED (didn't answer) */}
+                                {isCorrect && !q.answered && q.explanation && (
+                                  <div style={{
+                                    margin: '4px 0 2px 0',
+                                    padding: '8px 12px',
+                                    background: '#eff6ff',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    color: '#1e40af',
+                                    lineHeight: '1.5'
+                                  }}>
+                                    💡 {q.explanation}
+                                  </div>
                                 )}
                               </div>
                             )

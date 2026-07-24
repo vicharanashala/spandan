@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -147,6 +147,34 @@ function RoomResultsPage() {
     }
   }
 
+  const localStruggleAreas = useMemo(() => {
+    if (user?.role !== 'teacher') return []
+
+    return questions
+      .map(q => {
+        const qStats = responses[q._id] || {}
+        const totalResp = qStats.totalResponses || 0
+        if (totalResp === 0) return null
+
+        const correctRate = Math.round(((qStats.correctCount || 0) / totalResp) * 100)
+        if (correctRate >= 70) return null
+
+        const correctOption = q.options?.find(o => o.isCorrect)
+
+        return {
+          id: q._id,
+          question: q.question || 'Question',
+          correctAnswer: correctOption?.text || correctOption || 'N/A',
+          correctRate,
+          totalResponses: totalResp,
+          options: q.options || [],
+          answerCounts: qStats.answerCounts || {},
+          explanation: q.explanation || ''
+        }
+      })
+      .filter(Boolean)
+  }, [questions, responses, user])
+
   if (isLoading) {
     return (
       <div style={{
@@ -158,7 +186,7 @@ function RoomResultsPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -203,7 +231,7 @@ function RoomResultsPage() {
         minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)',
+        marginLeft: 'var(--sidebar-width)',
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>
@@ -445,47 +473,91 @@ function RoomResultsPage() {
                                 : '1px solid var(--border-color)'
 
                               return (
-                                <div key={optIdx} style={{
-                                  padding: '10px 14px',
-                                  background: highlightStyle,
-                                  borderRadius: 'var(--radius-sm)',
-                                  border: borderStyle,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '12px',
-                                  minWidth: 0
-                                }}>
-                                  <span style={{
-                                    width: '24px',
-                                    height: '24px',
-                                    borderRadius: '50%',
-                                    background: isCorrect ? '#059669' : 'var(--border-color)',
-                                    color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                <div key={optIdx}>
+                                  <div style={{
+                                    padding: '10px 14px',
+                                    background: highlightStyle,
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: borderStyle,
                                     display: 'flex',
                                     alignItems: 'center',
-                                    justifyContent: 'center',
-                                    fontSize: '11px',
-                                    fontWeight: 700,
-                                    flexShrink: 0
-                                  }}>
-                                    {String.fromCharCode(65 + optIdx)}
-                                  </span>
-                                  <span style={{
-                                    fontSize: '14px',
-                                    color: 'var(--text-primary)',
-                                    fontWeight: isCorrect ? 600 : 400,
+                                    gap: '12px',
                                     minWidth: 0
                                   }}>
-                                    {opt.text}
-                                  </span>
-                                  {isTeacher && isCorrect && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                    <span style={{
+                                      width: '24px',
+                                      height: '24px',
+                                      borderRadius: '50%',
+                                      background: isCorrect ? '#059669' : 'var(--border-color)',
+                                      color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontSize: '11px',
+                                      fontWeight: 700,
+                                      flexShrink: 0
+                                    }}>
+                                      {String.fromCharCode(65 + optIdx)}
+                                    </span>
+                                    <span style={{
+                                      fontSize: '14px',
+                                      color: 'var(--text-primary)',
+                                      fontWeight: isCorrect ? 600 : 400,
+                                      minWidth: 0
+                                    }}>
+                                      {opt.text}
+                                    </span>
+                                    {isTeacher && isCorrect && (
+                                      <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                    )}
+                                    {!isTeacher && isSelected && (
+                                      <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
+                                    )}
+                                    {!isTeacher && isCorrect && !isSelected && (
+                                      <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+                                    )}
+                                  </div>
+
+                                  {/* Teacher always sees explanation under correct answer */}
+                                  {isTeacher && isCorrect && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
                                   )}
-                                  {!isTeacher && isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
+
+                                  {/* Student sees explanation only when wrong */}
+                                  {!isTeacher && isCorrect && q.answered && !q.isCorrect && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
                                   )}
-                                  {!isTeacher && isCorrect && !isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+
+                                  {/* Student sees explanation only when missed */}
+                                  {!isTeacher && isCorrect && !q.answered && q.explanation && (
+                                    <div style={{
+                                      margin: '4px 0 2px',
+                                      padding: '8px 12px',
+                                      background: '#eff6ff',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      color: '#1e40af'
+                                    }}>
+                                      💡 {q.explanation}
+                                    </div>
                                   )}
                                 </div>
                               )
@@ -562,6 +634,51 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+
+          {/* Class Struggle Areas - deterministic, teacher-only, always available */}
+          {user?.role === 'teacher' && localStruggleAreas.length > 0 && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px 24px',
+              marginBottom: '24px',
+              border: '1px solid #fca5a5',
+              boxShadow: 'var(--card-shadow)',
+              marginTop: '24px'
+            }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: '600', color: '#dc2626' }}>
+                Class Struggle Areas ({localStruggleAreas.length})
+              </h3>
+              <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Questions where 30%+ of the class answered incorrectly, with the correct answer
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {localStruggleAreas.map((item, idx) => (
+                  <div key={item.id || idx} style={{
+                    padding: '10px 12px',
+                    background: '#fef2f2',
+                    borderRadius: '8px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                      {item.question}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#059669', marginBottom: '2px' }}>
+                      ✓ Correct answer: {item.correctAnswer}
+                    </div>
+                    {item.explanation && (
+                      <div style={{ fontSize: '11px', color: '#92400e', marginTop: '2px', marginBottom: '2px', fontStyle: 'italic' }}>
+                        💡 {item.explanation}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '11px', color: '#dc2626' }}>
+                      Only {item.correctRate}% answered correctly • {item.totalResponses} response(s)
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
