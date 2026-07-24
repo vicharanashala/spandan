@@ -76,13 +76,12 @@ export function Header({ title, subtitle }) {
 
 export function StatCard({ icon, label, value, color }) {
   return (
-        <div className="stats-card-hover" style={{
+    <div style={{
       background: 'white',
       borderRadius: '16px',
       padding: '24px',
       boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
-      border: '1px solid #e5e7eb',
-      cursor: 'pointer'
+      border: '1px solid #e5e7eb'
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
         <span style={{ fontSize: '24px' }}>{icon}</span>
@@ -97,14 +96,13 @@ export function StatCard({ icon, label, value, color }) {
 
 export function FeatureCard({ icon, title, description }) {
   return (
-        <div className="card-hover" style={{
+    <div style={{
       background: 'white',
       borderRadius: '16px',
       padding: '24px',
       boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
       border: '1px solid #e5e7eb',
-      textAlign: 'center',
-      cursor: 'pointer'
+      textAlign: 'center'
     }}>
       <div style={{
         width: '64px',
@@ -131,8 +129,7 @@ export function FeatureCard({ icon, title, description }) {
 
 export function RoomCard({ room, onOpen, onDelete, onToggle }) {
   return (
-        <div
-      className="card-hover"
+    <div
       style={{
         padding: '20px',
         border: '1px solid #e5e7eb',
@@ -142,6 +139,14 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
         alignItems: 'center',
         transition: 'all 0.2s',
         background: 'white'
+      }}
+      onMouseOver={(e) => {
+        e.currentTarget.style.borderColor = '#3b82f6'
+        e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.15)'
+      }}
+      onMouseOut={(e) => {
+        e.currentTarget.style.borderColor = '#e5e7eb'
+        e.currentTarget.style.boxShadow = 'none'
       }}
     >
       <div>
@@ -238,10 +243,9 @@ export function Button({ children, variant = 'primary', size = 'md', disabled, o
   }
 
   return (
-        <button
+    <button
       disabled={disabled}
       onClick={onClick}
-      className="btn-hover"
       style={{
         ...variants[variant],
         ...sizes[size],
@@ -253,6 +257,14 @@ export function Button({ children, variant = 'primary', size = 'md', disabled, o
         alignItems: 'center',
         gap: '8px',
         ...style
+      }}
+      onMouseOver={(e) => {
+        if (!disabled) {
+          e.target.style.transform = 'translateY(-2px)'
+        }
+      }}
+      onMouseOut={(e) => {
+        e.target.style.transform = 'translateY(0)'
       }}
     >
       {children}

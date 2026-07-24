@@ -80,9 +80,21 @@ jobs:
 
             cd ..
 
+            echo "==> Installing backend dependencies (workspace)..."
+            npm install --workspace=backend
+
             echo "==> Restarting backend..."
             sudo systemctl restart spandan-backend.service
-            
+
+            echo "==> Restarting transcription service (faster-whisper)..."
+            # Guarded so the deploy doesn't fail before the unit is installed on the server.
+            # One-time setup: see backend/spandan-transcription.service (install deps + unit).
+            sudo systemctl restart spandan-transcription.service || echo "WARN: spandan-transcription.service not installed yet — see backend/spandan-transcription.service"
+
+            echo "==> Restarting question-generation worker (only used when Redis is enabled)..."
+            # Guarded — only relevant when async generation (Redis) is set up; see backend/spandan-worker.service.
+            sudo systemctl restart spandan-worker.service || echo "WARN: spandan-worker.service not installed (fine unless async generation/Redis is enabled)"
+
             echo "==> Restarting spandan service..."
             sudo systemctl restart spandan.service
 

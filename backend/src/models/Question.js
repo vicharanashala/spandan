@@ -8,7 +8,7 @@ const questionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['MCQ', 'TF', 'MSQ', 'FIB', 'ORDERING', 'MATCHING'],
+    enum: ['MCQ', 'TF', 'MSQ'],
     required: true
   },
   question: {
@@ -47,8 +47,20 @@ const questionSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  // Phase 3 (response-window enforcement): once this poll is superseded by the next launch, responses
+  // are accepted only until closeAt (= supersede time + POLL_RESPONSE_GRACE_MS). It is null while the
+  // poll is live/current or has never been superseded. Stops a bot back-filling answers to polls that
+  // have already moved on. Set/cleared by setLiveQuestion; enforced by POST /responses.
+  closeAt: {
+    type: Date,
+    default: null
   }
 })
+
+// Covers the hot query shapes: filter by room (+status) and sort by createdAt.
+// Without this every question read (poll load, stats, history) is a full COLLSCAN.
+questionSchema.index({ roomId: 1, status: 1, createdAt: -1 })
 
 const Question = mongoose.model('Question', questionSchema)
 

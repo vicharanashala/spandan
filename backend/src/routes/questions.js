@@ -1,7 +1,8 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
-import { sanitizeObject } from '../utils/sanitize.js'
+import { getGenerationQueue } from '../services/generationQueue.js'
+import { stripObject } from '../utils/sanitize.js'
 
 const router = express.Router()
 
@@ -31,12 +32,9 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const { 
       numQuestions = 2, 
       difficulty = 'medium',
-      difficultyMix = null,
-      questionTypeMix = null,
-      mode = null,
-      provider: reqProvider = 'minimax'
+      provider = 'minimax',
+      questionTypeMix = null
     } = config || {}
-    const provider = AI_PROVIDERS[reqProvider] ? reqProvider : 'minimax'
 
     if (!transcript || transcript.trim().length === 0) {
       return res.status(400).json({
@@ -45,29 +43,65 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       })
     }
 
-    console.log(`Generating ${numQuestions} questions with ${provider}...`)
+    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
 
-    const questions = await generateQuestions(transcript, {
-      numQuestions,
-      difficulty,
-      difficultyMix,
-      provider,
-      questionTypeMix,
-      mode
-    })
+    // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
+    // The client polls GET /questions/jobs/:jobId for the result.
+    const queue = getGenerationQueue()
+    if (queue) {
+      const job = await queue.add(
+        'generate',
+        { transcript, config: jobConfig, requestedBy: String(req.user._id) },
+        {
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: { age: 900 }, // keep the result ~15 min so the client can poll it
+          removeOnFail: { age: 900 }
+        }
+      )
+      return res.status(202).json({ success: true, async: true, jobId: job.id })
+    }
 
+    // Sync fallback (no Redis): generate inline — today's behavior.
+    console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
+    const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-
-    res.json({
-      success: true,
-      questions
-    })
+    res.json({ success: true, questions })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to generate questions'
     })
+  }
+})
+
+// GET /api/questions/jobs/:jobId - poll an async generation job (Phase 2D)
+// Authorization: teacher only, and only the teacher who requested it.
+router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
+  try {
+    const queue = getGenerationQueue()
+    if (!queue) {
+      return res.status(404).json({ success: false, error: 'Async generation is not enabled' })
+    }
+    const job = await queue.getJob(req.params.jobId)
+    if (!job) {
+      return res.status(404).json({ success: false, status: 'not_found', error: 'Job not found or expired' })
+    }
+    if (job.data?.requestedBy && job.data.requestedBy !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not authorized to view this job' })
+    }
+    const state = await job.getState()
+    if (state === 'completed') {
+      return res.json({ success: true, status: 'completed', questions: job.returnvalue || [] })
+    }
+    if (state === 'failed') {
+      return res.json({ success: false, status: 'failed', error: job.failedReason || 'Generation failed' })
+    }
+    return res.json({ success: true, status: 'processing' })
+  } catch (error) {
+    console.error('Job status error:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch job status' })
   }
 })
 
@@ -81,7 +115,6 @@ router.post('/', authorize('teacher'), async (req, res) => {
       type, 
       question, 
       options, 
-      explanation = '',
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
@@ -92,10 +125,14 @@ router.post('/', authorize('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
-    // Sanitize user input to prevent XSS
-    const sanitizedData = sanitizeObject({ roomId, type, question, options, explanation, timeToAnswer, points, status, segmentIndex })
+    // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
+    // The frontend renders these as React text nodes, which auto-escape at
+    // render time, so entity-encoding here is unnecessary and would show
+    // literally (e.g. &quot;) on the student side.
+    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
 
     const newQuestion = new Question(sanitizedData)
+
     await newQuestion.save()
 
     res.status(201).json({
@@ -137,14 +174,26 @@ router.get('/', async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))
     const skip = (pageNum - 1) * limitNum
 
+    // Teachers manage the full set (pending/approved/rejected) and need the answers. STUDENTS must
+    // never receive answers or un-launched questions from this endpoint: restrict to approved and
+    // strip the correct-option flags. Otherwise a member could pull every question with `isCorrect`
+    // straight from here, bypassing the UI. (Their legitimate past-question results come from
+    // GET /responses/room/:roomId/student/:studentId once a poll is no longer live.)
+    const filter = isTeacher ? { roomId } : { roomId, status: 'approved' }
+
     const [questions, total] = await Promise.all([
-      Question.find({ roomId }).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
-      Question.countDocuments({ roomId })
+      Question.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+      Question.countDocuments(filter)
     ])
-    
+
+    const stripAnswer = ({ explanation, options, ...rest }) => ({
+      ...rest,
+      options: Array.isArray(options) ? options.map(({ isCorrect, ...o }) => o) : options
+    })
+
     res.json({
       success: true,
-      questions,
+      questions: isTeacher ? questions : questions.map(stripAnswer),
       pagination: {
         page: pageNum,
         limit: limitNum,

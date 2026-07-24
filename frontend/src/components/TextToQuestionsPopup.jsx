@@ -1,7 +1,10 @@
 import React, { useState } from 'react'
 
-function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false }) {
-  const [text, setText] = useState('')
+function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false, initialText = '' }) {
+  // Seed from initialText so a retry after a failed generation reopens with the text intact. The
+  // popup unmounts when closed (parent renders it conditionally), so this initializer runs fresh on
+  // each open, picking up whatever text the parent preserved.
+  const [text, setText] = useState(initialText)
   const [mode, setMode] = useState('MIXED') // 'TF' or 'MIXED'
 
   if (!isOpen) return null
@@ -24,12 +27,14 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
         </span>
       )
     }
-    const mix = roomSettings.questionDistribution || { MCQ: 50, TF: 50 }
+    const mix = roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
     return (
       <>
-        <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ || 50}%</span>
+        <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ}%</span>
         <span style={{ color: '#6b7280' }}> | </span>
-        <span style={{ color: '#10b981', fontWeight: '600' }}>TF: {mix.TF || 50}%</span>
+        <span style={{ color: '#10b981', fontWeight: '600' }}>TF: {mix.TF}%</span>
+        <span style={{ color: '#6b7280' }}> | </span>
+        <span style={{ color: '#8b5cf6', fontWeight: '600' }}>MSQ: {mix.MSQ}%</span>
       </>
     )
   }
@@ -173,7 +178,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
                 transition: 'all 0.2s ease'
               }}
             >
-              📋 Mixed (MCQ + TF)
+              📋 Mixed (MCQ + TF + MSQ)
             </button>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 
-  const roomSchema = new mongoose.Schema({
+const roomSchema = new mongoose.Schema({
   name: {
     type: String,
     required: [true, 'Room name is required'],
@@ -28,21 +28,6 @@ import mongoose from 'mongoose'
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
   },
-  summary: {
-    totalQuestions: { type: Number, default: 0 },
-    totalResponses: { type: Number, default: 0 },
-    totalStudents: { type: Number, default: 0 },
-    averageParticipation: { type: Number, default: 0 },
-    averagePoints: { type: Number, default: 0 },
-    strugglingQuestions: [{
-      question: String,
-      correctnessRate: Number,
-      timesAnswered: Number
-    }],
-    keyTopics: [{ type: String }],
-    recommendations: [{ type: String }],
-    generatedAt: { type: Date }
-  },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
@@ -53,10 +38,6 @@ import mongoose from 'mongoose'
     segmentTime: { type: Number, default: 2 },
     questionsPerSegment: { type: Number, default: 2 },
     difficulty: { type: String, default: 'medium' },
-    difficultyMix: {
-      medium: { type: Number, default: 70 },
-      hard: { type: Number, default: 30 }
-    },
     questionProvider: { type: String, default: 'minimax' },
     questionTypeMix: {
       MCQ: { type: Number, default: 50 },
@@ -89,6 +70,9 @@ function generateRoomCode() {
 roomSchema.statics.findByCode = function(code) {
   return this.findOne({ code: code.toUpperCase() })
 }
+
+// Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
+roomSchema.index({ teacher: 1, createdAt: -1 })
 
 const Room = mongoose.model('Room', roomSchema)
 

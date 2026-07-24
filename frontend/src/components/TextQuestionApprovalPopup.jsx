@@ -1,35 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react'
+import QuestionEditor from './QuestionEditor'
 
-function TextQuestionApprovalPopup({ 
-  questions, 
-  onApprove, 
-  onReject, 
-  onClose, 
+function TextQuestionApprovalPopup({
+  questions,
+  onApprove,
+  onReject,
+  onClose,
   onNext,
-  onEndActivePoll,
-  hasActivePoll = false,
-  activePollText = '',
-  roomSettings = {},
-  isLast 
+  isLast
 }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
   const [timeLeft, setTimeLeft] = useState(30)
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1)
+  const [isEditing, setIsEditing] = useState(false)
   const timerRef = useRef(null)
-  const defaultTimeToAnswer = roomSettings.timeToAnswer || 30
+  const defaultTimeToAnswer = 30
 
   useEffect(() => {
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
   }, [questions])
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [])
+  // Leave edit mode whenever we move to a different question.
+  useEffect(() => { setIsEditing(false) }, [currentIndex])
+
+  // Persist an edited question back into local state so Approve/Launch sends the edited version.
+  const updateCurrent = (updated) =>
+    setPendingQuestions(prev => prev.map((q, i) => (i === currentIndex ? updated : q)))
 
   const currentQuestion = pendingQuestions[currentIndex]
 
@@ -56,7 +55,6 @@ function TextQuestionApprovalPopup({
             setTimeout(() => moveToNext(), 300)
           } else {
             setTimeout(() => {
-              if (onEndActivePoll) onEndActivePoll()
               if (onNext) onNext()
               else onClose()
             }, 300)
@@ -117,7 +115,6 @@ function TextQuestionApprovalPopup({
     if (currentIndex < pendingQuestions.length - 1) {
       moveToNext()
     } else {
-      if (isQuestionLaunched && onEndActivePoll) onEndActivePoll()
       if (onNext) onNext()
       else onClose()
     }
@@ -247,6 +244,23 @@ function TextQuestionApprovalPopup({
                 )}
               </div>
             )}
+            {!isQuestionLaunched && (
+              <button
+                onClick={() => setIsEditing(e => !e)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '20px',
+                  border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
+                  background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                  color: isEditing ? '#10b981' : 'var(--text-secondary)',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                {isEditing ? '✓ Done' : '✏️ Edit'}
+              </button>
+            )}
             <span style={{
               padding: '6px 12px',
               background: 'rgba(59, 130, 246, 0.1)',
@@ -260,45 +274,10 @@ function TextQuestionApprovalPopup({
           </div>
         </div>
 
-        {/* A poll from BEFORE this modal opened (or from a different action)
-            may still be live on the dashboard behind this overlay — that
-            control is unreachable while this modal covers the screen, so
-            surface a direct way to end it right here, regardless of which
-            question card is currently shown. */}
-        {hasActivePoll && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '10px 14px',
-            marginBottom: '16px',
-            background: 'rgba(239, 68, 68, 0.1)',
-            border: '1.5px solid #ef4444',
-            borderRadius: '10px'
-          }}>
-            <span style={{ fontSize: '12px', color: '#ef4444', flex: 1 }}>
-              ⚠️ A poll is still live{activePollText ? `: "${activePollText.substring(0, 60)}${activePollText.length > 60 ? '...' : ''}"` : ''}
-            </span>
-            <button
-              onClick={() => onEndActivePoll && onEndActivePoll()}
-              style={{
-                padding: '6px 12px',
-                borderRadius: '8px',
-                border: 'none',
-                background: '#ef4444',
-                color: 'white',
-                fontSize: '12px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              ⏹ End it
-            </button>
-          </div>
-        )}
-
-        {/* Question Card */}
+        {/* Question Card — editable when the teacher taps Edit, read-only otherwise */}
+        {isEditing ? (
+          <QuestionEditor question={currentQuestion} onChange={updateCurrent} />
+        ) : (
         <div style={{
           background: 'var(--bg-primary)',
           borderRadius: '16px',
@@ -416,6 +395,7 @@ function TextQuestionApprovalPopup({
             })}
           </div>
         </div>
+        )}
 
         {/* Action Buttons */}
         {isQuestionLaunched ? (
@@ -438,7 +418,7 @@ function TextQuestionApprovalPopup({
               gap: '8px'
             }}
           >
-            {isLastQuestion ? '⏹ End Poll' : '⏭️ Next Question'}
+            {isLastQuestion ? '📋 Finish' : '⏭️ Next Question'}
           </button>
         ) : (
           // Timer not started - show Approve and Reject

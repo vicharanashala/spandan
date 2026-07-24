@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -6,13 +6,16 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import { fetchAllRoomQuestions } from '../services/questionService'
+import useIsMobile from '../hooks/useIsMobile'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
-  
+  const isMobile = useIsMobile()
+
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
@@ -24,62 +27,12 @@ function RoomResultsPage() {
     participationRate: 0
   })
 
-  const [bookmarked, setBookmarked] = useState(new Set())
-  const [showReviewTab, setShowReviewTab] = useState(false)
-  const [expandedQuestions, setExpandedQuestions] = useState({})
-  const [sessionSummary, setSessionSummary] = useState(null)
-  const [studentAnalysis, setStudentAnalysis] = useState(null)
-  const [isRegenerating, setIsRegenerating] = useState(false)
-  const [regenerateError, setRegenerateError] = useState(null)
-  const [regenerateCooldownUntil, setRegenerateCooldownUntil] = useState(0)
-  const [, setCooldownTick] = useState(0) // forces re-render while cooldown counts down
-
-  const toggleBookmark = (qId) => {
-    setBookmarked(prev => {
-      const next = new Set(prev)
-      next.has(qId) ? next.delete(qId) : next.add(qId)
-      return next
-    })
-  }
-
-  const toggleExpand = (qId) => {
-    setExpandedQuestions(prev => ({
-      ...prev,
-      [qId]: !prev[qId]
-    }))
-  }
-
-  const handleRegenerateSummary = async () => {
-    if (isRegenerating) return
-    if (Date.now() < regenerateCooldownUntil) return
-
-    setIsRegenerating(true)
-    setRegenerateError(null)
-
-    try {
-      const res = await fetch(`${API_URL}/summary/generate/${roomId}`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json().catch(() => ({}))
-
-      if (res.status === 429) {
-        setRegenerateError(data.error || 'Please wait before regenerating again')
-      } else if (res.ok && data.summary) {
-        setSessionSummary(data.summary)
-      } else {
-        setRegenerateError(data.error || 'Failed to regenerate summary. Please try again.')
-      }
-    } catch (err) {
-      console.error('Failed to regenerate summary:', err)
-      setRegenerateError('Network error while regenerating. Please try again.')
-    } finally {
-      // Local cooldown mirrors the backend's, so the button visibly disables
-      // instead of the user hitting 429s repeatedly.
-      setRegenerateCooldownUntil(Date.now() + 15000)
-      setIsRegenerating(false)
+  useEffect(() => {
+    if (token) {
+      setAuthToken(token)
+      fetchRoomData()
     }
-  }
+  }, [token, roomId])
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -91,30 +44,6 @@ function RoomResultsPage() {
       const roomData = await roomRes.json()
       if (roomRes.ok) {
         setRoom(roomData.room || roomData)
-        // Fetch session summary if available
-        if ((roomData.room || roomData).summary) {
-          setSessionSummary((roomData.room || roomData).summary)
-        }
-      }
-
-      // Fetch questions for this room
-      const qRes = await fetch(`${API_URL}/questions?roomId=${roomId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const qData = await qRes.json()
-      const roomQuestions = qData.questions || []
-      
-      // If no summary in room data, try to fetch separately
-      if (!sessionSummary) {
-        const summaryRes = await fetch(`${API_URL}/summary/${roomId}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-        if (summaryRes.ok) {
-          const summaryData = await summaryRes.json()
-          if (summaryData.summary) {
-            setSessionSummary(summaryData.summary)
-          }
-        }
       }
 
       if (user?.role === 'student') {
@@ -123,16 +52,16 @@ function RoomResultsPage() {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         const studentData = await studentRes.json()
-        
+
         // Use studentData.questions for rendering (has answered, isCorrect, pointsEarned, etc.)
         setQuestions(studentData.questions || [])
-        
+
         // Build responses data from student's question data
         const responsesData = {}
         let totalResponses = 0
         let totalCorrect = 0
         let totalPoints = 0
-        
+
         studentData.questions?.forEach(q => {
           if (q.answered) {
             responsesData[q._id] = {
@@ -145,9 +74,9 @@ function RoomResultsPage() {
             totalPoints += q.pointsEarned || 0
           }
         })
-        
+
         setResponses(responsesData)
-        
+
         // Fetch leaderboard to get student's rank
         const leaderboardRes = await fetch(`${API_URL}/responses/leaderboard/${roomId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
@@ -155,21 +84,8 @@ function RoomResultsPage() {
         const leaderboardData = await leaderboardRes.json()
         const userRank = leaderboardData.userRank || 0
 
-        // Personal wrong-answer analysis + weak areas
-        try {
-          const analysisRes = await fetch(`${API_URL}/summary/${roomId}/student`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          })
-          if (analysisRes.ok) {
-            const analysisData = await analysisRes.json()
-            if (analysisData.analysis) setStudentAnalysis(analysisData.analysis)
-          }
-        } catch (analysisErr) {
-          console.error('Failed to fetch personal analysis:', analysisErr)
-        }
-        
         const averageScore = totalResponses > 0 ? Math.round((totalPoints / (totalResponses * 100)) * 100) : 0
-        
+
         setStats({
           totalResponses,
           totalCorrect,
@@ -179,19 +95,22 @@ function RoomResultsPage() {
           totalPoints
         })
       } else {
-        // Teacher: set questions from API
+        // Teacher: fetch ALL questions (pages past the API's 50/page cap) so results show the true
+        // question count and every question's stats. Students don't need this — their per-response
+        // call above already returns the questions with their answers merged in.
+        const roomQuestions = await fetchAllRoomQuestions(roomId)
         setQuestions(roomQuestions)
-        
+
         // Teacher: fetch full room stats once
         const rRes = await fetch(`${API_URL}/responses/stats/room/${roomId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
         const rData = await rRes.json()
-        
+
         // Build responsesData from questionStats
         const responsesData = {}
         const questionStats = rData.stats?.questionStats || []
-        
+
         questionStats.forEach(qStat => {
           responsesData[qStat.questionId] = {
             totalResponses: qStat.totalResponses,
@@ -199,15 +118,15 @@ function RoomResultsPage() {
             answerCounts: qStat.answerCounts || {}
           }
         })
-        
+
         setResponses(responsesData)
-        
+
         // Calculate overall stats from aggregated data
         const totalResponses = rData.stats?.totalResponses || 0
         const totalCorrect = questionStats.reduce((sum, q) => sum + (q.correctCount || 0), 0)
         const averageScore = totalResponses > 0 ? Math.round((totalCorrect / totalResponses) * 100) : 0
         const uniqueStudents = rData.stats?.totalStudents || 0
-        const participationRate = roomQuestions.length > 0 
+        const participationRate = roomQuestions.length > 0
           ? Math.round((uniqueStudents / Math.max(roomQuestions.length, 1)) * 100)
           : 0
 
@@ -215,7 +134,9 @@ function RoomResultsPage() {
           totalResponses,
           totalCorrect,
           averageScore,
-          totalStudents: uniqueStudents,
+          // "Total Students" card = the room roster (joined); fall back to responders if the
+          // backend didn't supply it.
+          totalStudents: rData.stats?.totalJoined ?? uniqueStudents,
           participationRate: Math.min(participationRate, 100)
         })
       }
@@ -226,73 +147,24 @@ function RoomResultsPage() {
     }
   }
 
-  useEffect(() => {
-    if (token) {
-      setAuthToken(token)
-      fetchRoomData()
-    }
-  }, [token, roomId])
-
-  // Re-render every second while a regenerate cooldown is active, so the
-  // button re-enables itself and the countdown label stays accurate.
-  useEffect(() => {
-    if (regenerateCooldownUntil <= Date.now()) return
-    const interval = setInterval(() => {
-      setCooldownTick(t => t + 1)
-      if (Date.now() >= regenerateCooldownUntil) {
-        clearInterval(interval)
-      }
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [regenerateCooldownUntil])
-
-  // Deterministic "class struggled here" list, computed directly from the
-  // already-fetched questions/response stats — no AI call involved, so it's
-  // always available (teacher view only, since only teachers get class-wide
-  // stats in `responses`). This guarantees a struggle-areas view even if the
-  // AI summary has never successfully generated.
-  const localStruggleAreas = useMemo(() => {
-    if (user?.role !== 'teacher') return []
-
-    return questions
-      .map(q => {
-        const qStats = responses[q._id] || {}
-        const totalResp = qStats.totalResponses || 0
-        if (totalResp === 0) return null // no data yet for this question
-
-        const correctRate = Math.round(((qStats.correctCount || 0) / totalResp) * 100)
-        if (correctRate >= 70) return null // fewer than 30% got it wrong
-
-        const correctOption = (q.options || []).find(opt => opt.isCorrect)
-
-        return {
-          id: q._id,
-          question: q.question || 'Question',
-          correctAnswer: correctOption?.text || correctOption || 'N/A',
-          correctRate,
-          totalResponses: totalResp
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.correctRate - b.correctRate)
-  }, [questions, responses, user])
-
   if (isLoading) {
     return (
       <div style={{
         display: 'flex',
         minHeight: '100vh',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
         background: 'var(--bg-primary)',
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -304,28 +176,62 @@ function RoomResultsPage() {
     )
   }
 
+  // Stat cards config — same data, presented uniformly. Role-specific 3rd card handled inline.
+  const statCards = [
+    { icon: '📝', value: questions.length, label: 'Total Questions', tint: 'var(--accent)' },
+    { icon: '👥', value: stats.totalResponses, label: 'Total Responses', tint: 'var(--accent)' },
+    ...(user?.role === 'teacher'
+      ? [{ icon: '🧑‍🎓', value: stats.totalStudents || 0, label: 'Total Students', tint: 'var(--accent)' }]
+      : [{ icon: '🏅', value: stats.userRank ? `#${stats.userRank}` : '—', label: 'Your Rank', tint: '#f59e0b', valueColor: '#f59e0b' }]),
+    { icon: '✅', value: `${stats.averageScore}%`, label: 'Average Score', tint: '#059669', valueColor: '#059669' },
+    { icon: '🎯', value: stats.totalCorrect, label: 'Correct Answers', tint: 'var(--accent)', valueColor: 'var(--accent)' },
+  ]
+
   return (
     <div style={{
       display: 'flex',
       minHeight: '100vh',
+      maxWidth: '100%',
+      boxSizing: 'border-box',
       background: 'var(--bg-primary)',
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
     }}>
       <Sidebar user={user} />
-      
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width)' }}>
+
+      <div style={{
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        marginLeft: 'var(--sidebar-width, 240px)',
+        maxWidth: '100%',
+        boxSizing: 'border-box'
+      }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
           color: 'white',
-          padding: '24px 32px'
+          padding: isMobile ? '20px 16px' : '24px 32px',
+          paddingLeft: isMobile ? '64px' : '32px',
+          boxSizing: 'border-box'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>
-                📊 {room?.name || 'Room'} Results
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{
+                margin: 0,
+                fontSize: isMobile ? '22px' : '26px',
+                fontWeight: 700,
+                letterSpacing: '-0.02em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px'
+              }}>
+                <span aria-hidden="true">📊</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {room?.name || 'Room'} Results
+                </span>
               </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
+              <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '14px' }}>
                 Code: {room?.code} • Completed
               </p>
             </div>
@@ -337,530 +243,319 @@ function RoomResultsPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div style={{
+          flex: 1,
+          padding: isMobile ? '16px' : '32px',
+          maxWidth: '100%',
+          boxSizing: 'border-box'
+        }}>
           {/* Back Button */}
           <button
             onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
             style={{
-              display: 'flex',
+              display: 'inline-flex',
               alignItems: 'center',
-              gap: '4px',
-              padding: '8px 12px',
-              background: 'transparent',
+              gap: '6px',
+              padding: '8px 14px',
+              background: 'var(--bg-card)',
               color: 'var(--text-secondary)',
               border: '1px solid var(--border-color)',
-              borderRadius: '8px',
+              borderRadius: 'var(--radius-sm)',
               fontSize: '14px',
+              fontWeight: 600,
               cursor: 'pointer',
-              marginBottom: '20px'
+              boxShadow: 'var(--shadow-sm)',
+              marginBottom: '24px'
             }}
           >
-            ←
+            ← Back
           </button>
-          
-          {/* Overview Stats */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📝</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{questions.length}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Total Questions</div>
-            </div>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>👥</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalResponses}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Total Responses</div>
-            </div>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>✅</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: '#059669' }}>{stats.averageScore}%</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Average Score</div>
-            </div>
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎯</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: '#3b82f6' }}>{stats.totalCorrect}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Correct Answers</div>
-            </div>
-          </div>
 
-          {/* Session Summary - Both Teacher & Student */}
+          {/* Overview Stats */}
           <div style={{
-            background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
-            borderRadius: '16px',
-            padding: '24px',
-            marginBottom: '24px',
-            border: '1px solid #3b82f6'
+            display: 'grid',
+            gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(160px, 1fr))',
+            gap: '16px',
+            marginBottom: '24px'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#1e40af', flex: 1 }}>
-                🤖 AI Session Summary
-              </h2>
-              <button
-                onClick={handleRegenerateSummary}
-                disabled={isRegenerating || Date.now() < regenerateCooldownUntil}
-                style={{
+            {statCards.map((card, i) => (
+              <div key={i} style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: 'var(--shadow-md)',
+                padding: '20px',
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: 'var(--radius-sm)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 14px',
-                  background: (isRegenerating || Date.now() < regenerateCooldownUntil) ? '#93c5fd' : '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: (isRegenerating || Date.now() < regenerateCooldownUntil) ? 'not-allowed' : 'pointer',
-                  whiteSpace: 'nowrap'
-                }}
-                title="Generate a fresh AI summary from the saved transcript, questions & answers"
-              >
-                {isRegenerating
-                  ? '⏳ Regenerating...'
-                  : Date.now() < regenerateCooldownUntil
-                    ? `🔄 Wait ${Math.ceil((regenerateCooldownUntil - Date.now()) / 1000)}s`
-                    : '🔄 Regenerate'}
-              </button>
-            </div>
-
-            {regenerateError && (
-              <div style={{
-                padding: '8px 12px',
-                background: '#fef2f2',
-                border: '1px solid #fca5a5',
-                borderRadius: '8px',
-                fontSize: '12px',
-                color: '#dc2626',
-                marginBottom: '16px'
-              }}>
-                ⚠️ {regenerateError}
-              </div>
-            )}
-
-            {!sessionSummary && !isRegenerating && (
-              <div style={{
-                padding: '14px 16px',
-                background: 'white',
-                borderRadius: '10px',
-                fontSize: '13px',
-                color: 'var(--text-secondary)',
-                textAlign: 'center'
-              }}>
-                No AI summary yet for this session. Click Regenerate to generate one.
-              </div>
-            )}
-
-            {sessionSummary && (
-              <>
-              {/* Narrative Summary - 5-line AI text */}
-              {sessionSummary.narrativeSummary && (
+                  justifyContent: 'center',
+                  fontSize: '20px',
+                  background: 'color-mix(in srgb, ' + card.tint + ' 14%, transparent)',
+                  border: '1px solid color-mix(in srgb, ' + card.tint + ' 22%, transparent)'
+                }} aria-hidden="true">
+                  {card.icon}
+                </div>
                 <div style={{
-                  padding: '14px 16px',
-                  background: 'white',
-                  borderRadius: '10px',
-                  marginBottom: '16px',
-                  fontSize: '13px',
-                  color: '#1e40af',
-                  lineHeight: '1.7',
-                  fontWeight: '500'
+                  fontSize: isMobile ? '26px' : '30px',
+                  fontWeight: 700,
+                  letterSpacing: '-0.02em',
+                  lineHeight: 1.1,
+                  color: card.valueColor || 'var(--text-primary)'
                 }}>
-                  {sessionSummary.narrativeSummary}
+                  {card.value}
                 </div>
-              )}
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '16px' }}>
-                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
-                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>Overview</div>
-                  <div style={{ fontSize: '14px', color: '#1e40af', fontWeight: '600' }}>
-                    {sessionSummary.overview?.totalQuestions} questions • {sessionSummary.overview?.totalResponses} responses
-                  </div>
-                  <div style={{ fontSize: '14px', color: '#1e40af', fontWeight: '600' }}>
-                    {sessionSummary.overview?.totalStudents} students participated
-                  </div>
-                </div>
-                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
-                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>Performance</div>
-                  <div style={{ fontSize: '14px', color: '#059669', fontWeight: '600' }}>
-                    Average Score: {sessionSummary.overview?.averagePoints || 0} pts
-                  </div>
-                  <div style={{ fontSize: '14px', color: '#059669', fontWeight: '600' }}>
-                    Participation: {sessionSummary.overview?.averageParticipation || 0}%
-                  </div>
+                <div style={{ fontSize: '12.5px', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                  {card.label}
                 </div>
               </div>
-
-              {/* Struggling Questions - show where +30% got wrong */}
-              {sessionSummary.strugglingQuestions && sessionSummary.strugglingQuestions.length > 0 && (
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{ fontSize: '13px', fontWeight: '600', color: '#dc2626', marginBottom: '8px' }}>
-                    ⚠️ Areas to Review ({sessionSummary.strugglingQuestions.length} — where +30% of class struggled)
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {sessionSummary.strugglingQuestions.slice(0, 5).map((q, idx) => (
-                      <div key={idx} style={{ padding: '10px', background: '#fef2f2', borderRadius: '8px', fontSize: '13px' }}>
-                        <div style={{ fontWeight: '600', marginBottom: '2px' }}>{q.question?.substring(0, 100)}{q.question?.length > 100 ? '...' : ''}</div>
-                        <div style={{ fontSize: '11px', color: '#dc2626' }}>
-                          Only {q.correctnessRate}% answered correctly • {q.timesAnswered} response(s)
-                        </div>
-                        {q.explanation && (
-                          <div style={{ fontSize: '11px', color: '#92400e', marginTop: '4px', fontStyle: 'italic' }}>
-                            💡 {q.explanation}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Recommendations */}
-              {(sessionSummary.quickRecommendations?.length > 0 || sessionSummary.recommendations?.length > 0) && (
-                <div style={{ padding: '12px', background: 'white', borderRadius: '10px' }}>
-                  <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '6px' }}>Quick Recommendations</div>
-                  <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '13px', color: '#374151' }}>
-                    {(sessionSummary.quickRecommendations || sessionSummary.recommendations || []).map((rec, idx) => (
-                      <li key={idx} style={{ marginBottom: '4px' }}>{rec}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              </>
-            )}
+            ))}
           </div>
-
-          {/* Class Struggle Areas - deterministic, teacher-only, always available
-              (computed from real response stats already loaded — no AI dependency) */}
-          {user?.role === 'teacher' && localStruggleAreas.length > 0 && (
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '20px 24px',
-              marginBottom: '24px',
-              border: '1px solid #fca5a5',
-              boxShadow: 'var(--card-shadow)'
-            }}>
-              <h3 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: '600', color: '#dc2626' }}>
-                ⚠️ Class Struggle Areas ({localStruggleAreas.length})
-              </h3>
-              <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                Questions where 30%+ of the class answered incorrectly, with the correct answer
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {localStruggleAreas.map((item, idx) => (
-                  <div key={item.id || idx} style={{
-                    padding: '10px 12px',
-                    background: '#fef2f2',
-                    borderRadius: '8px',
-                    fontSize: '13px'
-                  }}>
-                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
-                      {item.question}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#059669', marginBottom: '2px' }}>
-                      ✓ Correct answer: {item.correctAnswer}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#dc2626' }}>
-                      Only {item.correctRate}% answered correctly • {item.totalResponses} response(s)
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Personal Weak-Area Analysis - Student only */}
-          {user?.role === 'student' && studentAnalysis && studentAnalysis.wrongAnswers?.length > 0 && (
-            <div style={{
-              background: 'linear-gradient(135deg, #fef2f2, #fee2e2)',
-              borderRadius: '16px',
-              padding: '24px',
-              marginBottom: '24px',
-              border: '1px solid #fca5a5'
-            }}>
-              <h2 style={{ margin: '0 0 12px', fontSize: '18px', fontWeight: '600', color: '#991b1b' }}>
-                🎯 Your Weak Areas ({studentAnalysis.accuracy}% accuracy overall)
-              </h2>
-              {studentAnalysis.weakAreas?.length > 0 && (
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-                  {studentAnalysis.weakAreas.map((topic, idx) => (
-                    <span key={idx} style={{
-                      padding: '4px 10px', background: 'white', borderRadius: '999px',
-                      fontSize: '12px', fontWeight: '600', color: '#991b1b', border: '1px solid #fca5a5'
-                    }}>{topic}</span>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {studentAnalysis.wrongAnswers.map((w, idx) => (
-                  <div key={idx} style={{ padding: '10px', background: 'white', borderRadius: '8px', fontSize: '13px' }}>
-                    <div style={{ fontWeight: '600', marginBottom: '2px', color: '#1f2937' }}>{w.question}</div>
-                    <div style={{ fontSize: '12px', color: '#991b1b', fontStyle: 'italic' }}>💡 {w.explanation}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',
-            borderRadius: '16px',
-            padding: '24px',
-            boxShadow: 'var(--card-shadow)',
-            border: '1px solid var(--border-color)'
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-md)',
+            padding: isMobile ? '18px' : '24px',
+            maxWidth: '100%',
+            boxSizing: 'border-box'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', flex: 1 }}>
-                Question-wise Analysis
-              </h2>
-              {user?.role === 'student' && bookmarked.size > 0 && (
-                <button
-                  onClick={() => setShowReviewTab(v => !v)}
-                  style={{
-                    padding: '6px 14px', background: showReviewTab ? '#3b82f6' : 'transparent',
-                    border: '1px solid #3b82f6', borderRadius: '8px',
-                    color: showReviewTab ? 'white' : '#3b82f6', fontSize: '12px',
-                    fontWeight: '600', cursor: 'pointer'
-                  }}
-                >
-                  📌 Review Later ({bookmarked.size})
-                </button>
-              )}
-            </div>
-            
+            <h2 style={{
+              margin: '0 0 20px',
+              fontSize: '18px',
+              fontWeight: 700,
+              letterSpacing: '-0.01em',
+              color: 'var(--text-primary)'
+            }}>
+              Question-wise Analysis
+            </h2>
+
             {questions.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
+              <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-secondary)' }}>
                 <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
-                <p>No questions were asked in this room.</p>
+                <p style={{ margin: 0 }}>No questions were asked in this room.</p>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {(showReviewTab ? questions.filter(q => bookmarked.has(q._id)) : questions).map((q, index) => {
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {questions.map((q, index) => {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
-                  const totalResp = qStats.totalResponses || 0
-                  const correctRate = isTeacher && totalResp > 0
-                    ? Math.round((qStats.correctCount / totalResp) * 100)
+
+                  // Teacher: show class percentage. Student: show their result
+                  const correctRate = isTeacher && qStats.totalResponses > 0
+                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100)
                     : q.answered ? (q.isCorrect ? 100 : 0) : null
-                  const attemptedPct = isTeacher && stats.totalStudents > 0
-                    ? Math.round((totalResp / stats.totalStudents) * 100)
-                    : null
-                  const isStruggle = isTeacher && correctRate !== null && correctRate < 70
-                  const isExpanded = !!expandedQuestions[q._id]
+
+                  // Score card accent (semantic) — mirrors the original thresholds/answer logic.
+                  const scoreColor = isTeacher
+                    ? (correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626')
+                    : (q.answered ? (q.isCorrect ? '#059669' : '#dc2626') : '#d97706')
 
                   return (
                     <div key={q._id} style={{
+                      padding: isMobile ? '16px' : '20px',
                       background: 'var(--bg-primary)',
-                      borderRadius: '10px',
-                      border: `1px solid ${isStruggle ? '#fca5a5' : 'var(--border-color)'}`,
-                      overflow: 'hidden'
+                      borderRadius: 'var(--radius)',
+                      border: '1px solid var(--border-color)',
+                      minWidth: 0
                     }}>
-                      {/* Compact header - always visible */}
-                      <div
-                        onClick={() => toggleExpand(q._id)}
-                        style={{
-                          padding: '12px 16px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '10px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <span style={{
-                          width: '24px', height: '24px', borderRadius: '50%',
-                          background: '#3b82f6', color: 'white',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: '11px', fontWeight: '700', flexShrink: 0
-                        }}>{index + 1}</span>
-
-                        <span style={{
-                          padding: '2px 6px', background: '#eff6ff', color: '#3b82f6',
-                          borderRadius: '4px', fontSize: '10px', fontWeight: '600', flexShrink: 0
-                        }}>{q.type}</span>
-
-                        <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', flex: 1, lineHeight: '1.4' }}>
-                          {q.question}
-                        </span>
-
-                        {/* Right side stats */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                          {isTeacher ? (
-                            <>
-                              {attemptedPct !== null && (
-                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                                  {attemptedPct}% attempted
-                                </span>
-                              )}
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        gap: '16px',
+                        flexDirection: isMobile ? 'column' : 'row'
+                      }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                            <span style={{
+                              width: '28px',
+                              height: '28px',
+                              borderRadius: '50%',
+                              background: 'var(--accent)',
+                              color: 'white',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '12px',
+                              fontWeight: 700,
+                              flexShrink: 0
+                            }}>
+                              {index + 1}
+                            </span>
+                            <span style={{
+                              padding: '3px 8px',
+                              background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+                              color: 'var(--accent)',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 600
+                            }}>
+                              {q.type}
+                            </span>
+                            <span style={{
+                              padding: '3px 8px',
+                              background: 'color-mix(in srgb, #d97706 16%, transparent)',
+                              color: '#b45309',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 600
+                            }}>
+                              {q.maxPoints || q.points} pts
+                            </span>
+                            {q.answered && (
                               <span style={{
-                                padding: '4px 10px', borderRadius: '6px', fontSize: '13px', fontWeight: '700',
-                                background: correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2',
-                                color: correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626'
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
+                                color: q.isCorrect ? '#059669' : '#dc2626'
                               }}>
-                                {correctRate !== null ? `${correctRate}%` : '—'}
+                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
                               </span>
-                              {isStruggle && <span style={{ fontSize: '14px' }} title="Class struggled here">⚠️</span>}
-                            </>
-                          ) : (
-                            <>
-                              {q.answered && (
-                                <span style={{
-                                  padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
-                                  background: q.isCorrect ? '#d1fae5' : '#fee2e2',
-                                  color: q.isCorrect ? '#059669' : '#dc2626'
-                                }}>
-                                  {q.isCorrect ? '✓' : '✗'} {q.pointsEarned || 0}pts
-                                </span>
-                              )}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); toggleBookmark(q._id) }}
-                                style={{
-                                  background: 'none', border: 'none', cursor: 'pointer',
-                                  fontSize: '16px', opacity: bookmarked.has(q._id) ? 1 : 0.4
-                                }}
-                                title="Save for Review Later"
-                              >📌</button>
-                            </>
-                          )}
-                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{isExpanded ? '▲' : '▼'}</span>
-                        </div>
-                      </div>
+                            )}
+                          </div>
+                          <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                            {q.question}
+                          </p>
 
-                      {/* Expanded options */}
-                      {isExpanded && (
-                        <div style={{ padding: '0 16px 14px' }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {/* Options - show differently for teacher vs student */}
+                          <div style={{ display: 'grid', gap: '8px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
-                              const optCount = qStats.answerCounts?.[optIdx] || 0
-                              const optPct = totalResp > 0 ? Math.round((optCount / totalResp) * 100) : 0
 
-                              let bg = 'var(--bg-card)', border = '1px solid var(--border-color)'
-                              if (isTeacher) {
-                                if (isCorrect) { bg = '#d1fae5'; border = '1px solid #059669' }
-                              } else {
-                                if (isSelected && isCorrect) { bg = '#d1fae5'; border = '1px solid #059669' }
-                                else if (isSelected && !isCorrect) { bg = '#fee2e2'; border = '1px solid #dc2626' }
-                                else if (!isSelected && isCorrect) { bg = '#eff6ff'; border = '1px solid #3b82f6' }
-                              }
+                              // For student: highlight their selection. For teacher: highlight correct answer
+                              const showAsSelected = isTeacher ? isCorrect : isSelected
+                              const highlightStyle = showAsSelected
+                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
+                                : 'var(--bg-card)'
+                              const borderStyle = showAsSelected
+                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
+                                : '1px solid var(--border-color)'
 
                               return (
-                                <div key={optIdx}>
-                              <div style={{
-                                    padding: '8px 12px', background: bg, borderRadius: '8px',
-                                    border, display: 'flex', alignItems: 'center', gap: '10px',
-                                    transition: 'all 0.2s ease', cursor: 'pointer'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    if (!isTeacher) return
-                                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.15)'
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.boxShadow = 'none'
+                                <div key={optIdx} style={{
+                                  padding: '10px 14px',
+                                  background: highlightStyle,
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: borderStyle,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '12px',
+                                  minWidth: 0
+                                }}>
+                                  <span style={{
+                                    width: '24px',
+                                    height: '24px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    flexShrink: 0
                                   }}>
-                                    <span style={{
-                                      width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
-                                      background: isCorrect ? '#059669' : 'var(--border-color)',
-                                      color: 'white', display: 'flex', alignItems: 'center',
-                                      justifyContent: 'center', fontSize: '10px', fontWeight: '700'
-                                    }}>{String.fromCharCode(65 + optIdx)}</span>
-                                    <span style={{ fontSize: '13px', color: isCorrect ? '#065f46' : 'var(--text-primary)', flex: 1, fontWeight: isCorrect ? '600' : '400' }}>
-                                      {opt.text}
-                                    </span>
-                                    {!isTeacher && isSelected && (
-                                      <span style={{ fontSize: '11px', color: isCorrect ? '#059669' : '#dc2626', fontWeight: '600' }}>
-                                        {isCorrect ? '✓ Your answer' : '✗ Your answer'}
-                                      </span>
-                                    )}
-                                    {!isTeacher && !isSelected && isCorrect && (
-                                      <span style={{ fontSize: '11px', color: '#3b82f6', fontWeight: '600' }}>Correct</span>
-                                    )}
-                                    {isTeacher && (
-                                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '500', whiteSpace: 'nowrap' }}>
-                                        {optPct}% ({optCount})
-                                      </span>
-                                    )}
-                                  </div>
-                                  {/* % bar under each option - teacher only */}
-                                  {isTeacher && totalResp > 0 && (
-                                    <div style={{ height: '3px', background: 'var(--border-color)', borderRadius: '2px', margin: '2px 0 4px', overflow: 'hidden' }}>
-                                      <div style={{
-                                        height: '100%', width: `${optPct}%`,
-                                        background: isCorrect ? '#059669' : '#94a3b8',
-                                        transition: 'width 0.4s ease'
-                                      }} />
-                                    </div>
+                                    {String.fromCharCode(65 + optIdx)}
+                                  </span>
+                                  <span style={{
+                                    fontSize: '14px',
+                                    color: 'var(--text-primary)',
+                                    fontWeight: isCorrect ? 600 : 400,
+                                    minWidth: 0
+                                  }}>
+                                    {opt.text}
+                                  </span>
+                                  {isTeacher && isCorrect && (
+                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
                                   )}
-                                  {/* Explanation under correct answer - teacher always sees it */}
-                                  {isTeacher && isCorrect && q.explanation && (
-                                    <div style={{
-                                      margin: '4px 0 2px',
-                                      padding: '8px 12px',
-                                      background: '#eff6ff',
-                                      borderRadius: '6px',
-                                      fontSize: '12px',
-                                      color: '#1e40af'
-                                    }}>
-                                      💡 {q.explanation}
-                                    </div>
+                                  {!isTeacher && isSelected && (
+                                    <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
                                   )}
-                                  {/* Student sees explanation only when wrong or missed */}
-                                  {!isTeacher && isCorrect && q.answered && !q.isCorrect && q.explanation && (
-                                    <div style={{
-                                      margin: '4px 0 2px',
-                                      padding: '8px 12px',
-                                      background: '#eff6ff',
-                                      borderRadius: '6px',
-                                      fontSize: '12px',
-                                      color: '#1e40af'
-                                    }}>
-                                      💡 {q.explanation}
-                                    </div>
-                                  )}
-                                  {!isTeacher && isCorrect && !q.answered && q.explanation && (
-                                    <div style={{
-                                      margin: '4px 0 2px',
-                                      padding: '8px 12px',
-                                      background: '#eff6ff',
-                                      borderRadius: '6px',
-                                      fontSize: '12px',
-                                      color: '#1e40af'
-                                    }}>
-                                      💡 {q.explanation}
-                                    </div>
+                                  {!isTeacher && isCorrect && !isSelected && (
+                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
                                   )}
                                 </div>
                               )
                             })}
                           </div>
+
+                          {/* Teacher: visual distribution bar of class correctness (purely presentational) */}
+                          {isTeacher && (
+                            <div style={{ marginTop: '14px' }}>
+                              <div style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                fontSize: '11px',
+                                color: 'var(--text-secondary)',
+                                marginBottom: '6px',
+                                fontWeight: 600
+                              }}>
+                                <span>Class correct rate</span>
+                                <span>{correctRate !== null ? `${correctRate}%` : '0%'}</span>
+                              </div>
+                              <div style={{
+                                height: '8px',
+                                borderRadius: '999px',
+                                background: 'var(--border-color)',
+                                overflow: 'hidden'
+                              }}>
+                                <div style={{
+                                  height: '100%',
+                                  width: `${Math.max(0, Math.min(100, correctRate || 0))}%`,
+                                  background: scoreColor,
+                                  borderRadius: '999px',
+                                  transition: 'width 0.3s ease'
+                                }} />
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      )}
+
+                        {/* Question Stats */}
+                        <div style={{
+                          minWidth: isMobile ? 0 : '120px',
+                          width: isMobile ? '100%' : 'auto',
+                          textAlign: 'center',
+                          padding: '16px',
+                          background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
+                          border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
+                          borderRadius: 'var(--radius)',
+                          flexShrink: 0
+                        }}>
+                          {isTeacher ? (
+                            <>
+                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                {correctRate !== null ? `${correctRate}%` : '0%'}
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                {qStats.totalResponses || 0} responses
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                {q.pointsEarned || 0}
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                / {q.maxPoints || 100} pts
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )
                 })}
@@ -873,4 +568,4 @@ function RoomResultsPage() {
   )
 }
 
-export default RoomResultsPage;
+export default RoomResultsPage
