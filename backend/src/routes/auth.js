@@ -7,11 +7,26 @@ import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
 import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
+import { getAllowedDomainRegexes } from '../utils/domainValidator.js'
 
 const router = express.Router()
 
 // Strong password: min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char
 const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/
+
+// Public endpoint to fetch allowed domain regex patterns for client-side validation
+router.get('/allowed-domains', (req, res) => {
+  try {
+    const regexes = getAllowedDomainRegexes()
+    if (!regexes || regexes.length === 0) {
+      return res.json({ patterns: [] })
+    }
+    const patterns = regexes.map(r => r.source)
+    res.json({ patterns })
+  } catch (error) {
+    res.json({ patterns: [] })
+  }
+})
 
 // Registration is email-OTP verified (two steps). There is intentionally NO single-step /register:
 // an account is created only after the emailed 6-digit code is verified, so the email is proven to

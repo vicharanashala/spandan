@@ -50,6 +50,19 @@ function AuthPage() {
   const [otpSent, setOtpSent] = useState(false)
   const [otpValue, setOtpValue] = useState('')
   const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
+  const [allowedDomainPatterns, setAllowedDomainPatterns] = useState([])
+
+  // Fetch allowed domain regex patterns for instant client-side validation
+  useEffect(() => {
+    fetch(`${API_URL}/auth/allowed-domains`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.patterns && Array.isArray(data.patterns)) {
+          setAllowedDomainPatterns(data.patterns)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
@@ -83,15 +96,38 @@ function AuthPage() {
   }, [isAuthenticated, token, navigate, user])
 
   const validateForm = () => {
-    if (!isLogin && formData.password !== formData.confirmPassword) {
-      setValidationError('Passwords do not match')
-      return false
-    }
-    if (!isLogin && formData.password) {
-      const failedReqs = PASSWORD_REQUIREMENTS.filter((req) => !req.test(formData.password))
-      if (failedReqs.length > 0) {
-        setValidationError('Password must have: ' + failedReqs.map((r) => r.label).join(', '))
+    if (!isLogin) {
+      if (!formData.email || !formData.email.includes('@')) {
+        setValidationError('Please enter a valid email address')
         return false
+      }
+
+      const emailDomain = formData.email.split('@').pop().toLowerCase().trim()
+      if (allowedDomainPatterns.length > 0) {
+        const isAllowed = allowedDomainPatterns.some(patternStr => {
+          try {
+            const regex = new RegExp(patternStr, 'i')
+            return regex.test(emailDomain)
+          } catch (e) {
+            return false
+          }
+        })
+        if (!isAllowed) {
+          setValidationError(`Email domain '${emailDomain}' is not allowed`)
+          return false
+        }
+      }
+
+      if (formData.password !== formData.confirmPassword) {
+        setValidationError('Passwords do not match')
+        return false
+      }
+      if (formData.password) {
+        const failedReqs = PASSWORD_REQUIREMENTS.filter((req) => !req.test(formData.password))
+        if (failedReqs.length > 0) {
+          setValidationError('Password must have: ' + failedReqs.map((r) => r.label).join(', '))
+          return false
+        }
       }
     }
     setValidationError('')

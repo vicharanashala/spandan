@@ -97,8 +97,9 @@ export const validate = (schema) => {
       next()
     } catch (error) {
       if (error instanceof z.ZodError) {
+        const firstMsg = error.errors[0]?.message
         return res.status(400).json({
-          error: 'Validation failed',
+          error: firstMsg || 'Validation failed',
           details: error.errors.map(e => ({
             field: e.path.join('.'),
             message: e.message

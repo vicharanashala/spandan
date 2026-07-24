@@ -78,7 +78,8 @@ export const useAuthStore = create(
           })
           const data = await response.json()
           if (!response.ok) {
-            throw new Error(data.error || 'Failed to send verification code')
+            const errMsg = (data.details && data.details[0]?.message) || data.error || 'Failed to send verification code'
+            throw new Error(errMsg)
           }
           set({ isLoading: false })
           return data // { message, expiresInSec }
@@ -98,7 +99,8 @@ export const useAuthStore = create(
           })
           const data = await response.json()
           if (!response.ok) {
-            throw new Error(data.error || 'Registration failed')
+            const errMsg = (data.details && data.details[0]?.message) || data.error || 'Registration failed'
+            throw new Error(errMsg)
           }
           set({
             user: data.user,
