@@ -21,6 +21,7 @@ html {
   --bg-primary: #f8f9fb;
   --bg-secondary: #ffffff;
   --bg-card: #ffffff;
+  --bg-card-rgb: 255, 255, 255; /* rgb triplet of --bg-card, for alpha gradients (scroll fades) */
   --text-primary: #1f2937;
   --text-secondary: #6b7280;
   --border-color: #e5e7eb;
@@ -30,6 +31,18 @@ html {
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.08);
   --nav-hover: #f3f4f6;
   --input-bg: #ffffff;
+
+  /* Layout + modern design tokens (shared across pages) */
+  --sidebar-width: 240px;               /* live-updated by Sidebar.jsx; 0 on mobile (drawer) */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(16,24,40,0.06), 0 1px 3px rgba(16,24,40,0.08);
+  --shadow-md: 0 4px 12px rgba(16,24,40,0.08), 0 2px 6px rgba(16,24,40,0.05);
+  --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
+  --accent: #3b82f6;
+  --accent-strong: #1e40af;
+  --accent-gradient: linear-gradient(135deg, #1e40af, #3b82f6);
 }
 
 /* Dark Theme */
@@ -37,6 +50,7 @@ html {
   --bg-primary: #111827;
   --bg-secondary: #1f2937;
   --bg-card: #1f2937;
+  --bg-card-rgb: 31, 41, 55; /* rgb triplet of --bg-card, for alpha gradients (scroll fades) */
   --text-primary: #f9fafb;
   --text-secondary: #9ca3af;
   --border-color: #374151;
@@ -46,6 +60,15 @@ html {
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.5);
   --nav-hover: #374151;
   --input-bg: #1f2937;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.35);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4), 0 2px 6px rgba(0,0,0,0.3);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,0.5);
+}
+
+/* On mobile the sidebar becomes an overlay drawer, so page content is full-width.
+   This is the pre-JS default; Sidebar.jsx keeps --sidebar-width in sync at runtime. */
+@media (max-width: 768px) {
+  :root { --sidebar-width: 0px; }
 }
 
 /* Custom scrollbar */
@@ -73,4 +96,20 @@ html {
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: #4b5563;
+}
+
+/* ---- Modern base (redesign) ---- */
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body { overflow-x: hidden; }
+
+/* Visible, accessible focus ring using the accent */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button, a { -webkit-tap-highlight-color: transparent; }
+
+/* Smooth theme + color transitions on surfaces */
+@media (prefers-reduced-motion: no-preference) {
+  a, button { transition: background-color .15s ease, color .15s ease, box-shadow .15s ease, transform .15s ease; }
 }
