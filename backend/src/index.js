@@ -370,6 +370,13 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
+// Active poll state — keyed by roomCode. Stores the full question payload,
+// timer (seconds), and startTime (epoch ms) so reconnecting/late-joining
+// students can recover the active poll without hitting the database.
+// Cleared when the question ends. Fixes issue #78.
+const activePolls = new Map()
+// roomCode -> { questionId, question, timer, startTime }
+
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
 // Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
@@ -548,6 +555,25 @@ io.on('connection', (socket) => {
       }
 
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+
+      // Issue #78 — active poll recovery: if a question is still live when this
+      // student joins or rejoins, push the remaining state directly to their socket.
+      // Served from RAM (activePolls map) — zero DB cost even under reload storms.
+      if (role === 'student') {
+        const poll = activePolls.get(roomCode)
+        if (poll) {
+          const elapsed = (Date.now() - poll.startTime) / 1000
+          const timeLeft = Math.floor(poll.timer - elapsed)
+          if (timeLeft > 0) {
+            socket.emit('question:started', {
+              questionId: poll.questionId,
+              question:   poll.question,
+              timer:      timeLeft,
+              startTime:  poll.startTime
+            })
+          }
+        }
+      }
     } catch (error) {
       console.error('Error in room:join:', error)
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
@@ -593,16 +619,27 @@ io.on('connection', (socket) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
+    const startTime = Date.now()
+    const sanitized = sanitizeQuestionForStudents(data.question)
+    // Cache in RAM so reconnecting students can recover this poll (issue #78).
+    activePolls.set(data.roomCode, {
+      questionId: data.questionId,
+      question:   sanitized,
+      timer:      data.timer,
+      startTime
+    })
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
-      question: sanitizeQuestionForStudents(data.question),
-      timer: data.timer,
-      startTime: Date.now()
+      question:   sanitized,
+      timer:      data.timer,
+      startTime
     })
   })
 
   socket.on('question:end', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    // Clear the RAM cache — the poll is over, no new joiner should receive it.
+    activePolls.delete(data.roomCode)
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
@@ -619,7 +656,16 @@ io.on('connection', (socket) => {
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+      const sanitized = sanitizeQuestionForStudents(data.question)
+      const timer = data.question.timeToAnswer || 30
+      // Cache in RAM for reconnect recovery (issue #78).
+      activePolls.set(data.roomCode, {
+        questionId: qId,
+        question:   sanitized,
+        timer,
+        startTime:  Date.now()
+      })
+      io.to(data.roomCode).emit('new_question', sanitized)
     }
   })
 

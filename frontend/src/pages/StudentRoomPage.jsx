@@ -57,21 +57,25 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+      // Normalise: the payload is { questionId, question: {...}, timer, startTime }.
+      // Extract the nested question object so the render can access .question (text),
+      // .options, ._id, etc. directly — matching the shape handleNewQuestion uses.
+      const q = (data.question && typeof data.question === 'object')
+        ? data.question
+        : data
+      setCurrentQuestion(q)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
-      
+      // Prefer data.timer (which is already the REMAINING time when recovering from
+      // a reconnect) over question.timeToAnswer (full duration). Fall back in order.
+      setTimeLeft(data.timer || q.timeToAnswer || 30)
+
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
