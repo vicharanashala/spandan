@@ -7,7 +7,16 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: config.smtpEmail,
     pass: config.smtpPassword
-  }
+  },
+  // Force IPv4 — prevents ECONNREFUSED on IPv6 addresses in local dev environments
+  family: 4,
+  // ⚠️  DEV-ONLY WORKAROUND: disables TLS certificate verification to bypass
+  // "self-signed certificate in certificate chain" errors on local/proxy setups.
+  // This is NOT safe for production. It is guarded by NODE_ENV so it will
+  // NEVER apply when NODE_ENV==='production'. Remove or re-audit before merging to PR.
+  ...(process.env.NODE_ENV !== 'production' && {
+    tls: { rejectUnauthorized: false }
+  })
 })
 
 // Send reset password email

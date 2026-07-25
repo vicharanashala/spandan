@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
@@ -18,7 +18,15 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import { API_URL } from './config.js'
 
+// Handles email invite links: /join/:code → /student/join-room?code=:code
+// JoinRoomPage reads the ?code param, pre-fills the input, and auto-submits.
+function JoinRedirect() {
+  const { code } = useParams()
+  return <Navigate to={`/student/join-room?code=${encodeURIComponent(code || '')}`} replace />
+}
+
 function App() {
+
   const { isDark } = useThemeStore()
   const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
@@ -171,6 +179,8 @@ function App() {
             <JoinRoomPage />
           </ProtectedRoute>
         } />
+        {/* Email invite deep-link: /join/:code → auto-fills code on JoinRoomPage */}
+        <Route path="/join/:code" element={<JoinRedirect />} />
         <Route path="/student/room-history" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomHistoryPage />

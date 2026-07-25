@@ -2,7 +2,13 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import User from '../models/User.js'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+if (!process.env.JWT_SECRET) {
+  throw new Error(
+    '[auth] JWT_SECRET environment variable is required but not set. ' +
+    'Set it in backend/.env before starting the server.'
+  )
+}
+const JWT_SECRET = process.env.JWT_SECRET
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '7d'
 
 export const authenticate = async (req, res, next) => {

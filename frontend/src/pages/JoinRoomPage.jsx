@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useState, useEffect, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
@@ -17,6 +17,7 @@ function JoinRoomPage() {
   const [isJoining, setIsJoining] = useState(false)
   const [error, setError] = useState('')
   const [joinedRoom, setJoinedRoom] = useState(null)
+  const [searchParams] = useSearchParams()
 
   useEffect(() => {
     if (token) {
@@ -24,8 +25,17 @@ function JoinRoomPage() {
     }
   }, [token])
 
-  const handleJoinRoom = async () => {
-    if (!roomCode.trim()) {
+  // Pre-fill code from URL ?code= param (set by email invite deep-link)
+  useEffect(() => {
+    const codeFromUrl = searchParams.get('code')
+    if (codeFromUrl) {
+      setRoomCode(codeFromUrl.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))
+    }
+  }, [searchParams])
+
+  const handleJoinRoom = useCallback(async (codeOverride) => {
+    const code = codeOverride || roomCode
+    if (!code.trim()) {
       setError('Please enter a room code')
       return
     }
@@ -34,7 +44,7 @@ function JoinRoomPage() {
     setError('')
     
     try {
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
+      const room = await joinRoomByCode(code.trim().toUpperCase())
       setJoinedRoom(room)
       joinRoom(room.code, user._id)
       navigate(`/student/session/${room.code}`)
@@ -43,7 +53,17 @@ function JoinRoomPage() {
     } finally {
       setIsJoining(false)
     }
-  }
+  }, [roomCode, joinRoomByCode, joinRoom, user, navigate])
+
+  // Auto-submit when a valid code arrives from URL
+  useEffect(() => {
+    const codeFromUrl = searchParams.get('code')
+    const normalized = codeFromUrl?.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+    if (normalized && normalized.length === 6 && token) {
+      handleJoinRoom(normalized)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]) // run once when token (auth) is confirmed ready
 
   const handleLeaveRoom = () => {
     if (joinedRoom) {
@@ -137,7 +157,7 @@ function JoinRoomPage() {
             </div>
             
             <button
-              onClick={handleJoinRoom}
+              onClick={() => handleJoinRoom()}
               disabled={isJoining || roomCode.length < 6}
               style={{
                 width: '100%',
