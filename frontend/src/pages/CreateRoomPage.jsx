@@ -15,6 +15,9 @@ function CreateRoomPage() {
   const isMobile = useIsMobile()
 
   const [roomName, setRoomName] = useState('')
+  const [isBossMode, setIsBossMode] = useState(false)
+  const [bossHealth, setBossHealth] = useState(1000)
+  const [classShields, setClassShields] = useState(100)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -34,7 +37,7 @@ function CreateRoomPage() {
     setError('')
 
     try {
-      const room = await createRoom(roomName.trim())
+      const room = await createRoom(roomName.trim(), {}, { isBossMode, bossHealth, classShields })
       navigate(`/teacher/room/${room._id}`)
     } catch (err) {
       setError(err.message || 'Failed to create room')
@@ -183,6 +186,51 @@ function CreateRoomPage() {
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
               />
             </div>
+            
+            <div style={{ marginBottom: '32px', background: 'rgba(99, 102, 241, 0.05)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                cursor: 'pointer',
+                marginBottom: isBossMode ? '16px' : '0'
+              }}>
+                <input 
+                  type="checkbox" 
+                  checked={isBossMode} 
+                  onChange={(e) => setIsBossMode(e.target.checked)} 
+                  style={{ width: '18px', height: '18px' }}
+                />
+                <span style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  🐉 Enable Co-op Boss Battle Mode
+                </span>
+              </label>
+              
+              {isBossMode && (
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '150px' }}>
+                    <label style={{ display: 'block', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Boss Health</label>
+                    <input 
+                      type="number" 
+                      value={bossHealth}
+                      onChange={(e) => setBossHealth(Number(e.target.value))}
+                      style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '150px' }}>
+                    <label style={{ display: 'block', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Class Shields</label>
+                    <input 
+                      type="number" 
+                      value={classShields}
+                      onChange={(e) => setClassShields(Number(e.target.value))}
+                      style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '12px' }}>
 
             <div style={{
               display: 'flex',

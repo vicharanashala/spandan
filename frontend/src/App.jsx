@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import AvatarStore from './pages/AvatarStore'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
@@ -183,6 +184,14 @@ function App() {
             <JoinRoomPage />
           </ProtectedRoute>
         } />
+        <Route 
+          path="/store" 
+          element={
+            <ProtectedRoute allowedRoles={['student']}>
+              <AvatarStore />
+            </ProtectedRoute>
+          } 
+        />
         <Route path="/student/room-history" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomHistoryPage />

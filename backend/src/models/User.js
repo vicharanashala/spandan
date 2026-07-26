@@ -67,6 +67,18 @@ const userSchema = new mongoose.Schema({
     linkedin: { type: String, default: '' },
     github: { type: String, default: '' }
   },
+  
+  // Gamification & Economy
+  personalXp: { type: Number, default: 0 },
+  unlockedAvatars: [{ type: String }],
+  activeAvatar: { type: String, default: 'default' },
+  finalizedRooms: [{ type: String }], // roomIds where session XP has already been awarded
+  faction: { 
+    type: String, 
+    enum: ['Pioneers', 'Innovators', 'Visionaries', 'None'], 
+    default: 'None' 
+  },
+  
   // For students
   enrollmentNumber: {
     type: String,

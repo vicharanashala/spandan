@@ -28,6 +28,12 @@ const roomSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
   },
+  
+  // Boss Battle Gamification
+  isBossMode: { type: Boolean, default: false },
+  bossHealth: { type: Number, default: 1000 },
+  classShields: { type: Number, default: 100 },
+  
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },

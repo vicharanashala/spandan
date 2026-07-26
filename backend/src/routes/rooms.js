@@ -10,8 +10,9 @@ const router = express.Router()
 // Create new room
 router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema), async (req, res) => {
   try {
-    const { name, settings } = req.validatedBody
-    const room = await createRoom(name, req.user._id, settings)
+    const { name, settings, isBossMode, bossHealth, classShields } = req.validatedBody
+    const bossOptions = { isBossMode, bossHealth, classShields }
+    const room = await createRoom(name, req.user._id, settings, bossOptions)
 
     res.status(201).json({
       message: 'Room created successfully',

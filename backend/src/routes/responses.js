@@ -217,6 +217,31 @@ router.post('/', authorize('student'), async (req, res) => {
       }
     }
 
+    await response.save()
+
+    if (isCorrect && points > 0) {
+      // Boss Battle Logic
+      if (room.isBossMode && room.bossHealth > 0) {
+        const damage = points
+        // Use findOneAndUpdate to prevent race conditions from concurrent answers
+        const updatedRoom = await room.constructor.findOneAndUpdate(
+          { _id: room._id },
+          { $inc: { bossHealth: -damage } },
+          { new: true }
+        )
+        const newHealth = Math.max(0, updatedRoom.bossHealth)
+        // Ensure it doesn't drop below 0 in DB
+        if (updatedRoom.bossHealth < 0) {
+          await room.constructor.updateOne({ _id: room._id }, { bossHealth: 0 })
+        }
+        // Broadcast boss damage if io is available
+        const io = req.app.get('io')
+        if (io) {
+          io.to(room.code).emit('boss:damage', { damage, newHealth, studentId })
+        }
+      }
+    }
+
     // Live answer-counts update immediately (throttled) so the teacher's "X/total answered"
     // badge stays current; the ranked leaderboard is DEFERRED to a quiet-debounce (fires once
     // the answer burst has drained) so its expensive recompute never competes with the burst.

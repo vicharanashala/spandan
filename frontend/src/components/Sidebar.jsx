@@ -12,6 +12,7 @@ const menuItems = {
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
+    { id: 'store', label: 'Avatar Store', icon: '🛍️', path: '/store' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
   ]
 }
