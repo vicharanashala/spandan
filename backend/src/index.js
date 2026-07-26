@@ -503,6 +503,7 @@ io.on('connection', (socket) => {
       }
       await authenticateSocket(socket, data.token)
       scheduleSocketExpiry(socket) // re-arm for the new token's expiry
+
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {

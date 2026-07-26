@@ -43,7 +43,8 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    restrictToRoster: { type: Boolean, default: false }
   }
 }, {
   timestamps: true

@@ -109,6 +109,16 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
 
+  // ── Roster state ────────────────────────────────────────────────────────────
+  const [rosterFile, setRosterFile] = useState(null)
+  const [rosterUploading, setRosterUploading] = useState(false)
+  const [rosterUploadResult, setRosterUploadResult] = useState(null) // {saved, skipped, entries, errors}
+  const [rosterEntries, setRosterEntries] = useState([])
+  const [rosterInviting, setRosterInviting] = useState(false)
+  const [rosterInviteResult, setRosterInviteResult] = useState(null) // {sent, failed}
+  const [restrictToRoster, setRestrictToRoster] = useState(false)
+  const [restrictSaving, setRestrictSaving] = useState(false)
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -490,9 +500,15 @@ function RoomDetailPage() {
           ...prev,
           ...roomData.settings
         }))
+        // Sync restrictToRoster toggle from room settings
+        if (typeof roomData.settings.restrictToRoster === 'boolean') {
+          setRestrictToRoster(roomData.settings.restrictToRoster)
+        }
       }
       // Load questions for this room from database
       loadQuestions(roomId)
+      // Load roster entries
+      loadRoster(roomId)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -540,6 +556,86 @@ function RoomDetailPage() {
     navigator.clipboard.writeText(room.code)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  // ── Roster handlers ──────────────────────────────────────────────────────────
+  const loadRoster = async (rid) => {
+    try {
+      const res = await fetch(`${API_URL}/rooms/${rid}/roster`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setRosterEntries(data.entries || [])
+      }
+    } catch (err) {
+      console.error('Failed to load roster:', err)
+    }
+  }
+
+  const handleRosterUpload = async () => {
+    if (!rosterFile) return
+    setRosterUploading(true)
+    setRosterUploadResult(null)
+    try {
+      const csvText = await rosterFile.text()
+      const res = await fetch(`${API_URL}/rooms/${room._id}/roster/upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ csvText })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Upload failed')
+      setRosterUploadResult(data)
+      setRosterEntries(data.entries || [])
+      setRosterFile(null)
+    } catch (err) {
+      setRosterUploadResult({ error: err.message })
+    } finally {
+      setRosterUploading(false)
+    }
+  }
+
+  const handleSendInvites = async () => {
+    if (!window.confirm(`Send invite emails to all ${rosterEntries.length} roster members?`)) return
+    setRosterInviting(true)
+    setRosterInviteResult(null)
+    try {
+      const res = await fetch(`${API_URL}/rooms/${room._id}/roster/invite`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Invite failed')
+      setRosterInviteResult(data)
+    } catch (err) {
+      setRosterInviteResult({ error: err.message })
+    } finally {
+      setRosterInviting(false)
+    }
+  }
+
+  const handleRestrictToggle = async (newValue) => {
+    setRestrictToRoster(newValue)
+    setRestrictSaving(true)
+    try {
+      await fetch(`${API_URL}/rooms/${room._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ settings: { ...roomSettings, restrictToRoster: newValue } })
+      })
+    } catch (err) {
+      console.error('Failed to save restrict setting:', err)
+      setRestrictToRoster(!newValue) // revert on error
+    } finally {
+      setRestrictSaving(false)
+    }
   }
 
   // Process transcription queue in order
@@ -1468,6 +1564,229 @@ function RoomDetailPage() {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Roster Management Card */}
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            padding: '20px',
+            marginBottom: '20px',
+            width: '100%',
+            boxSizing: 'border-box'
+          }}>
+            {/* Card header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', paddingBottom: '12px', borderBottom: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '20px' }}>📋</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Roster &amp; Invites
+                </span>
+                {rosterEntries.length > 0 && (
+                  <span style={{ padding: '2px 10px', background: '#dbeafe', color: '#1e40af', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
+                    {rosterEntries.length} members
+                  </span>
+                )}
+              </div>
+
+              {/* Restrict-to-roster toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {restrictSaving && (
+                  <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Saving…</span>
+                )}
+                <label htmlFor="roster-restrict-toggle" style={{ fontSize: '13px', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                  Restrict join to roster only
+                </label>
+                <button
+                  id="roster-restrict-toggle"
+                  onClick={() => handleRestrictToggle(!restrictToRoster)}
+                  disabled={restrictSaving || isEnded}
+                  title={restrictToRoster ? 'Only roster members can join' : 'Anyone with the code can join'}
+                  style={{
+                    width: '44px',
+                    height: '24px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    cursor: restrictSaving || isEnded ? 'not-allowed' : 'pointer',
+                    background: restrictToRoster ? '#1e40af' : 'var(--border-color)',
+                    position: 'relative',
+                    transition: 'background 0.2s ease',
+                    flexShrink: 0
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute',
+                    top: '3px',
+                    left: restrictToRoster ? '22px' : '3px',
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '50%',
+                    background: 'white',
+                    transition: 'left 0.2s ease',
+                    display: 'block'
+                  }} />
+                </button>
+              </div>
+            </div>
+
+            {/* CSV Upload row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <label
+                htmlFor="roster-csv-input"
+                style={{
+                  padding: '8px 14px',
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                📂 {rosterFile ? rosterFile.name : 'Choose CSV file'}
+                <input
+                  id="roster-csv-input"
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: 'none' }}
+                  onChange={e => { setRosterFile(e.target.files[0] || null); setRosterUploadResult(null) }}
+                />
+              </label>
+
+              <button
+                id="roster-upload-btn"
+                onClick={handleRosterUpload}
+                disabled={!rosterFile || rosterUploading || isEnded}
+                style={{
+                  padding: '8px 16px',
+                  background: !rosterFile || rosterUploading || isEnded ? '#9ca3af' : '#1e40af',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '500',
+                  cursor: !rosterFile || rosterUploading || isEnded ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {rosterUploading ? '⏳ Uploading…' : '⬆ Upload Roster'}
+              </button>
+
+              {/* Send Invites button */}
+              {rosterEntries.length > 0 && (
+                <button
+                  id="roster-invite-btn"
+                  onClick={handleSendInvites}
+                  disabled={rosterInviting || isEnded}
+                  style={{
+                    padding: '8px 16px',
+                    background: rosterInviting || isEnded ? '#9ca3af' : '#059669',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    cursor: rosterInviting || isEnded ? 'not-allowed' : 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {rosterInviting ? '⏳ Sending…' : `✉ Send Invites (${rosterEntries.length})`}
+                </button>
+              )}
+
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: 'auto' }}>
+                CSV must have <strong>name</strong> and <strong>email</strong> columns (headers in row 1)
+              </span>
+            </div>
+
+            {/* Upload result summary */}
+            {rosterUploadResult && (
+              <div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', background: rosterUploadResult.error ? '#fef2f2' : '#f0fdf4', border: `1px solid ${rosterUploadResult.error ? '#fecaca' : '#bbf7d0'}` }}>
+                {rosterUploadResult.error ? (
+                  <span style={{ color: '#dc2626', fontSize: '13px' }}>❌ {rosterUploadResult.error}</span>
+                ) : (
+                  <div style={{ fontSize: '13px' }}>
+                    <span style={{ color: '#059669', fontWeight: '600' }}>✅ {rosterUploadResult.saved} row{rosterUploadResult.saved !== 1 ? 's' : ''} saved</span>
+                    {rosterUploadResult.skipped > 0 && (
+                      <span style={{ color: '#92400e', marginLeft: '12px' }}>
+                        ⚠ {rosterUploadResult.skipped} skipped
+                        {rosterUploadResult.errors && rosterUploadResult.errors.length > 0 && (
+                          <ul style={{ margin: '6px 0 0 0', paddingLeft: '18px', listStyle: 'disc' }}>
+                            {rosterUploadResult.errors.slice(0, 5).map((e, i) => (
+                              <li key={i} style={{ color: '#92400e' }}>
+                                {e.row ? `Row ${e.row}: ` : ''}{e.reason}
+                              </li>
+                            ))}
+                            {rosterUploadResult.errors.length > 5 && (
+                              <li style={{ color: '#92400e' }}>…and {rosterUploadResult.errors.length - 5} more</li>
+                            )}
+                          </ul>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Invite result summary */}
+            {rosterInviteResult && (
+              <div style={{ marginTop: '8px', padding: '12px', borderRadius: '8px', background: rosterInviteResult.error ? '#fef2f2' : '#f0fdf4', border: `1px solid ${rosterInviteResult.error ? '#fecaca' : '#bbf7d0'}` }}>
+                {rosterInviteResult.error ? (
+                  <span style={{ color: '#dc2626', fontSize: '13px' }}>❌ {rosterInviteResult.error}</span>
+                ) : (
+                  <div style={{ fontSize: '13px' }}>
+                    <span style={{ color: '#059669', fontWeight: '600' }}>✉ {rosterInviteResult.sent?.length ?? 0} invite{rosterInviteResult.sent?.length !== 1 ? 's' : ''} sent</span>
+                    {rosterInviteResult.failed?.length > 0 && (
+                      <span style={{ color: '#92400e', marginLeft: '12px' }}>
+                        ⚠ {rosterInviteResult.failed.length} failed:
+                        {' '}{rosterInviteResult.failed.map(f => f.email).join(', ')}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Roster entries preview table */}
+            {rosterEntries.length > 0 && (
+              <div style={{ marginTop: '16px', overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 12px', color: 'var(--text-secondary)', fontWeight: '600' }}>#</th>
+                      <th style={{ textAlign: 'left', padding: '6px 12px', color: 'var(--text-secondary)', fontWeight: '600' }}>Name</th>
+                      <th style={{ textAlign: 'left', padding: '6px 12px', color: 'var(--text-secondary)', fontWeight: '600' }}>Email</th>
+                      <th style={{ textAlign: 'left', padding: '6px 12px', color: 'var(--text-secondary)', fontWeight: '600' }}>Invited</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rosterEntries.slice(0, 20).map((entry, idx) => (
+                      <tr key={entry.email} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                        <td style={{ padding: '6px 12px', color: 'var(--text-secondary)' }}>{idx + 1}</td>
+                        <td style={{ padding: '6px 12px', color: 'var(--text-primary)' }}>{entry.name}</td>
+                        <td style={{ padding: '6px 12px', color: 'var(--text-secondary)' }}>{entry.email}</td>
+                        <td style={{ padding: '6px 12px' }}>
+                          {entry.invited
+                            ? <span style={{ color: '#059669', fontWeight: '600' }}>✓ Sent</span>
+                            : <span style={{ color: '#9ca3af' }}>Pending</span>
+                          }
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rosterEntries.length > 20 && (
+                  <p style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                    Showing 20 of {rosterEntries.length} entries
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
