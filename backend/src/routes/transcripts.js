@@ -15,6 +15,16 @@ router.post('/', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'roomId, segmentIndex, and text are required' })
     }
 
+    const room = await Room.findById(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    const isTeacher = room.teacher.toString() === req.user._id.toString()
+    if (!isTeacher) {
+      return res.status(403).json({ error: 'Not authorized to add transcripts for this room' })
+    }
+
     const transcript = new Transcript({
       roomId,
       segmentIndex,
