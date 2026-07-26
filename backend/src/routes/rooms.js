@@ -69,8 +69,12 @@ router.get('/:id', authenticate, async (req, res) => {
     if (!isOwner && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
-    
-    res.json({ room })
+
+    // Seed the live participant count so a teacher opening/refreshing the room sees the current
+    // number immediately (the room:joined/room:left socket events keep it updated after load).
+    const participants = await RoomMember.countDocuments({ roomId: req.params.id })
+
+    res.json({ room, participants })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -13,6 +14,7 @@ import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import EngagementPanel from '../components/EngagementPanel'
+import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -24,6 +26,11 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { isDark } = useThemeStore()
+  const isMobile = useIsMobile()
+  // Room code + participant count use a deep blue on light, but that reads too dark on the dark card;
+  // switch to white in dark mode for clean, high contrast.
+  const codeColor = isDark ? '#ffffff' : '#1e40af'
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -554,6 +561,8 @@ function RoomDetailPage() {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
       await fetchRoomMembers()
+      // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
+      if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
       // Apply room settings if they exist
       if (roomData.settings) {
         setRoomSettings(prev => ({
@@ -1015,7 +1024,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -1037,7 +1046,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
           <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
             <h2 style={{ color: 'var(--text-primary)' }}>{error || 'Room not found'}</h2>
             <button onClick={() => navigate('/teacher')} style={{
@@ -1063,12 +1072,12 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
+        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1078,7 +1087,7 @@ function RoomDetailPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
               {error}
@@ -1090,14 +1099,20 @@ function RoomDetailPage() {
             display: 'flex',
             alignItems: 'center',
             gap: '12px',
+            flexWrap: 'wrap',
             background: 'var(--bg-card)',
-            borderRadius: '12px',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            boxShadow: 'var(--shadow-md)',
             padding: '12px 16px',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            maxWidth: '100%',
+            boxSizing: 'border-box'
           }}>
             <button onClick={() => navigate('/teacher')} style={{
               padding: '8px 12px',
               background: 'var(--nav-hover)',
+              color: 'var(--text-primary)',
               border: 'none',
               borderRadius: '8px',
               cursor: 'pointer',
@@ -1115,7 +1130,7 @@ function RoomDetailPage() {
               border: '2px solid var(--border-color)',
               borderRadius: '10px'
             }}>
-              <span style={{ fontSize: '28px', fontWeight: '700', color: '#1e40af', letterSpacing: '4px' }}>
+              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor, letterSpacing: '4px' }}>
                 {room.code}
               </span>
               <button onClick={copyRoomCode} disabled={isEnded} style={{
@@ -1131,7 +1146,26 @@ function RoomDetailPage() {
               </button>
             </div>
 
-            <div style={{ flex: 1 }} />
+            {/* Live participant count — seeded on load, kept current by room:joined / room:left */}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px',
+              padding: '8px 20px',
+              border: '2px solid var(--border-color)',
+              borderRadius: '10px'
+            }}>
+              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor }}>
+                {totalParticipants}
+              </span>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                👥 Participants
+              </span>
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
             {/* Segment Timer Display */}
             {isRecording && (
@@ -1304,14 +1338,16 @@ function RoomDetailPage() {
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
             {/* Microphone Card - 30% */}
             <div style={{
-              flex: '1 1 calc(30% - 10px)',
-              minWidth: '280px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+              minWidth: isMobile ? 0 : '280px',
               maxWidth: '100%',
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1424,11 +1460,14 @@ function RoomDetailPage() {
 
             {/* Transcription Card - 70% */}
             <div style={{
-              flex: '1 1 calc(70% - 10px)',
-              minWidth: '300px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
+              minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
+              minHeight: isMobile ? '260px' : undefined,
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1438,11 +1477,13 @@ function RoomDetailPage() {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
                 marginBottom: '12px',
                 paddingBottom: '12px',
                 borderBottom: '1px solid var(--border-color)'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                   <span style={{ fontSize: '18px' }}>🎙️</span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
@@ -1511,7 +1552,7 @@ function RoomDetailPage() {
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
-            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <span style={{ fontSize: '20px' }}>📝</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -1532,7 +1573,8 @@ function RoomDetailPage() {
             </div>
 
             {generatedQuestions.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ position: 'relative' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
                 {generatedQuestions.map((q, index) => (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
@@ -1641,6 +1683,10 @@ function RoomDetailPage() {
                   </div>
                 ))}
               </div>
+              {generatedQuestions.length > 6 && (
+                <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+              )}
+              </div>
             ) : (
               <div style={{
                 textAlign: 'center',
@@ -1653,7 +1699,7 @@ function RoomDetailPage() {
             )}
             </div>
             {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span style={{ fontSize: '20px' }}>🏆</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>

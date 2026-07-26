@@ -17,12 +17,24 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import { API_URL } from './config.js'
+import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
   const { isDark } = useThemeStore()
   const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
   const [samagamaChecked, setSamagamaChecked] = useState(false)
+
+  // On load, if the persisted token is already expired (e.g. the app was opened from a bookmark with a
+  // cached session), drop it immediately so the user lands on the login screen with a clear message
+  // instead of a logged-in-looking UI that only fails when they try to answer. This backs up the
+  // onRehydrateStorage check in authStore for any timing edge.
+  useEffect(() => {
+    const { token: t } = useAuthStore.getState()
+    if (t && isTokenExpired(t)) {
+      useAuthStore.getState().handleSessionExpired()
+    }
+  }, [])
 
   // Check for Samagama session on app load
   useEffect(() => {

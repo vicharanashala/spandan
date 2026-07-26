@@ -19,6 +19,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import researchRoutes from './routes/research.js'
 
 // Import models for reference
 import './models/index.js'
@@ -332,6 +333,17 @@ const leaderboardLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later' }
 })
 
+const otpLimiter = rateLimit({
+  store: rlStore('rl:otp:'),
+  windowMs: 60 * 60 * 1000, // 1 hour
+  // Registration-code sends trigger real emails, so this endpoint gets a tighter per-IP cap than the
+  // general auth limiter to prevent email-bombing. Legit sign-ups are rare per IP; the finer control
+  // (60s resend cooldown + 5-send cap) is per-email in otpService. Sized to still tolerate a shared NAT
+  // (a campus behind one IP), so the default is well above 100. Override via OTP_LIMIT_PER_HOUR in .env.
+  max: Number(process.env.OTP_LIMIT_PER_HOUR) || 500, // sends per IP per hour
+  message: { error: 'Too many verification requests, please try again later' }
+})
+
 // Middleware
 app.use(helmet())
 app.use(cors({
@@ -341,6 +353,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }))
 app.use('/api/', apiLimiter)           // general /api/ routes
 app.use('/api/auth/', authLimiter)     // auth routes
+app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
 app.use('/api/responses/', responseLimiter)  // response submission routes
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
 
@@ -354,6 +367,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/research', researchRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -379,20 +393,101 @@ async function authenticateSocket(socket, token) {
   const u = await User.findById(decoded.userId).select('role').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
+  socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
 }
 
+// jwt.verify only runs at (re)connect, so a long-lived socket can outlive its token: its cached
+// socket.data.userId then becomes stale. These helpers enforce token freshness on the socket anyway.
+// room:join refuses an expired socket, and a timer proactively de-authenticates it AT expiry so a
+// student who is only PASSIVELY receiving polls is still told to re-login (the client turns the
+// `expired` signal into a graceful sign-out) instead of lingering "in the room but unable to answer".
+function socketTokenExpired(socket) {
+  const exp = socket.data?.tokenExp
+  return typeof exp === 'number' && exp * 1000 <= Date.now()
+}
+
+function deauthenticateSocket(socket) {
+  socket.data.userId = null
+  socket.data.role = null
+  connectedUsers.delete(socket.id)
+  socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
+}
+
+function scheduleSocketExpiry(socket) {
+  if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
+  const exp = socket.data?.tokenExp
+  if (typeof exp !== 'number') return
+  const ms = exp * 1000 - Date.now()
+  if (ms <= 0) { deauthenticateSocket(socket); return }
+  // setTimeout overflows past ~24.8 days; clamp and, if we hit the clamp before the real expiry,
+  // reschedule for the remainder (harmless — real sockets never live that long anyway).
+  socket.data._expiryTimer = setTimeout(() => {
+    if (socketTokenExpired(socket)) deauthenticateSocket(socket)
+    else scheduleSocketExpiry(socket)
+  }, Math.min(ms, 2_147_000_000))
+}
+
 // Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
+// Returns the room doc when the socket is the room's teacher-owner, else null. Returning the room
+// (not just a bool) lets callers use room._id (e.g. to mark the current question) without re-looking
+// it up; truthiness of the result is still a valid owner check.
 async function verifyRoomOwner(socket, roomCode) {
-  if (socket.data?.role !== 'teacher' || !roomCode) return false
+  if (socket.data?.role !== 'teacher' || !roomCode) return null
   try {
     const Room = (await import('./models/Room.js')).default
     const room = await Room.findByCode(roomCode)
-    return !!room && room.teacher.toString() === String(socket.data.userId)
+    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
   } catch {
-    return false
+    return null
   }
+}
+
+// Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
+// endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
+// stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
+// desync-safe "poll is live" signal — a per-student/teacher timer can't be, since each student runs
+// their own answering window. Fire-and-forget.
+async function setLiveQuestion(roomId, questionId) {
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const Question = (await import('./models/Question.js')).default
+    const GRACE = Number(process.env.POLL_RESPONSE_GRACE_MS) || 10000
+    // Close the OUTGOING poll (the one leaving the live slot) to new responses, GRACE ms from now.
+    // The grace covers in-flight/late submits; once it passes, POST /responses refuses that poll, so
+    // a bot can no longer back-fill answers to polls that have already moved on. (The last poll of a
+    // session is never superseded, so it stays open until the room ends — see the POST guard.)
+    const room = await Room.findById(roomId).select('currentQuestion')
+    const outgoing = room?.currentQuestion
+    if (outgoing && String(outgoing) !== String(questionId)) {
+      await Question.updateOne({ _id: outgoing }, { $set: { closeAt: new Date(Date.now() + GRACE) } })
+    }
+    // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
+    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
+    await Room.updateOne({ _id: roomId }, { currentQuestion: questionId })
+    // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
+    // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.
+    const { setRoomLive } = await import('./services/roomLiveCache.js')
+    await setRoomLive(roomId, questionId)
+  } catch { /* non-fatal */ }
+}
+
+// Remove answer-revealing fields (which option is correct, and the explanation) from a question
+// before it is broadcast to STUDENTS on launch. Students receive this over the socket, so leaving
+// the answer in it lets them read `isCorrect` straight from the browser's WS frames. Removing it
+// breaks nothing: the teacher renders from its own local copy, scoring is computed server-side from
+// the submitted option index, and the answer is revealed afterwards through the results path. Option
+// order/count are preserved (students submit answers by index).
+function sanitizeQuestionForStudents(q) {
+  if (!q || typeof q !== 'object') return q
+  const { explanation, ...rest } = q
+  if (Array.isArray(rest.options)) {
+    rest.options = rest.options.map(o =>
+      (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o
+    )
+  }
+  return rest
 }
 
 // Authenticate at connection time from the handshake token (client already sends auth:{token}),
@@ -408,6 +503,8 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
+  // Arm the proactive de-auth for a handshake-authenticated socket (io.use already ran authenticateSocket).
+  scheduleSocketExpiry(socket)
 
   // Re-authenticate on demand (also covers clients that auth via this event, not the handshake).
   socket.on('authenticate', async (data) => {
@@ -417,6 +514,7 @@ io.on('connection', (socket) => {
         return
       }
       await authenticateSocket(socket, data.token)
+      scheduleSocketExpiry(socket) // re-arm for the new token's expiry
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -433,6 +531,13 @@ io.on('connection', (socket) => {
     const userId = socket.data?.userId
     const role = socket.data?.role
     if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
+    // Token this socket authenticated with has since lapsed — refuse the join and tell the client to
+    // re-login rather than trusting the userId cached at connect time.
+    if (socketTokenExpired(socket)) {
+      deauthenticateSocket(socket)
+      socket.emit('room:error', { error: 'Session expired' })
+      return
+    }
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
@@ -521,10 +626,12 @@ io.on('connection', (socket) => {
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    if (data.questionId) setLiveQuestion(room._id, data.questionId)
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
-      question: data.question,
+      question: sanitizeQuestionForStudents(data.question),
       timer: data.timer,
       startTime: Date.now()
     })
@@ -540,16 +647,20 @@ io.on('connection', (socket) => {
 
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
     if (data.question) {
-      io.to(data.roomCode).emit('new_question', data.question)
+      const qId = data.question._id || data.question.id
+      if (qId) setLiveQuestion(room._id, qId)
+      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
   })
 
   socket.on('disconnect', () => {
+    if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
@@ -561,7 +672,7 @@ app.use((err, req, res, next) => {
   console.error('Error:', err)
   res.status(500).json({ 
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
 })
 
