@@ -1,0 +1,31 @@
+# systemd unit for the question-generation worker (Phase 2D).
+# ONLY needed when async generation is enabled (i.e. REDIS_URL is set — same Redis as Phase 2A).
+# Without REDIS_URL the API generates synchronously and this worker is not needed (it exits).
+#
+# ONE-TIME SERVER SETUP (as root), so deploy.yml can restart it on each deploy:
+#   1) ensure backend deps are installed (deploy's workspace step does this) and REDIS_URL is set
+#      in backend/.env (from Infisical).
+#   2) install this unit (adjust User= to match spandan-backend.service):
+#        sudo cp /var/samagama/spandan-workspace/spandan/backend/spandan-worker.service \
+#                /etc/systemd/system/spandan-worker.service
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now spandan-worker.service
+#   3) verify:  systemctl status spandan-worker  (log: "question-generation worker started")
+#
+[Unit]
+Description=Spandan Question-Generation Worker (BullMQ)
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=spandan-deploy
+WorkingDirectory=/var/samagama/spandan-workspace/spandan/backend
+ExecStart=/usr/bin/node src/worker.js
+EnvironmentFile=/var/samagama/spandan-workspace/spandan/backend/.env
+Restart=always
+RestartSec=5
+# Optional: GENERATION_CONCURRENCY caps how many LLM calls run at once (default 2)
+# Environment=GENERATION_CONCURRENCY=2
+
+[Install]
+WantedBy=multi-user.target

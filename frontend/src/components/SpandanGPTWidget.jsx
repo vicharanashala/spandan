@@ -87,6 +87,13 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
   const [studentHistory, setStudentHistory] = useState([])
   const [isHistoryLoading, setIsHistoryLoading] = useState(false)
 
+  // ── Student Poll State ──
+  const [activePoll, setActivePoll] = useState(null)
+  const [pollTimerLeft, setPollTimerLeft] = useState(0)
+  const [selectedOption, setSelectedOption] = useState(null)
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false)
+  const [pollSubmitSuccess, setPollSubmitSuccess] = useState(false)
+
   // ── Initialization ──
   useEffect(() => {
     if (isAuthenticated && token) {
@@ -113,15 +120,55 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
   }, [isAuthenticated, token, connect])
 
   useEffect(() => {
-    if (!socket || !activeRoom) return
+    if (!socket) return
     const handleRoomJoined = (data) => {
-      if (data.roomCode === activeRoom.code && data.participants !== undefined) {
+      if (activeRoom && data.roomCode === activeRoom.code && data.participants !== undefined) {
         setActiveRoom(prev => ({ ...prev, activeParticipants: data.participants }))
       }
     }
+
+    const handleNewQuestion = (qData) => {
+      const question = qData.question || qData
+      if (user?.role === 'student' && question) {
+        setActivePoll(question)
+        setPollTimerLeft(qData.timer || question.timeToAnswer || 30)
+        setSelectedOption(null)
+        setPollSubmitSuccess(false)
+        setIsChatOpen(true) // Auto-open widget so student sees poll
+      }
+    }
+
+    const handleQuestionEnded = () => {
+      setActivePoll(null)
+    }
+
     socket.on('room:joined', handleRoomJoined)
-    return () => socket.off('room:joined', handleRoomJoined)
-  }, [socket, activeRoom?.code])
+    socket.on('new_question', handleNewQuestion)
+    socket.on('question:started', handleNewQuestion)
+    socket.on('question:ended', handleQuestionEnded)
+
+    return () => {
+      socket.off('room:joined', handleRoomJoined)
+      socket.off('new_question', handleNewQuestion)
+      socket.off('question:started', handleNewQuestion)
+      socket.off('question:ended', handleQuestionEnded)
+    }
+  }, [socket, activeRoom?.code, user?.role])
+
+  // ── Student Poll Timer ──
+  useEffect(() => {
+    if (!activePoll || pollSubmitSuccess) return
+    if (pollTimerLeft <= 0) {
+      if (!pollSubmitSuccess && !isSubmittingAnswer) {
+        setActivePoll(null)
+      }
+      return
+    }
+    const t = setInterval(() => {
+      setPollTimerLeft(prev => prev - 1)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [activePoll, pollTimerLeft, pollSubmitSuccess, isSubmittingAnswer])
 
   // ── Persist state ──
   useEffect(() => {
@@ -295,6 +342,38 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
   }
   
   // ── API Actions ──
+  const handleStudentSubmitAnswer = async () => {
+    if (selectedOption === null || !activePoll || !activeRoom) return
+    setIsSubmittingAnswer(true)
+    const responseTime = Math.max(0, Math.round((activePoll.timeToAnswer || 30) - pollTimerLeft))
+    
+    try {
+      const res = await fetch(`${API_URL}/responses`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: activeRoom._id,
+          questionId: activePoll._id,
+          selectedOptions: [selectedOption],
+          responseTime
+        })
+      })
+      
+      const data = await res.json()
+      // Even if 409 (already responded), we treat it as success locally so UI moves on
+      if (res.ok || res.status === 409) {
+        setPollSubmitSuccess(true)
+        setTimeout(() => setActivePoll(null), 3000)
+      } else {
+        setAssistantMessages(prev => [...prev, { type: 'bot', text: `❌ Failed to submit: ${data.error || 'Unknown error'}` }])
+      }
+    } catch (e) {
+      setAssistantMessages(prev => [...prev, { type: 'bot', text: '❌ Network error submitting answer.' }])
+    } finally {
+      setIsSubmittingAnswer(false)
+    }
+  }
+
   const handleStartRoom = async (customName) => {
     try {
       const roomName = typeof customName === 'string' ? customName : 'Live Class via SpandanGPT'
@@ -841,7 +920,69 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
           ) : (
             <>
               {/* ── DYNAMIC CONTENT AREA ── */}
-              <div ref={chatBodyRef} style={{ flex: 1, padding: '16px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div ref={chatBodyRef} style={{ flex: 1, padding: '16px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative' }}>
+                
+                {/* ── ACTIVE POLL (STUDENT) ── */}
+                {user?.role === 'student' && activePoll && (
+                  <div style={{ position: 'sticky', top: 0, zIndex: 10, background: colors.cardBg, borderRadius: '12px', padding: '16px', border: `2px solid ${colors.activeTabBg}`, boxShadow: '0 8px 30px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '16px' }}>📝</span>
+                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: colors.activeTabBg, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Live Poll</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: pollTimerLeft <= 5 ? 'rgba(239,68,68,0.1)' : colors.inputBg, padding: '4px 10px', borderRadius: '12px', color: pollTimerLeft <= 5 ? '#ef4444' : colors.text, fontWeight: 'bold', fontSize: '13px' }}>
+                        ⏱️ {pollTimerLeft}s
+                      </div>
+                    </div>
+                    
+                    {pollSubmitSuccess ? (
+                      <div style={{ padding: '20px', textAlign: 'center', color: '#10b981', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '24px' }}>✅</span>
+                        Answer submitted successfully!
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: '14px', color: colors.text, fontWeight: '600', lineHeight: 1.5 }}>
+                          {activePoll.text}
+                        </div>
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {activePoll.options?.map((opt, i) => (
+                            <button
+                              key={i}
+                              onClick={() => setSelectedOption(i)}
+                              disabled={isSubmittingAnswer}
+                              style={{
+                                padding: '12px', borderRadius: '8px', border: `1px solid ${selectedOption === i ? colors.activeTabBg : colors.border}`,
+                                background: selectedOption === i ? colors.systemBg : colors.inputBg,
+                                color: colors.text, textAlign: 'left', cursor: isSubmittingAnswer ? 'not-allowed' : 'pointer',
+                                fontSize: '13px', display: 'flex', gap: '10px', alignItems: 'flex-start',
+                                transition: '0.2s', opacity: isSubmittingAnswer && selectedOption !== i ? 0.5 : 1
+                              }}
+                            >
+                              <div style={{ width: '20px', height: '20px', borderRadius: '4px', background: selectedOption === i ? colors.activeTabBg : colors.actionBg, color: selectedOption === i ? '#fff' : colors.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 'bold', flexShrink: 0 }}>
+                                {String.fromCharCode(65 + i)}
+                              </div>
+                              <span style={{ paddingTop: '2px', lineHeight: 1.4 }}>{opt.text}</span>
+                            </button>
+                          ))}
+                        </div>
+                        
+                        <button
+                          onClick={handleStudentSubmitAnswer}
+                          disabled={selectedOption === null || isSubmittingAnswer}
+                          style={{ marginTop: '4px', padding: '12px', borderRadius: '8px', background: colors.buttonBg, color: 'white', border: 'none', fontWeight: 'bold', fontSize: '13px', cursor: selectedOption === null || isSubmittingAnswer ? 'not-allowed' : 'pointer', opacity: selectedOption === null ? 0.5 : 1, transition: '0.2s' }}
+                        >
+                          {isSubmittingAnswer ? 'Submitting...' : 'Submit Answer'}
+                        </button>
+                      </>
+                    )}
+                    
+                    <div style={{ height: '4px', background: colors.inputBg, borderRadius: '2px', overflow: 'hidden', marginTop: '4px' }}>
+                      <div style={{ height: '100%', background: colors.activeTabBg, width: `${(pollTimerLeft / (activePoll.timeToAnswer || 30)) * 100}%`, transition: 'width 1s linear' }} />
+                    </div>
+                  </div>
+                )}
 
                 {user?.role === 'teacher' && activeTab === 'command' && activeTeacherTool === 'history' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

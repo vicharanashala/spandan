@@ -1,0 +1,2 @@
+This is a placeholder for the actual SpandanGPT Windows Installer.
+Once you run `npm run pack:win`, the real .exe file generated in the `release` folder should be placed here so users can download it!
