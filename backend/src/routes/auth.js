@@ -3,7 +3,8 @@ import { register, login, getUserById, checkEmailExists, updateUserRole, updateP
 import { generateResetToken, verifyResetToken, resetPassword } from '../services/passwordService.js'
 import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
-import { validate, registerSchema, loginSchema } from '../middleware/validation.js'
+import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
+import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
 import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
 
@@ -12,21 +13,45 @@ const router = express.Router()
 // Strong password: min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char
 const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/
 
-// Register new user
-router.post('/register', validate(registerSchema), async (req, res) => {
-  try {
-    const { name, email, password, role } = req.validatedBody
-    const user = await register(name, email, password, role)
-    const token = generateToken(user._id)
+// Registration is email-OTP verified (two steps). There is intentionally NO single-step /register:
+// an account is created only after the emailed 6-digit code is verified, so the email is proven to
+// belong to the registrant (blocks fake/typo/bot signups).
 
+// Step 1 — request a verification code for a not-yet-registered email.
+router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
+  try {
+    const { email, name } = req.validatedBody
+    if (await checkEmailExists(email)) {
+      return res.status(400).json({ error: 'Email already registered' })
+    }
+    const { expiresInSec } = await requestRegistrationOtp(email, name)
+    res.json({ message: 'Verification code sent to your email', expiresInSec })
+  } catch (error) {
+    // COOLDOWN / SEND_CAP are client-actionable (429 with the real message); anything else is a
+    // server/email failure (500, generic message — don't leak internals).
+    const status = (error.code === 'COOLDOWN' || error.code === 'SEND_CAP') ? 429 : 500
+    res.status(status).json({ error: status === 500 ? 'Failed to send verification code' : error.message })
+  }
+})
+
+// Step 2 — verify the code and create the account.
+router.post('/register/verify', validate(verifyRegistrationSchema), async (req, res) => {
+  try {
+    const { name, email, password, role, otp } = req.validatedBody
+    await verifyRegistrationOtp(email, otp) // throws on invalid/expired/too-many-attempts
+    const user = await register(name, email, password, role) // creates the (now email-verified) account
+    const token = generateToken(user._id)
     res.status(201).json({
       message: 'Registration successful',
       user: user.toJSON(),
       token
     })
   } catch (error) {
-    const status = error.message === 'Email already registered' ? 400 : 500
-    res.status(status).json({ error: error.message })
+    let status
+    if (error.code === 'ATTEMPTS') status = 429
+    else if (error.code === 'INVALID' || error.code === 'MISMATCH') status = 400
+    else status = error.message === 'Email already registered' ? 400 : 500
+    res.status(status).json({ error: status === 500 ? 'Registration failed' : error.message })
   }
 })
 
