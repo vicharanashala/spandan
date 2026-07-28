@@ -190,6 +190,12 @@ function JoinRoomPage() {
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
+                
+                onKeyDown={(e) => {
+                if (e.key === 'Enter' && !isDisabled) {
+                   handleJoinRoom()
+                   }
+                }}
                 placeholder="XXXXXX"
                 maxLength={6}
                 style={{
