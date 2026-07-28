@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import { BASE_PATH } from './config.js'
 import HelpPage from './pages/HelpPage'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
@@ -135,7 +136,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={BASE_PATH || undefined}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />

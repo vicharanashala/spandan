@@ -73,9 +73,11 @@ app.use(BASE_PATH + '/api', (req, res) => {
   proxyReq(req, res, targetPath);
 });
 
-// Socket.IO proxy: BASE_PATH/socket.io/* -> localhost:3001/spandan/socket.io/*
+// Socket.IO proxy: BASE_PATH/socket.io/* -> backend socket path
 app.use(BASE_PATH + '/socket.io', (req, res) => {
-  const targetPath = '/spandan/socket.io' + req.url.replace(BASE_PATH + '/socket.io', '');
+  const backendBase = (process.env.BASE_PATH || BASE_PATH || '').replace(/\/+$/, '');
+  const backendSocketPath = backendBase + '/socket.io';
+  const targetPath = backendSocketPath + req.url.replace(BASE_PATH + '/socket.io', '');
   proxyReq(req, res, targetPath, true);
 });
 
