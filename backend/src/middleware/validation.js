@@ -20,13 +20,26 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Password is required')
 })
 
+// Email-OTP registration: step 1 requests a code (email only; name optional for the greeting),
+// step 2 submits the full registration form plus the 6-digit code.
+export const sendOtpSchema = z.object({
+  email: z.string().email('Please enter a valid email'),
+  name: z.string().min(2, 'Name must be at least 2 characters').max(100).optional()
+})
+
+export const verifyRegistrationSchema = registerSchema.extend({
+  otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code')
+})
+
 // Room validation schemas
 export const createRoomSchema = z.object({
   name: z.string().min(1, 'Room name is required').max(200),
   settings: z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),
-    requireCorrectAnswer: z.boolean().optional()
+    requireCorrectAnswer: z.boolean().optional(),
+    mode: z.enum(['normal', 'video']).optional(),
+    videoUrl: z.string().max(500).optional()
   }).optional()
 })
 
@@ -35,6 +48,8 @@ export const roomSettingsSchema = z.object({
   allowLateJoin: z.boolean().optional(),
   showResultsImmediately: z.boolean().optional(),
   requireCorrectAnswer: z.boolean().optional(),
+  mode: z.enum(['normal', 'video']).optional(),
+  videoUrl: z.string().max(500).optional(),
   timeToAnswer: z.number().min(5).max(300).optional(),
   points: z.number().min(10).max(1000).optional(),
   segmentTime: z.number().min(1).max(60).optional(),

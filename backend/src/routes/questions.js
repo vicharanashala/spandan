@@ -174,14 +174,26 @@ router.get('/', async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))
     const skip = (pageNum - 1) * limitNum
 
+    // Teachers manage the full set (pending/approved/rejected) and need the answers. STUDENTS must
+    // never receive answers or un-launched questions from this endpoint: restrict to approved and
+    // strip the correct-option flags. Otherwise a member could pull every question with `isCorrect`
+    // straight from here, bypassing the UI. (Their legitimate past-question results come from
+    // GET /responses/room/:roomId/student/:studentId once a poll is no longer live.)
+    const filter = isTeacher ? { roomId } : { roomId, status: 'approved' }
+
     const [questions, total] = await Promise.all([
-      Question.find({ roomId }).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
-      Question.countDocuments({ roomId })
+      Question.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+      Question.countDocuments(filter)
     ])
-    
+
+    const stripAnswer = ({ explanation, options, ...rest }) => ({
+      ...rest,
+      options: Array.isArray(options) ? options.map(({ isCorrect, ...o }) => o) : options
+    })
+
     res.json({
       success: true,
-      questions,
+      questions: isTeacher ? questions : questions.map(stripAnswer),
       pagination: {
         page: pageNum,
         limit: limitNum,
