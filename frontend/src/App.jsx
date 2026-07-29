@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
+import useSidebarStore from './stores/sidebarStore'
 import ProtectedRoute from './components/ProtectedRoute'
 import AuthPage from './pages/AuthPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
@@ -17,6 +18,7 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
+import TeacherStudentsPage from './pages/TeacherStudentsPage'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
@@ -25,6 +27,12 @@ function App() {
   const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
   const [samagamaChecked, setSamagamaChecked] = useState(false)
+  const { isCollapsed } = useSidebarStore()
+
+  // Sync sidebar width CSS variable
+  useEffect(() => {
+    document.documentElement.style.setProperty('--sidebar-width', isCollapsed ? '60px' : '240px')
+  }, [isCollapsed])
 
   // On load, if the persisted token is already expired (e.g. the app was opened from a bookmark with a
   // cached session), drop it immediately so the user lands on the login screen with a clear message
@@ -162,6 +170,11 @@ function App() {
         <Route path="/teacher/room-history" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/my-students" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherStudentsPage />
           </ProtectedRoute>
         } />
         <Route path="/teacher/room/:roomId" element={

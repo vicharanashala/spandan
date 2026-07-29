@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useLayoutEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
+import useSidebarStore from '../stores/sidebarStore'
 
 const menuItems = {
   teacher: [
@@ -8,6 +9,7 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'my-students', label: 'My Students', icon: '👥', path: '/teacher/my-students' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/teacher/help' },
   ],
   student: [
@@ -19,59 +21,40 @@ const menuItems = {
 }
 
 const MOBILE_QUERY = '(max-width: 768px)'
-const EXPANDED_W = 240
-const COLLAPSED_W = 76
 
-// Single source of truth for the layout: the sidebar writes --sidebar-width on :root and every
-// page's content margin reads it (var(--sidebar-width, 240px)). Mobile → 0 (drawer overlays).
 export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
   const role = user?.role || 'student'
   const items = menuItems[role] || menuItems.student
 
+  const { isCollapsed, toggle } = useSidebarStore()
+  const sidebarWidth = isCollapsed ? '60px' : '240px'
+
   const [isMobile, setIsMobile] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches)
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebarCollapsed') === '1')
+    typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches
+  )
   const [mobileOpen, setMobileOpen] = useState(false)
 
-  // Track viewport → mobile vs desktop.
+  // Track viewport → mobile vs desktop
   useEffect(() => {
     const mq = window.matchMedia(MOBILE_QUERY)
-    const onChange = (e) => { setIsMobile(e.matches); if (!e.matches) setMobileOpen(false) }
+    const onChange = (e) => {
+      setIsMobile(e.matches)
+      if (!e.matches) setMobileOpen(false)
+    }
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
   }, [])
 
-  // Publish the current sidebar width to the layout (before paint, so content lines up).
-  useLayoutEffect(() => {
-    const w = isMobile ? 0 : (collapsed ? COLLAPSED_W : EXPANDED_W)
-    document.documentElement.style.setProperty('--sidebar-width', `${w}px`)
-  }, [isMobile, collapsed])
+  // Close the mobile drawer on navigation
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname])
 
-  // Close the mobile drawer on navigation.
-  useEffect(() => { setMobileOpen(false) }, [location.pathname])
-
-  const persistCollapsed = (val) => { setCollapsed(val); localStorage.setItem('sidebarCollapsed', val ? '1' : '0') }
-
-  const railWidth = isMobile ? 260 : (collapsed ? COLLAPSED_W : EXPANDED_W)
-  const showLabels = isMobile || !collapsed
+  const railWidth = isMobile ? '260px' : sidebarWidth
+  const showLabels = isMobile || !isCollapsed
   const hidden = isMobile && !mobileOpen
-
-  const iconBtn = (onClick, label, children) => (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      style={{
-        width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '8px',
-        color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '15px', flexShrink: 0,
-        transition: 'all 0.15s ease'
-      }}
-      onMouseOver={(e) => { e.currentTarget.style.background = 'var(--nav-hover)'; e.currentTarget.style.color = 'var(--text-primary)' }}
-      onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}
-    >{children}</button>
-  )
 
   return (
     <>
@@ -101,7 +84,7 @@ export default function Sidebar({ user }) {
       {/* Sidebar (rail on desktop, drawer on mobile) */}
       <aside style={{
         position: 'fixed', left: 0, top: 0, bottom: 0,
-        width: `${railWidth}px`,
+        width: railWidth,
         background: 'var(--sidebar-bg)',
         boxShadow: 'var(--sidebar-shadow)',
         borderRight: '1px solid var(--border-color)',
@@ -111,13 +94,13 @@ export default function Sidebar({ user }) {
         transition: 'transform 0.25s ease, width 0.2s ease',
         overflow: 'hidden'
       }}>
-        {/* Logo + toggle */}
+        {/* Logo */}
         <div style={{
           padding: showLabels ? '18px 16px' : '18px 0',
           display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'space-between' : 'center',
           gap: '10px', borderBottom: '1px solid var(--border-color)', minHeight: '64px', boxSizing: 'border-box'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, margin: showLabels ? '0' : '0 auto' }}>
             <div style={{
               width: '40px', height: '40px', background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
               borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -132,20 +115,19 @@ export default function Sidebar({ user }) {
               </div>
             )}
           </div>
-          {/* Desktop collapse toggle / Mobile close */}
-          {showLabels && (
-            isMobile
-              ? iconBtn(() => setMobileOpen(false), 'Close menu', '✕')
-              : iconBtn(() => persistCollapsed(true), 'Collapse sidebar', '«')
+          {isMobile && mobileOpen && (
+            <button
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close menu"
+              style={{
+                width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '8px',
+                color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '15px', flexShrink: 0,
+                transition: 'all 0.15s ease'
+              }}
+            >✕</button>
           )}
         </div>
-
-        {/* Expand button when collapsed (desktop) */}
-        {!showLabels && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0 0' }}>
-            {iconBtn(() => persistCollapsed(false), 'Expand sidebar', '»')}
-          </div>
-        )}
 
         {/* Navigation */}
         <nav style={{ flex: 1, padding: showLabels ? '14px 12px' : '10px 0', overflowY: 'auto' }}>
@@ -158,8 +140,8 @@ export default function Sidebar({ user }) {
                 onClick={() => navigate(item.path)}
                 title={item.label}
                 style={{
-                  width: showLabels ? '100%' : '48px',
-                  height: showLabels ? 'auto' : '48px',
+                  width: showLabels ? '100%' : '40px',
+                  height: showLabels ? 'auto' : '40px',
                   margin: showLabels ? '0 0 4px' : '0 auto 6px',
                   display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center',
                   gap: '12px', padding: showLabels ? '11px 14px' : '0',
@@ -187,7 +169,8 @@ export default function Sidebar({ user }) {
               width: '38px', height: '38px',
               background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
               borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden'
+              color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden',
+              margin: showLabels ? '0' : '0 auto'
             }}>
               {user?.profileImage
                 ? <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -201,6 +184,33 @@ export default function Sidebar({ user }) {
             )}
           </div>
         </div>
+
+        {/* Toggle button at bottom (desktop) with ◀ icon that rotates */}
+        {!isMobile && (
+          <div style={{
+            padding: '12px 16px',
+            borderTop: '1px solid var(--border-color)',
+            display: 'flex',
+            justifyContent: isCollapsed ? 'center' : 'flex-end',
+            alignItems: 'center'
+          }}>
+            <button
+              onClick={toggle}
+              aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              style={{
+                width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '8px',
+                color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', flexShrink: 0,
+                transition: 'all 0.2s ease',
+                transform: isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'
+              }}
+              onMouseOver={(e) => { e.currentTarget.style.background = 'var(--nav-hover)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+              onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+            >
+              ◀
+            </button>
+          </div>
+        )}
       </aside>
     </>
   )
