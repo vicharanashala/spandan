@@ -432,6 +432,12 @@ async function verifyRoomOwner(socket, roomCode) {
   }
 }
 
+// Video mode: the teacher periodically broadcasts their current playback position. Students use it as
+// the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
+// of being stuck at 0), while still never seeking past the teacher. Cached so a fresh join gets it
+// immediately without waiting for the next broadcast tick.
+const videoProgress = new Map() // roomCode -> { time }
+
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
 // stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
@@ -548,6 +554,11 @@ io.on('connection', (socket) => {
       }
 
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+
+      // Seed the joining socket with the teacher's last known video position (video mode) so a
+      // reload/late-join can immediately seek forward up to where the class is.
+      const vp = videoProgress.get(roomCode)
+      if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
     } catch (error) {
       console.error('Error in room:join:', error)
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
@@ -621,6 +632,17 @@ io.on('connection', (socket) => {
       if (qId) setLiveQuestion(room._id, qId)
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
+  })
+
+  // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
+  // Teacher-only; students receive it and cannot forge it.
+  socket.on('video:progress', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const time = Number(data?.time)
+    if (!Number.isFinite(time)) return
+    const playing = !!data?.playing
+    videoProgress.set(data.roomCode, { time, playing })
+    socket.to(data.roomCode).emit('video:progress', { time, playing })
   })
 
   socket.on('disconnect', () => {
