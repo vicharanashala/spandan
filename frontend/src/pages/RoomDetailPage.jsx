@@ -907,6 +907,9 @@ function RoomDetailPage() {
   // DIRECTLY (not the React isLiveStream state) so this fires reliably even if live-detection state
   // hasn't settled or was captured stale by an older closure.
   const resumeTeacherVideo = () => {
+    // Tell students the popup window is over so they resume + jump to the live edge (fire even if the
+    // teacher's own player ref isn't ready).
+    if (socket && room?.code) socket.emit('video:resume', { roomCode: room.code })
     const p = ytPlayerRef.current
     if (!p) return
     let ps = null
@@ -1034,6 +1037,14 @@ function RoomDetailPage() {
     }, 2000)
     return () => clearInterval(id)
   }, [isVideoMode, socket, room?.code])
+
+  // Hold students' video paused for the whole approval-popup window: pause the moment the popup OPENS
+  // (after generation), not when the teacher's own video paused at segment-complete. Resume is handled
+  // by resumeTeacherVideo() when the popup closes.
+  useEffect(() => {
+    if (!isVideoMode || !showQuestionPopup || !socket || !room?.code) return
+    socket.emit('video:pause', { roomCode: room.code })
+  }, [showQuestionPopup, isVideoMode, socket, room?.code])
 
   const clearTranscript = () => {
     setTranscript('')
@@ -1534,7 +1545,7 @@ function RoomDetailPage() {
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '470px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
             {/* Microphone / Video Card */}
             <div style={{
               flex: isMobile ? '1 1 100%' : (isVideoMode ? '1 1 calc(60% - 10px)' : '1 1 calc(30% - 10px)'),
@@ -1861,6 +1872,9 @@ function RoomDetailPage() {
                 color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
+                // Cap the height so a long transcript scrolls INSIDE this box instead of growing the
+                // card and forcing the whole page to scroll.
+                maxHeight: isMobile ? '220px' : '470px',
                 overflowY: 'auto'
               }}>
                 {transcript ? transcript : (

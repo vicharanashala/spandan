@@ -49,12 +49,15 @@ function StudentRoomPage() {
   const teacherVideoTimeRef = useRef(null) // { time, playing, at } — teacher position for the forward-seek ceiling
   const capSuppressUntilRef = useRef(0) // performance.now() until which the forward cap is suspended (post-poll live-edge resume)
   const [isLiveStream, setIsLiveStream] = useState(false)
+  // True while the teacher's question-approval popup is open. The student video stays paused for the
+  // WHOLE popup window (across every question the teacher launches from it), not just per-question.
+  const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
 
   useEffect(() => {
     if (!isVideoMode) return
     const p = studentPlayerRef.current
     if (!p) return
-    if (currentQuestion) {
+    if (teacherVideoPaused || currentQuestion) {
       p.pauseVideo?.()
     } else {
       // For a live stream, jump back to the live edge on resume so students rejoin the broadcast.
@@ -70,7 +73,7 @@ function StudentRoomPage() {
       }
       p.playVideo?.()
     }
-  }, [currentQuestion, isVideoMode, isLiveStream])
+  }, [teacherVideoPaused, currentQuestion, isVideoMode, isLiveStream])
 
   useEffect(() => {
     if (!token || !socket) return
@@ -181,10 +184,15 @@ function StudentRoomPage() {
       teacherVideoTimeRef.current = { time: t, playing: !!data?.playing, at: performance.now() }
     }
 
+    const handleVideoPause = () => setTeacherVideoPaused(true)
+    const handleVideoResume = () => setTeacherVideoPaused(false)
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
     socket.on('video:progress', handleVideoProgress)
+    socket.on('video:pause', handleVideoPause)
+    socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -201,6 +209,8 @@ function StudentRoomPage() {
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
       socket.off('video:progress', handleVideoProgress)
+      socket.off('video:pause', handleVideoPause)
+      socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)

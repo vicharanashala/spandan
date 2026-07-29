@@ -106,6 +106,10 @@ const YouTubeVideo = ({
       if (capSuppressUntilRef?.current && performance.now() < capSuppressUntilRef.current) return
       const info = seekCeilingRef?.current
       if (!info || !Number.isFinite(info.time)) return // no teacher frontier yet — don't cap
+      // Only enforce while the teacher is actively playing. When the teacher is paused (e.g. the
+      // question-popup window), its reported position is frozen; capping against a frozen ceiling
+      // while the student is still playing is what caused the video to loop — so skip it entirely.
+      if (!info.playing) return
       // Ceiling = the teacher's CURRENT position: their last reported time, extrapolated forward
       // while they are playing (the broadcast is periodic). Students may rewind freely but cannot
       // move past the teacher — by seeking OR by natural playback. Applies to live too, with a wider
