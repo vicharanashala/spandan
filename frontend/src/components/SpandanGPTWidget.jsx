@@ -122,7 +122,10 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
   useEffect(() => {
     if (!socket) return
     const handleRoomJoined = (data) => {
-      if (activeRoom && data.roomCode === activeRoom.code && data.participants !== undefined) {
+      // If we don't have an active room, or the room we joined is different, fetch it
+      if (!activeRoom || data.roomCode !== activeRoom.code) {
+        checkActiveRoom()
+      } else if (activeRoom && data.roomCode === activeRoom.code && data.participants !== undefined) {
         setActiveRoom(prev => ({ ...prev, activeParticipants: data.participants }))
       }
     }
@@ -563,7 +566,7 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
       }
 
       // 2. END ROOM
-      if (/(end|stop|close|cancel|terminate).*(room|session|class)/i.test(lower)) {
+      if (/(end|stop|close|cancel|terminate|finish|wrap\s*up).*(room|session|class|it|now)/i.test(lower)) {
         if (!activeRoom) {
           setCommandMessages(prev => [...prev, { type: 'system', text: '⚠️ There is no active room to end.' }])
         } else {
@@ -773,13 +776,18 @@ export default function SpandanGPTWidget({ isCompanionMode = false }) {
                 </span>
               </div>
             ) : (
-              <div style={{ display: 'flex', background: colors.inputBg, borderRadius: '8px', padding: '2px', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
-                <button onClick={() => setActiveTab('assistant')} style={{ padding: '4px 12px', borderRadius: '6px', border: 'none', background: activeTab === 'assistant' ? colors.activeTabBg : 'transparent', color: activeTab === 'assistant' ? colors.activeTabColor : colors.textMuted, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', transition: '0.2s', boxShadow: activeTab === 'assistant' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none' }}>
-                  🤖 Copilot
-                </button>
-                <button onClick={() => { setActiveTab('command'); if (user?.role === 'teacher') fetchTeacherHistory(); else fetchStudentHistory(); }} style={{ padding: '4px 12px', borderRadius: '6px', border: 'none', background: activeTab === 'command' ? colors.activeTabBg : 'transparent', color: activeTab === 'command' ? colors.activeTabColor : colors.textMuted, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', transition: '0.2s', boxShadow: activeTab === 'command' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none' }}>
-                  {user?.role === 'student' ? '📜 History' : '🚀 Director'}
-                </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', background: colors.inputBg, borderRadius: '8px', padding: '2px', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>
+                  <button onClick={() => setActiveTab('assistant')} style={{ padding: '4px 12px', borderRadius: '6px', border: 'none', background: activeTab === 'assistant' ? colors.activeTabBg : 'transparent', color: activeTab === 'assistant' ? colors.activeTabColor : colors.textMuted, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', transition: '0.2s', boxShadow: activeTab === 'assistant' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none' }}>
+                    🤖 Copilot
+                  </button>
+                  <button onClick={() => { setActiveTab('command'); if (user?.role === 'teacher') fetchTeacherHistory(); else fetchStudentHistory(); }} style={{ padding: '4px 12px', borderRadius: '6px', border: 'none', background: activeTab === 'command' ? colors.activeTabBg : 'transparent', color: activeTab === 'command' ? colors.activeTabColor : colors.textMuted, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', transition: '0.2s', boxShadow: activeTab === 'command' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none' }}>
+                    {user?.role === 'student' ? '📜 History' : '🚀 Director'}
+                  </button>
+                </div>
+                <span style={{ fontSize: '9px', fontWeight: '800', padding: '3px 6px', borderRadius: '6px', background: user?.role === 'student' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(168, 85, 247, 0.15)', color: user?.role === 'student' ? '#60a5fa' : '#c084fc', border: `1px solid ${user?.role === 'student' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(168, 85, 247, 0.3)'}`, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  {user?.role === 'student' ? 'Student' : 'Teacher'}
+                </span>
               </div>
             )}
 

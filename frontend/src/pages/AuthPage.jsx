@@ -396,7 +396,7 @@ function AuthPage() {
               color: 'var(--text-primary)',
               marginBottom: '6px'
             }}>
-              {showForgotPassword ? 'Reset Password' : otpSent ? 'Verify your email' : isLogin ? 'Welcome Back' : 'Create Account'}
+              {showForgotPassword ? 'Reset Password' : isLogin ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p style={{
               fontSize: '14px',
@@ -404,11 +404,9 @@ function AuthPage() {
             }}>
               {showForgotPassword
                 ? 'Enter your email to receive a reset link'
-                : otpSent
-                  ? `Enter the 6-digit code sent to ${formData.email}`
-                  : isLogin
-                    ? 'Sign in to continue to your dashboard'
-                    : 'Join Spandan to start creating polls'}
+                : isLogin
+                  ? 'Sign in to continue to your dashboard'
+                  : 'Join Spandan to start creating polls'}
             </p>
           </div>
 

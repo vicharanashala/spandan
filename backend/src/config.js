@@ -9,6 +9,7 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   googleApiKey: process.env.GOOGLE_API_KEY || '',
+  groqApiKey: process.env.GROQ_API_KEY || '',
   nodeEnv: process.env.NODE_ENV || 'development'
 }
 
@@ -32,5 +33,10 @@ export const AI_PROVIDERS = {
     name: 'Gemini',
     enabled: !!config.googleApiKey,
     icon: '🔴'
+  },
+  groq: {
+    name: 'Groq',
+    enabled: !!config.groqApiKey,
+    icon: '⚡'
   }
 }

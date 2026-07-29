@@ -51,7 +51,7 @@ export const roomSettingsSchema = z.object({
   segmentTime: z.number().min(1).max(60).optional(),
   questionsPerSegment: z.number().min(1).max(10).optional(),
   difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
-  questionProvider: z.enum(['minimax', 'openai', 'anthropic', 'google']).optional(),
+  questionProvider: z.enum(['minimax', 'openai', 'anthropic', 'google', 'groq']).optional(),
   questionTypeMix: z.object({
     MCQ: z.number().min(0).max(100).optional(),
     TF: z.number().min(0).max(100).optional(),

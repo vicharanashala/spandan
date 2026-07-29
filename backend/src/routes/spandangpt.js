@@ -12,13 +12,24 @@ router.use(authenticate)
  * Fetches the active room for the current teacher.
  * SpandanGPT uses this to know where to push questions.
  */
-router.get('/active-room', authorize('teacher'), async (req, res) => {
+router.get('/active-room', async (req, res) => {
   try {
     const Room = (await import('../models/Room.js')).default
-    const activeRoom = await Room.findOne({ 
-      teacher: req.user._id, 
-      isActive: true 
-    })
+    
+    let activeRoom
+    if (req.user.role === 'teacher') {
+      activeRoom = await Room.findOne({ 
+        teacher: req.user._id, 
+        isActive: true 
+      })
+    } else if (req.user.role === 'student') {
+      const RoomMember = (await import('../models/RoomMember.js')).default
+      // Find the most recently joined active room
+      const membership = await RoomMember.findOne({ studentId: req.user._id }).sort({ joinedAt: -1 })
+      if (membership) {
+        activeRoom = await Room.findOne({ _id: membership.roomId, isActive: true })
+      }
+    }
 
     if (!activeRoom) {
       return res.status(404).json({ success: false, message: 'No active room found' })
@@ -198,6 +209,22 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
       } else {
         throw new Error('AI returned empty response')
       }
+    } else if (config.groqApiKey || process.env.GROQ_API_KEY) {
+      console.log(`[SpandanGPT] Generating real question via Groq for prompt: ${prompt}`)
+      const { generateQuestions } = await import('../services/questionService.js')
+      
+      const generatedQuestionsArray = await generateQuestions(prompt, {
+        numQuestions: 1,
+        difficulty: difficulty.toLowerCase(),
+        provider: 'groq'
+      })
+
+      if (generatedQuestionsArray && generatedQuestionsArray.length > 0) {
+        generatedQuestion = generatedQuestionsArray[0]
+        generatedQuestion.timeToAnswer = 30 // Set default timer
+      } else {
+        throw new Error('AI returned empty response')
+      }
     } else {
       // ── MOCK FALLBACK MODE (If no API key provided) ──
       console.log(`[SpandanGPT] No API key found. Using simulated Mock response.`)
@@ -321,7 +348,52 @@ router.post('/student/chat', authorize('student'), async (req, res) => {
       return `[Mock AI] That is a great question. Based on your recent classes, the professor emphasized core algorithms. Keep practicing!`
     }
 
-    if (config.minimaxApiKey || process.env.MINIMAX_API_KEY) {
+    if (config.groqApiKey || process.env.GROQ_API_KEY) {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.groqApiKey || process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-8b-instant',
+          messages: [
+            { role: 'system', content: 'You are a helpful study assistant for students. When explaining concepts, keep your answer brief, direct, and STRICTLY under 3 sentences/lines.' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 300
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        const reply = data.choices?.[0]?.message?.content || 'I could not process your request right now.'
+        return res.json({ success: true, reply })
+      } else {
+        const errorText = await response.text()
+        return res.json({ success: true, reply: `[Groq API Error: ${response.status}] ` + generateSmartMock(prompt) })
+      }
+    } else if (config.googleApiKey || process.env.GOOGLE_API_KEY) {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.googleApiKey || process.env.GOOGLE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{ text: 'System: You are a helpful study assistant for students. When explaining concepts, keep your answer brief, direct, and STRICTLY under 3 sentences/lines.\n\nUser: ' + prompt }]
+          }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 300 }
+        })
+      })
+      if (response.ok) {
+        const data = await response.json()
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'I could not process your request right now.'
+        return res.json({ success: true, reply })
+      } else {
+        return res.json({ success: true, reply: `[Google API Error: ${response.status}] ` + generateSmartMock(prompt) })
+      }
+    } else if (config.minimaxApiKey || process.env.MINIMAX_API_KEY) {
       const response = await fetch('https://samagama.in/platform/proxy/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -350,7 +422,8 @@ router.post('/student/chat', authorize('student'), async (req, res) => {
         const reply = data.choices?.[0]?.message?.content || 'I could not process your request right now.'
         return res.json({ success: true, reply })
       } else {
-        return res.json({ success: true, reply: generateSmartMock(prompt) })
+        const errorText = await response.text()
+        return res.json({ success: true, reply: `[MiniMax API Error: ${response.status}] ` + generateSmartMock(prompt) })
       }
     } else {
       await new Promise(resolve => setTimeout(resolve, 1000))
@@ -400,8 +473,76 @@ Here are the real-time stats:
 
 Respond to the teacher's query naturally, simply, and cleanly based on these stats. Do not use rigid templates.`
 
-    // 3. Call the AI API (Samagama Proxy for MiniMax)
-    if (config.minimaxApiKey || process.env.MINIMAX_API_KEY) {
+    // 3. Call the AI API (Groq first, then MiniMax Proxy)
+    if (config.groqApiKey || process.env.GROQ_API_KEY) {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.groqApiKey || process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-8b-instant',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 500
+        })
+      })
+
+      // Helper to generate a smart mock response when proxy fails
+      const generateSmartMock = (promptText) => {
+        const lower = promptText.toLowerCase()
+        if (lower.includes('hello') || lower.includes('hi ') || lower.trim() === 'hi' || lower.includes('hey')) {
+          return `Hello! I am Spandan AI, your teaching assistant. How can I help you manage your classroom today?`
+        } else if (lower.includes('stat') || lower.includes('update') || lower.includes('happen')) {
+          return `Here's your live update: You have ${activeRooms.length} active room(s) running and ${questions.length} polls launched. Your class accuracy is currently ${overallAccuracy}%.`
+        } else {
+          return `I am your Spandan AI assistant! (Proxy unavailable for full AI response). You have ${activeRooms.length} active room(s). How else can I assist?`
+        }
+      }
+
+      if (response.ok) {
+        const data = await response.json()
+        const reply = data.choices?.[0]?.message?.content || 'I could not generate an insight right now.'
+        return res.json({ success: true, reply })
+      } else {
+        // Fallback for API failure
+        return res.json({ success: true, reply: `[Groq API Error: ${response.status}] ` + generateSmartMock(prompt) })
+      }
+    } else if (config.googleApiKey || process.env.GOOGLE_API_KEY) {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.googleApiKey || process.env.GOOGLE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{ text: `System: ${systemPrompt}\n\nUser: ${prompt}` }]
+          }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+        })
+      })
+      if (response.ok) {
+        const data = await response.json()
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'I could not generate an insight right now.'
+        return res.json({ success: true, reply })
+      } else {
+        // Fallback for API failure
+        const generateSmartMock = (promptText) => {
+          const lower = promptText.toLowerCase()
+          if (lower.includes('hello') || lower.includes('hi ') || lower.trim() === 'hi' || lower.includes('hey')) {
+            return `Hello! I am Spandan AI, your teaching assistant. How can I help you manage your classroom today?`
+          } else if (lower.includes('stat') || lower.includes('update') || lower.includes('happen')) {
+            return `Here's your live update: You have active room(s) running and polls launched.`
+          } else {
+            return `I am your Spandan AI assistant! (Proxy unavailable for full AI response). How else can I assist?`
+          }
+        }
+        return res.json({ success: true, reply: `[Google API Error: ${response.status}] ` + generateSmartMock(prompt) })
+      }
+    } else if (config.minimaxApiKey || process.env.MINIMAX_API_KEY) {
       const response = await fetch('https://samagama.in/platform/proxy/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -443,7 +584,7 @@ Respond to the teacher's query naturally, simply, and cleanly based on these sta
         return res.json({ success: true, reply })
       } else {
         // Fallback for API failure
-        return res.json({ success: true, reply: generateSmartMock(prompt) })
+        return res.json({ success: true, reply: `[MiniMax API Error: ${response.status}] ` + generateSmartMock(prompt) })
       }
     } else {
       // Helper to generate a smart mock response when no API key

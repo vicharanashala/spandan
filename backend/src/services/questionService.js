@@ -455,6 +455,37 @@ function getMockFallbackResponse(prompt) {
     ]
   })
 }
+
+// Groq API call (OpenAI compatible)
+async function generateWithGroq(prompt, model = 'llama-3.1-8b-instant') {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.groqApiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 1500
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    throw new Error(`Groq API error: ${response.status} - ${errorData}`)
+  }
+
+  const data = await response.json()
+  return data.choices?.[0]?.message?.content || ''
+}
+
 // OpenAI API call
 async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -517,7 +548,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-1.5-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -571,6 +602,10 @@ export async function generateQuestions(transcript, cfg) {
     case 'minimax':
       if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
       responseText = await generateWithMiniMax(prompt)
+      break
+    case 'groq':
+      if (!config.groqApiKey) throw new Error('Groq API key not configured')
+      responseText = await generateWithGroq(prompt)
       break
     case 'openai':
       if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
