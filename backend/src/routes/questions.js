@@ -115,6 +115,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
       type, 
       question, 
       options, 
+      explanation = '',
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
@@ -129,7 +130,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // The frontend renders these as React text nodes, which auto-escape at
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
-    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = stripObject({ roomId, type, question, options, explanation, timeToAnswer, points, status, segmentIndex })
 
     const newQuestion = new Question(sanitizedData)
 
