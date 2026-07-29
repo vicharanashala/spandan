@@ -140,6 +140,7 @@ function StudentRoomPage() {
     }
 
     const handleNewQuestion = (question) => {
+      console.log("[StudentRoomPage] Received new_question event:", question)
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -155,6 +156,7 @@ function StudentRoomPage() {
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
+            console.log("[StudentRoomPage] Timer expired for new_question")
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             // Time expired - refresh from MongoDB only if room/user available

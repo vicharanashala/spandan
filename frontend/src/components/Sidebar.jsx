@@ -180,6 +180,68 @@ export default function Sidebar({ user }) {
           })}
         </nav>
 
+        {/* Download Widget */}
+        <div style={{ padding: showLabels ? '0 16px 16px' : '0 8px 16px' }}>
+          {showLabels ? (
+            <div style={{
+              background: 'var(--card-bg)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '16px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>Get SpandanGPT</h3>
+                <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>Download the desktop companion overlay for live classes.</p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  background: 'transparent',
+                  color: 'var(--text-secondary)', padding: '8px', borderRadius: '8px',
+                  fontSize: '12px', fontWeight: 600, border: '1px dashed var(--border-color)',
+                  cursor: 'not-allowed', opacity: 0.7
+                }}>
+                  <span style={{ fontSize: '14px' }}>🍎</span> Mac (Coming Soon ..)
+                </div>
+                <a href="/downloads/SpandanGPT-Windows.exe" download="SpandanGPT-Windows.exe" style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
+                  color: 'white', textDecoration: 'none', padding: '8px', borderRadius: '8px',
+                  fontSize: '12px', fontWeight: 600, border: 'none',
+                  transition: 'all 0.15s ease', cursor: 'pointer',
+                  boxShadow: '0 2px 8px rgba(30,64,175,0.3)'
+                }}
+                onMouseOver={e => e.currentTarget.style.transform = 'scale(1.02)'}
+                onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}
+                >
+                  <span style={{ fontSize: '14px' }}>⊞</span> Windows (.exe)
+                </a>
+              </div>
+            </div>
+          ) : (
+            <div 
+              title="Download Desktop App"
+              style={{
+                width: '48px', height: '48px', margin: '0 auto',
+                background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
+                borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'white', fontSize: '20px', cursor: 'pointer',
+                boxShadow: '0 2px 10px rgba(30,64,175,0.28)',
+                transition: 'transform 0.15s ease'
+              }}
+              onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'}
+              onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}
+              onClick={() => persistCollapsed(false)}
+            >
+              ⬇️
+            </div>
+          )}
+        </div>
+
         {/* User section */}
         <div style={{ padding: showLabels ? '14px 16px' : '14px 0', borderTop: '1px solid var(--border-color)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center', gap: '10px' }}>

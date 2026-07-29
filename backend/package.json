@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/index.js",
-    "start": "node src/index.js",
+    "start": "node --max-old-space-size=4096 src/index.js",
     "worker": "node src/worker.js",
     "build": "echo 'Backend build complete'",
     "test": "jest",

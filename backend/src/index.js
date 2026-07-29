@@ -15,6 +15,7 @@ import { computeRanked } from './services/leaderboardAgg.js'
 // Import routes
 import authRoutes from './routes/auth.js'
 import roomRoutes from './routes/rooms.js'
+import spandanGptRoutes from './routes/spandangpt.js'
 import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
@@ -24,7 +25,7 @@ import researchRoutes from './routes/research.js'
 // Import models for reference
 import './models/index.js'
 
-dotenv.config()
+dotenv.config({ override: true })
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
@@ -56,6 +57,10 @@ const requestTimeout = (req, res, next) => {
 const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
+  pingTimeout: 60000,      // 60 seconds (prevents dropping slow clients)
+  pingInterval: 25000,     // 25 seconds
+  connectTimeout: 45000,   // 45 seconds (allows slow clients to connect)
+  maxHttpBufferSize: 1e6,  // 1MB max payload to prevent memory exhaustion
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
@@ -310,7 +315,7 @@ const authLimiter = rateLimit({
 const responseLimiter = rateLimit({
   store: rlStore('rl:resp:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  max: 20000, // limit each IP to 20000 response submissions per windowMs (massive limit for live quizzes)
   message: { error: 'Too many response submissions, please try again later' }
 })
 
@@ -351,6 +356,7 @@ app.use(requestTimeout)
 // API Routes
 app.use('/api/auth', authRoutes)
 app.use('/api/rooms', roomRoutes)
+app.use('/api/spandangpt', spandanGptRoutes)
 app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
@@ -431,13 +437,6 @@ async function verifyRoomOwner(socket, roomCode) {
     return null
   }
 }
-
-// Video mode: the teacher periodically broadcasts their current playback position. Students use it as
-// the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
-// of being stuck at 0), while still never seeking past the teacher. Cached so a fresh join gets it
-// immediately without waiting for the next broadcast tick.
-const videoProgress = new Map() // roomCode -> { time }
-const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
 
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
@@ -555,13 +554,6 @@ io.on('connection', (socket) => {
       }
 
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
-
-      // Seed the joining socket with the teacher's last known video position (video mode) so a
-      // reload/late-join can immediately seek forward up to where the class is.
-      const vp = videoProgress.get(roomCode)
-      if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
-      // If the teacher's question popup is currently open, a late-joining student must start paused.
-      if (videoPaused.get(roomCode)) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
@@ -637,31 +629,6 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
-  // Teacher-only; students receive it and cannot forge it.
-  socket.on('video:progress', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    const time = Number(data?.time)
-    if (!Number.isFinite(time)) return
-    const playing = !!data?.playing
-    videoProgress.set(data.roomCode, { time, playing })
-    socket.to(data.roomCode).emit('video:progress', { time, playing })
-  })
-
-  // Teacher's question popup opened → students hold their video paused for the whole popup window.
-  socket.on('video:pause', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    videoPaused.set(data.roomCode, true)
-    socket.to(data.roomCode).emit('video:pause')
-  })
-
-  // Teacher's popup closed → students resume and jump to the live edge (handled client-side).
-  socket.on('video:resume', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    videoPaused.set(data.roomCode, false)
-    socket.to(data.roomCode).emit('video:resume')
-  })
-
   socket.on('disconnect', () => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
@@ -695,8 +662,8 @@ const connectDB = async () => {
       // Ceiling on concurrent in-flight queries. Default is 100; a live event with
       // hundreds of students bursting responses/leaderboard reads can exhaust it and
       // queue requests until they time out. Size to the Mongo server's capacity.
-      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
-      minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
+      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 1000,
+      minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 50
     })
     
     console.log('MongoDB connected successfully')
@@ -720,4 +687,4 @@ const startServer = async () => {
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app, io }

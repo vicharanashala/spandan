@@ -8,9 +8,11 @@
     "backend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev": "concurrently -n \"API,WEB,NATIVE\" -c \"bgBlue.bold,bgGreen.bold,bgMagenta.bold\" \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:desktop\"",
+    "dev:web": "concurrently -n \"API,WEB\" -c \"bgBlue.bold,bgGreen.bold\" \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:desktop": "npm run desktop --workspace=frontend",
     "build": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
     "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"

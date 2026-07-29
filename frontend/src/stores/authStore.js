@@ -48,7 +48,11 @@ export const useAuthStore = create(
           const data = await response.json()
           
           if (!response.ok) {
-            throw new Error(data.error || 'Login failed')
+            let errorMsg = data.error || 'Login failed'
+            if (data.details && data.details.length > 0) {
+              errorMsg = data.details.map(d => d.message).join(' | ')
+            }
+            throw new Error(errorMsg)
           }
           
           set({
@@ -66,39 +70,21 @@ export const useAuthStore = create(
         }
       },
 
-      // Registration is email-OTP verified (two steps). Step 1 requests a code; step 2 verifies it and
-      // creates the account. Only step 2 sets the auth session.
-      sendRegistrationOtp: async (name, email) => {
+      register: async (name, email, password, role) => {
         set({ isLoading: true, error: null })
         try {
-          const response = await fetch(`${API_URL}/auth/register/send-otp`, {
+          const response = await fetch(`${API_URL}/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, email })
+            body: JSON.stringify({ name, email, password, role })
           })
           const data = await response.json()
           if (!response.ok) {
-            throw new Error(data.error || 'Failed to send verification code')
-          }
-          set({ isLoading: false })
-          return data // { message, expiresInSec }
-        } catch (error) {
-          set({ error: error.message, isLoading: false })
-          throw error
-        }
-      },
-
-      verifyRegistration: async (name, email, password, role, otp) => {
-        set({ isLoading: true, error: null })
-        try {
-          const response = await fetch(`${API_URL}/auth/register/verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, email, password, role, otp })
-          })
-          const data = await response.json()
-          if (!response.ok) {
-            throw new Error(data.error || 'Registration failed')
+            let errorMsg = data.error || 'Registration failed'
+            if (data.details && data.details.length > 0) {
+              errorMsg = data.details.map(d => d.message).join(' | ')
+            }
+            throw new Error(errorMsg)
           }
           set({
             user: data.user,

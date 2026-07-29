@@ -27,8 +27,7 @@ function AuthPage() {
     isLoading,
     error,
     login,
-    sendRegistrationOtp,
-    verifyRegistration,
+    register,
     logout,
     clearError,
     sessionExpired
@@ -46,27 +45,12 @@ function AuthPage() {
   const [forgotPasswordMsg, setForgotPasswordMsg] = useState('')
   const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false)
   const [showPasswordReqs, setShowPasswordReqs] = useState(false)
-  // Email-OTP registration step: after the form is submitted we send a code and switch to OTP entry.
-  const [otpSent, setOtpSent] = useState(false)
-  const [otpValue, setOtpValue] = useState('')
-  const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
-
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
     setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
     setShowPasswordReqs(false)
     setValidationError('')
-    setOtpSent(false)
-    setOtpValue('')
-    setResendIn(0)
   }, [isLogin])
-
-  // Tick down the resend cooldown once per second.
-  useEffect(() => {
-    if (resendIn <= 0) return
-    const t = setTimeout(() => setResendIn(resendIn - 1), 1000)
-    return () => clearTimeout(t)
-  }, [resendIn])
 
   const getPasswordReqs = (password) => {
     if (password == null) return PASSWORD_REQUIREMENTS.map(req => ({ ...req, met: false }))
@@ -119,51 +103,12 @@ function AuthPage() {
       }
     } else {
       try {
-        // Step 1: request an email verification code, then switch to the OTP entry screen.
-        await sendRegistrationOtp(formData.name, formData.email)
-        setOtpValue('')
-        setOtpSent(true)
-        setResendIn(60)
+        const data = await register(formData.name, formData.email, formData.password, formData.role)
+        navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
       } catch (err) {
-        setValidationError(err.message || 'Failed to send verification code')
+        setValidationError(err.message || 'Registration failed')
       }
     }
-  }
-
-  // Step 2: verify the emailed code and create the account (signs the user in on success).
-  const handleVerifyOtp = async (e) => {
-    e.preventDefault()
-    clearError()
-    setValidationError('')
-    if (!/^\d{6}$/.test(otpValue)) {
-      setValidationError('Enter the 6-digit code from your email')
-      return
-    }
-    try {
-      const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue)
-      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
-    } catch (err) {
-      setValidationError(err.message || 'Registration failed')
-    }
-  }
-
-  const handleResendOtp = async () => {
-    if (resendIn > 0) return
-    clearError()
-    setValidationError('')
-    try {
-      await sendRegistrationOtp(formData.name, formData.email)
-      setResendIn(60)
-    } catch (err) {
-      setValidationError(err.message || 'Failed to resend code')
-    }
-  }
-
-  const handleBackToForm = () => {
-    setOtpSent(false)
-    setOtpValue('')
-    setValidationError('')
-    clearError()
   }
 
   const handleLogout = () => {
@@ -451,7 +396,7 @@ function AuthPage() {
               color: 'var(--text-primary)',
               marginBottom: '6px'
             }}>
-              {showForgotPassword ? 'Reset Password' : otpSent ? 'Verify your email' : isLogin ? 'Welcome Back' : 'Create Account'}
+              {showForgotPassword ? 'Reset Password' : isLogin ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p style={{
               fontSize: '14px',
@@ -459,11 +404,9 @@ function AuthPage() {
             }}>
               {showForgotPassword
                 ? 'Enter your email to receive a reset link'
-                : otpSent
-                  ? `Enter the 6-digit code sent to ${formData.email}`
-                  : isLogin
-                    ? 'Sign in to continue to your dashboard'
-                    : 'Join Spandan to start creating polls'}
+                : isLogin
+                  ? 'Sign in to continue to your dashboard'
+                  : 'Join Spandan to start creating polls'}
             </p>
           </div>
 
@@ -557,52 +500,6 @@ function AuthPage() {
               >
                 Back to login
               </button>
-            </form>
-          ) : otpSent ? (
-            <form onSubmit={handleVerifyOtp}>
-              <div style={{ marginBottom: '20px' }}>
-                <label style={labelStyle}>Verification code</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="6-digit code"
-                  value={otpValue}
-                  onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  autoFocus
-                  style={{ ...inputStyle, letterSpacing: '10px', textAlign: 'center', fontSize: '22px', fontWeight: 700 }}
-                  onFocus={handleInputFocus}
-                  onBlur={handleInputBlur}
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={isLoading || otpValue.length !== 6}
-                style={primaryButtonStyle(isLoading || otpValue.length !== 6)}
-              >
-                {isLoading ? 'Verifying...' : 'Verify & Create Account'}
-              </button>
-              <div style={{ textAlign: 'center', marginTop: '16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-                Didn't receive it?{' '}
-                <button
-                  type="button"
-                  onClick={handleResendOtp}
-                  disabled={resendIn > 0}
-                  style={{ background: 'none', border: 'none', color: resendIn > 0 ? 'var(--text-secondary)' : 'var(--accent)', fontWeight: 600, cursor: resendIn > 0 ? 'default' : 'pointer' }}
-                >
-                  {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
-                </button>
-              </div>
-              <div style={{ textAlign: 'center', marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
-                <button
-                  type="button"
-                  onClick={handleBackToForm}
-                  style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
-                >
-                  ← Change details
-                </button>
-              </div>
             </form>
           ) : (
             <form onSubmit={handleSubmit}>

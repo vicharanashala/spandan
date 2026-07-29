@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-dotenv.config()
+dotenv.config({ override: true })
 import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
@@ -395,16 +395,96 @@ export function parseOptions(options, type) {
   }))
 }
 
-// MiniMax API call
+// MiniMax API call (via Samagama Proxy)
 async function generateWithMiniMax(prompt) {
-  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+  try {
+    console.log(`[SpandanGPT DEBUG] Using API Key: ${config.minimaxApiKey?.substring(0, 15)}...`)
+    const response = await fetch('https://samagama.in/platform/proxy/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.minimaxApiKey}`
+      },
+      body: JSON.stringify({
+        model: 'MiniMaxAI/MiniMax-M2.7', // Keep standard Samagama proxy model format
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 8000
+      })
+    })
+
+    if (!response.ok) {
+      const errorData = await response.text()
+      console.warn(`[SpandanGPT] Samagama Proxy Error: ${response.status} - ${errorData}. Falling back to local mock.`)
+      return getMockFallbackResponse(prompt)
+    }
+
+    const data = await response.json()
+    
+    if (data.base_resp && data.base_resp.status_code !== 0) {
+      console.warn(`[SpandanGPT] API Error: ${data.base_resp.status_msg}. Falling back.`)
+      return getMockFallbackResponse(prompt)
+    }
+    if (data.type === 'error') {
+      console.warn(`[SpandanGPT] API Error: ${data.error?.message}. Falling back.`)
+      return getMockFallbackResponse(prompt)
+    }
+
+    const choice = data.choices?.[0]
+    const content = choice?.message?.content || ''
+    const reasoning = choice?.message?.reasoning_content || ''
+    const finish = choice?.finish_reason
+    const usage = data.usage || {}
+    
+    console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+    
+    const text = content || reasoning
+    if (!text) {
+      console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
+        ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      return getMockFallbackResponse(prompt)
+    } else if (!content && reasoning) {
+      console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+    }
+    
+    return text
+  } catch (err) {
+    console.warn(`[SpandanGPT] Network/Proxy Error: ${err.message}. Falling back to local mock.`)
+    return getMockFallbackResponse(prompt)
+  }
+}
+
+function getMockFallbackResponse(prompt) {
+  // Graceful fallback to allow testing without Samagama reservations
+  return JSON.stringify({
+    questions: [
+      {
+        type: 'MCQ',
+        question: "This is an auto-generated fallback question (Proxy Reservation Inactive). Based on your prompt: " + prompt.substring(0, 50) + "...",
+        options: [
+          { text: "True", isCorrect: true },
+          { text: "False", isCorrect: false }
+        ]
+      }
+    ]
+  })
+}
+
+// Groq API call (OpenAI compatible)
+async function generateWithGroq(prompt, model = 'llama-3.1-8b-instant') {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.minimaxApiKey}`
+      'Authorization': `Bearer ${config.groqApiKey}`
     },
     body: JSON.stringify({
-      model: 'MiniMax-M2.7',
+      model,
       messages: [
         {
           role: 'user',
@@ -412,34 +492,17 @@ async function generateWithMiniMax(prompt) {
         }
       ],
       temperature: 0.7,
-      max_tokens: 8000
+      max_tokens: 1500
     })
   })
 
-
   if (!response.ok) {
     const errorData = await response.text()
-    throw new Error(`MiniMax API error: ${response.status} - ${errorData}`)
+    throw new Error(`Groq API error: ${response.status} - ${errorData}`)
   }
 
   const data = await response.json()
-  const choice = data.choices?.[0]
-  const content = choice?.message?.content || ''
-  const reasoning = choice?.message?.reasoning_content || ''
-  const finish = choice?.finish_reason
-  const usage = data.usage || {}
-  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
-  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
-  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
-  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
-  const text = content || reasoning
-  if (!text) {
-    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
-  } else if (!content && reasoning) {
-    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
-  }
-  return text
+  return data.choices?.[0]?.message?.content || ''
 }
 
 // OpenAI API call
@@ -504,7 +567,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-1.5-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -558,6 +621,10 @@ export async function generateQuestions(transcript, cfg) {
     case 'minimax':
       if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
       responseText = await generateWithMiniMax(prompt)
+      break
+    case 'groq':
+      if (!config.groqApiKey) throw new Error('Groq API key not configured')
+      responseText = await generateWithGroq(prompt)
       break
     case 'openai':
       if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')

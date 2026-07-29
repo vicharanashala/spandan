@@ -13,9 +13,35 @@ const router = express.Router()
 // Strong password: min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char
 const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/
 
-// Registration is email-OTP verified (two steps). There is intentionally NO single-step /register:
-// an account is created only after the emailed 6-digit code is verified, so the email is proven to
-// belong to the registrant (blocks fake/typo/bot signups).
+// Direct Registration (Single-Step)
+// Validates password complexity: must contain uppercase, lowercase, number, and special character.
+router.post('/register', async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body
+    
+    // Password Validation
+    if (!password || !passwordRegex.test(password)) {
+      return res.status(400).json({ 
+        error: 'Invalid password. Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.' 
+      })
+    }
+
+    if (await checkEmailExists(email)) {
+      return res.status(400).json({ error: 'Email already registered' })
+    }
+
+    const user = await register(name, email, password, role)
+    const token = generateToken(user._id)
+    
+    res.status(201).json({
+      message: 'Registration successful',
+      user: user.toJSON(),
+      token
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Registration failed: ' + error.message })
+  }
+})
 
 // Step 1 — request a verification code for a not-yet-registered email.
 router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
