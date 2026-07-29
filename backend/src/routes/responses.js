@@ -596,6 +596,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
         answered: !!studentResponse,
+        explanation: q.explanation,
         // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
         // a "missed" tag if unanswered — no correct/incorrect until it is revealed.
         ...(isActive ? { resultPending: true } : {}),

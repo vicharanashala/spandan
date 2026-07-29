@@ -435,7 +435,7 @@ async function generateWithMiniMax(prompt) {
   const text = content || reasoning
   if (!text) {
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + (choice ? JSON.stringify(choice).slice(0, 1500) : 'undefined'))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }

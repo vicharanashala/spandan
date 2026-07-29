@@ -93,7 +93,7 @@ function StudentDashboard() {
         minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)',
+        marginLeft: 'var(--sidebar-width)',
         transition: 'margin-left 0.2s ease'
       }}>
         {/* Header - Blue gradient bar */}

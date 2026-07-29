@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -26,6 +26,15 @@ function RoomResultsPage() {
     averageScore: 0,
     participationRate: 0
   })
+  const [expandedQuestions, setExpandedQuestions] = useState({})
+  const contentRefs = useRef({})
+
+  const toggleQuestion = (qId) => {
+    setExpandedQuestions(prev => ({
+      ...prev,
+      [qId]: !prev[qId]
+    }))
+  }
 
   useEffect(() => {
     if (token) {
@@ -147,6 +156,34 @@ function RoomResultsPage() {
     }
   }
 
+  const localStruggleAreas = useMemo(() => {
+    if (user?.role !== 'teacher') return []
+
+    return questions
+      .map(q => {
+        const qStats = responses[q._id] || {}
+        const totalResp = qStats.totalResponses || 0
+        if (totalResp === 0) return null
+
+        const correctRate = Math.round(((qStats.correctCount || 0) / totalResp) * 100)
+        if (correctRate >= 70) return null
+
+        const correctOption = q.options?.find(o => o.isCorrect)
+
+        return {
+          id: q._id,
+          question: q.question || 'Question',
+          correctAnswer: correctOption?.text || correctOption || 'N/A',
+          correctRate,
+          totalResponses: totalResp,
+          options: q.options || [],
+          answerCounts: qStats.answerCounts || {},
+          explanation: q.explanation || ''
+        }
+      })
+      .filter(Boolean)
+  }, [questions, responses, user])
+
   if (isLoading) {
     return (
       <div style={{
@@ -158,18 +195,27 @@ function RoomResultsPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{
-              width: '48px',
-              height: '48px',
-              border: '4px solid var(--border-color)',
-              borderTopColor: 'var(--accent)',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite',
-              margin: '0 auto 16px'
-            }} />
-            <p style={{ color: 'var(--text-secondary)' }}>Loading results...</p>
+        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width)', padding: '32px', maxWidth: '100%', boxSizing: 'border-box' }}>
+          {/* Skeleton header */}
+          <div style={{ height: '28px', width: '200px', background: 'var(--border-color)', borderRadius: '6px', marginBottom: '24px', opacity: 0.6 }} />
+          {/* Skeleton stat cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(160px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+            {[1,2,3,4].map(i => (
+              <div key={i} style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)', padding: '20px' }}>
+                <div style={{ width: '40px', height: '40px', background: 'var(--border-color)', borderRadius: 'var(--radius-sm)', marginBottom: '12px', opacity: 0.5 }} />
+                <div style={{ height: '28px', width: '60%', background: 'var(--border-color)', borderRadius: '4px', marginBottom: '6px', opacity: 0.5 }} />
+                <div style={{ height: '14px', width: '40%', background: 'var(--border-color)', borderRadius: '4px', opacity: 0.4 }} />
+              </div>
+            ))}
+          </div>
+          {/* Skeleton questions */}
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)', padding: '24px' }}>
+            {[1,2,3].map(i => (
+              <div key={i} style={{ marginBottom: i < 3 ? '16px' : 0 }}>
+                <div style={{ height: '16px', width: '80%', background: 'var(--border-color)', borderRadius: '4px', marginBottom: '8px', opacity: 0.5 }} />
+                <div style={{ height: '12px', width: '50%', background: 'var(--border-color)', borderRadius: '4px', opacity: 0.4 }} />
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -203,7 +249,7 @@ function RoomResultsPage() {
         minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)',
+        marginLeft: 'var(--sidebar-width)',
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>
@@ -360,200 +406,255 @@ function RoomResultsPage() {
                     ? (correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626')
                     : (q.answered ? (q.isCorrect ? '#059669' : '#dc2626') : '#d97706')
 
+                  const isExpanded = !!expandedQuestions[q._id]
+
                   return (
-                    <div key={q._id} style={{
-                      padding: isMobile ? '16px' : '20px',
-                      background: 'var(--bg-primary)',
-                      borderRadius: 'var(--radius)',
-                      border: '1px solid var(--border-color)',
-                      minWidth: 0
-                    }}>
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'flex-start',
-                        gap: '16px',
-                        flexDirection: isMobile ? 'column' : 'row'
-                      }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                            <span style={{
-                              width: '28px',
-                              height: '28px',
-                              borderRadius: '50%',
-                              background: 'var(--accent)',
-                              color: 'white',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '12px',
-                              fontWeight: 700,
-                              flexShrink: 0
-                            }}>
-                              {index + 1}
-                            </span>
+                    <div key={q._id} 
+                      onClick={() => toggleQuestion(q._id)}
+                      style={{
+                        padding: isMobile ? '16px' : '20px',
+                        background: 'var(--bg-primary)',
+                        borderRadius: 'var(--radius)',
+                        border: '1px solid var(--border-color)',
+                        minWidth: 0,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {/* Always visible: question number, type, text, expand indicator */}
+                      <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                          <span style={{
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '50%',
+                            background: 'var(--accent)',
+                            color: 'white',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            flexShrink: 0
+                          }}>
+                            {index + 1}
+                          </span>
+                          <span style={{
+                            padding: '3px 8px',
+                            background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+                            color: 'var(--accent)',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600
+                          }}>
+                            {q.type}
+                          </span>
+                          <span style={{
+                            padding: '3px 8px',
+                            background: 'color-mix(in srgb, #d97706 16%, transparent)',
+                            color: '#b45309',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600
+                          }}>
+                            {q.maxPoints || q.points} pts
+                          </span>
+                          {q.answered && (
                             <span style={{
                               padding: '3px 8px',
-                              background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
-                              color: 'var(--accent)',
                               borderRadius: '6px',
                               fontSize: '11px',
-                              fontWeight: 600
+                              fontWeight: 600,
+                              background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
+                              color: q.isCorrect ? '#059669' : '#dc2626'
                             }}>
-                              {q.type}
+                              {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
                             </span>
-                            <span style={{
-                              padding: '3px 8px',
-                              background: 'color-mix(in srgb, #d97706 16%, transparent)',
-                              color: '#b45309',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              fontWeight: 600
-                            }}>
-                              {q.maxPoints || q.points} pts
-                            </span>
-                            {q.answered && (
-                              <span style={{
-                                padding: '3px 8px',
-                                borderRadius: '6px',
-                                fontSize: '11px',
-                                fontWeight: 600,
-                                background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
-                                color: q.isCorrect ? '#059669' : '#dc2626'
-                              }}>
-                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
-                              </span>
+                          )}
+                          <span style={{ marginLeft: 'auto', fontSize: '14px', color: 'var(--text-secondary)', transition: 'transform 0.3s ease', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                            ▼
+                          </span>
+                        </div>
+                        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0, lineHeight: 1.5 }}>
+                          {q.question}
+                        </p>
+                      </div>
+
+                      {/* Collapsible section */}
+                      <div 
+                        ref={el => { if (el) contentRefs.current[q._id] = el }}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          overflow: 'hidden',
+                          maxHeight: isExpanded ? '5000px' : '0',
+                          transition: 'max-height 0.35s ease, opacity 0.25s ease',
+                          opacity: isExpanded ? 1 : 0
+                        }}
+                      >
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          gap: '16px',
+                          flexDirection: isMobile ? 'column' : 'row',
+                          marginTop: '16px'
+                        }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            {/* Options */}
+                            <div style={{ display: 'grid', gap: '8px' }}>
+                              {q.options && q.options.map((opt, optIdx) => {
+                                const isCorrect = opt.isCorrect
+                                const isSelected = q.selectedOption === optIdx
+                                const showAsSelected = isTeacher ? isCorrect : isSelected
+                                const highlightStyle = showAsSelected
+                                  ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
+                                  : 'var(--bg-card)'
+                                const borderStyle = showAsSelected
+                                  ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
+                                  : '1px solid var(--border-color)'
+
+                                return (
+                                  <div key={optIdx}>
+                                    <div style={{
+                                      padding: '10px 14px',
+                                      background: highlightStyle,
+                                      borderRadius: 'var(--radius-sm)',
+                                      border: borderStyle,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '12px',
+                                      minWidth: 0
+                                    }}>
+                                      <span style={{
+                                        width: '24px',
+                                        height: '24px',
+                                        borderRadius: '50%',
+                                        background: isCorrect ? '#059669' : 'var(--border-color)',
+                                        color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        fontSize: '11px',
+                                        fontWeight: 700,
+                                        flexShrink: 0
+                                      }}>
+                                        {String.fromCharCode(65 + optIdx)}
+                                      </span>
+                                      <span style={{
+                                        fontSize: '14px',
+                                        color: 'var(--text-primary)',
+                                        fontWeight: isCorrect ? 600 : 400,
+                                        minWidth: 0
+                                      }}>
+                                        {opt.text}
+                                      </span>
+                                      {isTeacher && isCorrect && (
+                                        <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                      )}
+                                      {!isTeacher && isSelected && (
+                                        <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
+                                      )}
+                                      {!isTeacher && isCorrect && !isSelected && (
+                                        <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+                                      )}
+                                    </div>
+
+                                    {/* Teacher: explanation always visible under the correct option */}
+                                    {isTeacher && isCorrect && q.explanation && (
+                                      <div style={{
+                                        margin: '4px 0 2px',
+                                        padding: '8px 12px',
+                                        background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+                                        borderRadius: '6px',
+                                        fontSize: '12px',
+                                        color: 'var(--accent)'
+                                      }}>
+                                        <span style={{ fontWeight: 600, marginRight: '4px' }}>ℹ</span>
+                                        {q.explanation}
+                                      </div>
+                                    )}
+
+                                    {/* Student: explanation only when they got it wrong or missed it */}
+                                    {!isTeacher && isCorrect && q.explanation && (!q.answered || !q.isCorrect) && (
+                                      <div style={{
+                                        margin: '4px 0 2px',
+                                        padding: '8px 12px',
+                                        background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+                                        borderRadius: '6px',
+                                        fontSize: '12px',
+                                        color: 'var(--accent)'
+                                      }}>
+                                        <span style={{ fontWeight: 600, marginRight: '4px' }}>ℹ</span>
+                                        {q.explanation}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+
+                            {/* Class correctness rate bar (Teacher only) */}
+                            {isTeacher && (
+                              <div style={{ marginTop: '14px' }}>
+                                <div style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  fontSize: '11px',
+                                  color: 'var(--text-secondary)',
+                                  marginBottom: '6px',
+                                  fontWeight: 600
+                                }}>
+                                  <span>Class correct rate</span>
+                                  <span>{correctRate !== null ? `${correctRate}%` : '0%'}</span>
+                                </div>
+                                <div style={{
+                                  height: '8px',
+                                  borderRadius: '999px',
+                                  background: 'var(--border-color)',
+                                  overflow: 'hidden'
+                                }}>
+                                  <div style={{
+                                    height: '100%',
+                                    width: `${Math.max(0, Math.min(100, correctRate || 0))}%`,
+                                    background: scoreColor,
+                                    borderRadius: '999px',
+                                    transition: 'width 0.3s ease'
+                                  }} />
+                                </div>
+                              </div>
                             )}
                           </div>
-                          <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
-                            {q.question}
-                          </p>
 
-                          {/* Options - show differently for teacher vs student */}
-                          <div style={{ display: 'grid', gap: '8px' }}>
-                            {q.options && q.options.map((opt, optIdx) => {
-                              const isCorrect = opt.isCorrect
-                              const isSelected = q.selectedOption === optIdx
-
-                              // For student: highlight their selection. For teacher: highlight correct answer
-                              const showAsSelected = isTeacher ? isCorrect : isSelected
-                              const highlightStyle = showAsSelected
-                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
-                                : 'var(--bg-card)'
-                              const borderStyle = showAsSelected
-                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
-                                : '1px solid var(--border-color)'
-
-                              return (
-                                <div key={optIdx} style={{
-                                  padding: '10px 14px',
-                                  background: highlightStyle,
-                                  borderRadius: 'var(--radius-sm)',
-                                  border: borderStyle,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '12px',
-                                  minWidth: 0
-                                }}>
-                                  <span style={{
-                                    width: '24px',
-                                    height: '24px',
-                                    borderRadius: '50%',
-                                    background: isCorrect ? '#059669' : 'var(--border-color)',
-                                    color: isCorrect ? 'white' : 'var(--text-secondary)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    fontSize: '11px',
-                                    fontWeight: 700,
-                                    flexShrink: 0
-                                  }}>
-                                    {String.fromCharCode(65 + optIdx)}
-                                  </span>
-                                  <span style={{
-                                    fontSize: '14px',
-                                    color: 'var(--text-primary)',
-                                    fontWeight: isCorrect ? 600 : 400,
-                                    minWidth: 0
-                                  }}>
-                                    {opt.text}
-                                  </span>
-                                  {isTeacher && isCorrect && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
-                                  )}
-                                  {!isTeacher && isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
-                                  )}
-                                  {!isTeacher && isCorrect && !isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
-                                  )}
+                          {/* Large colored stat card */}
+                          <div style={{
+                            minWidth: isMobile ? 0 : '120px',
+                            width: isMobile ? '100%' : 'auto',
+                            textAlign: 'center',
+                            padding: '16px',
+                            background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
+                            border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
+                            borderRadius: 'var(--radius)',
+                            flexShrink: 0
+                          }}>
+                            {isTeacher ? (
+                              <>
+                                <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                  {correctRate !== null ? `${correctRate}%` : '0%'}
                                 </div>
-                              )
-                            })}
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                  {qStats.totalResponses || 0} responses
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                  {q.pointsEarned || 0}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                  / {q.maxPoints || 100} pts
+                                </div>
+                              </>
+                            )}
                           </div>
-
-                          {/* Teacher: visual distribution bar of class correctness (purely presentational) */}
-                          {isTeacher && (
-                            <div style={{ marginTop: '14px' }}>
-                              <div style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                fontSize: '11px',
-                                color: 'var(--text-secondary)',
-                                marginBottom: '6px',
-                                fontWeight: 600
-                              }}>
-                                <span>Class correct rate</span>
-                                <span>{correctRate !== null ? `${correctRate}%` : '0%'}</span>
-                              </div>
-                              <div style={{
-                                height: '8px',
-                                borderRadius: '999px',
-                                background: 'var(--border-color)',
-                                overflow: 'hidden'
-                              }}>
-                                <div style={{
-                                  height: '100%',
-                                  width: `${Math.max(0, Math.min(100, correctRate || 0))}%`,
-                                  background: scoreColor,
-                                  borderRadius: '999px',
-                                  transition: 'width 0.3s ease'
-                                }} />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Question Stats */}
-                        <div style={{
-                          minWidth: isMobile ? 0 : '120px',
-                          width: isMobile ? '100%' : 'auto',
-                          textAlign: 'center',
-                          padding: '16px',
-                          background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
-                          border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
-                          borderRadius: 'var(--radius)',
-                          flexShrink: 0
-                        }}>
-                          {isTeacher ? (
-                            <>
-                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
-                                {correctRate !== null ? `${correctRate}%` : '0%'}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
-                                {qStats.totalResponses || 0} responses
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
-                                {q.pointsEarned || 0}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
-                                / {q.maxPoints || 100} pts
-                              </div>
-                            </>
-                          )}
                         </div>
                       </div>
                     </div>
@@ -562,6 +663,51 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+
+          {/* Class Struggle Areas - deterministic, teacher-only, always available */}
+          {user?.role === 'teacher' && localStruggleAreas.length > 0 && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px 24px',
+              marginBottom: '24px',
+              border: '1px solid color-mix(in srgb, #dc2626 40%, transparent)',
+              boxShadow: 'var(--card-shadow)',
+              marginTop: '24px'
+            }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: '600', color: '#dc2626' }}>
+                Class Struggle Areas ({localStruggleAreas.length})
+              </h3>
+              <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Questions where 30%+ of the class answered incorrectly, with the correct answer
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {localStruggleAreas.map((item, idx) => (
+                  <div key={item.id || idx} style={{
+                    padding: '10px 12px',
+                    background: 'color-mix(in srgb, #dc2626 10%, transparent)',
+                    borderRadius: '8px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                      {item.question}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#059669', marginBottom: '2px' }}>
+                      ✓ Correct answer: {item.correctAnswer}
+                    </div>
+                    {item.explanation && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px', marginBottom: '2px', fontStyle: 'italic' }}>
+                        {item.explanation}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '11px', color: '#dc2626' }}>
+                      Only {item.correctRate}% answered correctly • {item.totalResponses} response(s)
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

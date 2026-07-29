@@ -71,7 +71,7 @@ function RoomHistoryPage() {
         minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)',
+        marginLeft: 'var(--sidebar-width)',
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>

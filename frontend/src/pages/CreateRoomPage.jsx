@@ -75,7 +75,7 @@ function CreateRoomPage() {
         minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)'
+        marginLeft: 'var(--sidebar-width)'
       }}>
         {/* Header */}
         <header style={{
