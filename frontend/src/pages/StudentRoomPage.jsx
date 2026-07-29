@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
@@ -39,6 +40,40 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+
+  // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
+  // player pauses locally while a question is live.
+  const isVideoMode = room?.settings?.mode === 'video'
+  const videoId = isVideoMode ? extractYouTubeId(room?.settings?.videoUrl) : null
+  const studentPlayerRef = useRef(null)
+  const teacherVideoTimeRef = useRef(null) // { time, playing, at } — teacher position for the forward-seek ceiling
+  const capSuppressUntilRef = useRef(0) // performance.now() until which the forward cap is suspended (post-poll live-edge resume)
+  const [isLiveStream, setIsLiveStream] = useState(false)
+  // True while the teacher's question-approval popup is open. The student video stays paused for the
+  // WHOLE popup window (across every question the teacher launches from it), not just per-question.
+  const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
+
+  useEffect(() => {
+    if (!isVideoMode) return
+    const p = studentPlayerRef.current
+    if (!p) return
+    if (teacherVideoPaused || currentQuestion) {
+      p.pauseVideo?.()
+    } else {
+      // For a live stream, jump back to the live edge on resume so students rejoin the broadcast.
+      // Query the player directly so it fires even if the isLiveStream state hasn't settled.
+      let live = isLiveStream
+      try { const ps = p.getProgressState?.(); if (ps && typeof ps.isLive === 'boolean') live = ps.isLive } catch (e) { /* ignore */ }
+      if (live && typeof p.seekTo === 'function') {
+        const dur = typeof p.getDuration === 'function' ? p.getDuration() : 0
+        p.seekTo(dur > 0 ? dur : 1e7, true)
+        // Suspend the teacher-cap briefly so the student isn't snapped off the live edge before the
+        // teacher's post-jump position broadcast (every 2s) lands and refreshes the ceiling.
+        capSuppressUntilRef.current = performance.now() + 4000
+      }
+      p.playVideo?.()
+    }
+  }, [teacherVideoPaused, currentQuestion, isVideoMode, isLiveStream])
 
   useEffect(() => {
     if (!token || !socket) return
@@ -145,9 +180,21 @@ function StudentRoomPage() {
       }
     }
 
+    const handleVideoProgress = (data) => {
+      const t = Number(data?.time)
+      if (!Number.isFinite(t)) return
+      teacherVideoTimeRef.current = { time: t, playing: !!data?.playing, at: performance.now() }
+    }
+
+    const handleVideoPause = () => setTeacherVideoPaused(true)
+    const handleVideoResume = () => setTeacherVideoPaused(false)
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('video:progress', handleVideoProgress)
+    socket.on('video:pause', handleVideoPause)
+    socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -163,6 +210,9 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('video:progress', handleVideoProgress)
+      socket.off('video:pause', handleVideoPause)
+      socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
@@ -472,6 +522,41 @@ function StudentRoomPage() {
             </button>
           </div>
 
+          {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
+              Hidden (not unmounted) while a question is live so the poll takes over like normal mode. */}
+          {isVideoMode && videoId && (
+            <div style={{
+              display: currentQuestion ? 'none' : 'block',
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '12px' : '16px',
+              boxShadow: 'var(--shadow-md)',
+              border: '1px solid var(--border-color)',
+              marginBottom: '24px'
+            }}>
+              {isLiveStream && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: 700, letterSpacing: '0.03em' }}>LIVE</span>
+                </div>
+              )}
+              <YouTubeVideo
+                videoId={videoId}
+                controls={true}
+                noForwardSeek={true}
+                seekCeilingRef={teacherVideoTimeRef}
+                capSuppressUntilRef={capSuppressUntilRef}
+                playerRef={studentPlayerRef}
+                onLiveStatus={setIsLiveStream}
+              />
+              <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                {isLiveStream
+                  ? 'Live stream. You can rewind, and the video pauses automatically during a poll.'
+                  : 'You can pause and rewind, but not skip ahead. The video pauses automatically during a poll.'}
+              </p>
+            </div>
+          )}
+
           {/* Live Question */}
           {currentQuestion ? (
             <div style={{
@@ -628,7 +713,8 @@ function StudentRoomPage() {
           ) : (
             /* Waiting State - Show Passed Questions */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              {/* Active question area placeholder */}
+              {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
+              {!isVideoMode && (
               <div style={{
                 background: 'var(--bg-card)',
                 borderRadius: 'var(--radius-lg)',
@@ -657,6 +743,7 @@ function StudentRoomPage() {
                   The teacher will start a poll soon. Stay tuned!
                 </p>
               </div>
+              )}
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>

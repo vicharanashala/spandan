@@ -16,6 +16,7 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import HelpPage from './pages/HelpPage'
 import { API_URL } from './config.js'
 import SpandanGPTWidget from './components/SpandanGPTWidget'
 import { isTokenExpired } from './lib/jwt.js'
@@ -189,6 +190,11 @@ function App() {
             <RoomResultsPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/help" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <HelpPage />
+          </ProtectedRoute>
+        } />
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
@@ -197,6 +203,11 @@ function App() {
         <Route path="/student/join-room" element={
           <ProtectedRoute allowedRoles={['student']}>
             <JoinRoomPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/help" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <HelpPage />
           </ProtectedRoute>
         } />
         <Route path="/student/room-history" element={

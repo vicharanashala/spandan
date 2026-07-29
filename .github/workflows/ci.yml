@@ -1,5 +1,8 @@
 name: CI
 
+# Runs the backend + frontend test suites. On pull_request it acts as the merge
+# gate (enable "require status checks" in branch protection once PRs open up).
+# On push to main it is informational only — it never blocks a direct push.
 on:
   push:
     branches: [main]
@@ -10,11 +13,9 @@ jobs:
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
-    
     defaults:
       run:
         working-directory: backend
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,28 +30,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Backend tests use @shelf/jest-mongodb (in-memory MongoDB), so no DB
+      # service or MONGODB_URI secret is needed. JWT_SECRET just needs to be set.
       - name: Run tests
-        run: npm test -- --coverage
+        run: npm test
         env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
           JWT_SECRET: test-secret-key
-          FRONTEND_URL: http://localhost:5173
-
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
-        if: success()
-        with:
-          files: ./backend/coverage/lcov.info
-          flags: backend
 
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
-    
     defaults:
       run:
         working-directory: frontend
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -66,11 +58,4 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test -- --coverage
-
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
-        if: success()
-        with:
-          files: ./frontend/coverage/lcov.info
-          flags: frontend
+        run: npm test
