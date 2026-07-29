@@ -22,7 +22,7 @@ export async function generateSessionSummary(room, questions, responses, transcr
 
   // Calculate correctness rate per question
   const questionStats = questions.map(q => {
-    const questionResponses = responses.filter(r => r.question.toString() === q._id.toString())
+    const questionResponses = responses.filter(r => r.questionId.toString() === q._id.toString())
     const correctCount = questionResponses.filter(r => r.isCorrect).length
     const totalQuestionResponses = questionResponses.length
     const correctnessRate = totalQuestionResponses > 0 ? Math.round((correctCount / totalQuestionResponses) * 100) : 0
