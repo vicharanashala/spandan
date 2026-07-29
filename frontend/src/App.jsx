@@ -18,6 +18,7 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
+import TeacherStudentsPage from './pages/TeacherStudentsPage'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
@@ -169,6 +170,11 @@ function App() {
         <Route path="/teacher/room-history" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/my-students" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherStudentsPage />
           </ProtectedRoute>
         } />
         <Route path="/teacher/room/:roomId" element={
