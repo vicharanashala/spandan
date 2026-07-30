@@ -174,34 +174,34 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -371,6 +371,26 @@ function RoomDetailPage() {
     let generated = null
     try {
       console.log('[SEGMENT] Auto-generating questions...')
+      let questions = null;
+      try {
+        questions = await generateQuestionsFromText(textToUse, currentSegment)
+      } catch (error) {
+        console.error('[SEGMENT] First generation attempt failed:', error)
+        console.log('[SEGMENT] Retrying question generation...')
+        questions = await generateQuestionsFromText(textToUse, currentSegment)
+      }
+
+      if (questions && questions.length > 0) {
+        setPendingQuestions(questions)
+        setShowQuestionPopup(true)
+        setIsPopupOpen(true)
+      } else {
+        throw new Error('No questions returned');
+      }
+    } catch (error) {
+      console.error('[SEGMENT] Question generation failed after retry:', error)
+      window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+      setGenerateQEnabled(true) // Enable fail-safe manual button
       generated = await generateQuestionsFromText(textToUse, currentSegment)
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
@@ -533,6 +553,16 @@ function RoomDetailPage() {
     if (room.endedAt) return
 
     try {
+      const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
+      if (textToUse && textToUse.length >= 50) {
+        try {
+          await saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+          console.log('[END ROOM] Final segment transcript saved to DB')
+        } catch (err) {
+          console.error('[END ROOM] Failed to save final transcript segment:', err)
+        }
+      }
+
       const updated = await updateRoom(room._id, {
         isActive: false,
         endedAt: new Date()
@@ -616,10 +646,33 @@ function RoomDetailPage() {
         return
       }
 
-      const result = await transcribeAudio(wavBlob)
-      addToTranscriptionQueue(sequence, result.text || '')
+      // Retry with exponential backoff — a single 502 (proxy not yet ready) used to
+      // permanently drop a sequence with no recovery. Now we retry up to 3 times:
+      // attempt 1 immediately, then 500 ms, 1 000 ms, 2 000 ms delays.
+      const MAX_RETRIES = 3
+      const BACKOFF_MS = [0, 500, 1000, 2000]
+      let lastError = null
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+          const delay = BACKOFF_MS[attempt] || 2000
+          console.warn(`[TRANSCRIPTION] Sequence ${sequence} retry ${attempt}/${MAX_RETRIES} in ${delay}ms`)
+          await new Promise(r => setTimeout(r, delay))
+        }
+        try {
+          const result = await transcribeAudio(wavBlob)
+          console.log(`[TRANSCRIPTION] Sequence ${sequence} succeeded on attempt ${attempt + 1}`)
+          addToTranscriptionQueue(sequence, result.text || '')
+          return
+        } catch (err) {
+          lastError = err
+          console.error(`[TRANSCRIPTION] Attempt ${attempt + 1} failed for sequence ${sequence}:`, err.message)
+        }
+      }
+      // All retries exhausted — enqueue empty so the queue doesn't stall on this sequence.
+      console.error(`[TRANSCRIPTION] All ${MAX_RETRIES + 1} attempts failed for sequence ${sequence}. Dropping.`)
+      addToTranscriptionQueue(sequence, '')
     } catch (error) {
-      console.error(`[TRANSCRIPTION] Error for sequence ${sequence}:`, error.message)
+      console.error(`[TRANSCRIPTION] Fatal error for sequence ${sequence}:`, error.message)
       addToTranscriptionQueue(sequence, '')
     }
   }, [room?._id, addToTranscriptionQueue])
@@ -668,34 +721,59 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
-  const startRecording = async ({ resetSegment = true } = {}) => {
-    if (recordingActiveRef.current) return
 
-    // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
-    // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
-    // loop for the next segment; do NOT call getUserMedia/getDisplayMedia here.
-    if (isVideoMode) {
-      if (!streamRef.current) return
-      setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
-      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
-      setSegmentTranscript(''); segmentTranscriptRef.current = ''
-      transcriptionQueueRef.current = []
-      nextSequenceRef.current = 0
-      pendingSequenceRef.current = 0
-      isProcessingQueueRef.current = false
-      recordingActiveRef.current = true
-      setIsRecording(true)
-      setIsTranscribing(true)
-      setModelStatus('Listening...')
-      startTranscriptionWindow()
-      return
+  // Ref used to communicate a "start recording once socket is ready" intent across renders.
+  // When the teacher clicks Start before the socket is ready, we set this to true and the
+  // effect below will call startRecording() as soon as isConnected becomes true.
+  const pendingRecordStartRef = useRef(false)
+
+  // Effect: auto-start recording once the socket is confirmed connected, if a start was
+  // requested while the socket was still establishing. This eliminates the manual reset
+  // requirement — the system self-executes the "wait for socket, then record" sequence.
+  useEffect(() => {
+    if (isConnected && pendingRecordStartRef.current && !recordingActiveRef.current) {
+      console.log('[GATE] Socket now connected — auto-starting pending recording')
+      pendingRecordStartRef.current = false
+      startRecording()
     }
+  }, [isConnected])
 
-    try {
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
+  const startRecording = async ({ resetSegment = true } = {}) => {
+  if (recordingActiveRef.current) return
+
+  // Gate: if the socket is not yet connected, queue the start and return.
+  // The effect above will call startRecording() once the connection is established.
+  if (!isConnected) {
+    console.warn('[GATE] Socket not connected yet — deferring recording start until socket is ready')
+    pendingRecordStartRef.current = true
+    setModelStatus('Waiting for connection...')
+    return
+  }
+
+  // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
+  // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
+  // loop for the next segment; do NOT call getUserMedia/getDisplayMedia here.
+  if (isVideoMode) {
+    if (!streamRef.current) return
+    setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
+    setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+    setSegmentTranscript(''); segmentTranscriptRef.current = ''
+    transcriptionQueueRef.current = []
+    nextSequenceRef.current = 0
+    pendingSequenceRef.current = 0
+    isProcessingQueueRef.current = false
+    recordingActiveRef.current = true
+    setIsRecording(true)
+    setIsTranscribing(true)
+    setModelStatus('Listening...')
+    startTranscriptionWindow()
+    return
+  }
+
+  try {
+    // Request microphone access
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    streamRef.current = stream
 
       // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
       let selectedMimeType = 'audio/ogg'
@@ -766,10 +844,10 @@ function RoomDetailPage() {
     await processTranscriptionQueue()
 
     // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -1621,8 +1699,8 @@ function RoomDetailPage() {
                   background: isEnded
                     ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
                     : (isRecording
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
+                      ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                      : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
                   cursor: isEnded ? 'not-allowed' : 'pointer',
@@ -1639,13 +1717,13 @@ function RoomDetailPage() {
               >
                 {isRecording ? (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
                 ) : (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
                   </svg>
                 )}
               </button>
@@ -1811,6 +1889,20 @@ function RoomDetailPage() {
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
+            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>📝</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Session Questions
+                </span>
+                {generatedQuestions.length > 0 && (
+                  <span style={{
+                    padding: '2px 10px',
+                    background: '#d1fae5',
+                    color: '#059669',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <span style={{ fontSize: '20px' }}>📝</span>
@@ -1844,101 +1936,131 @@ function RoomDetailPage() {
                     alignItems: 'flex-start',
                     gap: '12px'
                   }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
+                    {generatedQuestions.length}
+                  </span>
+                )}
+              </div>
+
+              {generatedQuestions.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {generatedQuestions.map((q, index) => (
+                    <div key={q._id || index} style={{
+                      padding: '14px 16px',
+                      background: 'var(--bg-primary)',
+                      borderRadius: '10px',
+                      border: '1px solid var(--border-color)',
                       display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
+                      alignItems: 'flex-start',
+                      gap: '12px'
                     }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
+                      <span style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: '#3b82f6',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        flexShrink: 0
+                      }}>
+                        {index + 1}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                            color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                          }}>
+                            {q.type}
+                          </span>
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: '#fef3c7',
+                            color: '#92400e'
+                          }}>
+                            {q.points || 100} pts
+                          </span>
+                        </div>
+                        <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                          {q.question}
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {(q.options || []).map((opt, optIdx) => {
+                            const letter = String.fromCharCode(65 + optIdx)
+                            return (
+                              <div key={optIdx} style={{
+                                padding: '8px 12px',
+                                background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                borderRadius: '6px',
                                 display: 'flex',
                                 alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
+                                gap: '8px',
+                                fontSize: '13px',
+                                color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
                               }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
+                                <span style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '50%',
+                                  background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                  color: 'white',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '11px',
+                                  fontWeight: '700',
+                                  flexShrink: 0
+                                }}>
+                                  {letter}
+                                </span>
+                                <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                  {opt.text}
+                                </span>
+                                {opt.isCorrect && (
+                                  <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                          color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                        }}>
+                          {answerCounts[q._id] || 0}/{totalParticipants}
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
-                      }}>
-                        {answerCounts[q._id] || 0}/{totalParticipants}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
-                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '32px',
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px'
+                }}>
+                  No questions generated yet. Start recording to auto-generate questions.
+                </div>
+              )}
                   </div>
                 ))}
               </div>

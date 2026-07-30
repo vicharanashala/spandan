@@ -1,7 +1,13 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_URL, SOCKET_PATH } from '../config.js'
 import useAuthStore from './authStore.js'
+
+// A module-level ref that guards against React StrictMode's double-invocation of effects.
+// When connect() is called twice rapidly (mount → cleanup → remount), the second call
+// sees the same socket instance here and skips creating a duplicate, preventing the
+// "WebSocket closed before connection established" race condition.
+let _pendingSocket = null
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
@@ -15,16 +21,30 @@ export const useSocketStore = create((set, get) => ({
 
   connect: (token) => {
     const { socket: existingSocket } = get()
+    // Guard 1: already connected — nothing to do.
     if (existingSocket?.connected) {
       console.log('Socket already connected, skipping')
+      return
+    }
+    // Guard 2: a socket is mid-handshake (e.g. Strict Mode second mount fires before
+    // the first one connects). Reuse it instead of creating a duplicate that will
+    // immediately conflict and produce "WebSocket closed before connection established".
+    if (_pendingSocket && !_pendingSocket.disconnected) {
+      console.log('Socket connection already in progress, reusing')
+      set({ socket: _pendingSocket })
       return
     }
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
-      transports: ['websocket', 'polling']
+      path: SOCKET_PATH,
+      transports: ['websocket', 'polling'],
+      // Prevent socket.io from aggressively reconnecting before the proxy is ready;
+      // we handle reconnect ourselves via the 'disconnect' event.
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
     })
+    _pendingSocket = socket
 
     socket.on('connect', () => {
       console.log('Socket connected')
@@ -100,6 +120,7 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.disconnect()
+      _pendingSocket = null
       set({ socket: null, isConnected: false, currentRoom: null, joinedRoom: null })
     }
   },

@@ -19,6 +19,9 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import revisionSuggestionsRoutes from './routes/revisionSuggestions.js'
+import notesRoutes from './routes/notes.js'
+import questionNotesRoutes from './routes/questionNotes.js'
 import researchRoutes from './routes/research.js'
 
 // Import models for reference
@@ -34,8 +37,8 @@ const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
   // 10- or 30-minute session) that can take minutes, so those routes get a much
   // longer timeout. Everything else keeps the tight 30s cap.
-  const isGeneration = req.path.startsWith('/api/questions/generate')
-  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+  const isGeneration = req.path.startsWith('/api/questions/generate') || req.path.startsWith('/api/transcription')
+  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation/transcription, 30s otherwise
 
   req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
@@ -355,6 +358,10 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/revision-suggestions', revisionSuggestionsRoutes)
+app.use('/api/notes', notesRoutes)
+app.use('/api/notes', questionNotesRoutes)
+
 app.use('/api/research', researchRoutes)
 
 // Health check
@@ -720,4 +727,4 @@ const startServer = async () => {
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app, io } 

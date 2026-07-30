@@ -27,11 +27,11 @@ export const createQuestion = async (data, createdBy) => {
 
 export const getQuestionById = async (id) => {
   const question = await Question.findById(id).populate('createdBy', 'name email')
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   return question
 }
 
@@ -41,38 +41,38 @@ export const getQuestionsByRoom = async (roomId) => {
 
 export const updateQuestion = async (questionId, updates, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Check ownership
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to update this question')
   }
-  
+
   Object.assign(question, updates)
   await question.save()
-  
+
   return question
 }
 
 export const deleteQuestion = async (questionId, userId) => {
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   if (question.createdBy.toString() !== userId.toString()) {
     throw new Error('Not authorized to delete this question')
   }
-  
+
   await Question.findByIdAndDelete(questionId)
-  
+
   // Also delete related responses
   await Response.deleteMany({ question: questionId })
-  
+
   return true
 }
 
@@ -82,36 +82,36 @@ export const setActiveQuestion = async (roomId, questionId) => {
     { roomId: roomId },
     { $set: { isActive: false } }
   )
-  
+
   // Activate the specified question
   const question = await Question.findByIdAndUpdate(
     questionId,
     { $set: { isActive: true } },
     { new: true }
   )
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   // Update room's currentQuestion
   await Room.findByIdAndUpdate(roomId, { currentQuestion: questionId })
-  
+
   return question
 }
 
 export const submitResponse = async (data, studentId) => {
   const { questionId, selectedOption, responseTime } = data
-  
+
   // Get the question to check correct answer
   const question = await Question.findById(questionId)
-  
+
   if (!question) {
     throw new Error('Question not found')
   }
-  
+
   const isCorrect = selectedOption === question.correctOptionIndex
-  
+
   const response = new Response({
     question: questionId,
     roomId: question.roomId,
@@ -122,7 +122,7 @@ export const submitResponse = async (data, studentId) => {
   })
 
   await response.save()
-  
+
   return response
 }
 
@@ -140,9 +140,9 @@ export const getResponsesByRoom = async (roomId) => {
 
 export const getQuestionResults = async (questionId) => {
   const responses = await Response.find({ question: questionId })
-  
+
   const totalResponses = responses.length
-  
+
   if (totalResponses === 0) {
     return {
       totalResponses: 0,
@@ -150,19 +150,19 @@ export const getQuestionResults = async (questionId) => {
       correctPercentage: 0
     }
   }
-  
+
   const results = {}
   let correctCount = 0
-  
+
   responses.forEach(response => {
     const option = response.selectedOption
     results[option] = (results[option] || 0) + 1
-    
+
     if (response.isCorrect) {
       correctCount++
     }
   })
-  
+
   return {
     totalResponses,
     results,
@@ -173,7 +173,7 @@ export const getQuestionResults = async (questionId) => {
 // Question Type Mix helper
 function getQuestionTypeMix(numQuestions) {
   const types = []
-  
+
   if (numQuestions === 1) {
     types.push('MCQ')
   } else if (numQuestions === 2) {
@@ -184,12 +184,12 @@ function getQuestionTypeMix(numQuestions) {
     const mcqCount = Math.round(numQuestions * 0.5)
     const tfCount = Math.round(numQuestions * 0.3)
     const msqCount = numQuestions - mcqCount - tfCount
-    
+
     for (let i = 0; i < mcqCount; i++) types.push('MCQ')
     for (let i = 0; i < tfCount; i++) types.push('TF')
     for (let i = 0; i < msqCount; i++) types.push('MSQ')
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -206,18 +206,18 @@ function generateFromMix(questionTypeMix, numQuestions) {
   const mcqCount = Math.round((MCQ / total) * numQuestions)
   const tfCount = Math.round((TF / total) * numQuestions)
   const msqCount = numQuestions - mcqCount - tfCount
-  
+
   const types = []
   for (let i = 0; i < mcqCount; i++) types.push('MCQ')
   for (let i = 0; i < tfCount; i++) types.push('TF')
   for (let i = 0; i < msqCount; i++) types.push('MSQ')
-  
+
   // Shuffle to mix them up nicely
   for (let i = types.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [types[i], types[j]] = [types[j], types[i]]
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
@@ -321,20 +321,20 @@ IMPORTANT:
 export function parseQuestions(responseText, expectedTypes) {
   try {
     let jsonStr = responseText
-    
+
     const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
     if (jsonMatch) {
       jsonStr = jsonMatch[1]
     }
-    
+
     const objMatch = jsonStr.match(/\{[\s\S]*\}/)
     if (!objMatch) {
       throw new Error('No JSON found in response')
     }
-    
+
     const parsed = JSON.parse(objMatch[0])
     const questions = parsed.questions || []
-    
+
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
@@ -364,7 +364,7 @@ export function parseOptions(options, type) {
     if (Array.isArray(options) && options.length === 2) {
       const trueIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('true'))
       const falseIdx = options.findIndex(o => (o.text || '').toLowerCase().startsWith('false'))
-      
+
       if (trueIdx !== -1 && falseIdx !== -1) {
         // Return with correct marking preserved
         return [
@@ -396,7 +396,7 @@ export function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+export async function generateWithMiniMax(prompt) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
@@ -435,7 +435,8 @@ async function generateWithMiniMax(prompt) {
   const text = content || reasoning
   if (!text) {
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + JSON.stringify(choice ?? null) +
+      ' full data: ' + JSON.stringify(data).slice(0, 2000))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
@@ -443,7 +444,7 @@ async function generateWithMiniMax(prompt) {
 }
 
 // OpenAI API call
-async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
+export async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -473,7 +474,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
 }
 
 // Anthropic (Claude) API call
-async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
+export async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -504,7 +505,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+export async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -536,6 +537,36 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
+// Ollama API call
+export async function generateWithOllama(prompt, model = 'llama3.2') {
+  let response
+  try {
+    response = await fetch('http://127.0.0.1:11434/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt, stream: false })
+    })
+  } catch (err) {
+    throw new Error(`Cannot connect to Ollama at 127.0.0.1:11434. Make sure Ollama is running. (${err.message})`)
+  }
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    // Give a clear message if the model is just not pulled yet
+    if (response.status === 404 || errorData.toLowerCase().includes('not found') || errorData.toLowerCase().includes('pull')) {
+      throw new Error(`Ollama model "${model}" not found. Run: ollama pull ${model}`)
+    }
+    throw new Error(`Ollama API error: ${response.status} - ${errorData}`)
+  }
+
+  const data = await response.json()
+  if (!data.response) {
+    console.error('[gen:ollama] Empty response from Ollama. Full payload:', JSON.stringify(data).slice(0, 500))
+    throw new Error('Ollama returned an empty response. Check that your model is fully loaded.')
+  }
+  return data.response
+}
+
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
   const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
@@ -545,7 +576,7 @@ export async function generateQuestions(transcript, cfg) {
   }
 
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
@@ -570,6 +601,9 @@ export async function generateQuestions(transcript, cfg) {
     case 'google':
       if (!config.googleApiKey) throw new Error('Google API key not configured')
       responseText = await generateWithGoogle(prompt)
+      break
+    case 'ollama':
+      responseText = await generateWithOllama(prompt)
       break
     default:
       throw new Error(`Unknown provider: ${provider}`)

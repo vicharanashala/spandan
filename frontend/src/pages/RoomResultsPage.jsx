@@ -9,6 +9,114 @@ import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 import useIsMobile from '../hooks/useIsMobile'
 
+import { Link } from 'react-router-dom'
+import RevisionSuggestions from '../components/RevisionSuggestions'
+
+function MyRevisionSummary({ roomId, token, userId }) {
+  const [weakTopics, setWeakTopics] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [openNoteId, setOpenNoteId] = useState(null)
+  const [openNote, setOpenNote] = useState(null)
+  const [noteLoading, setNoteLoading] = useState(false)
+
+  useEffect(() => {
+    if (!openNoteId) return
+    setNoteLoading(true)
+    fetch(`${API_URL}/notes/${openNoteId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => setOpenNote(data.note || null))
+      .catch(err => console.error('Failed to load note:', err))
+      .finally(() => setNoteLoading(false))
+  }, [openNoteId, token])
+
+  useEffect(() => {
+    fetch(`${API_URL}/revision-suggestions/${roomId}/student/${userId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.weakTopics) {
+          setWeakTopics(data.weakTopics)
+        }
+        setLoading(false)
+      })
+      .catch(err => {
+        console.error('Failed to load weak topics:', err)
+        setLoading(false)
+      })
+  }, [roomId, token, userId])
+
+  if (loading) return null
+  if (weakTopics.length === 0) return null
+
+  return (
+    <div style={{
+      background: 'var(--bg-card)', borderRadius: '16px', padding: '24px',
+      boxShadow: 'var(--card-shadow)', border: '1px solid #fca5a5', marginBottom: '24px'
+    }}>
+      <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '600', color: '#b91c1c' }}>
+        ⚠️ Topics to Review
+      </h2>
+      <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+        Based on your answers, you should spend more time reviewing these topics:
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {weakTopics.map(topic => (
+          <div key={topic.topic} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: 'var(--input-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <div>
+              <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{topic.topic}</div>
+              <div style={{ fontSize: '12px', color: '#ef4444' }}>{topic.wrongCount} mistakes</div>
+            </div>
+            {topic.noteStatus === 'released' ? (
+              <button
+                onClick={() => setOpenNoteId(topic.noteId)}
+                style={{ fontSize: '12px', color: '#059669', background: '#d1fae5', padding: '6px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: '600' }}
+              >
+                📘 Read Study Note
+              </button>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Note pending...</span>
+            )}
+          </div>
+        ))}
+      </div>
+      {openNoteId && (
+        <div
+          onClick={() => { setOpenNoteId(null); setOpenNote(null) }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}
+          >
+            {noteLoading ? (
+              <p style={{ color: 'var(--text-secondary)' }}>Loading note...</p>
+            ) : openNote ? (
+              <>
+                <h2 style={{ margin: '0 0 8px', color: 'var(--text-primary)' }}>{openNote.title}</h2>
+                <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>{openNote.topic}</p>
+                <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-primary)', fontSize: '14px', lineHeight: 1.6 }}>
+                  {openNote.content}
+                </div>
+              </>
+            ) : (
+              <p style={{ color: 'var(--text-secondary)' }}>Could not load note.</p>
+            )}
+            <button
+              onClick={() => { setOpenNoteId(null); setOpenNote(null) }}
+              style={{ marginTop: '16px', padding: '8px 16px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RoomResultsPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
@@ -198,6 +306,7 @@ function RoomResultsPage() {
     }}>
       <Sidebar user={user} />
 
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
       <div style={{
         flex: 1,
         minWidth: 0,
@@ -319,6 +428,16 @@ function RoomResultsPage() {
             ))}
           </div>
 
+          {/* Revision Suggestions — Teacher only */}
+          {user?.role === 'teacher' && (
+            <RevisionSuggestions roomId={roomId} token={token} />
+          )}
+
+          {/* Student Revision Summary */}
+          {user?.role === 'student' && (
+            <MyRevisionSummary roomId={roomId} token={token} userId={user._id} />
+          )}
+
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',
@@ -438,6 +557,10 @@ function RoomResultsPage() {
                               // For student: highlight their selection. For teacher: highlight correct answer
                               const showAsSelected = isTeacher ? isCorrect : isSelected
                               const highlightStyle = showAsSelected
+                                ? (isTeacher ? '#d1fae5' : (isSelected ? (isCorrect ? '#d1fae5' : '#fee2e2') : '#d1fae5'))
+                                : 'var(--bg-card)'
+                              const borderStyle = showAsSelected
+                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid #3b82f6' : '2px solid #059669'))
                                 ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
                                 : 'var(--bg-card)'
                               const borderStyle = showAsSelected
@@ -530,6 +653,10 @@ function RoomResultsPage() {
                           width: isMobile ? '100%' : 'auto',
                           textAlign: 'center',
                           padding: '16px',
+                          background: isTeacher
+                            ? (correctRate >= 70 ? '#d1fae5' : correctRate >= 40 ? '#fef3c7' : '#fee2e2')
+                            : (q.answered ? (q.isCorrect ? '#d1fae5' : '#fee2e2') : '#fef3c7'),
+                          borderRadius: '12px'
                           background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
                           border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
                           borderRadius: 'var(--radius)',
