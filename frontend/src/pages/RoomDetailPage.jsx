@@ -1794,19 +1794,18 @@ function RoomDetailPage() {
                         const response = await fetch(`${API_URL}/mindmap/generate`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                          body: JSON.stringify({ transcript: textToUse })
+                          body: JSON.stringify({ transcript: textToUse, roomCode: room.code })
                         })
                         const data = await response.json()
-                        if (data.success && socket && isConnected) {
-                          socket.emit('share_mindmap', { roomCode: room.code, markdown: data.markdown })
-                          alert('Mind map generated and shared with students!')
+                        if (response.status === 202 || data.success) {
+                          alert('Mind map generation started in the background! It will appear for students shortly.')
                         } else {
-                          throw new Error(data.error || 'Failed to generate')
+                          throw new Error(data.error || 'Failed to start generation')
                         }
                       } catch (err) {
                         alert('Error generating mind map: ' + err.message)
                       } finally {
-                        setIsGeneratingMindMap(false)
+                        setTimeout(() => setIsGeneratingMindMap(false), 5000) // disable button for 5s to prevent spam
                       }
                     }}
                     disabled={isGeneratingMindMap || !transcript}

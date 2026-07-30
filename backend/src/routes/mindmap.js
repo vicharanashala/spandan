@@ -10,17 +10,32 @@ router.use(authenticate)
 // POST /api/mindmap/generate
 // Authorization: teacher only
 router.post('/generate', authorize('teacher'), async (req, res) => {
-  try {
-    const { transcript } = req.body
+  const { transcript, roomCode } = req.body
 
-    if (!transcript || transcript.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Transcript is required'
-      })
-    }
+  if (!transcript || transcript.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Transcript is required'
+    })
+  }
+  
+  if (!roomCode) {
+    return res.status(400).json({
+      success: false,
+      error: 'roomCode is required'
+    })
+  }
 
-    const prompt = `You are an expert educational content structurer. Based on the following transcript, generate a Mind Map using Mermaid.js syntax.
+  // Respond immediately so the teacher's UI doesn't hang
+  res.status(202).json({
+    success: true,
+    message: 'Mind map generation started in the background'
+  })
+
+  // Process asynchronously
+  setImmediate(async () => {
+    try {
+      const prompt = `You are an expert educational content structurer. Based on the following transcript, generate a Mind Map using Mermaid.js syntax.
 
 RULES:
 1. Output ONLY valid mermaid.js mindmap syntax.
@@ -42,29 +57,25 @@ mindmap
 TRANSCRIPT:
 ${transcript}`
 
-    console.log('[mindmap] Calling Minimax API...')
-    let markdown = await generateWithMiniMax(prompt)
+      console.log('[mindmap] Calling Minimax API in background...')
+      let markdown = await generateWithMiniMax(prompt)
 
-    // Clean up potential markdown formatting from LLM
-    markdown = markdown.replace(/```mermaid/g, '').replace(/```/g, '').trim()
-    
-    // Ensure it starts with mindmap
-    if (!markdown.startsWith('mindmap')) {
-      markdown = 'mindmap\n' + markdown
+      // Clean up potential markdown formatting from LLM
+      markdown = markdown.replace(/```mermaid/g, '').replace(/```/g, '').trim()
+      
+      // Ensure it starts with mindmap
+      if (!markdown.startsWith('mindmap')) {
+        markdown = 'mindmap\n' + markdown
+      }
+      
+      const { io } = await import('../index.js')
+      io.to(roomCode).emit('mindmap_shared', { markdown })
+      console.log(`[mindmap] Background generation complete, broadcasted to room ${roomCode}.`)
+
+    } catch (error) {
+      console.error('Mindmap background generation error:', error)
     }
-
-    res.json({
-      success: true,
-      markdown
-    })
-
-  } catch (error) {
-    console.error('Mindmap generation error:', error)
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to generate mind map'
-    })
-  }
+  })
 })
 
 export default router
