@@ -396,7 +396,7 @@ export function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+export async function generateWithMiniMax(prompt) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {

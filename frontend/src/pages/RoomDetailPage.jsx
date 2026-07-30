@@ -81,6 +81,7 @@ function RoomDetailPage() {
 
   // Question generation
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
+  const [isGeneratingMindMap, setIsGeneratingMindMap] = useState(false)
   const [pendingQuestions, setPendingQuestions] = useState([])
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
@@ -1783,6 +1784,48 @@ function RoomDetailPage() {
                     }}
                   >
                     {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const textToUse = segmentTranscript.trim() || transcript
+                      if (!textToUse) return alert('No transcript available.')
+                      setIsGeneratingMindMap(true)
+                      try {
+                        const response = await fetch(`${API_URL}/mindmap/generate`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({ transcript: textToUse })
+                        })
+                        const data = await response.json()
+                        if (data.success && socket && isConnected) {
+                          socket.emit('share_mindmap', { roomCode: room.code, markdown: data.markdown })
+                          alert('Mind map generated and shared with students!')
+                        } else {
+                          throw new Error(data.error || 'Failed to generate')
+                        }
+                      } catch (err) {
+                        alert('Error generating mind map: ' + err.message)
+                      } finally {
+                        setIsGeneratingMindMap(false)
+                      }
+                    }}
+                    disabled={isGeneratingMindMap || !transcript}
+                    style={{
+                      padding: '4px 12px',
+                      background: '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: '500',
+                      cursor: isGeneratingMindMap || !transcript ? 'not-allowed' : 'pointer',
+                      opacity: isGeneratingMindMap || !transcript ? 0.6 : 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    {isGeneratingMindMap ? '⏳ Generating...' : '🧠 Mind Map'}
                   </button>
                 </div>
               </div>

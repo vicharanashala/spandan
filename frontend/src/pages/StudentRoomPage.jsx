@@ -8,6 +8,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
+import MindMapViewer from '../components/MindMapViewer'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
@@ -40,6 +41,8 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const [mindmaps, setMindmaps] = useState([])
+  const [showMindMapsModal, setShowMindMapsModal] = useState(false)
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -194,6 +197,11 @@ function StudentRoomPage() {
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
+    socket.on('mindmap_shared', (data) => {
+      if (data && data.markdown) {
+        setMindmaps(prev => [...prev, data.markdown])
+      }
+    })
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
@@ -212,6 +220,7 @@ function StudentRoomPage() {
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
+      socket.off('mindmap_shared')
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
@@ -961,6 +970,63 @@ function StudentRoomPage() {
           )}
         </div>
       </div>
+
+      {/* Floating Mind Map Button */}
+      {mindmaps.length > 0 && !showMindMapsModal && (
+        <button
+          onClick={() => setShowMindMapsModal(true)}
+          style={{
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            background: '#10b981',
+            color: 'white',
+            padding: '12px 20px',
+            borderRadius: '24px',
+            fontWeight: 'bold',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          🧠 View Mind Maps ({mindmaps.length})
+        </button>
+      )}
+
+      {/* Mind Map Modal */}
+      {showMindMapsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.6)',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '20px'
+        }}>
+          <div style={{
+            background: 'var(--bg-primary)',
+            width: '100%',
+            maxWidth: '900px',
+            maxHeight: '90vh',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', color: 'var(--text-primary)' }}>🧠 Lecture Mind Maps</h2>
+              <button onClick={() => setShowMindMapsModal(false)} style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: 'var(--text-secondary)' }}>&times;</button>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', background: 'var(--bg-secondary)' }}>
+              <MindMapViewer maps={mindmaps} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
