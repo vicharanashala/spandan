@@ -855,6 +855,7 @@ router.get('/analytics/student/:studentId/topic', async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const mongoose = (await import('mongoose')).default
     const { studentId } = req.params
+    const { roomId } = req.query
     const currentUser = req.user
 
     if (currentUser.role === 'student' && currentUser._id.toString() !== studentId) {
@@ -868,8 +869,29 @@ router.get('/analytics/student/:studentId/topic', async (req, res) => {
       return res.status(400).json({ error: 'Invalid student ID' })
     }
 
+    // Optional room scoping — when roomId is provided, scope results to that room only
+    let roomObjectId = null
+    if (roomId) {
+      try {
+        roomObjectId = new mongoose.Types.ObjectId(roomId)
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid room ID' })
+      }
+
+      // Verify student is a member of the requested room
+      const RoomMember = (await import('../models/RoomMember.js')).default
+      const isMember = await RoomMember.findOne({ roomId: roomObjectId, studentId: studentObjectId }).select('_id').lean()
+      if (!isMember) {
+        return res.status(403).json({ error: 'Not a member of this room' })
+      }
+    }
+
+    // Build match stage — include roomId filter only when scoping to a specific room
+    const matchStage = { studentId: studentObjectId }
+    if (roomObjectId) matchStage.roomId = roomObjectId
+
     const weaknessMap = await Response.aggregate([
-      { $match: { studentId: studentObjectId } },
+      { $match: matchStage },
       {
         $lookup: {
           from: 'questions',
@@ -919,6 +941,7 @@ router.get('/analytics/student/:studentId/topic', async (req, res) => {
     res.json({
       success: true,
       studentId,
+      ...(roomId && { roomId }),
       weaknesses: weaknessMap
     })
   } catch (error) {

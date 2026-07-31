@@ -66,3 +66,99 @@ describe('TAWM Topic Aggregation Logic', () => {
     expect(result).toHaveLength(0)
   })
 })
+
+// Room-scoping tests: verify that filtering by roomId correctly excludes other rooms' data
+describe('TAWM Room Scoping Logic', () => {
+
+  const ROOM_A = 'roomA'
+  const ROOM_B = 'roomB'
+
+  // Simulates the server-side $match filter applied when roomId is supplied
+  function calculateTopicStatsForRoom(allResponses, roomId) {
+    const scoped = roomId
+      ? allResponses.filter(r => r.roomId === roomId)
+      : allResponses
+    const topicMap = {}
+    scoped.forEach(r => {
+      const topic = r.topic || 'Untagged'
+      if (!topicMap[topic]) topicMap[topic] = { topic, totalQuestions: 0, correctCount: 0 }
+      topicMap[topic].totalQuestions += 1
+      if (r.isCorrect) topicMap[topic].correctCount += 1
+    })
+    return Object.values(topicMap).map(t => ({
+      ...t,
+      correctRate: t.totalQuestions > 0 ? Math.round((t.correctCount / t.totalQuestions) * 100) : 0,
+      status: (t.correctCount / t.totalQuestions) >= 0.7 ? 'strong'
+            : (t.correctCount / t.totalQuestions) >= 0.4 ? 'improving'
+            : 'weak'
+    }))
+  }
+
+  const allResponses = [
+    { roomId: ROOM_A, topic: 'Math',    isCorrect: true  },
+    { roomId: ROOM_A, topic: 'Math',    isCorrect: true  },
+    { roomId: ROOM_A, topic: 'Math',    isCorrect: false },
+    { roomId: ROOM_B, topic: 'Science', isCorrect: false },
+    { roomId: ROOM_B, topic: 'Science', isCorrect: false },
+  ]
+
+  it('should exclude responses from other rooms when roomId is specified', () => {
+    const result = calculateTopicStatsForRoom(allResponses, ROOM_A)
+    const topics = result.map(t => t.topic)
+    expect(topics).toContain('Math')
+    expect(topics).not.toContain('Science')
+  })
+
+  it('should include only responses from the queried room with correct aggregation', () => {
+    const result = calculateTopicStatsForRoom(allResponses, ROOM_A)
+    expect(result).toHaveLength(1)
+    const math = result[0]
+    expect(math.totalQuestions).toBe(3)
+    expect(math.correctCount).toBe(2)
+    expect(math.correctRate).toBe(67)
+    expect(math.status).toBe('improving')
+  })
+
+  it('should aggregate across all rooms when no roomId is given', () => {
+    const result = calculateTopicStatsForRoom(allResponses, null)
+    const topics = result.map(t => t.topic)
+    expect(topics).toContain('Math')
+    expect(topics).toContain('Science')
+    expect(result).toHaveLength(2)
+  })
+
+  it('should return empty when student has no responses in the queried room', () => {
+    const result = calculateTopicStatsForRoom(allResponses, 'roomC')
+    expect(result).toHaveLength(0)
+  })
+})
+
+// Authorization simulation: membership check that guards the scoped endpoint
+describe('TAWM Membership Authorization', () => {
+
+  // Simulates the server-side guard: when roomId is provided, student must be a member
+  function checkMembership(memberRoomIds, requestedRoomId) {
+    if (!requestedRoomId) return { allowed: true }
+    if (!memberRoomIds.includes(requestedRoomId)) {
+      return { allowed: false, status: 403, error: 'Not a member of this room' }
+    }
+    return { allowed: true }
+  }
+
+  it('should allow access when student is a member of the requested room', () => {
+    const result = checkMembership(['roomA', 'roomB'], 'roomA')
+    expect(result.allowed).toBe(true)
+  })
+
+  it('should deny access with 403 when student is NOT a member of the requested room', () => {
+    const result = checkMembership(['roomA'], 'roomZ')
+    expect(result.allowed).toBe(false)
+    expect(result.status).toBe(403)
+    expect(result.error).toBe('Not a member of this room')
+  })
+
+  it('should allow access when no roomId is provided (global endpoint, no membership check)', () => {
+    const result = checkMembership([], null)
+    expect(result.allowed).toBe(true)
+  })
+})

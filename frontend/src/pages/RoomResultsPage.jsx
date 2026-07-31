@@ -19,6 +19,7 @@ function RoomResultsPage() {
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
+  const [topicPerformance, setTopicPerformance] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState({
     totalResponses: 0,
@@ -94,6 +95,18 @@ function RoomResultsPage() {
           userRank,
           totalPoints
         })
+
+        // Fetch per-room topic performance — scoped to this room via ?roomId
+        try {
+          const topicRes = await fetch(
+            `${API_URL}/responses/analytics/student/${user._id}/topic?roomId=${roomId}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          )
+          const topicData = await topicRes.json()
+          if (topicData.success) setTopicPerformance(topicData.weaknesses || [])
+        } catch {
+          // non-fatal — topic section will show empty state
+        }
       } else {
         // Teacher: fetch ALL questions (pages past the API's 50/page cap) so results show the true
         // question count and every question's stats. Students don't need this — their per-response
@@ -318,6 +331,78 @@ function RoomResultsPage() {
               </div>
             ))}
           </div>
+
+          {/* Topic Performance — students only, scoped to this room */}
+          {user?.role === 'student' && (
+            <div style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-md)',
+              padding: isMobile ? '18px' : '24px',
+              marginBottom: '24px',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
+            }}>
+              <h2 style={{
+                margin: '0 0 16px',
+                fontSize: '18px',
+                fontWeight: 700,
+                letterSpacing: '-0.01em',
+                color: 'var(--text-primary)'
+              }}>
+                📚 Your Topic Performance
+              </h2>
+
+              {topicPerformance.length === 0 ? (
+                <p style={{
+                  margin: 0,
+                  fontSize: '14px',
+                  color: 'var(--text-secondary)',
+                  fontStyle: 'italic'
+                }}>
+                  No topic data available for this room yet.
+                </p>
+              ) : (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(200px, 1fr))',
+                  gap: '12px'
+                }}>
+                  {topicPerformance.map((w) => {
+                    const color = w.status === 'weak' ? '#ef4444' : w.status === 'improving' ? '#f59e0b' : '#10b981'
+                    const bg = w.status === 'weak' ? '#fee2e2' : w.status === 'improving' ? '#fef3c7' : '#d1fae5'
+                    const dot = w.status === 'weak' ? '🔴' : w.status === 'improving' ? '🟡' : '🟢'
+                    return (
+                      <div key={w.topic} style={{
+                        padding: '14px 16px',
+                        borderRadius: 'var(--radius)',
+                        background: bg,
+                        border: `2px solid ${color}`
+                      }}>
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginBottom: '4px'
+                        }}>
+                          <span style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937' }}>
+                            {w.topic === 'Untagged' ? '📋 Untagged' : w.topic}
+                          </span>
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#1f2937' }}>
+                            {w.correctRate}%
+                          </span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#6b7280' }}>
+                          {w.correctCount}/{w.totalQuestions} correct {dot}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Questions Analysis */}
           <div style={{
