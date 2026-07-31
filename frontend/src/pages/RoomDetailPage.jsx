@@ -13,6 +13,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
@@ -339,8 +340,14 @@ function RoomDetailPage() {
   const handleSegmentComplete = async () => {
     console.log('[SEGMENT] Timer hit zero - handling segment completion')
 
-    // PAUSE: stop recording and flush the final complete audio window before using the transcript.
-    await stopRecording()
+    // PAUSE: stop capturing and flush the final complete audio window before using the transcript.
+    // In video mode keep the shared tab-audio stream alive for the next segment (only stop the loop).
+    if (isVideoMode) {
+      await stopVideoTranscriptionLoop()
+      ytPlayerRef.current?.pauseVideo?.() // stop the video while questions generate and the poll runs
+    } else {
+      await stopRecording()
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -369,6 +376,7 @@ function RoomDetailPage() {
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
       startRecording({ resetSegment: false })
+      if (isVideoMode) resumeTeacherVideo()
       return
     }
 
@@ -679,6 +687,26 @@ function RoomDetailPage() {
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
+    // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
+    // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
+    // loop for the next segment; do NOT call getUserMedia/getDisplayMedia here.
+    if (isVideoMode) {
+      if (!streamRef.current) return
+      setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
+      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+      setSegmentTranscript(''); segmentTranscriptRef.current = ''
+      transcriptionQueueRef.current = []
+      nextSequenceRef.current = 0
+      pendingSequenceRef.current = 0
+      isProcessingQueueRef.current = false
+      recordingActiveRef.current = true
+      setIsRecording(true)
+      setIsTranscribing(true)
+      setModelStatus('Listening...')
+      startTranscriptionWindow()
+      return
+    }
+
     try {
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -774,6 +802,186 @@ function RoomDetailPage() {
       startRecording()
     }
   }
+
+  // --- Video Mode (Phase 2: teacher player + tab-audio capture into the existing pipeline) ---
+  const isVideoMode = roomSettings.mode === 'video'
+  const videoId = isVideoMode ? extractYouTubeId(roomSettings.videoUrl) : null
+  const videoIsLiveHint = /\/live\//.test(roomSettings.videoUrl || '')
+  const ytPlayerRef = useRef(null)
+  const [videoSessionActive, setVideoSessionActive] = useState(false)
+  const [isLiveStream, setIsLiveStream] = useState(false)
+  // Teacher-side editing of the room's YouTube link (live or normal) after creation.
+  const [editingLink, setEditingLink] = useState(false)
+  const [linkDraft, setLinkDraft] = useState('')
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [linkError, setLinkError] = useState('')
+  const isValidYouTube = (url) =>
+    /(?:youtube\.com\/(?:watch\?v=|live\/|embed\/)|youtu\.be\/)[\w-]+/.test((url || '').trim())
+  const saveVideoLink = async () => {
+    const url = linkDraft.trim()
+    if (!isValidYouTube(url)) { setLinkError('Enter a valid YouTube link (watch, live, or youtu.be).'); return }
+    setLinkSaving(true)
+    setLinkError('')
+    try {
+      // Merge with current settings so we never drop other keys; PUT /rooms/:id persists it.
+      await updateRoom(room._id, { settings: { ...roomSettings, mode: 'video', videoUrl: url } })
+      // Update local settings so videoId recomputes and the player reloads with the new video.
+      setRoomSettings(prev => ({ ...prev, mode: 'video', videoUrl: url }))
+      setEditingLink(false)
+    } catch (e) {
+      setLinkError(e.message || 'Failed to update the link.')
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+  // Mirror live status into a ref so resumeTeacherVideo() (invoked from popup/timeout closures) reads
+  // the CURRENT value, never a stale-closure snapshot from before detection settled.
+  const isLiveStreamRef = useRef(false)
+  const handleLiveStatus = (live) => { isLiveStreamRef.current = live; setIsLiveStream(live) }
+
+  // Resume the teacher's video after a poll. For a LIVE stream, jump to the live edge so we rejoin
+  // the current broadcast instead of falling behind by the poll + answer time. We query the player
+  // DIRECTLY (not the React isLiveStream state) so this fires reliably even if live-detection state
+  // hasn't settled or was captured stale by an older closure.
+  const resumeTeacherVideo = () => {
+    // Tell students the popup window is over so they resume + jump to the live edge (fire even if the
+    // teacher's own player ref isn't ready).
+    if (socket && room?.code) socket.emit('video:resume', { roomCode: room.code })
+    const p = ytPlayerRef.current
+    if (!p) return
+    let ps = null
+    try { ps = p.getProgressState?.() } catch (e) { /* ignore */ }
+    const live = (ps && ps.isLive === true) || videoIsLiveHint || isLiveStreamRef.current
+    console.log('[VIDEO] resumeTeacherVideo', { live, isLiveState: isLiveStreamRef.current, urlHint: videoIsLiveHint, progressState: ps })
+    p.playVideo?.()
+    if (!(live && typeof p.seekTo === 'function')) return
+    // Jump to the CURRENT live edge. seekTo issued immediately after playVideo() is often ignored
+    // while the player is still transitioning out of the paused state, so it lands back at the paused
+    // position. Re-seek a couple of times after the player settles, re-querying the fresh live edge
+    // (seekableEnd advances in real time even while paused) each attempt.
+    const seekToLiveEdge = () => {
+      const pl = ytPlayerRef.current
+      if (!pl || typeof pl.seekTo !== 'function') return
+      let fresh = null
+      try { fresh = pl.getProgressState?.() } catch (e) { /* ignore */ }
+      let edge = fresh && Number.isFinite(fresh.seekableEnd) ? fresh.seekableEnd : 0
+      if (!(edge > 0) && typeof pl.getDuration === 'function') edge = pl.getDuration()
+      pl.seekTo(edge > 0 ? edge : 1e7, true)
+      pl.playVideo?.()
+    }
+    seekToLiveEdge()                 // immediate attempt
+    setTimeout(seekToLiveEdge, 400)  // after the player resumes out of the paused state
+    setTimeout(seekToLiveEdge, 1200) // final catch for slow buffering/transition
+  }
+
+  // Acquire the tab's audio ONCE. getDisplayMedia re-prompts on every call, so the stream must persist
+  // across the whole segment loop — unlike the mic path, which can re-acquire silently each segment.
+  const beginVideoSession = async () => {
+    if (isEnded || videoSessionActive) return
+    try {
+      // preferCurrentTab makes the browser's share picker default to THIS tab (and drop the
+      // window/screen chooser), so the teacher just clicks "Share" once instead of hunting for the
+      // right tab. Chromium-only hint; ignored elsewhere. The prompt itself can't be removed — the
+      // browser always requires an explicit user confirm for screen/tab capture.
+      const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true, preferCurrentTab: true })
+      const audioTracks = display.getAudioTracks()
+      if (!audioTracks.length) {
+        display.getTracks().forEach(t => t.stop())
+        setModelStatus('No tab audio — re-share and tick "Share tab audio"')
+        return
+      }
+      display.getVideoTracks().forEach(t => t.stop()) // only the audio is needed
+      const stream = new MediaStream(audioTracks)
+      // If the teacher stops sharing via the browser UI, end the capture session.
+      audioTracks[0].addEventListener('ended', () => {
+        setVideoSessionActive(false)
+        stopRecording()
+      })
+      streamRef.current = stream
+
+      let selectedMimeType = 'audio/ogg'
+      for (const t of ['audio/ogg;codecs=opus', 'audio/ogg', 'audio/webm;codecs=opus', 'audio/webm']) {
+        if (MediaRecorder.isTypeSupported(t)) { selectedMimeType = t; break }
+      }
+      selectedMimeTypeRef.current = selectedMimeType
+
+      // Fresh session state
+      setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
+      setSegmentTranscript(''); segmentTranscriptRef.current = ''
+      transcriptionQueueRef.current = []; nextSequenceRef.current = 0
+      pendingSequenceRef.current = 0; isProcessingQueueRef.current = false
+      setCurrentSegment(1)
+      setVideoSessionActive(true)
+      setModelStatus('Ready - press play to begin')
+
+      // If the video is already playing, begin capturing immediately.
+      if (ytPlayerRef.current?.getPlayerState?.() === 1) {
+        recordingActiveRef.current = true
+        setIsTranscribing(true); setModelStatus('Listening...')
+        startTranscriptionWindow()
+        setIsRecording(true)
+      }
+    } catch (e) {
+      console.error('beginVideoSession failed:', e)
+      setModelStatus('Tab share cancelled')
+    }
+  }
+
+  // Stop the transcription windows but KEEP the shared tab-audio stream (used at segment completion).
+  const stopVideoTranscriptionLoop = async () => {
+    recordingActiveRef.current = false
+    if (transcriptionIntervalRef.current) { clearTimeout(transcriptionIntervalRef.current); transcriptionIntervalRef.current = null }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop()
+    if (mediaRecorderStopPromiseRef.current) { await mediaRecorderStopPromiseRef.current; mediaRecorderStopPromiseRef.current = null }
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await processTranscriptionQueue()
+    if (segmentTimerRef.current) { clearInterval(segmentTimerRef.current); segmentTimerRef.current = null }
+    setIsRecording(false); setIsTranscribing(false); setModelStatus('Ready')
+    // streamRef intentionally kept alive for the next segment.
+  }
+
+  // Play -> (re)start the 10s transcription windows + arm/resume the segment timer. Stream stays alive.
+  const handleVideoPlay = () => {
+    if (isEnded || !videoSessionActive) return
+    if (recordingActiveRef.current) return
+    recordingActiveRef.current = true
+    setIsTranscribing(true); setModelStatus('Listening...')
+    startTranscriptionWindow()
+    if (isSegmentPaused) resumeSegmentTimer()
+    else if (!isRecording) setIsRecording(true) // first play arms a fresh segment timer
+  }
+
+  // Pause -> stop the transcription windows (flush current) + freeze the timer. Keep the stream.
+  const handleVideoPause = () => {
+    if (!videoSessionActive || !recordingActiveRef.current) return
+    recordingActiveRef.current = false
+    if (transcriptionIntervalRef.current) { clearTimeout(transcriptionIntervalRef.current); transcriptionIntervalRef.current = null }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop()
+    setIsTranscribing(false)
+    if (segmentTimerRef.current) pauseSegmentTimer()
+  }
+
+  // Broadcast the teacher's video position so students can use it as their forward-seek ceiling
+  // (lets a reloaded/late-joining student catch up to where the class is).
+  useEffect(() => {
+    if (!isVideoMode || !socket || !room?.code) return
+    const id = setInterval(() => {
+      const p = ytPlayerRef.current
+      if (p && typeof p.getCurrentTime === 'function') {
+        const playing = typeof p.getPlayerState === 'function' ? p.getPlayerState() === 1 : true
+        socket.emit('video:progress', { roomCode: room.code, time: p.getCurrentTime(), playing })
+      }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [isVideoMode, socket, room?.code])
+
+  // Hold students' video paused for the whole approval-popup window: pause the moment the popup OPENS
+  // (after generation), not when the teacher's own video paused at segment-complete. Resume is handled
+  // by resumeTeacherVideo() when the popup closes.
+  useEffect(() => {
+    if (!isVideoMode || !showQuestionPopup || !socket || !room?.code) return
+    socket.emit('video:pause', { roomCode: room.code })
+  }, [showQuestionPopup, isVideoMode, socket, room?.code])
 
   const clearTranscript = () => {
     setTranscript('')
@@ -1305,10 +1513,10 @@ This will immediately remove it from students' screens. You can restore it later
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
-            {/* Microphone Card - 30% */}
+          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '470px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+            {/* Microphone / Video Card */}
             <div style={{
-              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+              flex: isMobile ? '1 1 100%' : (isVideoMode ? '1 1 calc(60% - 10px)' : '1 1 calc(30% - 10px)'),
               minWidth: isMobile ? 0 : '280px',
               maxWidth: '100%',
               background: 'var(--bg-card)',
@@ -1323,6 +1531,131 @@ This will immediately remove it from students' screens. You can restore it later
               boxSizing: 'border-box',
               overflow: 'hidden'
             }}>
+              {/* Video player (video mode) */}
+              {isVideoMode && (
+                <div style={{ width: '100%' }}>
+                  {/* Editable YouTube link (live or normal) */}
+                  <div style={{ marginBottom: '10px' }}>
+                    {!editingLink ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ flex: 1, minWidth: 0, fontSize: '12px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {roomSettings.videoUrl || 'No link set'}
+                        </span>
+                        <button
+                          onClick={() => { setLinkDraft(roomSettings.videoUrl || ''); setLinkError(''); setEditingLink(true) }}
+                          disabled={isEnded}
+                          style={{
+                            padding: '5px 12px', fontSize: '12px', fontWeight: 600,
+                            background: 'transparent', color: 'var(--accent)',
+                            border: '1px solid var(--accent)', borderRadius: 'var(--radius)',
+                            cursor: isEnded ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap'
+                          }}
+                        >
+                          Edit link
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <input
+                          type="text"
+                          value={linkDraft}
+                          onChange={(e) => { setLinkDraft(e.target.value); if (linkError) setLinkError('') }}
+                          placeholder="Paste YouTube live or video link"
+                          autoFocus
+                          style={{
+                            width: '100%', padding: '9px 12px', fontSize: '13px',
+                            border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxSizing: 'border-box'
+                          }}
+                        />
+                        {linkError && (
+                          <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#dc2626' }}>{linkError}</p>
+                        )}
+                        {videoSessionActive && (
+                          <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#b45309' }}>
+                            A capture session is active — changing the link reloads the player.
+                          </p>
+                        )}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                          <button
+                            onClick={saveVideoLink}
+                            disabled={linkSaving || !isValidYouTube(linkDraft)}
+                            style={{
+                              padding: '7px 16px', fontSize: '12px', fontWeight: 600,
+                              background: (linkSaving || !isValidYouTube(linkDraft)) ? '#9ca3af' : 'var(--accent-gradient)',
+                              color: '#fff', border: 'none', borderRadius: 'var(--radius)',
+                              cursor: (linkSaving || !isValidYouTube(linkDraft)) ? 'not-allowed' : 'pointer'
+                            }}
+                          >
+                            {linkSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => { setEditingLink(false); setLinkError('') }}
+                            disabled={linkSaving}
+                            style={{
+                              padding: '7px 16px', fontSize: '12px', fontWeight: 600,
+                              background: 'transparent', color: 'var(--text-secondary)',
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {isLiveStream && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                      <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: 700, letterSpacing: '0.03em' }}>LIVE</span>
+                    </div>
+                  )}
+                  {videoId ? (
+                    <YouTubeVideo
+                      videoId={videoId}
+                      controls={true}
+                      playerRef={ytPlayerRef}
+                      onPlay={handleVideoPlay}
+                      onPause={handleVideoPause}
+                      onEnd={handleVideoPause}
+                      onLiveStatus={handleLiveStatus}
+                    />
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#dc2626', fontSize: '13px' }}>
+                      Invalid YouTube link for this room.
+                    </div>
+                  )}
+                  {videoId && !videoSessionActive && (
+                    <button
+                      onClick={beginVideoSession}
+                      disabled={isEnded}
+                      style={{
+                        width: '100%',
+                        marginTop: '12px',
+                        padding: '11px 16px',
+                        background: isEnded ? '#9ca3af' : 'var(--accent-gradient)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 'var(--radius)',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: isEnded ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      Start Session (share this tab's audio)
+                    </button>
+                  )}
+                  <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                    {videoSessionActive
+                      ? (isTranscribing ? 'Listening to tab audio...' : 'Session ready - press play to capture.')
+                      : 'Share this tab’s audio, then play the video to capture the lecture.'}
+                    {'  '}{modelStatus}
+                  </p>
+                </div>
+              )}
+
+              {/* Mic controls (normal mode) */}
+              {!isVideoMode && (
+              <>
               {/* Mic Button */}
               <button
                 onClick={toggleRecording}
@@ -1387,6 +1720,8 @@ This will immediately remove it from students' screens. You can restore it later
                   <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
                 </div>
               )}
+              </>
+              )}
 
               {/* Settings Labels Below Mic */}
               <div style={{
@@ -1425,9 +1760,9 @@ This will immediately remove it from students' screens. You can restore it later
               </div>
             </div>
 
-            {/* Transcription Card - 70% */}
+            {/* Transcription Card */}
             <div style={{
-              flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
+              flex: isMobile ? '1 1 100%' : (isVideoMode ? '1 1 calc(40% - 10px)' : '1 1 calc(70% - 10px)'),
               minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
               minHeight: isMobile ? '260px' : undefined,
@@ -1505,6 +1840,9 @@ This will immediately remove it from students' screens. You can restore it later
                 color: transcript ? 'var(--text-primary)' : 'var(--text-secondary)',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
+                // Cap the height so a long transcript scrolls INSIDE this box instead of growing the
+                // card and forcing the whole page to scroll.
+                maxHeight: isMobile ? '220px' : '470px',
                 overflowY: 'auto'
               }}>
                 {transcript ? transcript : (
@@ -1752,6 +2090,7 @@ This will immediately remove it from students' screens. You can restore it later
 
             // Resume recording for next segment
             startRecording({ resetSegment: false })
+            if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
 
             // Timer will auto-start via the useEffect since isPendingReview is now false
           }}
@@ -1767,6 +2106,7 @@ This will immediately remove it from students' screens. You can restore it later
             setGenerateQEnabled(true)
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
             startRecording({ resetSegment: false })
+            if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
           }}
         />
       )}
