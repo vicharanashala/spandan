@@ -108,6 +108,7 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [retractingId, setRetractingId] = useState(null) // question being retracted (loading state)
 
   useEffect(() => {
     if (token) {
@@ -210,6 +211,20 @@ function RoomDetailPage() {
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
+
+  // Listen for question:retracted — updates the teacher's question list and clears the active
+  // question state if the retracted question was live when retraction happened.
+  useEffect(() => {
+    if (!socket) return
+    const handleRetracted = ({ questionId }) => {
+      setGeneratedQuestions(prev =>
+        prev.map(q => q._id === questionId ? { ...q, retracted: true } : q)
+      )
+      setActiveQuestion(prev => (prev && (prev._id === questionId || prev.id === questionId) ? null : prev))
+    }
+    socket.on('question:retracted', handleRetracted)
+    return () => socket.off('question:retracted', handleRetracted)
+  }, [socket])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -935,6 +950,37 @@ function RoomDetailPage() {
     }
   }
 
+  // Retract a question: calls the backend, then the backend broadcasts 'question:retracted'
+  // to all room clients (handled above in the socket listener). Optimistically marks the
+  // question retracted locally for instant feedback while the request is in-flight.
+  const handleRetractQuestion = async (q) => {
+    if (!window.confirm(`Retract "${q.question.substring(0, 60)}..."?
+
+This will immediately remove it from students' screens. You can restore it later from the Results page.`)) return
+    setRetractingId(q._id)
+    try {
+      const res = await fetch(`${API_URL}/questions/${q._id}/retract`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert('Failed to retract question: ' + (err.error || 'Unknown error'))
+        return
+      }
+      // Optimistic local update — the socket event will also fire and update the list.
+      setGeneratedQuestions(prev =>
+        prev.map(item => item._id === q._id ? { ...item, retracted: true } : item)
+      )
+      setActiveQuestion(prev => (prev && (prev._id === q._id || prev.id === q._id) ? null : prev))
+    } catch (error) {
+      console.error('Failed to retract question:', error)
+      alert('Failed to retract question')
+    } finally {
+      setRetractingId(null)
+    }
+  }
+
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
@@ -1496,21 +1542,23 @@ function RoomDetailPage() {
             {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                {generatedQuestions.map((q, index) => (
+                 {generatedQuestions.map((q, index) => (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
-                    background: 'var(--bg-primary)',
+                    background: q.retracted ? 'color-mix(in srgb, #dc2626 6%, var(--bg-primary))' : 'var(--bg-primary)',
                     borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
+                    border: q.retracted ? '1px dashed #fca5a5' : '1px solid var(--border-color)',
                     display: 'flex',
                     alignItems: 'flex-start',
-                    gap: '12px'
+                    gap: '12px',
+                    opacity: q.retracted ? 0.6 : 1,
+                    transition: 'all 0.2s ease'
                   }}>
                     <span style={{
                       width: '28px',
                       height: '28px',
                       borderRadius: '50%',
-                      background: '#3b82f6',
+                      background: q.retracted ? '#9ca3af' : '#3b82f6',
                       color: 'white',
                       display: 'flex',
                       alignItems: 'center',
@@ -1522,7 +1570,7 @@ function RoomDetailPage() {
                       {index + 1}
                     </span>
                     <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
                         <span style={{
                           padding: '2px 8px',
                           borderRadius: '4px',
@@ -1543,8 +1591,28 @@ function RoomDetailPage() {
                         }}>
                           {q.points || 100} pts
                         </span>
+                        {q.retracted && (
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '700',
+                            background: '#fee2e2',
+                            color: '#dc2626',
+                            letterSpacing: '0.03em'
+                          }}>
+                            ✕ RETRACTED
+                          </span>
+                        )}
                       </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                      <p style={{
+                        margin: '0 0 12px 0',
+                        fontSize: '14px',
+                        color: q.retracted ? 'var(--text-secondary)' : 'var(--text-primary)',
+                        lineHeight: '1.5',
+                        fontWeight: '500',
+                        textDecoration: q.retracted ? 'line-through' : 'none'
+                      }}>
                         {q.question}
                       </p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -1588,7 +1656,7 @@ function RoomDetailPage() {
                         })}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', marginLeft: '8px' }}>
                       <span style={{
                         padding: '4px 10px',
                         borderRadius: '6px',
@@ -1600,6 +1668,31 @@ function RoomDetailPage() {
                         {answerCounts[q._id] || 0}/{totalParticipants}
                       </span>
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                      {/* Retract button — only shown for non-retracted questions in a live session */}
+                      {!isEnded && !q.retracted && (
+                        <button
+                          id={`retract-btn-${q._id}`}
+                          onClick={() => handleRetractQuestion(q)}
+                          disabled={retractingId === q._id}
+                          title="Retract this question — removes it from student screens and excludes it from scoring"
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: 'transparent',
+                            color: retractingId === q._id ? '#9ca3af' : '#dc2626',
+                            border: `1px solid ${retractingId === q._id ? '#e5e7eb' : '#fca5a5'}`,
+                            cursor: retractingId === q._id ? 'wait' : 'pointer',
+                            whiteSpace: 'nowrap',
+                            transition: 'all 0.15s ease'
+                          }}
+                          onMouseEnter={e => { if (retractingId !== q._id) { e.currentTarget.style.background = '#fee2e2'; e.currentTarget.style.borderColor = '#dc2626' } }}
+                          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = retractingId === q._id ? '#e5e7eb' : '#fca5a5' }}
+                        >
+                          {retractingId === q._id ? '...' : '✕ Retract'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

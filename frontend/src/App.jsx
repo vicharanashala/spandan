@@ -132,9 +132,9 @@ function App() {
       document.documentElement.removeAttribute('data-theme')
     }
   }, [isDark])
-
+  const BASE_PATH = import.meta.env.VITE_BASE_PATH || ''
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={BASE_PATH}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />

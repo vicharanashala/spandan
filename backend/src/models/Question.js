@@ -55,12 +55,21 @@ const questionSchema = new mongoose.Schema({
   closeAt: {
     type: Date,
     default: null
+  },
+  // Teacher-initiated retraction. When true the question is excluded from all scoring aggregations,
+  // the leaderboard, the student results view, and the CSV export — as if it was never asked.
+  // It remains visible (muted) to the teacher so they can restore it if needed.
+  // Set by POST /api/questions/:id/retract; cleared by POST /api/questions/:id/restore.
+  retracted: {
+    type: Boolean,
+    default: false
   }
 })
 
-// Covers the hot query shapes: filter by room (+status) and sort by createdAt.
+// Covers the hot query shapes: filter by room (+status+retracted) and sort by createdAt.
 // Without this every question read (poll load, stats, history) is a full COLLSCAN.
 questionSchema.index({ roomId: 1, status: 1, createdAt: -1 })
+questionSchema.index({ roomId: 1, retracted: 1, createdAt: -1 })
 
 const Question = mongoose.model('Question', questionSchema)
 

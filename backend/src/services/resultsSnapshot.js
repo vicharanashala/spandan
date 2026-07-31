@@ -87,9 +87,11 @@ export async function buildSnapshot(roomId) {
     list.push(r)
   }
 
-  // Approved questions, newest-first — the exact set + order the per-student endpoint renders.
+  // Approved, non-retracted questions, newest-first — the exact set + order the per-student endpoint
+  // renders. Retracted questions are excluded from all scoring; the teacher's direct results-page
+  // fetch (GET /api/questions?roomId=xxx) includes them separately (with retracted:true) for display.
   const approved = allQuestions
-    .filter((q) => q.status === 'approved')
+    .filter((q) => q.status === 'approved' && !q.retracted)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
 
   // Per-student breakdown, byte-identical (key order included) to the payload built by
@@ -122,8 +124,14 @@ export async function buildSnapshot(roomId) {
 
   // Per-question stats over ALL questions (matches the current stats/room endpoint, which does not
   // filter by status). One aggregation instead of the old find-per-question N+1 loop.
+  // Retracted questions are included in the list but their response counts will be zero (their
+  // responses are excluded from respByQuestion below via the response filter). The frontend shows
+  // them muted for teachers; they never appear on the student side.
+  const retractedIds = new Set(allQuestions.filter(q => q.retracted).map(q => toIdStr(q._id)))
   const questionStats = allQuestions.map((q) => {
-    const list = respByQuestion.get(toIdStr(q._id)) || []
+    const list = retractedIds.has(toIdStr(q._id))
+      ? [] // retracted — responses excluded from scoring
+      : (respByQuestion.get(toIdStr(q._id)) || [])
     const answerCounts = {}
     let correctCount = 0
     q.options.forEach((opt, idx) => {
@@ -135,6 +143,7 @@ export async function buildSnapshot(roomId) {
       questionId: toIdStr(q._id),
       question: q.question,
       type: q.type,
+      retracted: q.retracted || false,
       totalResponses: list.length,
       correctCount,
       answerCounts

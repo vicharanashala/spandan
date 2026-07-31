@@ -37,6 +37,7 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  const [retractionMessage, setRetractionMessage] = useState('')
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
@@ -143,9 +144,29 @@ function StudentRoomPage() {
       }
     }
 
+    const handleQuestionRetracted = (data) => {
+      setCurrentQuestion(prev => {
+        // If the student is currently looking at the retracted question, clear it.
+        const qId = prev?._id || prev?.question?._id
+        if (qId && String(qId) === String(data.questionId)) {
+          if (timerIntervalRef.current) {
+            clearInterval(timerIntervalRef.current)
+            timerIntervalRef.current = null
+          }
+          setRetractionMessage('The teacher removed that question.')
+          setTimeout(() => setRetractionMessage(''), 4000)
+          return null
+        }
+        return prev
+      })
+      // We don't strictly need to refetch past responses here because past retracted questions
+      // simply don't appear in the past-responses endpoint anyway.
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('question:retracted', handleQuestionRetracted)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -161,6 +182,7 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('question:retracted', handleQuestionRetracted)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
@@ -424,6 +446,30 @@ function StudentRoomPage() {
             </div>
           </div>
         </header>
+
+        {retractionMessage && (
+          <div style={{
+            margin: isMobile ? '12px 16px 0' : '16px 32px 0',
+            padding: '12px 16px',
+            background: '#fee2e2',
+            color: '#dc2626',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            boxShadow: '0 2px 8px rgba(220,38,38,0.15)',
+            animation: 'slideDown 0.3s ease-out'
+          }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+            {retractionMessage}
+          </div>
+        )}
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>

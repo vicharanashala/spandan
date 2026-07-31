@@ -26,6 +26,7 @@ function RoomResultsPage() {
     averageScore: 0,
     participationRate: 0
   })
+  const [isTogglingId, setIsTogglingId] = useState(null)
 
   useEffect(() => {
     if (token) {
@@ -144,6 +145,36 @@ function RoomResultsPage() {
       console.error('Failed to fetch room results:', err)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleToggleExclude = async (q) => {
+    if (!user || user.role !== 'teacher') return
+    const isRetracting = !q.retracted
+    
+    if (isRetracting && !window.confirm(`Exclude "${q.question.substring(0, 60)}..." from results?
+
+This will remove it from all scoring and the leaderboard.`)) return
+
+    setIsTogglingId(q._id)
+    try {
+      const endpoint = isRetracting ? 'retract' : 'restore'
+      const res = await fetch(`${API_URL}/questions/${q._id}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(`Failed to ${isRetracting ? 'exclude' : 'restore'} question: ` + (err.error || 'Unknown error'))
+        return
+      }
+      // Re-fetch all data to recalculate stats and leaderboard automatically
+      await fetchRoomData()
+    } catch (err) {
+      console.error('Failed to toggle question exclusion:', err)
+      alert(`Failed to ${isRetracting ? 'exclude' : 'restore'} question`)
+    } finally {
+      setIsTogglingId(null)
     }
   }
 
@@ -363,10 +394,12 @@ function RoomResultsPage() {
                   return (
                     <div key={q._id} style={{
                       padding: isMobile ? '16px' : '20px',
-                      background: 'var(--bg-primary)',
+                      background: q.retracted ? 'color-mix(in srgb, #9ca3af 10%, var(--bg-primary))' : 'var(--bg-primary)',
                       borderRadius: 'var(--radius)',
-                      border: '1px solid var(--border-color)',
-                      minWidth: 0
+                      border: q.retracted ? '1px dashed #9ca3af' : '1px solid var(--border-color)',
+                      opacity: q.retracted ? 0.7 : 1,
+                      minWidth: 0,
+                      transition: 'all 0.2s ease'
                     }}>
                       <div style={{
                         display: 'flex',
@@ -381,7 +414,7 @@ function RoomResultsPage() {
                               width: '28px',
                               height: '28px',
                               borderRadius: '50%',
-                              background: 'var(--accent)',
+                              background: q.retracted ? '#9ca3af' : 'var(--accent)',
                               color: 'white',
                               display: 'flex',
                               alignItems: 'center',
@@ -424,8 +457,29 @@ function RoomResultsPage() {
                                 {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
                               </span>
                             )}
+                            {q.retracted && (
+                              <span style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                background: '#f3f4f6',
+                                color: '#4b5563',
+                                letterSpacing: '0.03em',
+                                border: '1px solid #d1d5db'
+                              }}>
+                                EXCLUDED
+                              </span>
+                            )}
                           </div>
-                          <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                          <p style={{
+                            fontSize: '16px',
+                            fontWeight: 600,
+                            color: q.retracted ? 'var(--text-secondary)' : 'var(--text-primary)',
+                            margin: '0 0 14px',
+                            lineHeight: 1.5,
+                            textDecoration: q.retracted ? 'line-through' : 'none'
+                          }}>
                             {q.question}
                           </p>
 
@@ -538,11 +592,32 @@ function RoomResultsPage() {
                           {isTeacher ? (
                             <>
                               <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
-                                {correctRate !== null ? `${correctRate}%` : '0%'}
+                                {q.retracted ? '—' : (correctRate !== null ? `${correctRate}%` : '0%')}
                               </div>
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
-                                {qStats.totalResponses || 0} responses
+                                {q.retracted ? 'Excluded from scoring' : `${qStats.totalResponses || 0} responses`}
                               </div>
+                              <button
+                                onClick={() => handleToggleExclude(q)}
+                                disabled={isTogglingId === q._id}
+                                style={{
+                                  marginTop: '16px',
+                                  width: '100%',
+                                  padding: '6px 0',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  background: 'transparent',
+                                  color: isTogglingId === q._id ? 'var(--text-secondary)' : (q.retracted ? '#059669' : '#dc2626'),
+                                  border: `1px solid ${isTogglingId === q._id ? 'var(--border-color)' : (q.retracted ? '#34d399' : '#fca5a5')}`,
+                                  cursor: isTogglingId === q._id ? 'wait' : 'pointer',
+                                  transition: 'all 0.15s ease'
+                                }}
+                                onMouseEnter={e => { if (isTogglingId !== q._id) { e.currentTarget.style.background = q.retracted ? '#d1fae5' : '#fee2e2'; e.currentTarget.style.borderColor = q.retracted ? '#059669' : '#dc2626' } }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = isTogglingId === q._id ? 'var(--border-color)' : (q.retracted ? '#34d399' : '#fca5a5') }}
+                              >
+                                {isTogglingId === q._id ? '...' : (q.retracted ? 'Restore' : 'Exclude')}
+                              </button>
                             </>
                           ) : (
                             <>
