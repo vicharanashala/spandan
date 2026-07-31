@@ -195,9 +195,14 @@ function getQuestionTypeMix(numQuestions) {
 
 // Generate question types from provided mix percentages
 function generateFromMix(questionTypeMix, numQuestions) {
-  const { MCQ = 50, TF = 30, MSQ = 20 } = questionTypeMix
+  const { MCQ = 0, TF = 100, MSQ = 0 } = questionTypeMix
   const total = MCQ + TF + MSQ
-  
+
+  // Guard against an all-zero mix (avoids divide-by-zero → NaN counts)
+  if (total <= 0) {
+    return getQuestionTypeMix(numQuestions)
+  }
+
   const mcqCount = Math.round((MCQ / total) * numQuestions)
   const tfCount = Math.round((TF / total) * numQuestions)
   const msqCount = numQuestions - mcqCount - tfCount
@@ -217,29 +222,52 @@ function generateFromMix(questionTypeMix, numQuestions) {
 }
 
 // Build prompt for question generation
-function buildQuestionPrompt(transcript, questionTypes, difficulty) {
+export function buildQuestionPrompt(transcript, questionTypes, difficulty) {
   const typeInstructions = questionTypes.map((type, index) => {
     switch (type) {
       case 'MCQ':
-        return `${index + 1}. MCQ: Create a multiple choice question with ONE correct answer and 3 wrong options (A, B, C, D). Mark the correct answer.`
+        return `${index + 1}. MCQ: One-sentence question with 4 options (A–D), exactly ONE correct; the 3 distractors must be plausible misconceptions. Mark the correct answer.`
       case 'TF':
-        return `${index + 1}. T/F: Create a True or False question. Mark the correct answer.`
+        return `${index + 1}. T/F: A single-sentence statement that is a plausible-sounding but subtly right OR subtly wrong generalization/inference. Mark the correct answer.`
       case 'MSQ':
-        return `${index + 1}. MSQ: Create a multiple select question with multiple correct answers (2-4 correct options). Mark ALL correct options.`
+        return `${index + 1}. MSQ: One-sentence question with 2–4 correct options (out of 4–5); every unmarked option must be a plausible misconception. Mark ALL correct options.`
       default:
         return ''
     }
   }).join('\n')
 
-  return `You are an expert quiz question generator. Based on the following transcription, generate ${questionTypes.length} quiz questions.
+  // Bloom emphasis follows the teacher-set difficulty (guides the model only; never saved/shown).
+  const diff = String(difficulty || 'medium').toLowerCase()
+  const bloomEmphasis = diff === 'easy'
+    ? 'Since difficulty is EASY, lean toward the Understand and Apply levels — but still test genuine comprehension and simple inference, never rote recall.'
+    : diff === 'hard'
+      ? 'Since difficulty is HARD, skew toward the Analyze and Evaluate levels — most questions should require multi-step reasoning or spotting a subtly flawed inference.'
+      : 'For MEDIUM difficulty, balance across Understand, Apply, Analyze and Evaluate, with a slight lean toward Analyze.'
 
-TRANSCRIPTION:
+  return `You are an expert educational assessment designer. Using ONLY the session content below, write ${questionTypes.length} high-quality quiz questions that test understanding and inference — NOT recall.
+
+SESSION CONTENT:
 ${transcript}
 
 DIFFICULTY: ${difficulty.toUpperCase()}
 
-QUESTION TYPES (follow exactly):
+QUESTION TYPES (produce exactly these, in this order):
 ${typeInstructions}
+
+HOW TO WRITE GOOD QUESTIONS:
+- One sentence each. Answerable in ~15 seconds, but genuinely tough — it must make the student reason, never a simple fact lookup or a restatement of a line.
+- Test comprehension, inference and reasoning: rephrase a concept to check real understanding; introduce a NEW example/scenario and test whether the logic still holds; ask WHY something is true or false; or present a plausible generalization that is subtly wrong.
+- ${bloomEmphasis} (Bloom levels only guide YOU while writing — do not label or mention them anywhere in the output.)
+- Inference beyond what is explicitly stated is encouraged, as long as it is clearly supported by the content's own logic.
+- Distractors and false statements must target REAL misconceptions: intuitive and plausible, wrong only on careful thought — never obviously wrong.
+- The "explanation" is a brief "why" that TEACHES: state what makes the answer correct and why the tempting alternative is wrong, in one or two sentences.
+
+WORDING:
+- Write each question so it stands on its own as a direct subject-knowledge question.
+- Do NOT point at the material with lazy stems. Never use the words "source material", "source", "transcript", "transcription", "passage", "text", "excerpt", "recording", "audio", "context", "speaker", "narrator", "presenter", or "author", and never refer to whoever produced the content as "the speaker" in ANY form (e.g. "the speaker said/mentioned/states/explains/argues/concludes", "as per the speaker", "the speaker's point"), nor open with "According to the source/passage/text".
+- ONLY when a question is genuinely about HOW an idea was framed or illustrated may you refer to "the session", "the discussion", or "the instructor" — never "the speaker" or "the source material".
+  BAD:  "According to the source material, what caused the failure?"
+  GOOD: "A single low-cost component caused a total system failure — what does this best demonstrate about complex engineered systems?"
 
 OUTPUT FORMAT (respond ONLY with valid JSON):
 {
@@ -284,13 +312,16 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
 IMPORTANT:
 - Respond ONLY with valid JSON, no markdown or additional text
 - Make questions clear and unambiguous
-- Ensure wrong options for MCQ are plausible but clearly wrong
+- Base every question ONLY on the session content; use no outside knowledge
+- Honor the specified DIFFICULTY level, but never drop to pure recall
+- For MCQ, the 3 wrong options must be plausible misconceptions (wrong only on careful thought), not obviously wrong
 - For MSQ, ensure at least 2 options are correct
-- Questions should be based ONLY on the transcription content`
+- Ensure all options are distinct and that ONLY the marked option(s) are correct; every unmarked option must be a plausible but genuinely incorrect distractor, with no option that could be argued as an alternative correct answer
+- For True/False questions, balance the correct answers across the set — roughly half should be correct "True" and half correct "False"; do not make most statements True (or most False)`
 }
 
 // Parse questions from AI response
-function parseQuestions(responseText, expectedTypes) {
+export function parseQuestions(responseText, expectedTypes) {
   try {
     let jsonStr = responseText
     
@@ -319,13 +350,20 @@ function parseQuestions(responseText, expectedTypes) {
       createdAt: new Date().toISOString()
     }))
   } catch (error) {
-    console.error('Failed to parse questions:', error)
+    // Log the RAW model text so a failure is diagnosable instead of a silent []. Truncate huge
+    // responses (keep head + tail) so logs stay readable.
+    const raw = typeof responseText === 'string' ? responseText : String(responseText ?? '')
+    const shown = raw.length > 2000
+      ? raw.slice(0, 1000) + `\n…[${raw.length - 2000} chars truncated]…\n` + raw.slice(-1000)
+      : raw
+    console.error('Failed to parse questions:', error?.message || error)
+    console.error(`[gen:parse-fail] raw model response (${raw.length} chars): ${shown}`)
     return []
   }
 }
 
 // Parse options ensuring correct structure
-function parseOptions(options, type) {
+export function parseOptions(options, type) {
   if (type === 'TF') {
     // For True/False, use AI-provided options if valid
     if (Array.isArray(options) && options.length === 2) {
@@ -379,7 +417,7 @@ async function generateWithMiniMax(prompt) {
         }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 8000
     })
   })
 
@@ -390,7 +428,23 @@ async function generateWithMiniMax(prompt) {
   }
 
   const data = await response.json()
-  return data.choices?.[0]?.message?.content || ''
+  const choice = data.choices?.[0]
+  const content = choice?.message?.content || ''
+  const reasoning = choice?.message?.reasoning_content || ''
+  const finish = choice?.finish_reason
+  const usage = data.usage || {}
+  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
+  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
+  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  const text = content || reasoning
+  if (!text) {
+    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
+      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+  } else if (!content && reasoning) {
+    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+  }
+  return text
 }
 
 // OpenAI API call
@@ -410,7 +464,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
         }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 8000
     })
   })
 
@@ -440,7 +494,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
           content: prompt
         }
       ],
-      max_tokens: 2000,
+      max_tokens: 8000,
       temperature: 0.7
     })
   })
@@ -473,7 +527,7 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2000
+        maxOutputTokens: 8000
       }
     })
   })
@@ -501,7 +555,7 @@ export async function generateQuestions(transcript, cfg) {
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
 
   let responseText
 
@@ -526,8 +580,13 @@ export async function generateQuestions(transcript, cfg) {
       throw new Error(`Unknown provider: ${provider}`)
   }
 
+  console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
   const questions = parseQuestions(responseText, questionTypes)
-  console.log(`Generated ${questions.length} questions successfully`)
+  if (questions.length === 0) {
+    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
+  } else {
+    console.log(`Generated ${questions.length} questions successfully`)
+  }
 
   return questions
 }

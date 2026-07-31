@@ -32,6 +32,9 @@ const roomSchema = new mongoose.Schema({
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
     requireCorrectAnswer: { type: Boolean, default: false },
+    // Video mode: 'normal' = live mic + transcript (default); 'video' = YouTube link, tab-audio transcript
+    mode: { type: String, enum: ['normal', 'video'], default: 'normal' },
+    videoUrl: { type: String, default: '' },
     // Quiz settings
     timeToAnswer: { type: Number, default: 30 },
     points: { type: Number, default: 100 },
@@ -70,6 +73,9 @@ function generateRoomCode() {
 roomSchema.statics.findByCode = function(code) {
   return this.findOne({ code: code.toUpperCase() })
 }
+
+// Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
+roomSchema.index({ teacher: 1, createdAt: -1 })
 
 const Room = mongoose.model('Room', roomSchema)
 

@@ -59,6 +59,51 @@ export const sendResetPasswordEmail = async (email, token) => {
 }
 
 // Send welcome email
+// Send a 6-digit registration verification code (email-OTP signup)
+export const sendRegistrationOtp = async (email, name, otp) => {
+  const mailOptions = {
+    from: `"Spandan Quiz" <${config.smtpEmail}>`,
+    to: email,
+    subject: `${otp} is your Spandan verification code`,
+    html: `
+      <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #1e40af, #3b82f6); padding: 30px; text-align: center; border-radius: 12px 12px 0 0;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">Spandan Quiz</h1>
+        </div>
+        <div style="background: white; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1f2937; margin-top: 0;">Verify your email</h2>
+          <p style="color: #6b7280; font-size: 16px; line-height: 1.6;">
+            ${name ? `Hi ${name}, ` : ''}use the code below to finish creating your Spandan account.
+          </p>
+          <div style="text-align: center; margin: 30px 0;">
+            <div style="display: inline-block; background: #f1f5ff; color: #1e40af; letter-spacing: 10px; font-size: 34px; font-weight: 700; padding: 16px 28px; border-radius: 10px; border: 1px solid #dbe4ff;">
+              ${otp}
+            </div>
+          </div>
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+            This code expires in <strong>10 minutes</strong>. Enter it on the sign-up page to complete registration.
+          </p>
+          <p style="color: #9ca3af; font-size: 13px; margin-top: 20px;">
+            If you didn't try to sign up for Spandan, you can safely ignore this email — no account will be created.
+          </p>
+        </div>
+        <div style="text-align: center; margin-top: 20px; color: #9ca3af; font-size: 12px;">
+          © 2024 Spandan Quiz. All rights reserved.
+        </div>
+      </div>
+    `
+  }
+
+  try {
+    await transporter.sendMail(mailOptions)
+    console.log(`OTP email sent to ${email}`)
+    return true
+  } catch (error) {
+    console.error(`Failed to send OTP email to ${email}:`, error.message)
+    throw new Error('Failed to send verification code')
+  }
+}
+
 export const sendWelcomeEmail = async (email, name, role) => {
   const roleDisplay = role === 'teacher' ? 'Teacher' : 'Student'
 

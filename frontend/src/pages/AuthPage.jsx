@@ -6,6 +6,7 @@ import useSocketStore from '../stores/socketStore'
 import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
+import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
 // Password requirements for registration
@@ -26,12 +27,15 @@ function AuthPage() {
     isLoading,
     error,
     login,
-    register,
+    sendRegistrationOtp,
+    verifyRegistration,
     logout,
-    clearError
+    clearError,
+    sessionExpired
   } = useAuthStore()
   const { isDark, toggleTheme } = useThemeStore()
   const socket = useSocketStore(state => state.socket)
+  const isMobile = useIsMobile()
 
   const [step, setStep] = useState('auth')
   const [isLogin, setIsLogin] = useState(true)
@@ -42,13 +46,27 @@ function AuthPage() {
   const [forgotPasswordMsg, setForgotPasswordMsg] = useState('')
   const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false)
   const [showPasswordReqs, setShowPasswordReqs] = useState(false)
+  // Email-OTP registration step: after the form is submitted we send a code and switch to OTP entry.
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpValue, setOtpValue] = useState('')
+  const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
 
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
     setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
     setShowPasswordReqs(false)
     setValidationError('')
+    setOtpSent(false)
+    setOtpValue('')
+    setResendIn(0)
   }, [isLogin])
+
+  // Tick down the resend cooldown once per second.
+  useEffect(() => {
+    if (resendIn <= 0) return
+    const t = setTimeout(() => setResendIn(resendIn - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendIn])
 
   const getPasswordReqs = (password) => {
     if (password == null) return PASSWORD_REQUIREMENTS.map(req => ({ ...req, met: false }))
@@ -101,17 +119,51 @@ function AuthPage() {
       }
     } else {
       try {
-        await register(formData.name, formData.email, formData.password, formData.role)
-        // Registration successful - go to login
-        logout() // Clear auth state so useEffect doesn't redirect prematurely
-        setStep('auth')
-        setIsLogin(true)
-        setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
-        setValidationError('')
+        // Step 1: request an email verification code, then switch to the OTP entry screen.
+        await sendRegistrationOtp(formData.name, formData.email)
+        setOtpValue('')
+        setOtpSent(true)
+        setResendIn(60)
       } catch (err) {
-        setValidationError(err.message || 'Registration failed')
+        setValidationError(err.message || 'Failed to send verification code')
       }
     }
+  }
+
+  // Step 2: verify the emailed code and create the account (signs the user in on success).
+  const handleVerifyOtp = async (e) => {
+    e.preventDefault()
+    clearError()
+    setValidationError('')
+    if (!/^\d{6}$/.test(otpValue)) {
+      setValidationError('Enter the 6-digit code from your email')
+      return
+    }
+    try {
+      const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue)
+      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+    } catch (err) {
+      setValidationError(err.message || 'Registration failed')
+    }
+  }
+
+  const handleResendOtp = async () => {
+    if (resendIn > 0) return
+    clearError()
+    setValidationError('')
+    try {
+      await sendRegistrationOtp(formData.name, formData.email)
+      setResendIn(60)
+    } catch (err) {
+      setValidationError(err.message || 'Failed to resend code')
+    }
+  }
+
+  const handleBackToForm = () => {
+    setOtpSent(false)
+    setOtpValue('')
+    setValidationError('')
+    clearError()
   }
 
   const handleLogout = () => {
@@ -140,228 +192,302 @@ function AuthPage() {
     }
   }
 
-  // Background gradients for light/dark
-  const bgGradient = isDark
-    ? 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%)'
-    : 'linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%)'
+  // Full-page brand gradient — theme-aware, so the ENTIRE auth page is one blue wash
+  // (deep navy in dark mode). Both the branding column and the form card sit on top of it.
+  const brandGradient = isDark
+    ? 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%)'
+    : 'var(--accent-gradient)'
 
-  const textColor = isDark ? '#f1f5f9' : '#1e293b'
-  const subTextColor = isDark ? '#94a3b8' : '#64748b'
-  const cardBg = isDark ? 'rgba(30,41,59,0.85)' : 'rgba(255,255,255,0.95)'
-  const cardBorder = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.3)'
+  // Shared input styles (token-driven), with accent focus/blur handlers
+  const inputStyle = {
+    width: '100%',
+    padding: '11px 14px',
+    fontSize: '15px',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius)',
+    outline: 'none',
+    background: 'var(--input-bg)',
+    color: 'var(--text-primary)',
+    boxSizing: 'border-box',
+    transition: 'border-color 0.2s, box-shadow 0.2s'
+  }
+  const handleInputFocus = (e) => {
+    e.target.style.borderColor = 'var(--accent)'
+    e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.15)'
+  }
+  const handleInputBlur = (e) => {
+    e.target.style.borderColor = 'var(--border-color)'
+    e.target.style.boxShadow = 'none'
+  }
+
+  const labelStyle = {
+    display: 'block',
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--text-secondary)',
+    marginBottom: '8px'
+  }
+
+  const primaryButtonStyle = (disabled) => ({
+    width: '100%',
+    padding: '13px 18px',
+    fontSize: '15px',
+    fontWeight: '600',
+    background: 'var(--accent-gradient)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 'var(--radius)',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.7 : 1,
+    boxShadow: '0 2px 10px rgba(30,64,175,.25)',
+    transition: 'all 0.2s'
+  })
 
   return (
     <div style={{
       minHeight: '100vh',
-      background: bgGradient,
+      background: brandGradient,
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
       display: 'flex',
       position: 'relative',
-      overflow: 'hidden',
-      transition: 'background 0.5s ease'
+      overflowX: 'hidden',
+      transition: 'background 0.4s ease'
     }}>
-      {/* Left side - Branding */}
+      {/* Centered brand watermark — spans the whole page, behind all content */}
       <div style={{
-        flex: 1,
+        position: 'absolute',
+        inset: 0,
         display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
         alignItems: 'center',
-        padding: '60px',
-        position: 'relative'
+        justifyContent: 'center',
+        pointerEvents: 'none',
+        userSelect: 'none',
+        overflow: 'hidden',
+        zIndex: 0
       }}>
-        {/* Big watermark text */}
-        <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%) rotate(-15deg)',
-          fontSize: 'clamp(80px, 12vw, 160px)',
-          fontWeight: '800',
-          color: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.15)',
-          whiteSpace: 'nowrap',
-          pointerEvents: 'none',
-          userSelect: 'none',
-          letterSpacing: '-4px'
-        }}>
-          SPANDAN
-        </div>
-        <div style={{
-          position: 'absolute',
-          top: '58%',
-          left: '50%',
-          transform: 'translate(-50%, -50%) rotate(-12deg)',
-          fontSize: 'clamp(60px, 10vw, 120px)',
-          fontWeight: '700',
-          color: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.12)',
-          whiteSpace: 'nowrap',
-          pointerEvents: 'none',
-          userSelect: 'none'
-        }}>
-          स्पंदन
-        </div>
-
-        {/* Theme toggle - top left */}
-        <button
-          onClick={toggleTheme}
-          style={{
-            position: 'absolute',
-            top: '32px',
-            left: '32px',
-            background: 'rgba(255,255,255,0.15)',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(255,255,255,0.2)',
-            borderRadius: '12px',
-            padding: '10px 16px',
-            fontSize: '20px',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color: 'white',
-            transition: 'all 0.3s'
-          }}
-        >
-          {isDark ? '☀️' : '🌙'}
-          <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
-        </button>
-
-        {/* Icon and brand */}
-        <div style={{
-          width: '100px',
-          height: '100px',
-          background: 'linear-gradient(135deg, #667eea, #764ba2)',
-          borderRadius: '24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '24px',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          <SpandanIcon size={50} />
-        </div>
-        <h1 style={{
-          fontSize: '48px',
-          fontWeight: '800',
-          color: 'white',
-          marginBottom: '16px',
-          textShadow: '0 4px 30px rgba(0,0,0,0.3)',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          Spandan
-        </h1>
-        <p style={{
-          fontSize: '18px',
-          color: 'rgba(255,255,255,0.8)',
-          textAlign: 'center',
-          maxWidth: '400px',
-          lineHeight: '1.6',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          Empowering educators and students with intelligent poll questions, real-time responses, and beautiful analytics.
-        </p>
-
-        {/* Features */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '16px',
-          marginTop: '48px',
-          maxWidth: '420px',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          {[
-            { icon: '⚡', text: 'AI-Powered Questions' },
-            { icon: '📊', text: 'Live Analytics' },
-            { icon: '🎯', text: 'Multiple Question Types' },
-            { icon: '🔒', text: 'Secure & Private' }
-          ].map((f, i) => (
-            <div key={i} style={{
-              background: 'rgba(255,255,255,0.1)',
-              backdropFilter: 'blur(10px)',
-              border: '1px solid rgba(255,255,255,0.15)',
-              borderRadius: '12px',
-              padding: '14px 18px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              color: 'white',
-              fontSize: '14px',
-              fontWeight: '500'
-            }}>
-              <span style={{ fontSize: '20px' }}>{f.icon}</span>
-              {f.text}
-            </div>
-          ))}
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            fontSize: 'clamp(80px, 14vw, 200px)',
+            fontWeight: '800',
+            color: 'rgba(255,255,255,0.08)',
+            whiteSpace: 'nowrap',
+            letterSpacing: '-4px',
+            transform: 'rotate(-12deg)'
+          }}>
+            SPANDAN
+          </div>
+          <div style={{
+            fontSize: 'clamp(60px, 11vw, 150px)',
+            fontWeight: '700',
+            color: 'rgba(255,255,255,0.06)',
+            whiteSpace: 'nowrap',
+            transform: 'rotate(-10deg)',
+            marginTop: '-8px'
+          }}>
+            स्पंदन
+          </div>
         </div>
       </div>
+      {/* Theme toggle - top right (available on all layouts) */}
+      <button
+        onClick={toggleTheme}
+        style={{
+          position: 'absolute',
+          top: '20px',
+          right: '20px',
+          zIndex: 5,
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-color)',
+          borderRadius: 'var(--radius)',
+          padding: '9px 14px',
+          fontSize: '18px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          color: 'var(--text-primary)',
+          boxShadow: 'var(--shadow-sm)',
+          transition: 'all 0.2s'
+        }}
+      >
+        {isDark ? '☀️' : '🌙'}
+        <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
+      </button>
+
+      {/* Left side - Branding (desktop only) */}
+      {!isMobile && (
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: '60px',
+          position: 'relative',
+          zIndex: 1
+        }}>
+          {/* Icon and brand */}
+          <div style={{
+            width: '96px',
+            height: '96px',
+            background: 'rgba(255,255,255,0.15)',
+            border: '1px solid rgba(255,255,255,0.25)',
+            borderRadius: 'var(--radius-lg)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: '24px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+            position: 'relative',
+            zIndex: 1
+          }}>
+            <SpandanIcon size={50} />
+          </div>
+          <h1 style={{
+            fontSize: '48px',
+            fontWeight: '800',
+            color: 'white',
+            marginBottom: '16px',
+            textShadow: '0 4px 30px rgba(0,0,0,0.2)',
+            position: 'relative',
+            zIndex: 1
+          }}>
+            Spandan
+          </h1>
+          <p style={{
+            fontSize: '18px',
+            color: 'rgba(255,255,255,0.85)',
+            textAlign: 'center',
+            maxWidth: '400px',
+            lineHeight: '1.6',
+            position: 'relative',
+            zIndex: 1
+          }}>
+            Empowering educators and students with intelligent poll questions, real-time responses, and beautiful analytics.
+          </p>
+
+          {/* Features */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '16px',
+            marginTop: '48px',
+            maxWidth: '420px',
+            position: 'relative',
+            zIndex: 1
+          }}>
+            {[
+              { icon: '⚡', text: 'AI-Powered Questions' },
+              { icon: '📊', text: 'Live Analytics' },
+              { icon: '🎯', text: 'Multiple Question Types' },
+              { icon: '🔒', text: 'Secure & Private' }
+            ].map((f, i) => (
+              <div key={i} style={{
+                background: 'rgba(255,255,255,0.12)',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: 'var(--radius)',
+                padding: '14px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                color: 'white',
+                fontSize: '14px',
+                fontWeight: '500'
+              }}>
+                <span style={{ fontSize: '20px' }}>{f.icon}</span>
+                {f.text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Right side - Auth Form */}
       <div style={{
-        width: '520px',
+        width: isMobile ? '100%' : '520px',
+        minHeight: '100vh',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '40px',
-        position: 'relative'
+        // Extra top padding reserves space for the absolute theme toggle, so the taller
+        // registration card starts below it instead of overlapping; tall forms push the
+        // page height and scroll (root is overflowX-only) rather than clipping.
+        padding: isMobile ? '76px 16px 24px' : '96px 40px 48px',
+        boxSizing: 'border-box',
+        position: 'relative',
+        zIndex: 1
       }}>
         <div style={{
-          background: cardBg,
-          backdropFilter: 'blur(20px)',
-          borderRadius: '24px',
-          padding: '48px',
+          background: 'var(--bg-card)',
+          borderRadius: 'var(--radius-lg)',
+          padding: isMobile ? '20px' : '32px',
           width: '100%',
-          maxWidth: '440px',
-          boxShadow: '0 25px 80px rgba(0,0,0,0.25)',
-          border: `1px solid ${cardBorder}`,
-          animation: 'fadeInUp 0.5s ease-out'
+          maxWidth: isMobile ? 'calc(100% - 16px)' : '420px',
+          boxShadow: 'var(--shadow-lg)',
+          border: '1px solid var(--border-color)',
+          boxSizing: 'border-box',
+          animation: 'fadeInUp 0.4s ease-out'
         }}>
           {/* Logo and Title */}
           <div style={{ textAlign: 'center', marginBottom: '32px' }}>
             <div style={{
-              width: '70px',
-              height: '70px',
-              background: 'linear-gradient(135deg, #667eea, #764ba2)',
-              borderRadius: '18px',
+              width: '64px',
+              height: '64px',
+              background: 'var(--accent-gradient)',
+              borderRadius: 'var(--radius-lg)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 16px',
-              boxShadow: '0 15px 35px rgba(102, 126, 234, 0.35)'
+              boxShadow: '0 8px 24px rgba(30,64,175,0.30)'
             }}>
-              <SpandanIcon size={35} />
+              <SpandanIcon size={34} />
             </div>
             <h1 style={{
-              fontSize: '28px',
+              fontSize: isMobile ? '24px' : '28px',
               fontWeight: '700',
-              color: textColor,
+              color: 'var(--text-primary)',
               marginBottom: '6px'
             }}>
-              {showForgotPassword ? 'Reset Password' : isLogin ? 'Welcome Back' : 'Create Account'}
+              {showForgotPassword ? 'Reset Password' : otpSent ? 'Verify your email' : isLogin ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p style={{
               fontSize: '14px',
-              color: subTextColor
+              color: 'var(--text-secondary)'
             }}>
               {showForgotPassword
                 ? 'Enter your email to receive a reset link'
-                : isLogin
-                  ? 'Sign in to continue to your dashboard'
-                  : 'Join Spandan to start creating polls'}
+                : otpSent
+                  ? `Enter the 6-digit code sent to ${formData.email}`
+                  : isLogin
+                    ? 'Sign in to continue to your dashboard'
+                    : 'Join Spandan to start creating polls'}
             </p>
           </div>
+
+          {/* Session-expiry notice (shown when the app dropped an expired token, not a login error) */}
+          {sessionExpired && !validationError && !error && (
+            <div style={{
+              background: isDark ? 'rgba(245,158,11,0.15)' : '#fffbeb',
+              border: `1px solid ${isDark ? 'rgba(245,158,11,0.3)' : '#fde68a'}`,
+              borderRadius: 'var(--radius-sm)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              color: isDark ? '#fcd34d' : '#b45309',
+              fontSize: '14px'
+            }}>
+              Your session expired. Please sign in again.
+            </div>
+          )}
 
           {/* Error / Success messages */}
           {validationError && (
             <div style={{
               background: isDark ? 'rgba(239,68,68,0.15)' : '#fef2f2',
               border: `1px solid ${isDark ? 'rgba(239,68,68,0.3)' : '#fecaca'}`,
-              borderRadius: '10px',
+              borderRadius: 'var(--radius-sm)',
               padding: '12px 16px',
               marginBottom: '20px',
               color: isDark ? '#fca5a5' : '#dc2626',
@@ -374,13 +500,7 @@ function AuthPage() {
           {showForgotPassword ? (
             <form onSubmit={handleForgotPassword}>
               <div style={{ marginBottom: '20px' }}>
-                <label style={{
-                  display: 'block',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: subTextColor,
-                  marginBottom: '8px'
-                }}>
+                <label style={labelStyle}>
                   Email Address
                 </label>
                 <input
@@ -389,20 +509,9 @@ function AuthPage() {
                   value={forgotPasswordEmail}
                   onChange={(e) => setForgotPasswordEmail(e.target.value)}
                   required
-                  style={{
-                    width: '100%',
-                    padding: '14px 16px',
-                    fontSize: '16px',
-                    border: `2px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-                    borderRadius: '12px',
-                    outline: 'none',
-                    background: isDark ? '#1e293b' : 'white',
-                    color: textColor,
-                    boxSizing: 'border-box',
-                    transition: 'border-color 0.3s'
-                  }}
-                  onFocus={(e) => e.target.style.borderColor = '#667eea'}
-                  onBlur={(e) => e.target.style.borderColor = isDark ? '#334155' : '#e2e8f0'}
+                  style={inputStyle}
+                  onFocus={handleInputFocus}
+                  onBlur={handleInputBlur}
                 />
               </div>
               {forgotPasswordMsg && (
@@ -413,7 +522,7 @@ function AuthPage() {
                   border: `1px solid ${forgotPasswordMsg.startsWith('✓')
                     ? (isDark ? 'rgba(16,185,129,0.3)' : '#6ee7b7')
                     : (isDark ? 'rgba(239,68,68,0.3)' : '#fecaca')}`,
-                  borderRadius: '10px',
+                  borderRadius: 'var(--radius-sm)',
                   padding: '12px 16px',
                   marginBottom: '20px',
                   color: forgotPasswordMsg.startsWith('✓')
@@ -427,19 +536,7 @@ function AuthPage() {
               <button
                 type="submit"
                 disabled={forgotPasswordLoading}
-                style={{
-                  width: '100%',
-                  padding: '14px',
-                  fontSize: '16px',
-                  fontWeight: '600',
-                  background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  cursor: forgotPasswordLoading ? 'not-allowed' : 'pointer',
-                  opacity: forgotPasswordLoading ? 0.7 : 1,
-                  transition: 'all 0.3s'
-                }}
+                style={primaryButtonStyle(forgotPasswordLoading)}
               >
                 {forgotPasswordLoading ? 'Sending...' : 'Send Reset Link'}
               </button>
@@ -453,7 +550,7 @@ function AuthPage() {
                   fontSize: '14px',
                   fontWeight: '600',
                   background: 'transparent',
-                  color: subTextColor,
+                  color: 'var(--text-secondary)',
                   border: 'none',
                   cursor: 'pointer'
                 }}
@@ -461,17 +558,57 @@ function AuthPage() {
                 Back to login
               </button>
             </form>
+          ) : otpSent ? (
+            <form onSubmit={handleVerifyOtp}>
+              <div style={{ marginBottom: '20px' }}>
+                <label style={labelStyle}>Verification code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="6-digit code"
+                  value={otpValue}
+                  onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  autoFocus
+                  style={{ ...inputStyle, letterSpacing: '10px', textAlign: 'center', fontSize: '22px', fontWeight: 700 }}
+                  onFocus={handleInputFocus}
+                  onBlur={handleInputBlur}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={isLoading || otpValue.length !== 6}
+                style={primaryButtonStyle(isLoading || otpValue.length !== 6)}
+              >
+                {isLoading ? 'Verifying...' : 'Verify & Create Account'}
+              </button>
+              <div style={{ textAlign: 'center', marginTop: '16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                Didn't receive it?{' '}
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={resendIn > 0}
+                  style={{ background: 'none', border: 'none', color: resendIn > 0 ? 'var(--text-secondary)' : 'var(--accent)', fontWeight: 600, cursor: resendIn > 0 ? 'default' : 'pointer' }}
+                >
+                  {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
+                </button>
+              </div>
+              <div style={{ textAlign: 'center', marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
+                <button
+                  type="button"
+                  onClick={handleBackToForm}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  ← Change details
+                </button>
+              </div>
+            </form>
           ) : (
             <form onSubmit={handleSubmit}>
               {!isLogin && (
                 <div style={{ marginBottom: '20px' }}>
-                  <label style={{
-                    display: 'block',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: subTextColor,
-                    marginBottom: '8px'
-                  }}>
+                  <label style={labelStyle}>
                     Full Name
                   </label>
                   <input
@@ -480,32 +617,15 @@ function AuthPage() {
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     required={!isLogin}
-                    style={{
-                      width: '100%',
-                      padding: '14px 16px',
-                      fontSize: '16px',
-                      border: `2px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-                      borderRadius: '12px',
-                      outline: 'none',
-                      background: isDark ? '#1e293b' : 'white',
-                      color: textColor,
-                      boxSizing: 'border-box',
-                      transition: 'border-color 0.3s'
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#667eea'}
-                    onBlur={(e) => e.target.style.borderColor = isDark ? '#334155' : '#e2e8f0'}
+                    style={inputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
                   />
                 </div>
               )}
 
               <div style={{ marginBottom: '20px' }}>
-                <label style={{
-                  display: 'block',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: subTextColor,
-                  marginBottom: '8px'
-                }}>
+                <label style={labelStyle}>
                   Email Address
                 </label>
                 <input
@@ -514,31 +634,14 @@ function AuthPage() {
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   required
-                  style={{
-                    width: '100%',
-                    padding: '14px 16px',
-                    fontSize: '16px',
-                    border: `2px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-                    borderRadius: '12px',
-                    outline: 'none',
-                    background: isDark ? '#1e293b' : 'white',
-                    color: textColor,
-                    boxSizing: 'border-box',
-                    transition: 'border-color 0.3s'
-                  }}
-                  onFocus={(e) => e.target.style.borderColor = '#667eea'}
-                  onBlur={(e) => e.target.style.borderColor = isDark ? '#334155' : '#e2e8f0'}
+                  style={inputStyle}
+                  onFocus={handleInputFocus}
+                  onBlur={handleInputBlur}
                 />
               </div>
 
               <div style={{ marginBottom: '20px' }}>
-                <label style={{
-                  display: 'block',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: subTextColor,
-                  marginBottom: '8px'
-                }}>
+                <label style={labelStyle}>
                   Password
                 </label>
                 <PasswordInput
@@ -548,7 +651,7 @@ function AuthPage() {
                     if (!isLogin) setShowPasswordReqs(true)
                   }}
                   placeholder="Enter your password"
-                  style={{ background: isDark ? '#1e293b' : 'white' }}
+                  style={{ background: 'var(--input-bg)' }}
                   showRequirements={!isLogin && showPasswordReqs}
                   passwordReqs={getPasswordReqs(formData.password)}
                   onFocus={() => {
@@ -559,33 +662,21 @@ function AuthPage() {
 
               {!isLogin && (
                 <div style={{ marginBottom: '20px' }}>
-                  <label style={{
-                    display: 'block',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: subTextColor,
-                    marginBottom: '8px'
-                  }}>
+                  <label style={labelStyle}>
                     Confirm Password
                   </label>
                   <PasswordInput
                     value={formData.confirmPassword}
                     onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                     placeholder="Confirm your password"
-                    style={{ background: isDark ? '#1e293b' : 'white' }}
+                    style={{ background: 'var(--input-bg)' }}
                   />
                 </div>
               )}
 
               {!isLogin && (
                 <div style={{ marginBottom: '24px' }}>
-                  <label style={{
-                    display: 'block',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: subTextColor,
-                    marginBottom: '8px'
-                  }}>
+                  <label style={labelStyle}>
                     I am a...
                   </label>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -593,39 +684,39 @@ function AuthPage() {
                       type="button"
                       onClick={() => setFormData({ ...formData, role: 'student' })}
                       style={{
-                        padding: '14px',
+                        padding: '13px',
                         fontSize: '15px',
                         fontWeight: '600',
                         background: formData.role === 'student'
-                          ? 'linear-gradient(135deg, #667eea, #764ba2)'
+                          ? 'var(--accent-gradient)'
                           : 'transparent',
-                        color: formData.role === 'student' ? 'white' : subTextColor,
-                        border: `2px solid ${formData.role === 'student' ? 'transparent' : (isDark ? '#334155' : '#e2e8f0')}`,
-                        borderRadius: '12px',
+                        color: formData.role === 'student' ? 'white' : 'var(--text-secondary)',
+                        border: `1px solid ${formData.role === 'student' ? 'transparent' : 'var(--border-color)'}`,
+                        borderRadius: 'var(--radius)',
                         cursor: 'pointer',
-                        transition: 'all 0.3s'
+                        transition: 'all 0.2s'
                       }}
                     >
-                      🎓 Student
+                      🎓 Learn
                     </button>
                     <button
                       type="button"
                       onClick={() => setFormData({ ...formData, role: 'teacher' })}
                       style={{
-                        padding: '14px',
+                        padding: '13px',
                         fontSize: '15px',
                         fontWeight: '600',
                         background: formData.role === 'teacher'
-                          ? 'linear-gradient(135deg, #667eea, #764ba2)'
+                          ? 'var(--accent-gradient)'
                           : 'transparent',
-                        color: formData.role === 'teacher' ? 'white' : subTextColor,
-                        border: `2px solid ${formData.role === 'teacher' ? 'transparent' : (isDark ? '#334155' : '#e2e8f0')}`,
-                        borderRadius: '12px',
+                        color: formData.role === 'teacher' ? 'white' : 'var(--text-secondary)',
+                        border: `1px solid ${formData.role === 'teacher' ? 'transparent' : 'var(--border-color)'}`,
+                        borderRadius: 'var(--radius)',
                         cursor: 'pointer',
-                        transition: 'all 0.3s'
+                        transition: 'all 0.2s'
                       }}
                     >
-                      👨‍🏫 Teacher
+                      👨‍🏫 Teach
                     </button>
                   </div>
                 </div>
@@ -634,20 +725,7 @@ function AuthPage() {
               <button
                 type="submit"
                 disabled={isLoading}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  fontSize: '17px',
-                  fontWeight: '700',
-                  background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  cursor: isLoading ? 'not-allowed' : 'pointer',
-                  opacity: isLoading ? 0.7 : 1,
-                  boxShadow: '0 8px 25px rgba(102, 126, 234, 0.4)',
-                  transition: 'all 0.3s'
-                }}
+                style={primaryButtonStyle(isLoading)}
               >
                 {isLoading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
               </button>
@@ -660,7 +738,7 @@ function AuthPage() {
                     style={{
                       background: 'none',
                       border: 'none',
-                      color: '#667eea',
+                      color: 'var(--accent)',
                       fontSize: '14px',
                       fontWeight: '600',
                       cursor: 'pointer'
@@ -675,8 +753,8 @@ function AuthPage() {
                 textAlign: 'center',
                 marginTop: '24px',
                 paddingTop: '24px',
-                borderTop: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-                color: subTextColor,
+                borderTop: '1px solid var(--border-color)',
+                color: 'var(--text-secondary)',
                 fontSize: '14px'
               }}>
                 {isLogin ? (
@@ -688,7 +766,7 @@ function AuthPage() {
                       style={{
                         background: 'none',
                         border: 'none',
-                        color: '#667eea',
+                        color: 'var(--accent)',
                         fontWeight: '700',
                         cursor: 'pointer'
                       }}
@@ -705,7 +783,7 @@ function AuthPage() {
                       style={{
                         background: 'none',
                         border: 'none',
-                        color: '#667eea',
+                        color: 'var(--accent)',
                         fontWeight: '700',
                         cursor: 'pointer'
                       }}
