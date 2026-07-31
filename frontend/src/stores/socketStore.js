@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
 import { SOCKET_URL } from '../config.js'
+import useAuthStore from './authStore.js'
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
@@ -46,6 +47,12 @@ export const useSocketStore = create((set, get) => ({
     socket.on('authenticated', (data) => {
       if (!data.success) {
         console.error('Socket authentication failed:', data.error)
+        // A token that expired mid-session fails socket re-auth too (server sends expired:true). Treat
+        // it like an HTTP 401 so the user is sent to re-login instead of sitting on a silently
+        // unauthenticated socket that still shows polls but can't submit answers.
+        if (data.expired) {
+          useAuthStore.getState().handleSessionExpired()
+        }
       }
     })
 

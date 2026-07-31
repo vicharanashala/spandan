@@ -7,11 +7,15 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
-import ExportMenu from '../components/ExportMenu'
-import { exportResults } from '../utils/exportResults.js'
+import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
+import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
-import { playQuestionSound, playSubmitSound, playCorrectSound, playTimerWarningSound } from '../services/soundService'
-import { useKeyboardShortcuts, KEYBOARD_SHORTCUTS } from '../hooks/useKeyboardShortcuts'
+
+// Spread the ~N students' navigation to the results page over this window (ms). When a big room
+// ends, all students receive room:ended at once; without a spread they'd all hit the results
+// endpoints in the same instant (the end-session "results stampede"). Each student waits a random
+// delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
+const RESULTS_NAV_JITTER_MS = 4000
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
@@ -19,7 +23,8 @@ function StudentRoomPage() {
   const { user, token, logout } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
-  
+  const isMobile = useIsMobile()
+
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -27,16 +32,48 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
+  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
-  const [soundEnabled, setSoundEnabled] = useState(true)
-  const [showLeaderboard, setShowLeaderboard] = useState(true)
-  const [markedForReview, setMarkedForReview] = useState(new Set())
-  const [anonymousMode, setAnonymousMode] = useState(false)
-  const [confidence, setConfidence] = useState('')
+  const resultsNavTimerRef = useRef(null)
+
+  // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
+  // player pauses locally while a question is live.
+  const isVideoMode = room?.settings?.mode === 'video'
+  const videoId = isVideoMode ? extractYouTubeId(room?.settings?.videoUrl) : null
+  const studentPlayerRef = useRef(null)
+  const teacherVideoTimeRef = useRef(null) // { time, playing, at } — teacher position for the forward-seek ceiling
+  const capSuppressUntilRef = useRef(0) // performance.now() until which the forward cap is suspended (post-poll live-edge resume)
+  const [isLiveStream, setIsLiveStream] = useState(false)
+  // True while the teacher's question-approval popup is open. The student video stays paused for the
+  // WHOLE popup window (across every question the teacher launches from it), not just per-question.
+  const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
+
+  useEffect(() => {
+    if (!isVideoMode) return
+    const p = studentPlayerRef.current
+    if (!p) return
+    if (teacherVideoPaused || currentQuestion) {
+      p.pauseVideo?.()
+    } else {
+      // For a live stream, jump back to the live edge on resume so students rejoin the broadcast.
+      // Query the player directly so it fires even if the isLiveStream state hasn't settled.
+      let live = isLiveStream
+      try { const ps = p.getProgressState?.(); if (ps && typeof ps.isLive === 'boolean') live = ps.isLive } catch (e) { /* ignore */ }
+      if (live && typeof p.seekTo === 'function') {
+        const dur = typeof p.getDuration === 'function' ? p.getDuration() : 0
+        p.seekTo(dur > 0 ? dur : 1e7, true)
+        // Suspend the teacher-cap briefly so the student isn't snapped off the live edge before the
+        // teacher's post-jump position broadcast (every 2s) lands and refreshes the ceiling.
+        capSuppressUntilRef.current = performance.now() + 4000
+      }
+      p.playVideo?.()
+    }
+  }, [teacherVideoPaused, currentQuestion, isVideoMode, isLiveStream])
 
   useEffect(() => {
     if (!token || !socket) return
@@ -55,21 +92,13 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      const question = data.question || data
-      setAnonymousMode(data.anonymousMode || false)
-      
-      setCurrentQuestion(question)
+      setCurrentQuestion(data)
       setSelectedOptions([])
-      setConfidence('')
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
       
-      if (question && question.timeToAnswer) {
-        setTimeLeft(question.timeToAnswer)
-      }
-      
-      if (soundEnabled) {
-        playQuestionSound()
+      if (data.question && data.question.timeToAnswer) {
+        setTimeLeft(data.question.timeToAnswer)
       }
       
       // Clear any existing timer
@@ -89,9 +118,6 @@ function StudentRoomPage() {
             }
             setCurrentQuestion(null)
             return 0
-          }
-          if (prev <= 5 && soundEnabled) {
-            playTimerWarningSound()
           }
           return prev - 1
         })
@@ -113,11 +139,11 @@ function StudentRoomPage() {
       setCurrentQuestion(null)
     }
 
-    const handleNewQuestion = (data) => {
-      // data can be { question: fullDoc, anonymousMode } or the raw fullDoc directly
-      const question = (data && data.question && typeof data.question === 'object') ? data.question : data
-      setAnonymousMode(data.anonymousMode || false)
-      
+    const handleNewQuestion = (payload) => {
+      // Manual launches carry room-level presentation options alongside the question.
+      const question = payload?.question && typeof payload.question === 'object'
+        ? payload.question
+        : payload
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -125,15 +151,10 @@ function StudentRoomPage() {
         timerIntervalRef.current = null
       }
       
-      if (soundEnabled) {
-        playQuestionSound()
-      }
-      
       setCurrentQuestion(question)
       setSelectedOptions([])
-      setConfidence('')
       setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
+      setTimeLeft(question?.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
@@ -147,26 +168,56 @@ function StudentRoomPage() {
             setCurrentQuestion(null)
             return 0
           }
-          if (prev <= 5 && soundEnabled) {
-            playTimerWarningSound()
-          }
           return prev - 1
         })
       }, 1000)
     }
 
+    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
+    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
+    // room's questions so any missed one surfaces without the student manually refreshing.
+    const handleReconnect = () => {
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
+      }
+    }
+
+    const handleVideoProgress = (data) => {
+      const t = Number(data?.time)
+      if (!Number.isFinite(t)) return
+      teacherVideoTimeRef.current = { time: t, playing: !!data?.playing, at: performance.now() }
+    }
+
+    const handleVideoPause = () => setTeacherVideoPaused(true)
+    const handleVideoResume = () => setTeacherVideoPaused(false)
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('video:progress', handleVideoProgress)
+    socket.on('video:pause', handleVideoPause)
+    socket.on('video:resume', handleVideoResume)
+    socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
-      navigate(`/student/room/${room?._id}/results`)
+      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
+      // so all students don't hit the results endpoints in the same instant.
+      setSessionEnded(true)
+      const delay = Math.random() * RESULTS_NAV_JITTER_MS
+      resultsNavTimerRef.current = setTimeout(() => {
+        navigate(`/student/room/${room?._id}/results`)
+      }, delay)
     })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('video:progress', handleVideoProgress)
+      socket.off('video:pause', handleVideoPause)
+      socket.off('video:resume', handleVideoResume)
+      socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -234,48 +285,35 @@ function StudentRoomPage() {
     }
   }
 
-  const handleStudentExport = (format) => {
-    if (!room || pastResponses.length === 0) {
-      alert('No responses to export yet.')
-      return
-    }
-    try {
-      const answered = pastResponses.filter(q => q.answered)
-      const totalCorrect = answered.filter(q => q.isCorrect).length
-      const totalPoints = answered.reduce((s, q) => s + (q.pointsEarned || 0), 0)
-      const avg = answered.length > 0 ? Math.round((totalPoints / (answered.length * 100)) * 100) : 0
-      exportResults(format, {
-        room,
-        questions: pastResponses,
-        responses: {},
-        stats: { totalResponses: answered.length, totalCorrect, averageScore: avg },
-        isTeacher: false,
-        userName: user?.name
-      })
-    } catch (err) {
-      console.error('Export failed:', err)
-      alert('Export failed: ' + err.message)
-    }
-  }
-
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion || (currentQuestion.confidenceRequired && !confidence)) return
+    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
+    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
+    // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
-    
-    console.log('[StudentRoom] Submitting answer:', { 
-      questionId, 
-      roomId: room._id, 
-      studentId: user._id, 
-      selectedOptions,
-      timeToAnswer: tta,
-      timeLeft,
-      responseTime
+    const roomId = room?._id
+    const studentId = user?._id
+
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
+    // even though the network POST itself is deferred by a small random delay.
+    setSubmitted(true)
+    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
+    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
+    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
+    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    const jitterMs = Math.floor(Math.random() * 2000)
+
+    console.log('[StudentRoom] Submitting answer:', {
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
     })
 
-    // Save to MongoDB - wait for it to complete before fetching past responses
+    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
+
+    // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -284,48 +322,29 @@ function StudentRoomPage() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          roomId: room._id,
+          roomId,
           questionId,
-          studentId: user._id,
+          studentId,
           selectedOptions,
-          responseTime,
-          confidence
+          responseTime
         })
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
-      
-      // Emit points:update for leaderboard broadcast
-      if (saveData.success && saveData.response) {
-        socket.emit('points:update', {
-          roomCode: room.code,
-          questionId,
-          studentId: user._id,
-          points: saveData.response.points,
-          isCorrect: saveData.response.isCorrect
-        })
+
+      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
+      // (from this authenticated POST) — the client no longer emits points:update /
+      // response:submit. The POST returns this student's current rank; surface it so the
+      // leaderboard's "you" pill updates even when outside the broadcast top-N.
+      if (saveData.success && saveData.rank != null) {
+        setMyRank(saveData.rank)
       }
     } catch (err) {
       console.error('Failed to save response:', err)
     }
 
-    // Emit via socket
-    socket.emit('response:submit', {
-      roomCode: room.code,
-      questionId,
-      studentId: user._id,
-      selectedOptions,
-      responseTime
-    })
-    
-    // Set submitted immediately and fetch past responses without delay
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
-    if (soundEnabled) {
-      playSubmitSound()
-    }
-    if (room?._id && user?._id) {
-      fetchPastResponses(room._id, user._id)
+    if (roomId && studentId) {
+      fetchPastResponses(roomId, studentId)
     }
   }
 
@@ -336,30 +355,6 @@ function StudentRoomPage() {
     navigate('/student')
   }
 
-  // Keyboard shortcuts
-  useKeyboardShortcuts({
-    onSubmit: () => {
-      if (currentQuestion && selectedOptions.length > 0 && !submitted) {
-        handleSubmitAnswer()
-      }
-    },
-    onSelectOption: (index) => {
-      if (!currentQuestion || submitted) return
-      const isMSQ = currentQuestion.type === 'MSQ'
-      if (isMSQ) {
-        setSelectedOptions(prev => 
-          prev.includes(index) 
-            ? prev.filter(i => i !== index)
-            : [...prev, index]
-        )
-      } else {
-        setSelectedOptions([index])
-      }
-    },
-    onToggleSound: () => setSoundEnabled(prev => !prev),
-    onToggleLeaderboard: () => setShowLeaderboard(prev => !prev),
-  }, !!currentQuestion || !submitted)
-
   if (isLoading) {
     return (
       <div style={{
@@ -369,7 +364,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -396,7 +391,7 @@ function StudentRoomPage() {
         fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
       }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
@@ -425,6 +420,33 @@ function StudentRoomPage() {
     )
   }
 
+  if (sessionEnded) {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              width: '48px',
+              height: '48px',
+              border: '4px solid var(--border-color)',
+              borderTopColor: '#3b82f6',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              margin: '0 auto 16px'
+            }} />
+            <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -437,42 +459,20 @@ function StudentRoomPage() {
     }}>
       <Sidebar user={user} />
       
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
         <header style={{
           background: 'var(--header-bg)',
           color: 'white',
-          padding: '24px 32px'
+          padding: isMobile ? '20px 16px' : '24px 32px',
+          paddingLeft: isMobile ? '64px' : '32px'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
             </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <button
-                onClick={() => setSoundEnabled(prev => !prev)}
-                title={soundEnabled ? 'Mute sounds' : 'Enable sounds'}
-                style={{
-                  padding: '8px 12px',
-                  background: soundEnabled ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '16px'
-                }}
-              >
-                {soundEnabled ? '🔊' : '🔇'}
-              </button>
-              <ExportMenu
-                options={[
-                  { label: '📄 CSV — My Answers', value: 'csv-question', description: 'One row per question with your answer' },
-                  { label: '📋 PDF Report', value: 'pdf', description: 'Formatted PDF of your responses' }
-                ]}
-                onSelect={handleStudentExport}
-                disabled={pastResponses.length === 0}
-                buttonLabel="My Results"
-              />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -480,94 +480,96 @@ function StudentRoomPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {/* Connection Status */}
-<div style={{
-                background: 'var(--bg-card)',
-                borderRadius: '16px',
-                padding: '16px 24px',
-                boxShadow: 'var(--card-shadow)',
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '16px',
+            padding: '16px 24px',
+            boxShadow: 'var(--card-shadow)',
+            border: '1px solid var(--border-color)',
+            marginBottom: '24px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{
+                width: '12px',
+                height: '12px',
+                borderRadius: '50%',
+                background: isConnected ? '#10b981' : '#ef4444'
+              }} />
+              <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
+                {isConnected ? 'Connected' : 'Reconnecting...'}
+              </span>
+            </div>
+            <button
+              onClick={leaveSession}
+              disabled={hasAnsweredPoll}
+              title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
+              style={{
+                padding: '8px 16px',
+                background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
+                color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
                 border: '1px solid var(--border-color)',
-                marginBottom: '24px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{
-                    width: '12px',
-                    height: '12px',
-                    borderRadius: '50%',
-                    background: isConnected ? '#10b981' : '#ef4444'
-                  }} />
-                  <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
-                    {isConnected ? 'Connected' : 'Reconnecting...'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <button
-                    onClick={() => setShowLeaderboard(prev => !prev)}
-                    title={showLeaderboard ? 'Hide leaderboard' : 'Show leaderboard'}
-                    style={{
-                      padding: '8px 16px',
-                      background: showLeaderboard ? '#3b82f6' : 'var(--bg-primary)',
-                      color: showLeaderboard ? 'white' : 'var(--text-primary)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {showLeaderboard ? '🏆 Hide Board' : '🏆 Show Board'}
-                  </button>
-                  <button
-                    onClick={leaveSession}
-                    disabled={hasAnsweredPoll}
-                    title={hasAnsweredPoll ? 'You cannot leave after answering a question' : 'Leave the session'}
-                    style={{
-                      padding: '8px 16px',
-                      background: hasAnsweredPoll ? 'var(--border-color)' : '#ef4444',
-                      color: hasAnsweredPoll ? 'var(--text-secondary)' : 'white',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
-                      opacity: hasAnsweredPoll ? 0.6 : 1
-                    }}
-                  >
-                    Leave
-                  </button>
-                </div>
-              </div>
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: hasAnsweredPoll ? 'not-allowed' : 'pointer',
+                opacity: hasAnsweredPoll ? 0.6 : 1
+              }}
+            >
+              Leave
+            </button>
+          </div>
 
-              {currentQuestion.confidenceRequired && !submitted && <div style={{ marginBottom: '18px', textAlign: 'center' }}>
-                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>How confident are you?</p>
-                {['sure', 'unsure', 'guessing'].map(value => <button key={value} onClick={() => setConfidence(value)} style={{ margin: '0 5px', padding: '8px 12px', borderRadius: 16, border: confidence === value ? '2px solid #ffd700' : '1px solid rgba(255,255,255,.45)', background: confidence === value ? 'rgba(255,215,0,.25)' : 'transparent', color: 'white', cursor: 'pointer', textTransform: 'capitalize' }}>{value}</button>)}
-              </div>}
+          {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
+              Hidden (not unmounted) while a question is live so the poll takes over like normal mode. */}
+          {isVideoMode && videoId && (
+            <div style={{
+              display: currentQuestion ? 'none' : 'block',
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '12px' : '16px',
+              boxShadow: 'var(--shadow-md)',
+              border: '1px solid var(--border-color)',
+              marginBottom: '24px'
+            }}>
+              {isLiveStream && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: 700, letterSpacing: '0.03em' }}>LIVE</span>
+                </div>
+              )}
+              <YouTubeVideo
+                videoId={videoId}
+                controls={true}
+                noForwardSeek={true}
+                seekCeilingRef={teacherVideoTimeRef}
+                capSuppressUntilRef={capSuppressUntilRef}
+                playerRef={studentPlayerRef}
+                onLiveStatus={setIsLiveStream}
+              />
+              <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                {isLiveStream
+                  ? 'Live stream. You can rewind, and the video pauses automatically during a poll.'
+                  : 'You can pause and rewind, but not skip ahead. The video pauses automatically during a poll.'}
+              </p>
+            </div>
+          )}
 
           {/* Live Question */}
           {currentQuestion ? (
-<div style={{
-                background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-                borderRadius: '16px',
-                padding: '32px',
-                color: 'white',
-                boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)'
-              }}>
-              {/* Keyboard shortcuts hint */}
-              <div style={{ 
-                textAlign: 'center', 
-                marginBottom: '16px',
-                fontSize: '12px',
-                opacity: 0.8
-              }}>
-                <span style={{ marginRight: '16px' }}>⌨️ Keys: <kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>1-4</kbd> Select</span>
-                <span style={{ marginRight: '16px' }}><kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>Space</kbd> Toggle</span>
-                <span><kbd style={{background:'rgba(255,255,255,0.2)',padding:'2px 6px',borderRadius:'4px',marginRight:'4px'}}>Enter</kbd> Submit</span>
-              </div>
-
+            <div style={{
+              background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '20px 16px' : '32px',
+              color: 'white',
+              boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
+            }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -586,7 +588,7 @@ function StudentRoomPage() {
               </div>
 
               {/* Question */}
-              <h2 style={{ fontSize: '24px', fontWeight: '700', textAlign: 'center', marginBottom: '32px' }}>
+              <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
                 {currentQuestion.question}
               </h2>
 
@@ -621,19 +623,22 @@ function StudentRoomPage() {
                       onClick={handleOptionClick}
                       disabled={submitted}
                       style={{
-                        padding: '20px 24px',
-                        background: submitted 
+                        width: '100%',
+                        minHeight: '48px',
+                        boxSizing: 'border-box',
+                        padding: isMobile ? '14px 16px' : '20px 24px',
+                        background: submitted
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
                         borderRadius: '12px',
                         color: 'white',
-                        fontSize: '18px',
+                        fontSize: isMobile ? '16px' : '18px',
                         textAlign: 'left',
                         cursor: submitted ? 'default' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '16px'
+                        gap: isMobile ? '12px' : '16px'
                       }}
                     >
                       {isMSQ && (
@@ -647,7 +652,8 @@ function StudentRoomPage() {
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: isSelected ? '#1f2937' : 'white',
-                          fontSize: '14px'
+                          fontSize: '14px',
+                          flexShrink: 0
                         }}>
                           {isSelected ? '✓' : ''}
                         </span>
@@ -662,11 +668,12 @@ function StudentRoomPage() {
                         justifyContent: 'center',
                         fontWeight: '700',
                         color: isSelected ? '#1f2937' : 'white',
-                        fontSize: '16px'
+                        fontSize: '16px',
+                        flexShrink: 0
                       }}>
                         {optionLabel}
                       </span>
-                      <span>{optionText}</span>
+                      <span style={{ minWidth: 0, wordBreak: 'break-word' }}>{optionText}</span>
                     </button>
                   )
                 })}
@@ -688,7 +695,7 @@ function StudentRoomPage() {
               ) : (
                 <button
                   onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0 || (currentQuestion.confidenceRequired && !confidence)}
+                  disabled={selectedOptions.length === 0}
                   style={{
                     width: '100%',
                     padding: '16px',
@@ -708,12 +715,13 @@ function StudentRoomPage() {
           ) : (
             /* Waiting State - Show Passed Questions */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              {/* Active question area placeholder */}
+              {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
+              {!isVideoMode && (
               <div style={{
                 background: 'var(--bg-card)',
-                borderRadius: '16px',
-                padding: '48px',
-                boxShadow: 'var(--card-shadow)',
+                borderRadius: 'var(--radius-lg)',
+                padding: isMobile ? '32px 20px' : '48px',
+                boxShadow: 'var(--shadow-md)',
                 border: '1px solid var(--border-color)',
                 textAlign: 'center'
               }}>
@@ -737,96 +745,42 @@ function StudentRoomPage() {
                   The teacher will start a poll soon. Stay tuned!
                 </p>
               </div>
+              )}
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
-                <div style={{ flex: '1 1 calc(70% - 8px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
-                      📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
-                    </h3>
-                    {markedForReview.size > 0 && (
-                      <button
-                        onClick={() => {
-                          const marked = pastResponses.filter((_, i) => markedForReview.has(i))
-                          alert(`Marked for review (${marked.length}):\n${marked.map(q => q.question).join('\n')}`)
-                        }}
-                        style={{
-                          padding: '6px 12px',
-                          background: '#fef3c7',
-                          color: '#d97706',
-                          border: '1px solid #fbbf24',
-                          borderRadius: '6px',
-                          fontSize: '12px',
-                          fontWeight: '600',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        📌 Review ({markedForReview.size})
-                      </button>
-                    )}
-                  </div>
+                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
+                    📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
+                  </h3>
                 {pastResponses.length === 0 ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
                     No questions answered yet. Questions you answer will appear here.
                   </p>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ position: 'relative' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
                     {pastResponses.map((q, index) => (
                       <div key={`past-${index}`} style={{
                         padding: '20px',
                         background: 'var(--bg-primary)',
                         borderRadius: '12px',
-                        border: markedForReview.has(index) ? '2px solid #f59e0b' : '1px solid var(--border-color)',
-                        opacity: q.answered ? 1 : 0.8,
-                        position: 'relative'
+                        border: '1px solid var(--border-color)',
+                        opacity: q.answered ? 1 : 0.8
                       }}>
-                        {/* Mark for review button */}
-                        <button
-                          onClick={() => {
-                            setMarkedForReview(prev => {
-                              const newSet = new Set(prev)
-                              if (newSet.has(index)) {
-                                newSet.delete(index)
-                              } else {
-                                newSet.add(index)
-                              }
-                              return newSet
-                            })
-                          }}
-                          title={markedForReview.has(index) ? 'Remove from review' : 'Mark for review'}
-                          style={{
-                            position: 'absolute',
-                            top: '12px',
-                            right: '12px',
-                            padding: '4px 8px',
-                            background: markedForReview.has(index) ? '#f59e0b' : 'transparent',
-                            border: `1px solid ${markedForReview.has(index) ? '#f59e0b' : 'var(--border-color)'}`,
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                            color: markedForReview.has(index) ? 'white' : 'var(--text-secondary)'
-                          }}
-                        >
-                          {markedForReview.has(index) ? '✓ Marked' : '📌 Review'}
-                        </button>
-
                         {/* Header with status badges */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', paddingRight: '60px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <span style={{
                               padding: '2px 10px',
-                              background: q.answered ? '#d1fae5' : '#fee2e2',
-                              color: q.answered ? '#059669' : '#dc2626',
+                              background: q.answered ? '#d1fae5' : (q.resultPending ? '#eff6ff' : '#fee2e2'),
+                              color: q.answered ? '#059669' : (q.resultPending ? '#3b82f6' : '#dc2626'),
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              {q.answered ? 'Answered' : 'Missed'}
+                              {q.answered ? 'Answered' : (q.resultPending ? 'Live' : 'Missed')}
                             </span>
                             <span style={{
                               padding: '2px 10px',
@@ -846,10 +800,23 @@ function StudentRoomPage() {
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              {q.answered ? (q.pointsEarned || 0) : 0}/{q.maxPoints || 100} pts
+                              {q.resultPending ? '—' : (q.answered ? (q.pointsEarned || 0) : 0)}/{q.maxPoints || 100} pts
                             </span>
                           </div>
-                          {q.answered && q.isCorrect && (
+                          {/* Live poll: result withheld until the poll closes — show a neutral badge, never correct/incorrect. */}
+                          {q.resultPending && q.answered && (
+                            <span style={{
+                              padding: '4px 12px',
+                              background: '#3b82f6',
+                              color: 'white',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              fontWeight: '600'
+                            }}>
+                              ⏳ Answer submitted
+                            </span>
+                          )}
+                          {!q.resultPending && q.answered && q.isCorrect && (
                             <span style={{
                               padding: '4px 12px',
                               background: '#10b981',
@@ -861,7 +828,7 @@ function StudentRoomPage() {
                               ✓ Correct (+{q.pointsEarned || 0})
                             </span>
                           )}
-                          {q.answered && !q.isCorrect && (
+                          {!q.resultPending && q.answered && !q.isCorrect && (
                             <span style={{
                               padding: '4px 12px',
                               background: '#ef4444',
@@ -883,27 +850,49 @@ function StudentRoomPage() {
                         {/* All options - always shown */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
                           {(q.options || []).map((option, optIdx) => {
+                            const pending = !!q.resultPending
                             const isSelected = q.selectedOptions?.includes(optIdx)
                             const isCorrect = option.isCorrect
                             const letter = String.fromCharCode(65 + optIdx)
-                            
+
                             let bgColor = 'var(--bg-secondary)'
                             let borderColor = 'var(--border-color)'
                             let textColor = 'var(--text-primary)'
+                            let letterBg = 'var(--border-color)'
                             let label = ''
-                            
-                            if (q.answered && isSelected && isCorrect) {
+
+                            if (pending) {
+                              // Live poll: NEVER reveal the correct option. Only mark what the student
+                              // picked, in blue — the correct/incorrect result comes after it closes.
+                              if (q.answered && isSelected) {
+                                bgColor = '#eff6ff'
+                                borderColor = '#3b82f6'
+                                letterBg = '#3b82f6'
+                                // The highlight bg is a fixed light pastel, so text must be a dark
+                                // accent (not var(--text-primary), which is white in dark mode and
+                                // would wash out over the pastel). Mirrors the teacher side.
+                                textColor = '#1e40af'
+                                label = ' (Your answer)'
+                              }
+                            } else if (q.answered && isSelected && isCorrect) {
                               bgColor = '#d1fae5'
                               borderColor = '#059669'
+                              letterBg = '#059669'
+                              textColor = '#065f46'
                               label = ' (Your correct answer)'
                             } else if (q.answered && isSelected && !isCorrect) {
                               bgColor = '#fee2e2'
                               borderColor = '#dc2626'
+                              textColor = '#991b1b'
                               label = ' (Your wrong answer)'
                             } else if (!q.answered && isCorrect) {
                               bgColor = '#d1fae5'
                               borderColor = '#059669'
+                              letterBg = '#059669'
+                              textColor = '#065f46'
                               label = ' (Correct answer)'
+                            } else if (isCorrect) {
+                              letterBg = '#059669'
                             }
                             
                             return (
@@ -920,7 +909,7 @@ function StudentRoomPage() {
                                   width: '28px',
                                   height: '28px',
                                   borderRadius: '50%',
-                                  background: isCorrect ? '#059669' : 'var(--border-color)',
+                                  background: letterBg,
                                   color: 'white',
                                   display: 'flex',
                                   alignItems: 'center',
@@ -944,8 +933,13 @@ function StudentRoomPage() {
                           })}
                         </div>
                         
-                        {/* Missed question notice */}
-                        {!q.answered && (
+                        {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
+                        {q.resultPending && (
+                          <p style={{ fontSize: '13px', color: '#3b82f6', margin: 0, fontStyle: 'italic' }}>
+                            ⏳ Result will be shown once this poll closes
+                          </p>
+                        )}
+                        {!q.resultPending && !q.answered && (
                           <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
                             ⚠️ You did not answer this question
                           </p>
@@ -953,17 +947,19 @@ function StudentRoomPage() {
                       </div>
                     ))}
                   </div>
+                  {pastResponses.length > 3 && (
+                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 12px 12px' }} />
+                  )}
+                  </div>
                 )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                {showLeaderboard && (
-                  <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
-<h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    🏆 Leaderboard {anonymousMode && <span style={{ fontSize: '12px', color: '#d97706' }}>(Anonymous)</span>}
+                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
+                    🏆 Leaderboard
                   </h3>
-                    <Leaderboard roomId={room?._id} token={token} socket={socket} anonymousMode={anonymousMode} />
-                  </div>
-                )}
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
+                </div>
               </div>
             </div>
           )}
