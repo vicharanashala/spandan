@@ -95,7 +95,8 @@ function App() {
 
         // Open dashboard in new tab
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
-        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
+        const basename = import.meta.env.VITE_BASE_PATH || ''
+        const redirectUrl = `${window.location.origin}${basename}${dashboard}`
         console.log('[Spandan] Opening dashboard:', redirectUrl)
         window.open(redirectUrl, '_blank')
       } catch (error) {
@@ -134,8 +135,10 @@ function App() {
     }
   }, [isDark])
 
+  const basename = import.meta.env.VITE_BASE_PATH || '/'
+
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={basename}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
