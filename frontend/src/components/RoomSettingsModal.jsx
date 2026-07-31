@@ -91,6 +91,14 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </button>
         </div>
 
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!localSettings.confidencePulseEnabled} onChange={e => setLocalSettings(prev => ({ ...prev, confidencePulseEnabled: e.target.checked }))} />
+            <span style={{ fontSize: '14px', fontWeight: '500' }}>Enable confidence pulse</span>
+          </label>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>Students can label an answer as sure, unsure, or guessing.</p>
+        </div>
+
         {/* Segment Time */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{

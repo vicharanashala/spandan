@@ -12,12 +12,15 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import ExportMenu from '../components/ExportMenu'
+import { exportResults } from '../utils/exportResults.js'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
 import { playStudentSubmittedSound, playSegmentEndSound } from '../services/soundService'
 import { useTeacherShortcuts } from '../hooks/useTeacherShortcuts'
 import QuestionTemplateBrowser from '../components/QuestionTemplateBrowser'
+import ParticipationHeatmap from '../components/ParticipationHeatmap'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -27,6 +30,7 @@ function RoomDetailPage() {
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
 
   const [room, setRoom] = useState(null)
+  const isEnded = room ? !!room.endedAt : false
   const [isLoading, setIsLoading] = useState(true)
   const [isRoomJoined, setIsRoomJoined] = useState(false)
   const [error, setError] = useState('')
@@ -103,6 +107,7 @@ function RoomDetailPage() {
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [showTemplateBrowser, setShowTemplateBrowser] = useState(false)
+  const [showParticipationHeatmap, setShowParticipationHeatmap] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -555,6 +560,47 @@ function RoomDetailPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const handleExportLive = async (format) => {
+    if (!room || generatedQuestions.length === 0) {
+      alert('No questions to export yet.')
+      return
+    }
+    try {
+      const isTeacher = user?.role === 'teacher'
+      const basePayload = { room, questions: generatedQuestions, stats: { totalResponses: 0 }, isTeacher }
+
+      if (format === 'csv-student') {
+        const r = await fetch(`${API_URL}/responses/room/${room._id}/student-detailed`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'Failed to load student data')
+        exportResults(format, { ...basePayload, students: data.students || [], responses: data.responses || [] })
+      } else {
+        // For per-question CSV / PDF, compute basic stats on-the-fly from answerCounts
+        const questionStats = {}
+        generatedQuestions.forEach(q => {
+          const qId = q._id
+          let total = 0, correct = 0, answerCounts = {}
+          for (let i = 0; i < (q.options?.length || 0); i++) {
+            const c = answerCounts[`${qId}_${i}`] || 0
+            answerCounts[i] = c
+            total += c
+            if (q.options[i]?.isCorrect) correct += c
+          }
+          // Fallback: total from answerCounts[qId] when option breakdown not tracked
+          const totalFromQ = answerCounts[qId] || total
+          questionStats[qId] = { totalResponses: totalFromQ, correctCount: correct, answerCounts }
+        })
+        basePayload.responses = questionStats
+        exportResults(format, basePayload)
+      }
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert('Export failed: ' + err.message)
+    }
+  }
+
   // Process transcription queue in order
   const processTranscriptionQueue = useCallback(async () => {
     if (isProcessingQueueRef.current) return
@@ -944,6 +990,20 @@ function RoomDetailPage() {
     }
   }
 
+  const handleClarificationQuestion = async (q) => {
+    const answerSummary = (q.options || []).map((opt, index) => `${String.fromCharCode(65 + index)}: ${answerCounts[`${q._id}_${index}`] || 0} responses${opt.isCorrect ? ' (correct)' : ''}`).join(', ')
+    try {
+      const response = await fetch(`${API_URL}/questions/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ transcript: `Create one short clarification question for students who struggled with: ${q.question}. Response pattern: ${answerSummary}. Explain the misconception in the question explanation.`, config: { numQuestions: 1, difficulty: roomSettings.difficulty, provider: roomSettings.questionProvider } })
+      })
+      const data = await response.json()
+      if (!response.ok || !data.questions?.length) throw new Error(data.error || 'No question generated')
+      setPendingTextQuestions(data.questions.map(item => ({ ...item, timeToAnswer: roomSettings.timeToAnswer, points: roomSettings.points })))
+      setShowTextQuestionPopup(true)
+    } catch (error) { alert(`Could not create clarification question: ${error.message}`) }
+  }
+
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
@@ -1021,8 +1081,6 @@ function RoomDetailPage() {
       </div>
     )
   }
-
-  const isEnded = !!room.endedAt
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
@@ -1272,6 +1330,18 @@ function RoomDetailPage() {
                 }}
               />
             </div>
+
+            {/* Export Live Results */}
+            <ExportMenu
+              options={[
+                { label: '📄 CSV — Per Question', value: 'csv-question', description: 'One row per question with stats' },
+                { label: '📊 CSV — Per Student Grid', value: 'csv-student', description: 'One row per student, columns per question' },
+                { label: '📋 PDF Report', value: 'pdf', description: 'Formatted PDF with tables' }
+              ]}
+              onSelect={handleExportLive}
+              disabled={generatedQuestions.length === 0}
+            />
+            <button onClick={() => setShowParticipationHeatmap(true)} style={{ padding: '8px 14px', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'var(--bg-card)', color: 'var(--text-primary)', cursor: 'pointer' }}>▦ Participation</button>
 
             {/* End Room Button */}
             {!isEnded && (
@@ -1650,6 +1720,12 @@ function RoomDetailPage() {
                         })}
                       </div>
                       {!isEnded && (
+                        <>
+                        {q.silentMode && !q.resultsRevealed && <button onClick={async () => {
+                          const r = await fetch(`${API_URL}/questions/${q._id}/reveal`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+                          if (r.ok) setGeneratedQuestions(prev => prev.map(item => item._id === q._id ? { ...item, resultsRevealed: true } : item))
+                        }} style={{ padding: '4px 8px', border: 'none', borderRadius: '4px', background: '#7c3aed', color: 'white', cursor: 'pointer', fontSize: '10px' }}>Reveal results</button>}
+                        <button onClick={() => handleClarificationQuestion(q)} style={{ padding: '4px 8px', border: '1px solid #818cf8', borderRadius: '4px', background: '#eef2ff', color: '#4338ca', cursor: 'pointer', fontSize: '10px' }}>AI clarification</button>
                         <button
                           onClick={() => {
                             const templateData = {
@@ -1681,6 +1757,7 @@ function RoomDetailPage() {
                         >
                           + Template
                         </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1723,6 +1800,7 @@ function RoomDetailPage() {
           setShowTemplateBrowser(false)
         }}
       />
+      {showParticipationHeatmap && <ParticipationHeatmap roomId={room?._id} token={token} onClose={() => setShowParticipationHeatmap(false)} />}
 
       {/* Question Approval Popup */}
       {showQuestionPopup && pendingQuestions.length > 0 && (

@@ -118,7 +118,9 @@ router.post('/', authorize('teacher'), async (req, res) => {
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
-      segmentIndex = 0
+      segmentIndex = 0,
+      silentMode = false,
+      confidenceRequired = false
     } = req.body
 
     if (!roomId || !type || !question || !options) {
@@ -129,7 +131,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // The frontend renders these as React text nodes, which auto-escape at
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
-    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex, silentMode, confidenceRequired, resultsRevealed: !silentMode })
 
     const newQuestion = new Question(sanitizedData)
 
@@ -145,6 +147,24 @@ router.post('/', authorize('teacher'), async (req, res) => {
       success: false,
       error: 'Failed to create question'
     })
+  }
+})
+
+// Reveal a silent question's results. The room owner is the only permitted caller.
+router.post('/:id/reveal', authorize('teacher'), async (req, res) => {
+  try {
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const question = await Question.findById(req.params.id)
+    if (!question) return res.status(404).json({ error: 'Question not found' })
+    const room = await Room.findById(question.roomId)
+    if (!room || room.teacher.toString() !== req.user._id.toString()) return res.status(403).json({ error: 'Only the room owner can reveal results' })
+    question.resultsRevealed = true
+    await question.save()
+    req.app.get('io')?.to(room.code).emit('question:results-revealed', { questionId: question._id })
+    res.json({ success: true, question })
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to reveal results' })
   }
 })
 

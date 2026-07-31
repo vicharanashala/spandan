@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:local": "concurrently \"npm run dev:frontend\" \"npm run dev:local --workspace=backend\"",
     "dev:frontend": "npm run dev --workspace=frontend",
     "dev:backend": "npm run dev --workspace=backend",
     "build": "npm run build --workspace=frontend",

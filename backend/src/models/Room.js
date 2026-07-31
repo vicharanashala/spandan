@@ -32,6 +32,8 @@ const roomSchema = new mongoose.Schema({
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
     requireCorrectAnswer: { type: Boolean, default: false },
+    anonymousMode: { type: Boolean, default: false },
+    confidencePulseEnabled: { type: Boolean, default: false },
     // Quiz settings
     timeToAnswer: { type: Number, default: 30 },
     points: { type: Number, default: 100 },

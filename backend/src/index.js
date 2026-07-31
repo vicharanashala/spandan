@@ -511,7 +511,10 @@ io.on('connection', (socket) => {
       return
     }
     if (data.question) {
-      io.to(data.roomCode).emit('new_question', data.question)
+      io.to(data.roomCode).emit('new_question', {
+        question: data.question,
+        anonymousMode: data.anonymousMode || false
+      })
     }
   })
 

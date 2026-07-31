@@ -11,6 +11,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   ])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [points, setPoints] = useState(100)
+  const [silentMode, setSilentMode] = useState(false)
+  const [confidenceRequired, setConfidenceRequired] = useState(false)
 
   // Launched state - once teacher launches, show timer mode
   const [isLaunched, setIsLaunched] = useState(false)
@@ -105,7 +107,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
         ? [{ text: 'True', isCorrect: options[0].isCorrect }, { text: 'False', isCorrect: options[1].isCorrect }]
         : options.filter(o => o.text.trim()),
       timeToAnswer,
-      points
+      points,
+      silentMode,
+      confidenceRequired
     })
 
     // Start launched timer - question is now live
@@ -145,6 +149,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     ])
     setTimeToAnswer(30)
     setPoints(100)
+    setSilentMode(false)
+    setConfidenceRequired(false)
     onClose()
   }
 
@@ -483,6 +489,10 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
         </div>
 
         {/* Launch Button */}
+        <div style={{ display: 'flex', gap: '18px', marginBottom: '16px', fontSize: '13px' }}>
+          <label><input type="checkbox" checked={silentMode} onChange={e => setSilentMode(e.target.checked)} /> Silent results</label>
+          <label><input type="checkbox" checked={confidenceRequired} onChange={e => setConfidenceRequired(e.target.checked)} /> Ask confidence</label>
+        </div>
         <button
           onClick={handleLaunch}
           style={{

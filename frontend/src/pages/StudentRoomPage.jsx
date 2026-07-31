@@ -7,6 +7,8 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import ExportMenu from '../components/ExportMenu'
+import { exportResults } from '../utils/exportResults.js'
 import { API_URL } from '../config.js'
 import { playQuestionSound, playSubmitSound, playCorrectSound, playTimerWarningSound } from '../services/soundService'
 import { useKeyboardShortcuts, KEYBOARD_SHORTCUTS } from '../hooks/useKeyboardShortcuts'
@@ -34,6 +36,7 @@ function StudentRoomPage() {
   const [showLeaderboard, setShowLeaderboard] = useState(true)
   const [markedForReview, setMarkedForReview] = useState(new Set())
   const [anonymousMode, setAnonymousMode] = useState(false)
+  const [confidence, setConfidence] = useState('')
 
   useEffect(() => {
     if (!token || !socket) return
@@ -57,6 +60,7 @@ function StudentRoomPage() {
       
       setCurrentQuestion(question)
       setSelectedOptions([])
+      setConfidence('')
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
       
@@ -110,7 +114,8 @@ function StudentRoomPage() {
     }
 
     const handleNewQuestion = (data) => {
-      const question = data.question || data
+      // data can be { question: fullDoc, anonymousMode } or the raw fullDoc directly
+      const question = (data && data.question && typeof data.question === 'object') ? data.question : data
       setAnonymousMode(data.anonymousMode || false)
       
       // Handle manually created questions from teacher
@@ -126,6 +131,7 @@ function StudentRoomPage() {
       
       setCurrentQuestion(question)
       setSelectedOptions([])
+      setConfidence('')
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
       
@@ -228,8 +234,32 @@ function StudentRoomPage() {
     }
   }
 
+  const handleStudentExport = (format) => {
+    if (!room || pastResponses.length === 0) {
+      alert('No responses to export yet.')
+      return
+    }
+    try {
+      const answered = pastResponses.filter(q => q.answered)
+      const totalCorrect = answered.filter(q => q.isCorrect).length
+      const totalPoints = answered.reduce((s, q) => s + (q.pointsEarned || 0), 0)
+      const avg = answered.length > 0 ? Math.round((totalPoints / (answered.length * 100)) * 100) : 0
+      exportResults(format, {
+        room,
+        questions: pastResponses,
+        responses: {},
+        stats: { totalResponses: answered.length, totalCorrect, averageScore: avg },
+        isTeacher: false,
+        userName: user?.name
+      })
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert('Export failed: ' + err.message)
+    }
+  }
+
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    if (selectedOptions.length === 0 || submitted || !currentQuestion || (currentQuestion.confidenceRequired && !confidence)) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -258,7 +288,8 @@ function StudentRoomPage() {
           questionId,
           studentId: user._id,
           selectedOptions,
-          responseTime
+          responseTime,
+          confidence
         })
       })
       const saveData = await saveResponse.json()
@@ -433,6 +464,15 @@ function StudentRoomPage() {
               >
                 {soundEnabled ? '🔊' : '🔇'}
               </button>
+              <ExportMenu
+                options={[
+                  { label: '📄 CSV — My Answers', value: 'csv-question', description: 'One row per question with your answer' },
+                  { label: '📋 PDF Report', value: 'pdf', description: 'Formatted PDF of your responses' }
+                ]}
+                onSelect={handleStudentExport}
+                disabled={pastResponses.length === 0}
+                buttonLabel="My Results"
+              />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -501,6 +541,11 @@ function StudentRoomPage() {
                   </button>
                 </div>
               </div>
+
+              {currentQuestion.confidenceRequired && !submitted && <div style={{ marginBottom: '18px', textAlign: 'center' }}>
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>How confident are you?</p>
+                {['sure', 'unsure', 'guessing'].map(value => <button key={value} onClick={() => setConfidence(value)} style={{ margin: '0 5px', padding: '8px 12px', borderRadius: 16, border: confidence === value ? '2px solid #ffd700' : '1px solid rgba(255,255,255,.45)', background: confidence === value ? 'rgba(255,215,0,.25)' : 'transparent', color: 'white', cursor: 'pointer', textTransform: 'capitalize' }}>{value}</button>)}
+              </div>}
 
           {/* Live Question */}
           {currentQuestion ? (
@@ -643,7 +688,7 @@ function StudentRoomPage() {
               ) : (
                 <button
                   onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
+                  disabled={selectedOptions.length === 0 || (currentQuestion.confidenceRequired && !confidence)}
                   style={{
                     width: '100%',
                     padding: '16px',
