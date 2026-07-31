@@ -1,0 +1,10 @@
+# Allowed Email Domains Configuration
+# Add allowed email domains, wildcards, or regex patterns below (one per line).
+# Lines starting with '#' or '//' are treated as comments.
+
+# Allowed domains:
+gmail.com
+yahoo.com
+outlook.com
+samagama.in
+*.edu.in
