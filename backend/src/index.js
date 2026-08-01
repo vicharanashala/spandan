@@ -11,7 +11,7 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { computeRanked } from './services/leaderboardAgg.js'
-import { getRoomDistributions, recordResponse } from './services/optionDistribution.js'
+import { buildTeacherDistributionPayload, getMongoDistributions, getRoomDistributions, recordResponse, teacherDistributionRoom } from './services/optionDistribution.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -125,20 +125,17 @@ async function resolveRoomCode(roomId) {
 // (1) Live answer counts — cheap count-only aggregation, throttled/coalesced per window.
 async function broadcastCounts(roomId) {
   try {
-    const Response = (await import('./models/Response.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
     const Question = (await import('./models/Question.js')).default
     const questions = await Question.find({ roomId: roomObjId }).select('_id options').lean()
-    const distributions = await getRoomDistributions(roomId, questions)
-    const countAgg = distributions ? null : await Response.aggregate([
-      { $match: { roomId: roomObjId } },
-      { $group: { _id: '$questionId', count: { $sum: 1 } } }
-    ])
+    const distributions = await getRoomDistributions(roomId, questions) || await getMongoDistributions(roomId, questions)
     const counts = {}
-    if (distributions) Object.entries(distributions).forEach(([qid, d]) => { counts[qid] = d.totalResponses })
-    else countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    Object.entries(distributions).forEach(([qid, d]) => { counts[qid] = d.totalResponses })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts, distributions: distributions || undefined })
+    if (roomCode) {
+      io.to(roomCode).emit('counts:updated', { counts })
+      io.to(teacherDistributionRoom(roomCode)).emit('poll:distribution:updated', buildTeacherDistributionPayload(distributions))
+    }
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
@@ -156,10 +153,9 @@ async function scheduleCountsBroadcast(roomId) {
     return
   }
   const s = getRoomState(id)
-  if (s.countsTimer) return // already scheduled; the trailing run picks up the latest DB state
+  if (s.countsTimer) return
   s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
 }
-
 // (2) Ranked leaderboard — full aggregation + name resolution + rank cache. Deferred/forced only.
 async function broadcastLeaderboard(roomId) {
   try {
@@ -549,6 +545,9 @@ io.on('connection', (socket) => {
 
       let participantCount = 0
       if (room) {
+        if (role === 'teacher' && room.teacher.toString() === String(userId)) {
+          socket.join(teacherDistributionRoom(room.code))
+        }
         // Only students are added to RoomMember (not teachers)
         if (role === 'student') {
           await RoomMember.findOneAndUpdate(
@@ -585,9 +584,13 @@ io.on('connection', (socket) => {
 
       socket.leave(roomCode)
       const room = await Room.findByCode(roomCode)
+      if (room && role === 'teacher' && room.teacher.toString() === String(userId)) {
+        socket.leave(teacherDistributionRoom(room.code))
+      }
 
       let participantCount = 0
       if (room) {
+
         if (role === 'student' && userId) {
           await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
         }

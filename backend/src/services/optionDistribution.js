@@ -59,6 +59,37 @@ export async function recordResponse(roomId, questionId, selectedOptions) {
   } catch (error) { console.error('[option-distribution] increment failed:', error.message); return false }
 }
 
+export const teacherDistributionRoom = (roomCode) => `teacher:distribution:${String(roomCode)}`
+
+export function buildTeacherDistributionPayload(distributions) {
+  const safe = Object.fromEntries(Object.entries(distributions || {}).map(([qid, value]) => [qid, {
+    totalResponses: value.totalResponses,
+    options: value.options
+  }]))
+  return { distributions: safe }
+}
+
+export async function getMongoDistributions(roomId, questions) {
+  const Response = (await import('../models/Response.js')).default
+  const roomObjectId = new mongoose.Types.ObjectId(roomId)
+  const [totals, options] = await Promise.all([
+    Response.aggregate([{ $match: { roomId: roomObjectId } }, { $group: { _id: '$questionId', count: { $sum: 1 } } }]),
+    Response.aggregate([
+      { $match: { roomId: roomObjectId } },
+      { $project: { questionId: 1, values: { $setUnion: [{ $ifNull: ['$selectedOptions', []] }, ['$selectedOption']] } } },
+      { $unwind: '$values' }, { $match: { values: { $type: 'number' } } },
+      { $group: { _id: { q: '$questionId', o: '$values' }, count: { $sum: 1 } } }
+    ])
+  ])
+  const totalByQuestion = new Map(totals.map((x) => [String(x._id), x.count]))
+  const countsByQuestion = new Map()
+  options.forEach((x) => {
+    const qid = String(x._id.q)
+    if (!countsByQuestion.has(qid)) countsByQuestion.set(qid, new Map())
+    countsByQuestion.get(qid).set(x._id.o, x.count)
+  })
+  return Object.fromEntries((questions || []).map((q) => [String(q._id), buildDistribution(q, totalByQuestion.get(String(q._id)) || 0, countsByQuestion.get(String(q._id)) || new Map())]))
+}
 export async function getRoomDistributions(roomId, questions) {
   if (!isRedisEnabled()) return null
   try {
