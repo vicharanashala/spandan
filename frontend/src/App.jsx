@@ -73,16 +73,13 @@ function App() {
           return
         }
 
-        // Send to Spandan backend for auto-provisioning
+        // Send the Samagama token to the Spandan backend, which re-verifies it
+        // server-side and provisions the account from the identity Samagama returns.
+        // We deliberately do not send email/name/admin flags — the server does not trust them.
         const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: samagamaUser.email,
-            name: samagamaUser.name,
-            isAdmin: samagamaUser.isAdmin || false,
-            isSuperAdmin: samagamaUser.isSuperAdmin || false
-          })
+          body: JSON.stringify({ samagamaToken })
         })
 
         if (!spandanResponse.ok) {
