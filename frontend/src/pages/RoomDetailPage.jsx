@@ -13,6 +13,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import OptionDistribution from '../components/OptionDistribution'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
@@ -76,6 +77,7 @@ function RoomDetailPage() {
   // Question timer for teacher visibility
   const [activeQuestion, setActiveQuestion] = useState(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
+  const [lastPollQuestionId, setLastPollQuestionId] = useState(null)
   const questionTimerRef = useRef(null)
 
 
@@ -109,6 +111,7 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [optionDistributions, setOptionDistributions] = useState({}) // questionId -> option distribution
 
   useEffect(() => {
     if (token) {
@@ -165,9 +168,18 @@ function RoomDetailPage() {
     if (!socket) return
     const handleCounts = (payload) => {
       if (payload?.counts) setAnswerCounts(payload.counts)
+      // Keep compatibility with older servers that included distributions on this event.
+      if (payload?.distributions) setOptionDistributions(payload.distributions)
+    }
+    const handleDistribution = (payload) => {
+      if (payload?.distributions) setOptionDistributions(payload.distributions)
     }
     socket.on('counts:updated', handleCounts)
-    return () => socket.off('counts:updated', handleCounts)
+    socket.on('poll:distribution:updated', handleDistribution)
+    return () => {
+      socket.off('counts:updated', handleCounts)
+      socket.off('poll:distribution:updated', handleDistribution)
+    }
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -200,7 +212,12 @@ function RoomDetailPage() {
   }
 
   const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
+    const question = data?.question || data
+    const questionId = data?.questionId || question?._id
+    if (!questionId) return
+    const fullQuestion = generatedQuestions.find((item) => String(item._id) === String(questionId)) || question
+    setLastPollQuestionId(String(questionId))
+    startQuestionTimer(fullQuestion)
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -210,7 +227,7 @@ function RoomDetailPage() {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
     }
-  }, [socket, roomSettings.timeToAnswer])
+  }, [socket, roomSettings.timeToAnswer, generatedQuestions])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -523,6 +540,7 @@ function RoomDetailPage() {
         if (countsData.counts) {
           setAnswerCounts(countsData.counts)
         }
+        if (countsData.distributions) setOptionDistributions(countsData.distributions)
       }
     } catch (err) {
       console.error('Failed to load questions:', err)
@@ -1148,6 +1166,10 @@ function RoomDetailPage() {
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
+
+  const pollQuestion = generatedQuestions.find((question) => String(question._id) === String(lastPollQuestionId)) || activeQuestion
+  const pollDistribution = lastPollQuestionId ? optionDistributions[String(lastPollQuestionId)] : null
+  const pollIsActive = Boolean(activeQuestion && questionTimeLeft > 0)
 
   if (isLoading) {
     return (
@@ -1831,6 +1853,15 @@ function RoomDetailPage() {
               )}
             </div>
 
+            {pollQuestion && pollDistribution && (
+              <OptionDistribution
+                question={pollQuestion}
+                distribution={pollDistribution}
+                totalParticipants={totalParticipants}
+                isActive={pollIsActive}
+                isMobile={isMobile}
+              />
+            )}
             {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
