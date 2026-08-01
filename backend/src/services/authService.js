@@ -89,8 +89,14 @@ export const updateUserRole = async (userId, role) => {
   if (!user) {
     throw new Error('User not found')
   }
-  
+  if (user.role || !user.requiresRoleSelection) {
+    const error = new Error('Role is already assigned')
+    error.code = 'ROLE_ALREADY_ASSIGNED'
+    throw error
+  }
+
   user.role = role
+  user.requiresRoleSelection = false
   await user.save()
   return user
 }

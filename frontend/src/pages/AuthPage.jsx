@@ -29,6 +29,7 @@ function AuthPage() {
     error,
     login,
     loginWithGoogle,
+    completeRoleSelection,
     sendRegistrationOtp,
     verifyRegistration,
     logout,
@@ -53,6 +54,8 @@ function AuthPage() {
   const [otpValue, setOtpValue] = useState('')
   const [resendIn, setResendIn] = useState(0) // seconds left before 'Resend' is allowed
   const [googleLoading, setGoogleLoading] = useState(false)
+  const [onboardingRole, setOnboardingRole] = useState('student')
+  const [onboardingLoading, setOnboardingLoading] = useState(false)
   const googleSubmissionRef = useRef(false)
 
   // Reset form data whenever login/registration mode switches
@@ -69,7 +72,7 @@ function AuthPage() {
   useEffect(() => {
     if (resendIn <= 0) return
     const t = setTimeout(() => setResendIn(resendIn - 1), 1000)
-    return () => clearTimeout(t)
+  return () => clearTimeout(t)
   }, [resendIn])
 
   const getPasswordReqs = (password) => {
@@ -81,7 +84,7 @@ function AuthPage() {
   }
 
   useEffect(() => {
-    if (isAuthenticated && token) {
+    if (isAuthenticated && token && !user?.requiresRoleSelection) {
       navigate(user?.role === 'teacher' ? '/teacher' : '/student')
     }
   }, [isAuthenticated, token, navigate, user])
@@ -141,13 +144,29 @@ function AuthPage() {
     setValidationError('')
     setGoogleLoading(true)
     try {
-      const data = await loginWithGoogle(credential, formData.role)
-      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+      const data = await loginWithGoogle(credential)
+      if (!data.requiresRoleSelection && !data.user?.requiresRoleSelection) {
+        navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+      }
     } catch (err) {
       setValidationError(err.message || 'Google sign-in failed')
     } finally {
       googleSubmissionRef.current = false
       setGoogleLoading(false)
+    }
+  }
+  const handleCompleteRoleSelection = async () => {
+    if (onboardingLoading) return
+    setOnboardingLoading(true)
+    clearError()
+    setValidationError('')
+    try {
+      const data = await completeRoleSelection(onboardingRole)
+      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+    } catch (err) {
+      setValidationError(err.message || 'Unable to save role')
+    } finally {
+      setOnboardingLoading(false)
     }
   }
   // Step 2: verify the emailed code and create the account (signs the user in on success).
@@ -263,6 +282,32 @@ function AuthPage() {
     transition: 'all 0.2s'
   })
 
+  if (isAuthenticated && token && user?.requiresRoleSelection) {
+    return (
+      <div style={{ minHeight: '100vh', background: brandGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: isMobile ? '24px 16px' : '40px' }}>
+        <div style={{ width: '100%', maxWidth: '420px', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '24px' : '32px', boxShadow: 'var(--shadow-lg)' }}>
+          <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+            <div style={{ width: '64px', height: '64px', margin: '0 auto 16px', borderRadius: 'var(--radius-lg)', background: 'var(--accent-gradient)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <SpandanIcon size={34} />
+            </div>
+            <h1 style={{ color: 'var(--text-primary)', fontSize: '26px', margin: '0 0 8px' }}>Welcome to Spandan</h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.5, margin: 0 }}>Choose how you want to use Spandan to finish setting up your account.</p>
+          </div>
+          {validationError && <div style={{ color: isDark ? '#fca5a5' : '#dc2626', background: isDark ? 'rgba(239,68,68,0.15)' : '#fef2f2', padding: '12px', borderRadius: 'var(--radius-sm)', marginBottom: '16px', fontSize: '14px' }}>{validationError}</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+            {['student', 'teacher'].map((role) => (
+              <button key={role} type="button" onClick={() => setOnboardingRole(role)} disabled={onboardingLoading} style={{ padding: '14px 10px', border: `1px solid ${onboardingRole === role ? 'var(--accent)' : 'var(--border-color)'}`, borderRadius: 'var(--radius)', background: onboardingRole === role ? 'rgba(59,130,246,0.12)' : 'transparent', color: onboardingRole === role ? 'var(--accent)' : 'var(--text-secondary)', fontWeight: 700, cursor: onboardingLoading ? 'not-allowed' : 'pointer' }}>
+                {role === 'student' ? '🎓 Student' : '👨‍🏫 Teacher'}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={handleCompleteRoleSelection} disabled={onboardingLoading} style={primaryButtonStyle(onboardingLoading)}>
+            {onboardingLoading ? 'Saving...' : 'Continue'}
+          </button>
+        </div>
+      </div>
+    )
+  }
   return (
     <div style={{
       minHeight: '100vh',
@@ -526,31 +571,6 @@ function AuthPage() {
                 isDark={isDark}
                 isMobile={isMobile}
               />
-              <div style={{ marginTop: '14px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
-                New Google accounts use:
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
-                {['student', 'teacher'].map((role) => (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => setFormData({ ...formData, role })}
-                    disabled={isLoading || googleLoading}
-                    style={{
-                      padding: '8px',
-                      border: `1px solid ${formData.role === role ? 'var(--accent)' : 'var(--border-color)'}`,
-                      borderRadius: 'var(--radius-sm)',
-                      background: formData.role === role ? 'rgba(59,130,246,0.12)' : 'transparent',
-                      color: formData.role === role ? 'var(--accent)' : 'var(--text-secondary)',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      cursor: isLoading || googleLoading ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    {role === 'student' ? '🎓 Student' : '👨‍🏫 Teacher'}
-                  </button>
-                ))}
-              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--text-secondary)', fontSize: '12px', marginTop: '14px' }}>
                 <span style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
                 <span>OR</span>

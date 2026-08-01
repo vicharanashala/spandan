@@ -40,7 +40,7 @@ const googlePayload = (overrides = {}) => normalizeGooglePayload({
 })
 
 describe('Google authentication service', () => {
-  it('creates a new Google user with the selected role', async () => {
+  it('creates a new Google user in role-selection onboarding', async () => {
     const UserModel = createFakeUserModel()
     const service = createGoogleAuthService({
       UserModel,
@@ -51,20 +51,23 @@ describe('Google authentication service', () => {
 
     expect(result.isNewUser).toBe(true)
     expect(result.user.email).toBe('google.user@example.com')
-    expect(result.user.role).toBe('student')
+    expect(result.user.role).toBeNull()
+    expect(result.requiresRoleSelection).toBe(true)
     expect(result.user.authProviders.google.subject).toBe('google-sub-1')
     expect(result.user.password).toMatch(/^google:/)
     expect(UserModel.records).toHaveLength(1)
   })
 
-  it('requires a role for a new Google user', async () => {
+it('creates an authenticated incomplete account without guessing a role', async () => {
     const UserModel = createFakeUserModel()
     const service = createGoogleAuthService({ UserModel, verifyCredential: async () => googlePayload() })
 
-    await expect(service.signIn('verified-credential')).rejects.toMatchObject({ code: 'ROLE_REQUIRED' })
-    expect(UserModel.records).toHaveLength(0)
-  })
+    const result = await service.signIn('verified-credential', 'teacher')
 
+    expect(result.user.role).toBeNull()
+    expect(result.user.requiresRoleSelection).toBe(true)
+    expect(UserModel.records).toHaveLength(1)
+  })
   it('links an existing email account without changing its role or creating a duplicate', async () => {
     const UserModel = createFakeUserModel()
     const existing = new UserModel({
@@ -126,6 +129,7 @@ describe('Google authentication service', () => {
 
     expect(second.user._id).toBe(first.user._id)
     expect(UserModel.records).toHaveLength(1)
-    expect(second.user.role).toBe('student')
+    expect(second.user.role).toBeNull()
+    expect(second.requiresRoleSelection).toBe(true)
   })
 })

@@ -78,14 +78,15 @@ router.post('/login', validate(loginSchema), async (req, res) => {
 router.post('/google', async (req, res) => {
   try {
     const { credential, role } = req.body || {}
-    const { user, isNewUser } = await signInWithGoogle(credential, role)
+    const { user, isNewUser, requiresRoleSelection } = await signInWithGoogle(credential, role)
     const token = generateToken(user._id)
 
     res.json({
       message: 'Google sign-in successful',
       user: user.toJSON(),
       token,
-      isNewUser
+      isNewUser,
+      requiresRoleSelection
     })
   } catch (error) {
     if (error instanceof GoogleAuthError) {
@@ -113,7 +114,8 @@ router.put('/role', authenticate, async (req, res) => {
       user 
     })
   } catch (error) {
-    res.status(500).json({ error: error.message })
+    const status = error.code === 'ROLE_ALREADY_ASSIGNED' ? 403 : 500
+    res.status(status).json({ error: error.message })
   }
 })
 

@@ -66,13 +66,13 @@ export const useAuthStore = create(
         }
       },
 
-      loginWithGoogle: async (credential, role) => {
+      loginWithGoogle: async (credential) => {
         set({ isLoading: true, error: null })
         try {
           const response = await fetch(`${API_URL}/auth/google`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ credential, role })
+            body: JSON.stringify({ credential })
           })
           const data = await response.json()
           if (!response.ok) {
@@ -88,6 +88,27 @@ export const useAuthStore = create(
             isLoading: false,
             sessionExpired: false
           })
+          return data
+        } catch (error) {
+          set({ error: error.message, isLoading: false })
+          throw error
+        }
+      },
+      completeRoleSelection: async (role) => {
+        set({ isLoading: true, error: null })
+        try {
+          const token = get().token
+          const response = await fetch(`${API_URL}/auth/role`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ role })
+          })
+          const data = await response.json()
+          if (!response.ok) throw new Error(data.error || 'Unable to save role')
+          set({ user: data.user, isLoading: false, sessionExpired: false })
           return data
         } catch (error) {
           set({ error: error.message, isLoading: false })

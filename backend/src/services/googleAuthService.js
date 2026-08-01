@@ -75,14 +75,13 @@ export function createGoogleAuthService({ verifyCredential = verifyGoogleCredent
       let isNewUser = false
 
       if (!user) {
-        if (!['teacher', 'student'].includes(role)) {
-          throw new GoogleAuthError('Role selection is required for a new Google account', 'ROLE_REQUIRED')
-        }
-
+        // New Google users are authenticated first and complete role selection in the app.
+        // The role argument is intentionally ignored so the onboarding step cannot be bypassed.
         user = new UserModel({
           name: googleUser.name,
           email: googleUser.email,
-          role,
+          role: null,
+          requiresRoleSelection: true,
           profileImage: googleUser.picture,
           password: createUnusablePassword(),
           authProviders: {
@@ -114,12 +113,12 @@ export function createGoogleAuthService({ verifyCredential = verifyGoogleCredent
       } catch (error) {
         if (error?.code === 11000) {
           const concurrentUser = await UserModel.findOne({ 'authProviders.google.subject': googleUser.subject })
-          if (concurrentUser) return { user: concurrentUser, isNewUser: false }
+          if (concurrentUser) return { user: concurrentUser, isNewUser: false, requiresRoleSelection: Boolean(concurrentUser.requiresRoleSelection) }
         }
         throw error
       }
 
-      return { user, isNewUser }
+      return { user, isNewUser, requiresRoleSelection: Boolean(user.requiresRoleSelection) }
     }
   }
 }
