@@ -623,6 +623,20 @@ io.on('connection', (socket) => {
     })
   })
 
+  // Teacher-initiated question retraction via socket. The REST endpoint (POST /questions/:id/retract)
+  // is the canonical path (it does the DB write); this socket handler provides a symmetric
+  // broadcast path so the teacher's own live-session UI can trigger and receive the event in
+  // the same round-trip as the REST call, without a second network hop.
+  socket.on('question:retract', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) {
+      console.warn('question:retract rejected — not the room owner:', socket.id)
+      return
+    }
+    // Broadcast to all room clients (including the teacher) so every student screen clears.
+    io.to(data.roomCode).emit('question:retracted', { questionId: data.questionId })
+  })
+
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)

@@ -74,7 +74,8 @@ async function getRoomQuestionsCached(Question, roomObjectId) {
   if (inflight) return inflight
   const p = (async () => {
     try {
-      const questions = await Question.find({ roomId: roomObjectId, status: 'approved' })
+      // Exclude retracted questions — students must never see them or have them counted.
+      const questions = await Question.find({ roomId: roomObjectId, status: 'approved', retracted: { $ne: true } })
         .sort({ createdAt: -1 }).lean()
       if (roomQuestionsCache.size > 50000) roomQuestionsCache.clear()
       roomQuestionsCache.set(key, { questions, expiresAt: Date.now() + ROOM_QUESTIONS_TTL_MS })
@@ -135,6 +136,11 @@ router.post('/', authorize('student'), async (req, res) => {
       if (!closeAt || Date.now() >= closeAt) {
         return res.status(409).json({ error: 'poll_closed' })
       }
+    }
+
+    // Retracted questions cannot be answered — the teacher has officially voided them.
+    if (question.retracted) {
+      return res.status(409).json({ error: 'poll_closed' })
     }
 
     // Check if answer is correct based on question type
@@ -414,15 +420,21 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const mongoose = (await import('mongoose')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
+    // Pre-fetch retracted question IDs so we can exclude their responses from every aggregation.
+    const retractedDocs = await Question.find({ roomId: roomObjId, retracted: true }).select('_id').lean()
+    const retractedIds = retractedDocs.map(q => q._id)
+    const hasRetracted = retractedIds.length > 0
+    const responseFilter = hasRetracted ? { roomId: roomObjId, questionId: { $nin: retractedIds } } : { roomId: roomObjId }
+
     // One pass for the counts (grouped by question × selected option) plus the light room-wide
     // totals, all in parallel — replaces the old N+1 (one Response.find per question).
     const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
-      Response.countDocuments({ roomId }),
-      Response.distinct('studentId', { roomId }),
+      Response.countDocuments(responseFilter),
+      Response.distinct('studentId', responseFilter),
       RoomMember.countDocuments({ roomId }),
-      Question.find({ roomId }).lean(),
+      Question.find({ roomId }).lean(), // teachers see all questions (including retracted, shown muted)
       Response.aggregate([
-        { $match: { roomId: roomObjId } },
+        { $match: responseFilter },
         { $group: { _id: { q: '$questionId', opt: '$selectedOption' }, count: { $sum: 1 } } }
       ])
     ])
@@ -453,6 +465,7 @@ router.get('/stats/room/:roomId', async (req, res) => {
         questionId: q._id,
         question: q.question,
         type: q.type,
+        retracted: q.retracted || false,
         totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
         answerCounts
@@ -557,9 +570,10 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       responseMap[qId] = r
     })
 
-    // Get all approved questions for this room (launched to students). Cached per-room (short TTL)
-    // because this list is identical for every student and the whole room hits this endpoint at once
-    // when a poll ends — see getRoomQuestionsCached. Sorted newest-first (latest asked on top).
+    // Get all approved, non-retracted questions for this room. Cached per-room (short TTL) because
+    // this list is identical for every student and the whole room hits this endpoint at once when a
+    // poll ends — see getRoomQuestionsCached. Sorted newest-first (latest asked on top).
+    // NOTE: getRoomQuestionsCached already filters retracted: { $ne: true } in its DB query.
     const questions = await getRoomQuestionsCached(Question, roomObjectId)
 
     debug(`[responses] Found ${questions.length} questions for room ${roomId}`)
@@ -690,9 +704,17 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
     if (!leaderboard) {
-      // Aggregate points per student
+      // Pre-fetch retracted question IDs so their responses are excluded from the ranked board.
+      const retractedQDocs = await (await import('../models/Question.js')).default
+        .find({ roomId: toObjectId(roomId), retracted: true }).select('_id').lean()
+      const retractedQIds = retractedQDocs.map(q => q._id)
+      const lbMatchFilter = retractedQIds.length > 0
+        ? { roomId: toObjectId(roomId), questionId: { $nin: retractedQIds } }
+        : { roomId: toObjectId(roomId) }
+
+      // Aggregate points per student, excluding responses for retracted questions
       const leaderboardData = await Response.aggregate([
-        { $match: { roomId: toObjectId(roomId) } },
+        { $match: lbMatchFilter },
         { $group: {
           _id: '$studentId',
           totalPoints: { $sum: '$points' },

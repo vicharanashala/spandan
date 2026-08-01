@@ -179,7 +179,9 @@ router.get('/', async (req, res) => {
     // strip the correct-option flags. Otherwise a member could pull every question with `isCorrect`
     // straight from here, bypassing the UI. (Their legitimate past-question results come from
     // GET /responses/room/:roomId/student/:studentId once a poll is no longer live.)
-    const filter = isTeacher ? { roomId } : { roomId, status: 'approved' }
+    // Students also never see retracted questions; teachers see everything (retracted ones are shown
+    // muted on the results page so they can be restored if needed).
+    const filter = isTeacher ? { roomId } : { roomId, status: 'approved', retracted: { $ne: true } }
 
     const [questions, total] = await Promise.all([
       Question.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
@@ -210,4 +212,87 @@ router.get('/', async (req, res) => {
   }
 })
 
-export default router
+// POST /api/questions/:questionId/retract
+// Marks a question as retracted so it is excluded from all scoring and results.
+// If the question is currently the room's live question, it is also cleared from the room
+// and a 'question:retracted' socket event is broadcast to every client in the room.
+// Authorization: teacher (owner of the question's room) only.
+router.post('/:questionId/retract', authorize('teacher'), async (req, res) => {
+  try {
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const { invalidate } = await import('../services/resultsSnapshot.js')
+
+    const { questionId } = req.params
+    const question = await Question.findById(questionId)
+    if (!question) {
+      return res.status(404).json({ success: false, error: 'Question not found' })
+    }
+
+    // Verify teacher owns the room this question belongs to
+    const room = await Room.findById(question.roomId)
+    if (!room || room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, error: 'Not authorized to retract this question' })
+    }
+
+    // Mark retracted
+    await Question.updateOne({ _id: questionId }, { $set: { retracted: true } })
+
+    // If this was the current live question, clear it from the room
+    const wasLive = room.currentQuestion && String(room.currentQuestion) === String(questionId)
+    if (wasLive) {
+      await Room.updateOne({ _id: room._id }, { $unset: { currentQuestion: '' } })
+      // Update the live cache so POST /responses immediately refuses submissions
+      const { setRoomLive } = await import('../services/roomLiveCache.js')
+      await setRoomLive(room._id, null)
+    }
+
+    // Broadcast to all room members so student screens clear immediately
+    const io = req.app.get('io')
+    if (io) {
+      io.to(room.code).emit('question:retracted', { questionId: String(questionId) })
+    }
+
+    // Invalidate the snapshot so the next results read rebuilds without this question
+    await invalidate(String(question.roomId))
+
+    res.json({ success: true, wasLive })
+  } catch (error) {
+    console.error('Error retracting question:', error)
+    res.status(500).json({ success: false, error: 'Failed to retract question' })
+  }
+})
+
+// POST /api/questions/:questionId/restore
+// Clears the retracted flag — the question is included in scoring again.
+// Authorization: teacher (owner of the question's room) only.
+router.post('/:questionId/restore', authorize('teacher'), async (req, res) => {
+  try {
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const { invalidate } = await import('../services/resultsSnapshot.js')
+
+    const { questionId } = req.params
+    const question = await Question.findById(questionId)
+    if (!question) {
+      return res.status(404).json({ success: false, error: 'Question not found' })
+    }
+
+    const room = await Room.findById(question.roomId)
+    if (!room || room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, error: 'Not authorized to restore this question' })
+    }
+
+    await Question.updateOne({ _id: questionId }, { $set: { retracted: false } })
+
+    // Invalidate snapshot so the restored question is included in the next results read
+    await invalidate(String(question.roomId))
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Error restoring question:', error)
+    res.status(500).json({ success: false, error: 'Failed to restore question' })
+  }
+})
+
+export default router

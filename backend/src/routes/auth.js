@@ -25,12 +25,18 @@ router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
       return res.status(400).json({ error: 'Email already registered' })
     }
     const { expiresInSec } = await requestRegistrationOtp(email, name)
-    res.json({ message: 'Verification code sent to your email', expiresInSec })
+    if (!res.headersSent) {
+      return res.json({ message: 'Verification code sent to your email', expiresInSec })
+    }
   } catch (error) {
     // COOLDOWN / SEND_CAP are client-actionable (429 with the real message); anything else is a
     // server/email failure (500, generic message — don't leak internals).
-    const status = (error.code === 'COOLDOWN' || error.code === 'SEND_CAP') ? 429 : 500
-    res.status(status).json({ error: status === 500 ? 'Failed to send verification code' : error.message })
+    if (!res.headersSent) {
+      const status = (error.code === 'COOLDOWN' || error.code === 'SEND_CAP') ? 429 : 500
+      return res.status(status).json({ error: status === 500 ? 'Failed to send verification code' : error.message })
+    } else {
+      console.error('[send-otp] Error after headers sent:', error.message)
+    }
   }
 })
 

@@ -38,6 +38,7 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  const [retractionMessage, setRetractionMessage] = useState('')
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
@@ -177,7 +178,26 @@ function StudentRoomPage() {
         fetchPastResponses(room._id, user._id)
       }
     }
+    const handleQuestionRetracted = (data) => {
+      setCurrentQuestion(prev => {
+        const qId = prev?._id || prev?.question?._id
+        if (qId && String(qId) === String(data.questionId)) {
+          if (timerIntervalRef.current) {
+            clearInterval(timerIntervalRef.current)
+            timerIntervalRef.current = null
+          }
+          setRetractionMessage('The teacher removed that question.')
+          setTimeout(() => setRetractionMessage(''), 4000)
+          return null
+        }
+        return prev
+      })
+    }
 
+   // socket.on('question:started', handleQuestionStarted)
+   // socket.on('question:ended', handleQuestionEnded)
+   // socket.on('new_question', handleNewQuestion)
+    //socket.on('question:retracted', handleQuestionRetracted)
     const handleVideoProgress = (data) => {
       const t = Number(data?.time)
       if (!Number.isFinite(t)) return
@@ -186,10 +206,10 @@ function StudentRoomPage() {
 
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
-
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('question:retracted', handleQuestionRetracted)
     socket.on('video:progress', handleVideoProgress)
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
@@ -208,6 +228,7 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('question:retracted', handleQuestionRetracted)
       socket.off('video:progress', handleVideoProgress)
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
@@ -474,6 +495,30 @@ function StudentRoomPage() {
             </div>
           </div>
         </header>
+
+        {retractionMessage && (
+          <div style={{
+            margin: isMobile ? '12px 16px 0' : '16px 32px 0',
+            padding: '12px 16px',
+            background: '#fee2e2',
+            color: '#dc2626',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            boxShadow: '0 2px 8px rgba(220,38,38,0.15)',
+            animation: 'slideDown 0.3s ease-out'
+          }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+            {retractionMessage}
+          </div>
+        )}
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
