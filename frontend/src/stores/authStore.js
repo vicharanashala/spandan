@@ -66,6 +66,34 @@ export const useAuthStore = create(
         }
       },
 
+      loginWithGoogle: async (credential, role) => {
+        set({ isLoading: true, error: null })
+        try {
+          const response = await fetch(`${API_URL}/auth/google`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ credential, role })
+          })
+          const data = await response.json()
+          if (!response.ok) {
+            const error = new Error(data.error || 'Google sign-in failed')
+            error.code = data.code
+            error.requiresRole = data.requiresRole
+            throw error
+          }
+          set({
+            user: data.user,
+            token: data.token,
+            isAuthenticated: true,
+            isLoading: false,
+            sessionExpired: false
+          })
+          return data
+        } catch (error) {
+          set({ error: error.message, isLoading: false })
+          throw error
+        }
+      },
       // Registration is email-OTP verified (two steps). Step 1 requests a code; step 2 verifies it and
       // creates the account. Only step 2 sets the auth session.
       sendRegistrationOtp: async (name, email) => {

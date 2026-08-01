@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
@@ -8,6 +8,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import GoogleSignInButton from '../components/GoogleSignInButton.jsx'
 
 // Password requirements for registration
 const PASSWORD_REQUIREMENTS = [
@@ -27,6 +28,7 @@ function AuthPage() {
     isLoading,
     error,
     login,
+    loginWithGoogle,
     sendRegistrationOtp,
     verifyRegistration,
     logout,
@@ -49,7 +51,9 @@ function AuthPage() {
   // Email-OTP registration step: after the form is submitted we send a code and switch to OTP entry.
   const [otpSent, setOtpSent] = useState(false)
   const [otpValue, setOtpValue] = useState('')
-  const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
+  const [resendIn, setResendIn] = useState(0) // seconds left before 'Resend' is allowed
+  const [googleLoading, setGoogleLoading] = useState(false)
+  const googleSubmissionRef = useRef(false)
 
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
@@ -130,6 +134,22 @@ function AuthPage() {
     }
   }
 
+  const handleGoogleCredential = async (credential) => {
+    if (!credential || googleSubmissionRef.current || isLoading || googleLoading) return
+    googleSubmissionRef.current = true
+    clearError()
+    setValidationError('')
+    setGoogleLoading(true)
+    try {
+      const data = await loginWithGoogle(credential, formData.role)
+      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+    } catch (err) {
+      setValidationError(err.message || 'Google sign-in failed')
+    } finally {
+      googleSubmissionRef.current = false
+      setGoogleLoading(false)
+    }
+  }
   // Step 2: verify the emailed code and create the account (signs the user in on success).
   const handleVerifyOtp = async (e) => {
     e.preventDefault()
@@ -497,6 +517,47 @@ function AuthPage() {
             </div>
           )}
 
+          {isLogin && !showForgotPassword && (
+            <div style={{ marginBottom: '24px' }}>
+
+              <GoogleSignInButton
+                onCredential={handleGoogleCredential}
+                disabled={isLoading || googleLoading}
+                isDark={isDark}
+                isMobile={isMobile}
+              />
+              <div style={{ marginTop: '14px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                New Google accounts use:
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
+                {['student', 'teacher'].map((role) => (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, role })}
+                    disabled={isLoading || googleLoading}
+                    style={{
+                      padding: '8px',
+                      border: `1px solid ${formData.role === role ? 'var(--accent)' : 'var(--border-color)'}`,
+                      borderRadius: 'var(--radius-sm)',
+                      background: formData.role === role ? 'rgba(59,130,246,0.12)' : 'transparent',
+                      color: formData.role === role ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: isLoading || googleLoading ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {role === 'student' ? '🎓 Student' : '👨‍🏫 Teacher'}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--text-secondary)', fontSize: '12px', marginTop: '14px' }}>
+                <span style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+                <span>OR</span>
+                <span style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+              </div>
+            </div>
+          )}
           {showForgotPassword ? (
             <form onSubmit={handleForgotPassword}>
               <div style={{ marginBottom: '20px' }}>

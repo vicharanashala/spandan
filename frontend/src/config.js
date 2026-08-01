@@ -5,3 +5,4 @@ const BASE_PATH = import.meta.env.VITE_BASE_PATH || ''
 
 export const API_URL = BASE_PATH + '/api'
 export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin
+export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
