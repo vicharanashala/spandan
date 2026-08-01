@@ -9,6 +9,7 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   googleApiKey: process.env.GOOGLE_API_KEY || '',
+  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
   nodeEnv: process.env.NODE_ENV || 'development'
 }
 

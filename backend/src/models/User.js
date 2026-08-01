@@ -28,6 +28,15 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Password is required'],
     minlength: [6, 'Password must be at least 6 characters']
   },
+  // Google identities are linked to the same local account and still receive a normal Spandan JWT.
+  // The sparse unique index prevents one Google subject from being linked to multiple accounts.
+  authProviders: {
+    google: {
+      subject: { type: String },
+      email: { type: String },
+      linkedAt: { type: Date }
+    }
+  },
   role: {
     type: String,
     enum: ['teacher', 'student'],
@@ -124,6 +133,8 @@ userSchema.methods.toJSON = function() {
   delete obj.password
   return obj
 }
+
+userSchema.index({ 'authProviders.google.subject': 1 }, { unique: true, sparse: true })
 
 const User = mongoose.model('User', userSchema)
 

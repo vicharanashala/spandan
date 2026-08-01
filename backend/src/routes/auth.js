@@ -7,6 +7,7 @@ import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
 import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
+import { signInWithGoogle, GoogleAuthError } from '../services/googleAuthService.js'
 
 const router = express.Router()
 
@@ -72,6 +73,32 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   }
 })
 
+// Google Sign-In. The credential is an ID token from Google Identity Services; it is verified
+// server-side before any account lookup, linking, creation, or JWT issuance.
+router.post('/google', async (req, res) => {
+  try {
+    const { credential, role } = req.body || {}
+    const { user, isNewUser } = await signInWithGoogle(credential, role)
+    const token = generateToken(user._id)
+
+    res.json({
+      message: 'Google sign-in successful',
+      user: user.toJSON(),
+      token,
+      isNewUser
+    })
+  } catch (error) {
+    if (error instanceof GoogleAuthError) {
+      const status = error.code === 'MISSING_CREDENTIAL' ? 400
+        : error.code === 'ROLE_REQUIRED' ? 409
+          : error.code === 'GOOGLE_NOT_CONFIGURED' ? 503
+            : error.code === 'ACCOUNT_CONFLICT' ? 409 : 401
+      return res.status(status).json({ error: error.message, code: error.code, requiresRole: error.code === 'ROLE_REQUIRED' })
+    }
+    console.error('Google sign-in error:', error.message)
+    res.status(500).json({ error: 'Google sign-in failed' })
+  }
+})
 // Update user role (called after registration role selection)
 router.put('/role', authenticate, async (req, res) => {
   try {
