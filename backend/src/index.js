@@ -11,6 +11,7 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { computeRanked } from './services/leaderboardAgg.js'
+import { getRoomDistributions, recordResponse } from './services/optionDistribution.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -126,14 +127,18 @@ async function broadcastCounts(roomId) {
   try {
     const Response = (await import('./models/Response.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
-    const countAgg = await Response.aggregate([
+    const Question = (await import('./models/Question.js')).default
+    const questions = await Question.find({ roomId: roomObjId }).select('_id options').lean()
+    const distributions = await getRoomDistributions(roomId, questions)
+    const countAgg = distributions ? null : await Response.aggregate([
       { $match: { roomId: roomObjId } },
       { $group: { _id: '$questionId', count: { $sum: 1 } } }
     ])
     const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    if (distributions) Object.entries(distributions).forEach(([qid, d]) => { counts[qid] = d.totalResponses })
+    else countAgg.forEach(c => { counts[c._id.toString()] = c.count })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+    if (roomCode) io.to(roomCode).emit('counts:updated', { counts, distributions: distributions || undefined })
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
@@ -274,6 +279,7 @@ async function getCachedStudentRank(roomId, studentId) {
 
 app.set('liveUpdates', {
   scheduleCounts: scheduleCountsBroadcast,
+  recordResponse: (roomId, questionId, selectedOptions) => recordResponse(roomId, questionId, selectedOptions),
   scheduleLeaderboard: scheduleLeaderboardRefresh,
   refreshLeaderboardNow,
   getRank: getCachedStudentRank

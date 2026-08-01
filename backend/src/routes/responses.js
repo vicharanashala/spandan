@@ -3,6 +3,7 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { debug } from '../utils/debug.js'
+import { buildDistribution, ensureRoomSeeded, getRoomDistributions } from '../services/optionDistribution.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -186,6 +187,10 @@ router.post('/', authorize('student'), async (req, res) => {
       points
     }
 
+    // Seed Redis before saving this response so the seed snapshot cannot also include this response.
+    // Later submissions are counted with atomic HINCRBY operations.
+    if (!isBatchEnabled()) await ensureRoomSeeded(roomId)
+
     // Persist. DEFAULT path: save() immediately and let the unique index
     // {roomId,questionId,studentId} reject duplicates as a 409 (no pre-check → no extra query, no
     // check-then-act race). OPTIONAL path (RESPONSE_BATCH=on, Fix 3b): buffer the doc for a batched
@@ -223,6 +228,7 @@ router.post('/', authorize('student'), async (req, res) => {
     // Return this student's current rank ("rank on submit") from the last settled board — it may
     // lag during a burst (Option A), but the student still gets their points immediately below.
     const live = req.app.get('liveUpdates')
+    if (!isBatchEnabled()) await live?.recordResponse?.(roomId, questionId, selectedOptions)
     live?.scheduleCounts(roomId)
     live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
@@ -416,46 +422,49 @@ router.get('/stats/room/:roomId', async (req, res) => {
 
     // One pass for the counts (grouped by question × selected option) plus the light room-wide
     // totals, all in parallel — replaces the old N+1 (one Response.find per question).
-    const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
+    const [totalResponses, uniqueStudents, totalJoined, questions, questionTotals, grouped] = await Promise.all([
       Response.countDocuments({ roomId }),
       Response.distinct('studentId', { roomId }),
       RoomMember.countDocuments({ roomId }),
       Question.find({ roomId }).lean(),
+      Response.aggregate([{ $match: { roomId: roomObjId } }, { $group: { _id: '$questionId', count: { $sum: 1 } } }]),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
-        { $group: { _id: { q: '$questionId', opt: '$selectedOption' }, count: { $sum: 1 } } }
+        { $project: { questionId: 1, values: { $setUnion: [{ $ifNull: ['$selectedOptions', []] }, ['$selectedOption']] } } },
+        { $unwind: '$values' }, { $match: { values: { $type: 'number' } } },
+        { $group: { _id: { q: '$questionId', opt: '$values' }, count: { $sum: 1 } } }
       ])
     ])
 
     // Index grouped counts: questionId -> per-option counts, and questionId -> total responses
     // (all responses for the question, matching the old responses.length).
     const countsByQuestion = new Map()
-    const totalByQuestion = new Map()
+    const totalByQuestion = new Map(questionTotals.map((g) => [g._id.toString(), g.count]))
     for (const g of grouped) {
       const qid = g._id.q ? g._id.q.toString() : null
       if (!qid) continue
       let m = countsByQuestion.get(qid)
       if (!m) { m = new Map(); countsByQuestion.set(qid, m) }
       m.set(g._id.opt, g.count)
-      totalByQuestion.set(qid, (totalByQuestion.get(qid) || 0) + g.count)
+      // Option counts can exceed total respondents for MSQ.
     }
 
     const questionStats = questions.map((q) => {
       const perOption = countsByQuestion.get(q._id.toString()) || new Map()
       const answerCounts = {}
-      let correctCount = 0
+      const correctCount = list.filter((r) => r.isCorrect).length
       q.options.forEach((opt, idx) => {
         const c = perOption.get(idx) || 0
         answerCounts[idx] = c
-        if (opt.isCorrect) correctCount += c
-      })
+        })
       return {
         questionId: q._id,
         question: q.question,
         type: q.type,
         totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
-        answerCounts
+        answerCounts,
+        distribution: buildDistribution(q, totalByQuestion.get(q._id.toString()) || 0, perOption, true)
       }
     })
 
@@ -633,19 +642,20 @@ router.get('/counts/:roomId', async (req, res) => {
       return new mongoose.Types.ObjectId(id)
     }
 
-    // Get count per question
-    const counts = await Response.aggregate([
+    // Initial load uses the same Redis counters as the live socket when available.
+    await ensureRoomSeeded(roomId)
+    const Question = (await import('../models/Question.js')).default
+    const questions = await Question.find({ roomId: toObjectId(roomId) }).select('_id options').lean()
+    const distributions = await getRoomDistributions(roomId, questions)
+    const counts = distributions ? null : await Response.aggregate([
       { $match: { roomId: toObjectId(roomId) } },
       { $group: { _id: '$questionId', count: { $sum: 1 } } }
     ])
-
-
     const countMap = {}
-    counts.forEach(c => {
-      countMap[c._id.toHexString()] = c.count
-    })
+    if (distributions) Object.entries(distributions).forEach(([qid, d]) => { countMap[qid] = d.totalResponses })
+    else counts.forEach(c => { countMap[c._id.toHexString()] = c.count })
 
-    res.json({ success: true, counts: countMap })
+    res.json({ success: true, counts: countMap, distributions: distributions || undefined })
   } catch (error) {
     console.error('Error fetching answer counts:', error)
     res.status(500).json({ error: 'Failed to fetch counts' })
