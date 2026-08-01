@@ -53,9 +53,12 @@ export async function ensureRoomSeeded(roomId) {
 export async function recordResponse(roomId, questionId, selectedOptions) {
   if (!isRedisEnabled()) return false
   try {
-    const client = getRedisClient(); await client.hIncrBy(key(roomId), totalField(questionId), 1)
-    for (const index of distinctNumericOptions(selectedOptions)) await client.hIncrBy(key(roomId), optionField(questionId, index), 1)
-    await client.expire(key(roomId), TTL); return true
+    const client = getRedisClient()
+    const transaction = client.multi().hIncrBy(key(roomId), totalField(questionId), 1)
+    for (const index of distinctNumericOptions(selectedOptions)) transaction.hIncrBy(key(roomId), optionField(questionId, index), 1)
+    transaction.expire(key(roomId), TTL)
+    await transaction.exec()
+    return true
   } catch (error) { console.error('[option-distribution] increment failed:', error.message); return false }
 }
 

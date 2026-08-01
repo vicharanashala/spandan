@@ -78,6 +78,7 @@ function RoomDetailPage() {
   const [activeQuestion, setActiveQuestion] = useState(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const [lastPollQuestionId, setLastPollQuestionId] = useState(null)
+  const [pollEnded, setPollEnded] = useState(true)
   const questionTimerRef = useRef(null)
 
 
@@ -125,6 +126,10 @@ function RoomDetailPage() {
         leaveRoom(room.code, user?._id)
       }
       stopRecording()
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
@@ -196,6 +201,7 @@ function RoomDetailPage() {
     }
 
     setActiveQuestion(question)
+    setPollEnded(false)
     setQuestionTimeLeft(timeToAnswer)
 
     questionTimerRef.current = setInterval(() => {
@@ -204,6 +210,7 @@ function RoomDetailPage() {
           clearInterval(questionTimerRef.current)
           questionTimerRef.current = null
           setActiveQuestion(null)
+          setPollEnded(true)
           return 0
         }
         return prev - 1
@@ -220,14 +227,27 @@ function RoomDetailPage() {
     startQuestionTimer(fullQuestion)
   }
 
+  const handleQuestionEnded = (data) => {
+    if (data?.questionId && lastPollQuestionId && String(data.questionId) !== String(lastPollQuestionId)) return
+    if (questionTimerRef.current) {
+      clearInterval(questionTimerRef.current)
+      questionTimerRef.current = null
+    }
+    setActiveQuestion(null)
+    setQuestionTimeLeft(0)
+    setPollEnded(true)
+  }
+
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
+    socket.on('question:ended', handleQuestionEnded)
 
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      socket.off('question:ended', handleQuestionEnded)
     }
-  }, [socket, roomSettings.timeToAnswer, generatedQuestions])
+  }, [socket, roomSettings.timeToAnswer, generatedQuestions, lastPollQuestionId])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -507,6 +527,12 @@ function RoomDetailPage() {
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
+      if (roomData?.currentQuestion) {
+        setLastPollQuestionId(String(roomData.currentQuestion))
+        setPollEnded(Boolean(roomData.endedAt))
+      } else {
+        setPollEnded(true)
+      }
       // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
       if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
       // Apply room settings if they exist
@@ -1169,7 +1195,7 @@ function RoomDetailPage() {
 
   const pollQuestion = generatedQuestions.find((question) => String(question._id) === String(lastPollQuestionId)) || activeQuestion
   const pollDistribution = lastPollQuestionId ? optionDistributions[String(lastPollQuestionId)] : null
-  const pollIsActive = Boolean(activeQuestion && questionTimeLeft > 0)
+  const pollIsActive = !pollEnded
 
   if (isLoading) {
     return (

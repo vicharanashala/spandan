@@ -146,9 +146,23 @@ async function scheduleCountsBroadcast(roomId) {
   if (redis.enabled) {
     try {
       const won = await redis.client.set(`live:cnt:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
-      if (won === 'OK') setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+      if (won === 'OK') {
+        const state = getRoomState(id)
+        state.countsTimer = setTimeout(() => {
+          const current = roomLive.get(id)
+          if (current) current.countsTimer = null
+          broadcastCounts(id)
+        }, LIVE_THROTTLE_MS)
+      }
     } catch (e) {
-      setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+      const state = getRoomState(id)
+      if (!state.countsTimer) {
+        state.countsTimer = setTimeout(() => {
+          const current = roomLive.get(id)
+          if (current) current.countsTimer = null
+          broadcastCounts(id)
+        }, LIVE_THROTTLE_MS)
+      }
     }
     return
   }
@@ -247,13 +261,18 @@ async function runLbCheck(id) {
 // settled board is complete regardless of where the debounce window happened to be.
 async function refreshLeaderboardNow(roomId) {
   const id = String(roomId)
+  const state = roomLive.get(id)
+  if (state?.countsTimer) { clearTimeout(state.countsTimer); state.countsTimer = null }
+  if (state?.lbTimer) { clearTimeout(state.lbTimer); state.lbTimer = null }
+  if (state?.lbCheckTimer) { clearTimeout(state.lbCheckTimer); state.lbCheckTimer = null }
   if (redis.enabled) {
-    try { await redis.client.del(`live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
-  } else {
-    const s = roomLive.get(id)
-    if (s?.lbTimer) { clearTimeout(s.lbTimer); s.lbTimer = null }
+    try { await redis.client.del(`live:cnt:sched:${id}`, `live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
   }
-  await broadcastLeaderboard(id)
+  try {
+    await broadcastLeaderboard(id)
+  } finally {
+    roomLive.delete(id)
+  }
 }
 
 // Last-computed rank for a student ("rank on submit"); refreshed when the board settles, so it
