@@ -1,6 +1,11 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { applyAnswer } from '../services/streakService.js'
+import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
+import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { debug } from '../utils/debug.js'
+import { computeRanked } from '../services/leaderboardAgg.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -47,6 +52,43 @@ async function getQuestionCached(Question, questionId) {
   }
   return q
 }
+
+// The GET /responses/room/:id/student/:id read path fetches the room's FULL approved-question list.
+// That list is student-INDEPENDENT (identical for everyone in the room), yet every student hits the
+// endpoint when their poll timer expires — at classroom scale that is hundreds of identical
+// Question.find + serializations per poll transition. Cache the list per room so the herd collapses
+// to ~one query per TTL per instance. The per-student response merge in the handler stays fresh (it
+// comes from a separate Response.find); the cached array is only ever read, never mutated. Staleness
+// is bounded by the TTL and benign: a question is approved at launch (~a poll-length before its poll
+// ends), so it is always in the cache by the time students read; the live question arrives via the
+// new_question socket, not this endpoint.
+const ROOM_QUESTIONS_TTL_MS = Number(process.env.ROOM_QUESTIONS_CACHE_TTL_MS) || 10000
+const roomQuestionsCache = new Map()    // roomId(str) -> { questions, expiresAt(ms) }
+const roomQuestionsInflight = new Map() // roomId(str) -> Promise<questions>  (single-flight)
+
+async function getRoomQuestionsCached(Question, roomObjectId) {
+  const key = String(roomObjectId)
+  const hit = roomQuestionsCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.questions
+  // Single-flight: if a query for this room is already running, share it instead of firing another.
+  // This matters most at a congested transition where the whole room misses at once and the first
+  // query is slow — without this, everyone who arrives before it returns would each hit Mongo.
+  const inflight = roomQuestionsInflight.get(key)
+  if (inflight) return inflight
+  const p = (async () => {
+    try {
+      const questions = await Question.find({ roomId: roomObjectId, status: 'approved' })
+        .sort({ createdAt: -1 }).lean()
+      if (roomQuestionsCache.size > 50000) roomQuestionsCache.clear()
+      roomQuestionsCache.set(key, { questions, expiresAt: Date.now() + ROOM_QUESTIONS_TTL_MS })
+      return questions
+    } finally {
+      roomQuestionsInflight.delete(key)
+    }
+  })()
+  roomQuestionsInflight.set(key, p)
+  return p
+}
 // ----------------------------------------------------------------------------------------------
 
 // POST /api/responses - Save a student's answer
@@ -76,6 +118,28 @@ router.post('/', authorize('student'), async (req, res) => {
     const question = await getQuestionCached(Question, questionId)
     if (!question) {
       return res.status(404).json({ error: 'Question not found' })
+    }
+
+    // Phase 3 — response-window enforcement. A poll is answerable only while it is the room's LIVE
+    // poll (room.currentQuestion), or briefly after it is superseded (until its closeAt = next-launch
+    // time + POLL_RESPONSE_GRACE_MS, which covers in-flight/late submits — see setLiveQuestion). Any
+    // other case — an old poll a bot tries to back-fill, a never-launched question, or ANY poll once
+    // the room has ended — is refused. This does not weaken the live poll (still answerable) and
+    // reveals nothing; it only closes the back-fill hole. Room is read fresh (the live pointer must
+    // not be stale); closeAt is read fresh only on the rare non-current path (the cached question copy
+    // can lag the stamp written on launch), so the hot path stays a single small room read.
+    const Room = (await import('../models/Room.js')).default
+    const { getRoomLive } = await import('../services/roomLiveCache.js')
+    const roomLive = await getRoomLive(Room, roomId) // Redis hit → no Mongo read; miss/Redis-off → Mongo
+    if (!roomLive || roomLive.endedAt) {
+      return res.status(409).json({ error: 'poll_closed' })
+    }
+    if (String(questionId) !== String(roomLive.currentQuestion || '')) {
+      const fresh = await Question.findById(questionId).select('closeAt')
+      const closeAt = fresh?.closeAt ? new Date(fresh.closeAt).getTime() : 0
+      if (!closeAt || Date.now() >= closeAt) {
+        return res.status(409).json({ error: 'poll_closed' })
+      }
     }
 
     // Check if answer is correct based on question type
@@ -149,9 +213,8 @@ router.post('/', authorize('student'), async (req, res) => {
             error: 'Already responded to this question',
             existingResponse: existingResponse ? {
               selectedOption: existingResponse.selectedOption,
-              selectedOptions: existingResponse.selectedOptions,
-              isCorrect: existingResponse.isCorrect,
-              points: existingResponse.points
+              selectedOptions: existingResponse.selectedOptions
+              // isCorrect + points withheld — same reason as the success response above.
             } : undefined
           })
         }
@@ -169,148 +232,90 @@ router.post('/', authorize('student'), async (req, res) => {
     live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
-  // --- Streak Fire: streak multiplier (applied after applyAnswer) ---
-  // Multiplier tiers:
-  //   0-2  streak → ×1 (base)
-  //   3-4  streak → ×2
-  //   5-9  streak → ×3
-  //   10+  streak → ×5
-  // Only correct answers are boosted — wrong answers get 0 either way.
+  // --- Streak Fire ---
   const computeMultiplier = (s) =>
-    s >= 10 ? 5 :
-    s >= 5  ? 3 :
-    s >= 3  ? 2 : 1
+    s >= 10 ? 5 : s >= 5 ? 3 : s >= 3 ? 2 : 1
   const basePoints = points
   let multiplier = 1
   let multiplierBoosted = false
 
-    // --- Streak Fire: missed-question sweep ---
-    // Find any approved questions in this room that the student did NOT answer
-    // between their most recent response and now (before the current question).
-    // This is the "missed since last answer" semantics — once a question has
-    // been swept and penalized, it won't be detected again on subsequent answers.
-    //
-    // Why "since last response" and not "all unanswered before current"?
-    //   The latter (older behavior) caused the sweep to re-detect the same
-    //   skipped questions on every subsequent answer, breaking the streak
-    //   infinitely. Now we only count questions in the gap since the last answer.
-    const toObjectId = (id) => {
-      if (!id) return null
-      if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
-      return new mongoose.Types.ObjectId(id)
-    }
-    const sweepEvents = []
-    let sweepBrokeStreak = false
-    // Tracks whether a streak freeze was consumed this response, and what
-    // it blocked. null | 'sweep' | 'wrong_answer'
-    let freezeUsed = null
-    try {
-      // Find the student's most recent response (before the current one).
-      // Use a stable tiebreaker: any older response.
-      const lastResponse = await Response.findOne({
-        roomId: toObjectId(roomId),
-        studentId,
-        _id: { $ne: response._id }, // exclude the just-saved response
-      })
-        .sort({ createdAt: -1 })
-        .select('createdAt')
-        .lean()
+  const toObjectId = (id) => {
+    if (!id) return null
+    if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
+    return new mongoose.Types.ObjectId(id)
+  }
+  const sweepEvents = []
+  let sweepBrokeStreak = false
+  let freezeUsed = null
+  try {
+    const lastResponse = await Response.findOne({
+      roomId: toObjectId(roomId),
+      studentId,
+      _id: { $ne: savedResponse._id },
+    }).sort({ createdAt: -1 }).select('createdAt').lean()
 
-      const fromDate = lastResponse ? lastResponse.createdAt : new Date(0)
-      // Use `$gte` so we don't miss a question created in the same millisecond
-      // as the previous response (with `$gt` we'd skip it).
-      const priorQuestions = await Question.find({
-        roomId: toObjectId(roomId),
-        status: 'approved',
-        _id: { $ne: toObjectId(questionId) },
-        createdAt: { $gte: fromDate, $lt: question.createdAt },
-      }).select('_id').lean()
+    const fromDate = lastResponse ? lastResponse.createdAt : new Date(0)
+    const priorQuestions = await Question.find({
+      roomId: toObjectId(roomId),
+      status: 'approved',
+      _id: { $ne: toObjectId(questionId) },
+      createdAt: { $gte: fromDate, $lt: question.createdAt },
+    }).select('_id').lean()
 
-      const answeredIdsInGap = await Response.distinct('questionId', {
-        roomId: toObjectId(roomId),
-        studentId,
-        questionId: { $in: priorQuestions.map(q => q._id) },
-      })
-      const answeredSet = new Set(answeredIdsInGap.map(id => id.toString()))
-      const missedIds = priorQuestions.filter(q => !answeredSet.has(q._id.toString()))
+    const answeredIdsInGap = await Response.distinct('questionId', {
+      roomId: toObjectId(roomId),
+      studentId,
+      questionId: { $in: priorQuestions.map(q => q._id) },
+    })
+    const answeredSet = new Set(answeredIdsInGap.map(id => id.toString()))
+    const missedIds = priorQuestions.filter(q => !answeredSet.has(q._id.toString()))
 
-      // Skipped-question handling under the new spec:
-      //   - Freeze present  -> consume the freeze, streak is preserved (no change to counter)
-      //   - No freeze left  -> silently ignore; streak counter is NOT touched
-      // The streak counter never breaks due to a skip under the new rule;
-      // 'sweepBrokeStreak' therefore stays false.
-      if (missedIds.length > 0 && member.streakFreezes > 0) {
+    if (missedIds.length > 0) {
+      if (member.streakFreezes > 0) {
         member.streakFreezes -= 1
         freezeUsed = 'sweep'
-        // Don't change member.currentStreak / bestStreak — streak preserved.
-      } else if (missedIds.length > 0) {
-        // No freeze left — skip is a silent no-op for the streak counter.
-        // (Previously this path would reset the streak. Under the new rule
-        // it doesn't.)
-      }
-    } catch (streakSweepErr) {
-      // Don't fail the response on sweep errors; log and continue.
-      console.error('[streak] missed-question sweep failed:', streakSweepErr)
-    }
-
-    // --- Streak Fire: apply this answer ---
-    const after = applyAnswer(member, isCorrect)
-    // applyAnswer is pure — it returns the next state but doesn't mutate member.
-    // Use after.currentStreak so the multiplier reflects the POST-answer value.
-    multiplier = isCorrect ? computeMultiplier(after.currentStreak) : 1
-    if (isCorrect && multiplier > 1) {
-      const boosted = Math.round(basePoints * multiplier)
-      if (boosted !== basePoints) {
-        response.points = boosted
-        await response.save()
-        multiplierBoosted = true
+      } else {
+        member.currentStreak = Math.max(0, (Number(member.currentStreak) || 0) - 3)
       }
     }
-    // --- Wrong-answer streak handling ---
-    // Under the current spec, a wrong answer always applies the -3 decrement
-    // (floored at 0) computed by applyAnswer. The freeze is reserved for
-    // skipped questions only and is never consumed by a wrong answer here.
-    member.currentStreak = after.currentStreak
-    member.bestStreak    = after.bestStreak
-    await member.save()
+  } catch (streakSweepErr) {
+    console.error('[streak] missed-question sweep failed:', streakSweepErr)
+  }
 
-    res.status(201).json({
-      success: true,
-      response: {
-        ...savedResponse,
-        isCorrect,
-        points: response.points,  // reflects multiplier-boosted value if applicable
-        basePoints,               // pre-multiplier (for "you got 100 × 3 = 300!" display)
-        multiplier                // 1 | 2 | 3 | 5
-      },
-      streak: {
-        currentStreak: member.currentStreak,
-        bestStreak: member.bestStreak,
-        // Final answer event:
-        //   'increment' = correct (+2)
-        //   'decrement' = wrong  (-3, floored at 0)
-        //   'noop'      = wrong while streak was already 0
-        event: after.event,
-        // Under the new spec the missed-question sweep never resets the streak,
-        // so this array is always empty (kept for backward compatibility with
-        // any frontend that still inspects it).
-        sweep: sweepEvents,
-        // Always false under the new spec (skips no longer break the streak).
-        sweepBrokeStreak,
-        // Always 0 under the new spec (skips don't trigger reset events).
-        missedCount: sweepEvents.length,
-        // --- Streak Freeze ---
-        // 'sweep' = freeze consumed by a skipped-question sweep (streak preserved)
-        // null    = no freeze was used this turn
-        // (Previously also 'wrong_answer' when a freeze blocked a wrong-answer
-        // reset; that path was removed under the new spec — wrong answers now
-        // always apply the -3 decrement and never consume a freeze.)
-        freezeUsed,
-        // How many freezes the student has left in this room
-        streakFreezesRemaining: member.streakFreezes,
-        multiplier,
-        multiplierBoosted,
-      }
+  const after = applyAnswer(member, isCorrect)
+  multiplier = isCorrect ? computeMultiplier(after.currentStreak) : 1
+  if (isCorrect && multiplier > 1) {
+    const boosted = Math.round(basePoints * multiplier)
+    if (boosted !== basePoints) {
+      savedResponse.points = boosted
+      multiplierBoosted = true
+    }
+  }
+  member.currentStreak = after.currentStreak
+  member.bestStreak    = after.bestStreak
+  await member.save()
+
+  res.status(201).json({
+    success: true,
+    response: {
+      ...savedResponse,
+      isCorrect,
+      points: savedResponse.points,
+      basePoints,
+      multiplier
+    },
+    streak: {
+      currentStreak: member.currentStreak,
+      bestStreak: member.bestStreak,
+      event: after.event,
+      sweep: sweepEvents,
+      sweepBrokeStreak,
+      missedCount: sweepEvents.length,
+      freezeUsed,
+      streakFreezesRemaining: member.streakFreezes,
+      multiplier,
+      multiplierBoosted,
+    }
     })
   } catch (error) {
     console.error(`[ERROR] POST /api/responses — ${error.message}`)
@@ -417,7 +422,11 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const roomIdsMember = roomMemberships.map(m => m.roomId)
     const uniqueRoomIdsFromResponse = await Response.distinct('roomId', { studentId })
     const allRoomIds = [...new Set([...roomIdsMember.map(id => id.toString()), ...uniqueRoomIdsFromResponse.map(id => id.toString())])]
-    const totalRooms = allRoomIds.length
+    // Count only rooms that still exist. A deleted room leaves orphaned membership/response
+    // records whose roomId would otherwise inflate totalRooms (and the launched-poll count below),
+    // making the dashboard "Total Rooms" disagree with the existence-checked Room History list.
+    const existingRoomIds = (await Room.distinct('_id', { _id: { $in: allRoomIds } })).map(id => id.toString())
+    const totalRooms = existingRoomIds.length
     const roomIds = roomMemberships.map(m => m.roomId)
     
     // Total responses (polls taken)
@@ -429,9 +438,9 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
 
     // Count launched polls: questions with 'approved' status (approved & launched to students)
-    // Use allRoomIds (RoomMember + Response unique) to count ALL rooms student participated in
+    // Use existingRoomIds (rooms that still exist) to count polls across the student's rooms.
     const launchedCount = await Question.countDocuments({
-      roomId: { $in: allRoomIds },
+      roomId: { $in: existingRoomIds },
       status: 'approved'
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
@@ -634,7 +643,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     }).lean()
     
     // Debug log
-    console.log(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
+    debug(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
     
     // Create a map of questionId -> response for quick lookup
     // Use a helper to safely convert any ID to string
@@ -649,42 +658,58 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const responseMap = {}
     responses.forEach(r => {
       const qId = toIdString(r.questionId)
-      console.log(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
+      debug(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
       responseMap[qId] = r
     })
 
-    // Get all approved questions for this room (launched to students)
-    const questions = await Question.find({ 
-      roomId: roomObjectId, 
-      status: 'approved'
-    }).sort({ createdAt: -1 }).lean()  // Sort by newest first (latest asked question on top)
+    // Get all approved questions for this room (launched to students). Cached per-room (short TTL)
+    // because this list is identical for every student and the whole room hits this endpoint at once
+    // when a poll ends — see getRoomQuestionsCached. Sorted newest-first (latest asked on top).
+    const questions = await getRoomQuestionsCached(Question, roomObjectId)
 
-    console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
+    debug(`[responses] Found ${questions.length} questions for room ${roomId}`)
+
+    // While the room is LIVE, the currently-active poll (room.currentQuestion) must not reveal its
+    // correct answer to ANYONE — not even a student who already answered (else a dummy / second
+    // account could answer randomly, read isCorrect/points, and relay it). We still return the
+    // question with the student's marked answer (the frontend renders it neutrally), but strip which
+    // option is correct and withhold the student's own isCorrect + pointsEarned until the poll is no
+    // longer current (next launch / room end → revealed via the normal path / results snapshot).
+    const activeQid = (!ended && room?.currentQuestion) ? String(room.currentQuestion) : null
 
     // Merge questions with response data
     const questionsWithResponses = questions.map(q => {
       const qIdStr = toIdString(q._id)
       const studentResponse = responseMap[qIdStr]
+      const isActive = !!activeQid && qIdStr === activeQid
+      // Strip which option is correct for the still-live poll. Map to NEW objects — the question list
+      // is a shared cache and must never be mutated (see the cache's read-only invariant).
+      const options = isActive
+        ? q.options.map(o => (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o)
+        : q.options
       
       if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
+        debug(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
       }
       
       return {
         _id: qIdStr,
         question: q.question,
         type: q.type,
-        options: q.options,
+        options,
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
         answered: !!studentResponse,
+        // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
+        // a "missed" tag if unanswered — no correct/incorrect until it is revealed.
+        ...(isActive ? { resultPending: true } : {}),
         ...(studentResponse && {
           selectedOption: studentResponse.selectedOption,
           selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
-          isCorrect: studentResponse.isCorrect,
           responseTime: studentResponse.responseTime,
-          pointsEarned: studentResponse.points
+          // isCorrect + pointsEarned both reveal correctness → withhold for the live poll, send once past.
+          ...(isActive ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
         }),
         createdAt: q.createdAt
       }
@@ -706,7 +731,16 @@ router.get('/counts/:roomId', async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
+    const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
+
+    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
+    // used only by the teacher's room view; students receive live counts over the socket instead.
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ error: ownership.error })
+    }
 
     const toObjectId = (id) => {
       if (!id) return null
@@ -771,26 +805,21 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     const ended = !!room?.endedAt
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
-    // Resolve student names and per-room streak fields
-    const leaderboard = await Promise.all(leaderboardData.map(async (entry, index) => {
-      const user = await User.findById(entry._id).lean()
-      const member = await RoomMember.findOne({
-        roomId: toObjectId(roomId),
-        studentId: entry._id
-      }).select('currentStreak bestStreak streakFreezes').lean()
-      return {
-        rank: index + 1,
-        studentId: entry._id.toHexString(),
-        studentName: user?.name || user?.email || 'Unknown Student',
-        totalPoints: entry.totalPoints,
-        correctCount: entry.correctCount,
-        totalAnswered: entry.totalAnswered,
-        // --- Streak Fire ---
-        currentStreak:    member?.currentStreak ?? 0,
-        bestStreak:       member?.bestStreak    ?? 0,
-        streakFreezes:    member?.streakFreezes ?? 0
-      }
-    }))
+    if (!leaderboard) {
+      const { full: rankedFull } = await computeRanked(roomId)
+      const members = await RoomMember.find({ roomId: toObjectId(roomId) })
+        .select('studentId currentStreak bestStreak streakFreezes').lean()
+      const memberMap = new Map(members.map(m => [m.studentId.toString(), m]))
+      leaderboard = rankedFull.map(entry => {
+        const m = memberMap.get(entry.studentId)
+        return {
+          ...entry,
+          currentStreak: m?.currentStreak ?? 0,
+          bestStreak:    m?.bestStreak    ?? 0,
+          streakFreezes: m?.streakFreezes ?? 0
+        }
+      })
+    }
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
     let visibleLeaderboard = leaderboard
@@ -826,6 +855,80 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     console.error(`[ERROR] GET /api/responses/leaderboard/:roomId — ${error.message}`)
     console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ error: 'Failed to fetch leaderboard' })
+  }
+})
+
+// Teacher CSV export of a room's complete results — a gradebook matrix
+// (one row per student, one column per question). Reuses buildSnapshot (a single
+// aggregation pass = the exact data the results page renders), so it adds no new heavy
+// queries; a one-off download does not need the stampede cache. Rows are streamed.
+router.get('/room/:roomId/export', async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const User = (await import('../models/User.js')).default
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    const room = await Room.findById(roomId).lean()
+    if (!room) return res.status(404).json({ error: 'Room not found' })
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to export this room' })
+    }
+
+    const { leaderboard, byStudent, stats } = await resultsSnapshot.buildSnapshot(roomId)
+
+    // Question columns in chronological order (Q1 = first asked). Every byStudent array holds the
+    // same approved-question set in newest-first order, so take one and reverse.
+    const anySid = Object.keys(byStudent)[0]
+    const qCols = anySid ? [...byStudent[anySid]].reverse() : []
+    const statsByQid = new Map((stats.questionStats || []).map((q) => [q.questionId, q]))
+
+    // Emails for the participant set — one query.
+    const sids = leaderboard.map((e) => String(e.studentId))
+    const users = await User.find({ _id: { $in: sids } }).select('email').lean()
+    const emailById = new Map(users.map((u) => [u._id.toString(), u.email || '']))
+
+    const esc = (v) => {
+      const s = v == null ? '' : String(v)
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const row = (arr) => arr.map(esc).join(',') + '\n'
+
+    const safeName = (room.name || 'room').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 60)
+    const date = room.endedAt ? new Date(room.endedAt).toISOString().slice(0, 10) : 'session'
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="Spandan_${safeName}_${date}.csv"`)
+    res.write('\uFEFF') // UTF-8 BOM so Excel renders names, emails and the check marks correctly
+
+    const qHeaders = qCols.map((_, i) => `Q${i + 1}`)
+    res.write(row(['student', 'email', 'points', 'rank', 'correct', 'accuracy', ...qHeaders]))
+
+    for (const e of leaderboard) {
+      const byQid = new Map((byStudent[String(e.studentId)] || []).map((q) => [q._id, q]))
+      const acc = e.totalAnswered ? (e.correctCount / e.totalAnswered).toFixed(2) : ''
+      const cells = qCols.map((qc) => {
+        const q = byQid.get(qc._id)
+        return !q || !q.answered ? '' : (q.isCorrect ? '✓' : '✗')
+      })
+      res.write(row([
+        e.studentName || '', emailById.get(String(e.studentId)) || '',
+        e.totalPoints, e.rank, `${e.correctCount}/${e.totalAnswered}`, acc, ...cells
+      ]))
+    }
+
+    // Question legend so Q1..Qn are identifiable.
+    res.write('\n')
+    res.write(row(['Question', 'Text', 'Type', 'Responses', 'Correct %']))
+    qCols.forEach((qc, i) => {
+      const s = statsByQid.get(qc._id)
+      const pct = s && s.totalResponses ? Math.round((s.correctCount / s.totalResponses) * 100) + '%' : ''
+      res.write(row([`Q${i + 1}`, qc.question, qc.type, s ? s.totalResponses : '', pct]))
+    })
+    res.end()
+  } catch (error) {
+    console.error('CSV export error:', error)
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to export results' })
+    else res.end()
   }
 })
 

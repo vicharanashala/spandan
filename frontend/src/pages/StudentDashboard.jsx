@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import useIsMobile from '../hooks/useIsMobile'
 
 function StudentDashboard() {
   // Inject streak flame pulse animation once
@@ -27,6 +28,7 @@ function StudentDashboard() {
       document.head.appendChild(style)
     }
   }, [])
+  const isMobile = useIsMobile()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
@@ -90,50 +92,74 @@ function StudentDashboard() {
     }
   }
 
+  const statCards = [
+    { icon: '📚', value: stats.totalRooms, label: 'Total Rooms', tint: '#3b82f6' },
+    { icon: '✅', value: stats.pollsTaken, label: 'Polls Taken', tint: '#10b981' },
+    { icon: '❌', value: stats.pollsMissed, label: 'Polls Missed', tint: '#ef4444' },
+    { icon: '📈', value: `${stats.average}%`, label: 'Earned Points %', tint: '#8b5cf6' }
+  ]
+
   return (
     <div style={{
       display: 'flex',
       minHeight: '100vh',
       background: 'var(--bg-primary)',
-      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+      maxWidth: '100%',
+      boxSizing: 'border-box'
     }}>
       <Sidebar user={user} />
-      
+
       {/* Main Content */}
       <div style={{
         flex: 1,
+        minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        marginLeft: '240px'
+        marginLeft: 'var(--sidebar-width, 240px)',
+        transition: 'margin-left 0.2s ease'
       }}>
         {/* Header - Blue gradient bar */}
         <header style={{
           background: 'var(--header-bg)',
           color: 'white',
-          padding: '24px 32px'
+          padding: isMobile ? '20px 16px' : '28px 32px',
+          paddingLeft: isMobile ? '64px' : '32px',
+          boxShadow: 'var(--shadow-md)'
         }}>
           <div style={{
             display: 'flex',
             justifyContent: 'space-between',
-            alignItems: 'center'
+            alignItems: 'center',
+            gap: '12px',
+            flexWrap: 'wrap'
           }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{
+                margin: 0,
+                fontSize: isMobile ? '20px' : '26px',
+                fontWeight: '700',
+                letterSpacing: '-0.02em'
+              }}>
                 Welcome, {user?.name || 'Student'}!
               </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
+              <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '14px' }}>
                 Join rooms and participate in polls
               </p>
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
               <ThemeToggle />
               <ProfileDropdown />
             </div>
           </div>
         </header>
 
-        {/* Dashboard content */}
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div style={{
+          flex: 1,
+          padding: isMobile ? '16px' : '32px',
+          maxWidth: '100%',
+          boxSizing: 'border-box'
+        }}>
           {/* Streak Fire — featured big card on its own row */}
           <div
             title={stats.bestStreak > 0 ? `Personal best: ${stats.bestStreak} in a row 🔥` : 'Get 2 correct answers in a row to light the streak'}
@@ -148,11 +174,10 @@ function StudentDashboard() {
               position: 'relative',
               overflow: 'hidden',
               display: 'grid',
-              gridTemplateColumns: 'auto 1fr auto',
+              gridTemplateColumns: isMobile ? '1fr' : 'auto 1fr auto',
               gap: '32px',
               alignItems: 'center',
             }}>
-            {/* Soft glow blob in the corner */}
             <div style={{
               position: 'absolute', top: '-40px', right: '-40px',
               width: '180px', height: '180px',
@@ -160,7 +185,6 @@ function StudentDashboard() {
               borderRadius: '50%',
               pointerEvents: 'none',
             }} />
-            {/* Left: flame icon + huge number */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
               <div style={{
                 fontSize: '72px',
@@ -179,24 +203,12 @@ function StudentDashboard() {
                 }}>
                   {stats.currentStreak}
                 </div>
-                <div style={{ fontSize: '14px', opacity: 0.9, fontWeight: '500', marginTop: '2px' }}>
-                  in a row
-                </div>
+                <div style={{ fontSize: '14px', opacity: 0.9, fontWeight: '500', marginTop: '2px' }}>in a row</div>
               </div>
             </div>
-            {/* Middle: title + tagline */}
             <div>
-              <div style={{
-                fontSize: '22px', fontWeight: '700',
-                color: 'white', letterSpacing: '0.3px',
-                marginBottom: '6px',
-              }}>
-                Streak Fire
-              </div>
-              <div style={{
-                fontSize: '14px', opacity: 0.92, lineHeight: 1.4,
-                maxWidth: '360px',
-              }}>
+              <div style={{ fontSize: '22px', fontWeight: '700', color: 'white', letterSpacing: '0.3px', marginBottom: '6px' }}>Streak Fire</div>
+              <div style={{ fontSize: '14px', opacity: 0.92, lineHeight: 1.4, maxWidth: '360px' }}>
                 {stats.currentStreak === 0
                   ? 'Answer correctly to light the fire.'
                   : stats.currentStreak === 1
@@ -208,113 +220,76 @@ function StudentDashboard() {
                         : 'Unstoppable. Legendary status.'}
               </div>
             </div>
-            {/* Right: best + freeze pills */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'flex-end' }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                background: 'rgba(255,255,255,0.15)',
-                border: '1px solid rgba(255,255,255,0.22)',
-                borderRadius: '999px',
-                padding: '6px 14px',
-                fontSize: '13px',
-                fontWeight: '500',
-                backdropFilter: 'blur(4px)',
-              }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: isMobile ? 'flex-start' : 'flex-end' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.22)', borderRadius: '999px', padding: '6px 14px', fontSize: '13px', fontWeight: '500', backdropFilter: 'blur(4px)' }}>
                 <span>🏆</span>
                 <span>Best: <strong style={{ color: 'white' }}>{stats.bestStreak}</strong></span>
               </div>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                background: stats.streakFreezes > 0
-                  ? 'rgba(56, 189, 248, 0.25)'
-                  : 'rgba(255,255,255,0.08)',
-                border: '1px solid ' + (stats.streakFreezes > 0
-                  ? 'rgba(56, 189, 248, 0.5)'
-                  : 'rgba(255,255,255,0.12)'),
-                borderRadius: '999px',
-                padding: '6px 14px',
-                fontSize: '13px',
-                fontWeight: '500',
-                opacity: stats.streakFreezes > 0 ? 1 : 0.5,
-              }}
-              title="One-time shield that saves your streak from a wrong answer or skipped question">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: stats.streakFreezes > 0 ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255,255,255,0.08)', border: '1px solid ' + (stats.streakFreezes > 0 ? 'rgba(56, 189, 248, 0.5)' : 'rgba(255,255,255,0.12)'), borderRadius: '999px', padding: '6px 14px', fontSize: '13px', fontWeight: '500', opacity: stats.streakFreezes > 0 ? 1 : 0.5 }}
+                title="One-time shield that saves your streak from a wrong answer or skipped question">
                 <span>🛡️</span>
                 <span>Freeze: <strong style={{ color: 'white' }}>{stats.streakFreezes}</strong></span>
               </div>
             </div>
           </div>
-
           {/* Stats Cards */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '20px',
-            marginBottom: '32px'
+            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
+            gap: isMobile ? '12px' : '20px',
+            marginBottom: isMobile ? '24px' : '32px'
           }}>
-
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.totalRooms}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Total Rooms</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>✅</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsTaken}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Taken</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>❌</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.pollsMissed}</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Polls Missed</div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              padding: '24px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '32px', marginBottom: '8px' }}>📈</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{stats.average}%</div>
-              <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>Earned Points %</div>
-            </div>
+            {statCards.map((card) => (
+              <div key={card.label} style={{
+                background: 'var(--bg-card)',
+                borderRadius: 'var(--radius-lg)',
+                padding: '24px',
+                boxShadow: 'var(--shadow-md)',
+                border: '1px solid var(--border-color)',
+                minWidth: 0,
+                boxSizing: 'border-box'
+              }}>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '24px',
+                  marginBottom: '12px',
+                  background: `${card.tint}1a`
+                }}>{card.icon}</div>
+                <div style={{
+                  fontSize: isMobile ? '26px' : '30px',
+                  fontWeight: '700',
+                  color: 'var(--text-primary)',
+                  letterSpacing: '-0.02em'
+                }}>{card.value}</div>
+                <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>{card.label}</div>
+              </div>
+            ))}
           </div>
 
           {/* Quick Join Section */}
           <div style={{
             background: 'var(--bg-card)',
-            borderRadius: '16px',
-            padding: '24px',
-            boxShadow: 'var(--card-shadow)',
+            borderRadius: 'var(--radius-lg)',
+            padding: isMobile ? '20px' : '24px',
+            boxShadow: 'var(--shadow-md)',
             border: '1px solid var(--border-color)',
-            marginBottom: '32px'
+            marginBottom: isMobile ? '24px' : '32px',
+            boxSizing: 'border-box'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
               Quick Join
             </h2>
-            
-            <div style={{ display: 'flex', gap: '12px' }}>
+
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              flexDirection: isMobile ? 'column' : 'row'
+            }}>
               <input
                 type="text"
                 value={roomCode}
@@ -323,30 +298,34 @@ function StudentDashboard() {
                 maxLength={8}
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   padding: '12px 16px',
                   border: '2px solid var(--border-color)',
-                  borderRadius: '10px',
-                  fontSize: '14px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '15px',
                   outline: 'none',
                   background: 'var(--input-bg)',
                   color: 'var(--text-primary)',
                   letterSpacing: '2px',
-                  fontWeight: '600'
+                  fontWeight: '600',
+                  boxSizing: 'border-box'
                 }}
               />
-              
+
               <button
                 onClick={handleJoinRoom}
                 disabled={isJoining || !roomCode.trim()}
                 style={{
-                  padding: '12px 24px',
-                  background: (isJoining || !roomCode.trim()) ? '#9ca3af' : '#3b82f6',
-                  color: 'white',
+                  padding: '11px 24px',
+                  background: (isJoining || !roomCode.trim()) ? 'var(--border-color)' : 'var(--accent-gradient)',
+                  color: (isJoining || !roomCode.trim()) ? 'var(--text-secondary)' : '#fff',
                   border: 'none',
-                  borderRadius: '10px',
-                  fontSize: '14px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '15px',
                   fontWeight: '600',
-                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer'
+                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  transition: 'transform 0.15s ease, box-shadow 0.15s ease'
                 }}
               >
                 {isJoining ? 'Joining...' : 'Join Room'}
@@ -357,36 +336,48 @@ function StudentDashboard() {
           {/* Active Joined Rooms Section */}
           {activeRooms.length > 0 && (
             <>
-              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
                 🟢 Previously Joined Active Rooms
               </h2>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', 
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
                 gap: '16px',
-                marginBottom: '32px'
+                marginBottom: isMobile ? '24px' : '32px'
               }}>
                 {activeRooms.map((room) => (
                   <div
                     key={room._id}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-2px)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = 'translateY(0)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                    }}
                     style={{
                       display: 'flex',
                       flexDirection: 'column',
                       padding: '20px',
                       background: 'var(--bg-card)',
-                      borderRadius: '16px',
+                      borderRadius: 'var(--radius-lg)',
                       border: '1px solid var(--border-color)',
-                      minHeight: '140px'
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                      transition: 'transform 0.15s ease, box-shadow 0.15s ease'
                     }}
                   >
-                    <div style={{ flex: 1 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
                         {room.name}
                       </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: '#3b82f6', letterSpacing: '1px' }}>{room.code}</strong>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
                       </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
                         {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
                       </p>
                     </div>
@@ -394,14 +385,15 @@ function StudentDashboard() {
                       onClick={() => navigate(`/student/session/${room.code}`)}
                       style={{
                         marginTop: '16px',
-                        padding: '10px 16px',
-                        background: '#3b82f6',
-                        color: 'white',
+                        padding: '11px 18px',
+                        background: 'var(--accent-gradient)',
+                        color: '#fff',
                         border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '13px',
-                        fontWeight: '500',
-                        cursor: 'pointer'
+                        borderRadius: 'var(--radius)',
+                        fontSize: '14px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        transition: 'transform 0.15s ease'
                       }}
                     >
                       🔄 Rejoin Room →
