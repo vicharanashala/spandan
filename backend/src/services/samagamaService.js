@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import User from '../models/User.js'
 
 const SAMAGAMA_ME_URL = 'https://samagama.in/api/auth/me'
@@ -111,12 +112,17 @@ export async function findOrCreateSamagamaUser(samagamaUser) {
     return user
   }
 
-  // New user — create in Spandan
+  // New user — create in Spandan.
+  // `password` is required by the schema but is meaningless for an SSO account: the user signs in
+  // through Samagama, never with a password of their own. It must therefore be unguessable and
+  // never communicated — a shared literal here is a password every SSO account can be logged in
+  // with by anyone who knows the account's email. The value is discarded immediately; the only way
+  // to get a usable password on such an account is to set one deliberately.
   user = new User({
     name,
     email: email.toLowerCase(),
     role,
-    password: 'samagama-sso-placeholder' // User cannot log in standalone without setting a password
+    password: crypto.randomBytes(32).toString('hex')
   })
 
   await user.save()
