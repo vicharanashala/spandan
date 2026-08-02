@@ -11,6 +11,13 @@ const questionSchema = new mongoose.Schema({
     enum: ['MCQ', 'TF', 'MSQ'],
     required: true
   },
+    // new — TAWM: Topic tag for analytics
+  topic: {
+    type: String,
+    trim: true,
+    index: true,
+    default: null
+  },
   question: {
     type: String,
     required: true
@@ -57,6 +64,9 @@ const questionSchema = new mongoose.Schema({
     default: null
   }
 })
+// NAYA — TAWM: Compound indexes for fast aggregation
+questionSchema.index({ roomId: 1, topic: 1 })
+questionSchema.index({ status: 1, topic: 1 })
 
 // Covers the hot query shapes: filter by room (+status) and sort by createdAt.
 // Without this every question read (poll load, stats, history) is a full COLLSCAN.

@@ -25,6 +25,7 @@ function StudentDashboard() {
     average: 0
   })
 
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -47,6 +48,7 @@ function StudentDashboard() {
           average: data.stats.average || 0
         })
       }
+
     } catch (err) {
       console.error('Failed to fetch student stats:', err)
     }
@@ -176,8 +178,10 @@ function StudentDashboard() {
               </div>
             ))}
           </div>
+          
 
-          {/* Quick Join Section */}
+
+        {/* Quick Join */}
           <div style={{
             background: 'var(--bg-card)',
             borderRadius: 'var(--radius-lg)',

@@ -119,7 +119,8 @@ router.post('/', authorize('teacher'), async (req, res) => {
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
-      segmentIndex = 0
+      segmentIndex = 0,
+      topic = null
     } = req.body
 
     if (!roomId || !type || !question || !options) {
@@ -141,8 +142,8 @@ router.post('/', authorize('teacher'), async (req, res) => {
     // literally (e.g. &quot;) on the student side.
     const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
 
-    const newQuestion = new Question(sanitizedData)
-
+    // NAYA — TAWM: Spread topic into Question creation
+    const newQuestion = new Question({ ...sanitizedData, topic })
     await newQuestion.save()
 
     res.status(201).json({
