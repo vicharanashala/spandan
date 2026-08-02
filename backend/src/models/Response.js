@@ -32,6 +32,16 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Behavioral engagement signals (SEI)
+  answerSwitches: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  firstInteractionMs: {
+    type: Number, // ms from question start to first option click
+    default: null
+  },
   points: {
     type: Number,
     default: 0

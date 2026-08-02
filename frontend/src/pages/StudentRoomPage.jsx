@@ -39,6 +39,10 @@ function StudentRoomPage() {
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
+  // SEI behavioral signals
+  const answerSwitchesRef = useRef(0)
+  const firstInteractionRef = useRef(null)  // ms timestamp of first option click
+  const questionStartRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
@@ -95,6 +99,9 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      answerSwitchesRef.current = 0
+      firstInteractionRef.current = null
+      questionStartRef.current = Date.now()
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -150,6 +157,9 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      answerSwitchesRef.current = 0
+      firstInteractionRef.current = null
+      questionStartRef.current = Date.now()
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -309,6 +319,8 @@ function StudentRoomPage() {
 
     if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
 
+    let saveData = null
+
     // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
@@ -322,10 +334,12 @@ function StudentRoomPage() {
           questionId,
           studentId,
           selectedOptions,
-          responseTime
+          responseTime,
+          answerSwitches: answerSwitchesRef.current,
+          firstInteractionMs: firstInteractionRef.current,
         })
       })
-      const saveData = await saveResponse.json()
+      saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
 
       // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
@@ -600,6 +614,12 @@ function StudentRoomPage() {
                   
                   const handleOptionClick = () => {
                     if (submitted) return
+                    if (firstInteractionRef.current === null) {
+                      firstInteractionRef.current = Date.now() - questionStartRef.current
+                    }
+                    if (selectedOptions.length > 0 && !selectedOptions.includes(index)) {
+                      answerSwitchesRef.current += 1
+                    }
                     if (isMSQ) {
                       // MSQ: Toggle selection
                       setSelectedOptions(prev => 

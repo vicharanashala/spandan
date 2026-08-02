@@ -13,6 +13,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import EngagementPanel from '../components/EngagementPanel'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
@@ -109,6 +110,42 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [roomMemberIds, setRoomMemberIds] = useState([]) // array of studentId strings
+  const [respondedByQuestion, setRespondedByQuestion] = useState({}) // questionId -> Set of studentIds
+
+  const roomRef = useRef(room)
+  const roomMemberIdsRef = useRef([])
+  const respondedByQuestionRef = useRef({})
+
+  useEffect(() => {
+    roomRef.current = room
+  }, [room])
+
+  useEffect(() => {
+    roomMemberIdsRef.current = roomMemberIds
+  }, [roomMemberIds])
+
+  useEffect(() => {
+    respondedByQuestionRef.current = respondedByQuestion
+  }, [respondedByQuestion])
+
+  const fetchRoomMembers = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/rooms/${roomId}/members`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      if (response.ok) {
+        const data = await response.json()
+        if (data.studentIds) {
+          setRoomMemberIds(data.studentIds.map(String))
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch room members:', err)
+    }
+  }, [roomId, token])
 
   useEffect(() => {
     if (token) {
@@ -130,10 +167,10 @@ function RoomDetailPage() {
   }, [roomId])
 
   useEffect(() => {
-    if (room?.code && user?._id) {
+    if (room?.code && user?._id && socket && isConnected) {
       joinRoom(room.code, user._id)
     }
-  }, [room?.code, user?._id])
+  }, [room?.code, user?._id, socket, isConnected])
 
   // Listen for room:joined event
   useEffect(() => {
@@ -143,10 +180,12 @@ function RoomDetailPage() {
       console.log('Teacher joined room successfully')
       setIsRoomJoined(true)
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      fetchRoomMembers()
     }
 
     const handleRoomLeft = (data) => {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      fetchRoomMembers()
     }
 
     socket.on('room:joined', handleRoomJoined)
@@ -156,7 +195,7 @@ function RoomDetailPage() {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
     }
-  }, [socket])
+  }, [socket, fetchRoomMembers])
 
   // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
   // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
@@ -164,7 +203,16 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
     const handleCounts = (payload) => {
+      console.log('[DEBUG] Live update received:', payload)
       if (payload?.counts) setAnswerCounts(payload.counts)
+      if (payload?.respondedStudents) {
+        const newResponded = {}
+        for (const [qId, studentIds] of Object.entries(payload.respondedStudents)) {
+          newResponded[qId] = new Set(studentIds.map(String))
+        }
+        setRespondedByQuestion(newResponded)
+        respondedByQuestionRef.current = newResponded
+      }
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)
@@ -174,34 +222,60 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            // SEI: report students who never answered this question
+            const respondedIds = respondedByQuestionRef.current[question._id] || new Set()
+            const nonResponderIds = roomMemberIdsRef.current.filter(id => !respondedIds.has(String(id)))
+            const roomCode = roomRef.current?.code
+            if (socket && roomCode) {
+              socket.emit('question:end:engagement', { roomCode, nonResponderIds })
+            }
+            setActiveQuestion(null)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      let questionObj = null
+      if (data && typeof data === 'object') {
+        if (data._id) {
+          questionObj = data
+        } else if (data.question && typeof data.question === 'object' && data.question._id) {
+          questionObj = data.question
+        } else if (data.questionId) {
+          questionObj = {
+            _id: data.questionId,
+            question: typeof data.question === 'string' ? data.question : '',
+            timeToAnswer: data.timer || 30
+          }
         }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+      }
+      if (questionObj && questionObj._id) {
+        startQuestionTimer(questionObj)
+      } else {
+        console.warn('[QUESTION LAUNCHED] Could not extract valid question with _id:', data)
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -474,7 +548,7 @@ function RoomDetailPage() {
       }
     } catch (error) {
       setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
+      setShowGeneratingPopup(false)
       console.error('Text to questions error:', error)
       if (error.name !== 'AbortError') {
         // Same as above — preserve the pasted text and reopen the popup for a retry.
@@ -485,11 +559,16 @@ function RoomDetailPage() {
     }
   }
 
+  
+
+
+
   const loadRoom = async () => {
     setIsLoading(true)
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
+      await fetchRoomMembers()
       // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
       if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
       // Apply room settings if they exist
@@ -1973,6 +2052,7 @@ function RoomDetailPage() {
                 </span>
               </div>
               <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <EngagementPanel socket={socket} />
             </div>
           </div>
         </div>

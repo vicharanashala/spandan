@@ -13,6 +13,7 @@ jobs:
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: backend
@@ -28,11 +29,14 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
+        working-directory: backend
         run: npm ci
 
       # Backend tests use @shelf/jest-mongodb (in-memory MongoDB), so no DB
       # service or MONGODB_URI secret is needed. JWT_SECRET just needs to be set.
       - name: Run tests
+        working-directory: backend
+        run: npm test -- --coverage
         run: npm test
         env:
           JWT_SECRET: test-secret-key
@@ -40,6 +44,7 @@ jobs:
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: frontend
@@ -55,7 +60,17 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
+        working-directory: frontend
         run: npm ci
 
       - name: Run tests
+        working-directory: frontend
+        run: npm test -- --coverage
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: success()
+        with:
+          files: ./frontend/coverage/lcov.info
+          flags: frontend
         run: npm test

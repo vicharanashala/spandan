@@ -97,7 +97,7 @@ router.post('/', authorize('student'), async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const { roomId, questionId, selectedOptions, responseTime, answerSwitches, firstInteractionMs } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember) — cached (Fix 4), DB fallback on miss.
@@ -184,6 +184,8 @@ router.post('/', authorize('student'), async (req, res) => {
       selectedOptions, // Store all selections for MSQ
       isCorrect,
       responseTime: respTime,
+      answerSwitches: Math.max(0, parseInt(answerSwitches, 10) || 0),
+      firstInteractionMs: Number.isFinite(Number(firstInteractionMs)) ? Number(firstInteractionMs) : null,
       points
     }
 
@@ -216,6 +218,44 @@ router.post('/', authorize('student'), async (req, res) => {
         }
         throw saveErr
       }
+    }
+
+    // SEI: score this interaction and push live update to the room
+    try {
+      const Room = (await import('../models/Room.js')).default
+      const room = await Room.findById(roomId).select('code').lean()
+      const roomCode = room?.code
+      if (roomCode) {
+        const { recordSignal } = await import('../services/engagementService.js')
+        const result = recordSignal(roomCode, studentId.toString(), {
+          answered: true,
+          isCorrect,
+          responseTime: respTime,
+          timerSeconds: tta,
+          answerSwitches: Math.max(0, parseInt(answerSwitches, 10) || 0)
+        })
+
+        const io = req.app.get('io')
+        if (io) {
+          io.to(roomCode).emit('engagement:update', {
+            studentId: studentId.toString(),
+            studentName: req.user.name || req.user.email || 'Unknown Student',
+            index: result.index,
+            disengaged: result.disengaged
+          })
+
+          if (result.shouldAlert) {
+            io.to(roomCode).emit('engagement:alert', {
+              studentId: studentId.toString(),
+              studentName: req.user.name || req.user.email || 'Unknown Student',
+              index: result.index
+            })
+          }
+        }
+      }
+    } catch (seiErr) {
+      // Engagement scoring must never break the core answer flow
+      console.error('SEI scoring error in REST handler:', seiErr.message)
     }
 
     // Live answer-counts update immediately (throttled) so the teacher's "X/total answered"

@@ -24,6 +24,7 @@ import researchRoutes from './routes/research.js'
 
 // Import models for reference
 import './models/index.js'
+import { recordSignal, getRoomEngagement, clearRoom } from './services/engagementService.js'
 
 dotenv.config()
 
@@ -129,12 +130,17 @@ async function broadcastCounts(roomId) {
     const roomObjId = new mongoose.Types.ObjectId(roomId)
     const countAgg = await Response.aggregate([
       { $match: { roomId: roomObjId } },
-      { $group: { _id: '$questionId', count: { $sum: 1 } } }
+      { $group: { _id: '$questionId', count: { $sum: 1 }, studentIds: { $push: '$studentId' } } }
     ])
     const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    const respondedStudents = {}
+    countAgg.forEach(c => {
+      const qid = c._id.toString()
+      counts[qid] = c.count
+      respondedStudents[qid] = (c.studentIds || []).map(id => id.toString())
+    })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+    if (roomCode) io.to(roomCode).emit('counts:updated', { counts, respondedStudents })
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
@@ -168,12 +174,17 @@ async function broadcastLeaderboard(roomId) {
       computeRanked(roomId),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
-        { $group: { _id: '$questionId', count: { $sum: 1 } } }
+        { $group: { _id: '$questionId', count: { $sum: 1 }, studentIds: { $push: '$studentId' } } }
       ])
     ])
 
     const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    const respondedStudents = {}
+    countAgg.forEach(c => {
+      const qid = c._id.toString()
+      counts[qid] = c.count
+      respondedStudents[qid] = (c.studentIds || []).map(id => id.toString())
+    })
 
     const roomCode = await resolveRoomCode(roomId)
 
@@ -197,7 +208,8 @@ async function broadcastLeaderboard(roomId) {
       io.to(roomCode).emit('leaderboard:updated', {
         leaderboard: full.slice(0, LEADERBOARD_TOP_N),
         totalParticipants: full.length,
-        counts
+        counts,
+        respondedStudents
       })
     }
   } catch (err) {
@@ -601,6 +613,30 @@ io.on('connection', (socket) => {
       console.error('Error in room:leave:', error)
       io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
     }
+  })
+
+  // When a question ends, penalize non-responders in the SEI
+  socket.on('question:end:engagement', ({ roomCode, nonResponderIds = [] }) => {
+    try {
+      for (const studentId of nonResponderIds) {
+        const result = recordSignal(roomCode, studentId, { answered: false })
+        io.to(roomCode).emit('engagement:update', {
+          studentId,
+          index: result.index,
+          disengaged: result.disengaged
+        })
+        if (result.shouldAlert) {
+          io.to(roomCode).emit('engagement:alert', { studentId, index: result.index })
+        }
+      }
+    } catch (err) {
+      console.error('SEI non-responder scoring error:', err.message)
+    }
+  })
+
+  // Free engagement memory when a room ends
+  socket.on('room:end', ({ roomCode }) => {
+    clearRoom(roomCode)
   })
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
