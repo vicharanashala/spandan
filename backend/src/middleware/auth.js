@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import User from '../models/User.js'
+import { declarePolicy } from './routePolicy.js'
 
 // Signing key for every Spandan session token, exported so there is exactly one place it is read
 // from. There is deliberately no default: a fallback lets a deploy that lost its environment come
@@ -27,7 +28,7 @@ const userCache = new Map() // userId -> { user, expires }
 
 export const clearUserCache = () => userCache.clear()
 
-export const authenticate = async (req, res, next) => {
+export const authenticate = declarePolicy(async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization
 
@@ -79,10 +80,10 @@ export const authenticate = async (req, res, next) => {
     }
     next(error)
   }
-}
+}, 'authenticated')
 
 export const authorize = (...roles) => {
-  return (req, res, next) => {
+  return declarePolicy((req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ 
         error: 'Not authenticated',
@@ -98,7 +99,7 @@ export const authorize = (...roles) => {
     }
 
     next()
-  }
+  }, `role:${roles.join('|')}`)
 }
 
 export const generateToken = (userId) => {

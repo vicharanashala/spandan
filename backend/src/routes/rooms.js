@@ -1,7 +1,8 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
+import { roomAccess } from '../middleware/roomAccess.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 
@@ -56,19 +57,10 @@ router.get('/', authenticate, async (req, res) => {
 })
 
 // Get room by ID
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, roomAccess('member'), async (req, res) => {
   try {
-    const room = await getRoomById(req.params.id)
+    const room = req.room
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
-    // Check if user is the room teacher (owner) or a student member
-    const isOwner = room.teacher._id.toString() === req.user._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
-    
-    // Only the room owner OR room members can access
-    if (!isOwner && !isStudentMember) {
-      return res.status(403).json({ error: 'Access denied' })
-    }
 
     // Seed the live participant count so a teacher opening/refreshing the room sees the current
     // number immediately (the room:joined/room:left socket events keep it updated after load).
@@ -127,13 +119,9 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 })
 
 // Update room
-router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.put('/:id', authenticate, roomAccess('owner'), async (req, res) => {
   try {
-    const room = await getRoomById(req.params.id)
-    
-    if (room.teacher._id.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ error: 'Only the room owner can update the room' })
-    }
+    const room = req.room
 
     // Prevent reactivating an ended room
     if (room.endedAt && req.body.isActive === true) {
@@ -163,14 +151,8 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 })
 
 // Delete room
-router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.delete('/:id', authenticate, roomAccess('owner'), async (req, res) => {
   try {
-    const room = await getRoomById(req.params.id)
-    
-    if (room.teacher._id.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ error: 'Only the room owner can delete the room' })
-    }
-
     await deleteRoom(req.params.id)
     res.json({ message: 'Room deleted successfully' })
   } catch (error) {

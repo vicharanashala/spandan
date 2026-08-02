@@ -19,13 +19,8 @@ import { computeRanked } from './services/leaderboardAgg.js'
 import { JWT_SECRET } from './middleware/auth.js'
 
 // Import routes
-import authRoutes from './routes/auth.js'
-import roomRoutes from './routes/rooms.js'
-import questionRoutes from './routes/questions.js'
-import transcriptionRoutes from './routes/transcription.js'
-import transcriptRoutes from './routes/transcripts.js'
-import responseRoutes from './routes/responses.js'
-import researchRoutes from './routes/research.js'
+import { API_ROUTES } from './apiRoutes.js'
+import { assertRoutePoliciesDeclared, publicRoute } from './middleware/routePolicy.js'
 
 // Import models for reference
 import './models/index.js'
@@ -364,16 +359,17 @@ app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard route
 app.use(requestTimeout)
 
 // API Routes
-app.use('/api/auth', authRoutes)
-app.use('/api/rooms', roomRoutes)
-app.use('/api/questions', questionRoutes)
-app.use('/api/transcription', transcriptionRoutes)
-app.use('/api/transcripts', transcriptRoutes)
-app.use('/api/responses', responseRoutes)
-app.use('/api/research', researchRoutes)
+for (const [basePath, router] of API_ROUTES) {
+  app.use(basePath, router)
+}
+
+// Every route must say who may call it. Refusing to boot on an undeclared one turns the failure
+// that actually keeps happening — a handler nobody remembered to guard — into a deploy-time crash
+// with the offending routes named, rather than an endpoint quietly open to the internet.
+assertRoutePoliciesDeclared(API_ROUTES)
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', publicRoute, (req, res) => {
   res.json({ 
     status: 'ok', 
     version: '0.5.0',

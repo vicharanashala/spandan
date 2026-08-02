@@ -10,7 +10,9 @@ describe('updateRoom field allowlist', () => {
   let room
 
   beforeAll(async () => {
-    await mongoose.connect(process.env.MONGO_URL)
+    // Jest runs suites in parallel against ONE mongod, so every suite that writes takes its own
+    // database — otherwise a beforeEach in a sibling suite deletes this one's fixtures mid-run.
+    await mongoose.connect(process.env.MONGO_URL, { dbName: 'room-update-fields' })
   })
 
   afterAll(async () => {

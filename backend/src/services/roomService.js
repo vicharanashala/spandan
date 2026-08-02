@@ -16,14 +16,6 @@ export const createRoom = async (name, teacherId, settings = {}) => {
   return room
 }
 
-export const getRoomById = async (id) => {
-  const room = await Room.findById(id).populate('teacher', 'name')
-  if (!room) {
-    throw new Error('Room not found')
-  }
-  return room
-}
-
 export const getRoomByCode = async (code) => {
   const room = await Room.findOne({ code: code.toUpperCase() }).populate('teacher', 'name')
   if (!room) {
