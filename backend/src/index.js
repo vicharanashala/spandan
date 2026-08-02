@@ -13,6 +13,32 @@ import { initRedis } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 
+// =====================================================
+// Global crash guards
+// Without these, a single unhandled promise rejection
+// (e.g. a forgotten `await` on a Mongoose call) will
+// terminate the entire Node process under modern Node's
+// default behaviour. Log loudly so we see the cause,
+// and exit gracefully on truly uncaught exceptions so
+// any supervisor (or the developer) gets a clean signal.
+// =====================================================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Promise Rejection at:', promise)
+  console.error('[FATAL] Reason:', reason)
+  // Do NOT exit — the process is still healthy and other
+  // requests may be in flight. Just log so we can fix.
+})
+
+process.on('uncaughtException', (err, origin) => {
+  console.error('[FATAL] Uncaught Exception at:', origin)
+  console.error('[FATAL] Error:', err)
+  // For truly uncaught exceptions the process state may be
+  // corrupted, so exit. A supervisor (or the developer) will
+  // restart with `npm run dev:mongo`.
+  console.error('[FATAL] Exiting process in 1s...')
+  setTimeout(() => process.exit(1), 1000)
+})
+
 // Import routes
 import authRoutes from './routes/auth.js'
 import roomRoutes from './routes/rooms.js'
@@ -335,8 +361,17 @@ const otpLimiter = rateLimit({
 
 // Middleware
 app.use(helmet())
+// Build the HTTP CORS origin list:
+//   - Prefer CORS_ORIGINS env var (comma-separated) — matches Socket.IO config
+//   - Fall back to FRONTEND_URL (strip any trailing path — origin is protocol+host+port only)
+//   - Default: http://localhost:5173
+const _rawOrigins = (process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+  : [process.env.FRONTEND_URL || 'http://localhost:5173']
+).map(s => s.replace(/\/.*$/, '')) // strip any path component
+const HTTP_CORS_ORIGINS = [...new Set(_rawOrigins.filter(Boolean))]
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: HTTP_CORS_ORIGINS,
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
@@ -680,8 +715,12 @@ io.on('connection', (socket) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Error:', err)
-  res.status(500).json({ 
+  // Log with request context so a 500 is traceable
+  console.error(`[ERROR] ${req.method} ${req.originalUrl} — ${err.message}`)
+  if (process.env.NODE_ENV === 'development') {
+    console.error('[ERROR] Stack:', err.stack)
+  }
+  res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })

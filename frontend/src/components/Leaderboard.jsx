@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { API_URL } from '../config.js'
 
 const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
@@ -12,7 +12,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   const isTeacherRef = useRef(false)
   useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
 
-  const fetchLeaderboard = async () => {
+  const fetchLeaderboard = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/responses/leaderboard/${roomId}`, {
         headers: {
@@ -25,51 +25,39 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         setUserRank(data.userRank)
         setTotalParticipants(data.totalParticipants)
         setIsTeacher(data.isTeacher)
+        setError(null)
       } else {
-        setError('Failed to load leaderboard')
+        setError(data.error || 'Failed to load leaderboard')
       }
     } catch (err) {
       console.error('Failed to fetch leaderboard:', err)
-      setError('Failed to load leaderboard')
+      setError('Couldn’t reach the server. Check your connection and try again.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [roomId, token])
 
   useEffect(() => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Phase 1: consume the server's throttled, pushed leaderboard payload instead of
-    // re-fetching on every points event (which caused the ~N^2 storm). Students apply the
-    // top-N payload directly; the teacher is a single client, so it just re-fetches the
-    // full board on each tick.
+    // Listen for points:updated events AND socket reconnect
     if (socket) {
-      const handleLiveUpdate = (payload) => {
-        if (isTeacherRef.current) {
-          fetchLeaderboard()
-          return
-        }
-        if (payload?.leaderboard) {
-          setLeaderboard(payload.leaderboard)
-          if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
-          // If this student is within the broadcast top-N, refresh their rank from it.
-          // Outside top-N, their rank refreshes on their own next submit (myRank prop).
-          if (userId) {
-            const me = payload.leaderboard.find(e => e.studentId === userId)
-            if (me) setUserRank(me.rank)
-          }
-        }
+      const onPointsUpdate = () => {
+        fetchLeaderboard()
       }
-      socket.on('leaderboard:updated', handleLiveUpdate)
-      return () => socket.off('leaderboard:updated', handleLiveUpdate)
+      const onReconnect = () => {
+        console.log('[Leaderboard] Socket reconnected, refreshing...')
+        fetchLeaderboard()
+      }
+      socket.on('points:updated', onPointsUpdate)
+      socket.on('connect', onReconnect)
+      return () => {
+        socket.off('points:updated', onPointsUpdate)
+        socket.off('connect', onReconnect)
+      }
     }
-  }, [roomId, socket, userId])
-
-  // "Rank on submit": when the student answers, the POST returns their current rank; apply it.
-  useEffect(() => {
-    if (myRank != null) setUserRank(myRank)
-  }, [myRank])
+  }, [roomId, socket, fetchLeaderboard])
 
   if (loading) {
     return (
@@ -90,9 +78,28 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
         padding: '20px',
         textAlign: 'center',
         color: '#ef4444',
-        fontSize: '13px'
+        fontSize: '13px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '12px'
       }}>
-        {error}
+        <div>{error}</div>
+        <button
+          onClick={() => { setLoading(true); fetchLeaderboard() }}
+          style={{
+            padding: '6px 14px',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: 'white',
+            background: '#3b82f6',
+            border: 'none',
+            borderRadius: '6px',
+            cursor: 'pointer'
+          }}
+        >
+          Retry
+        </button>
       </div>
     )
   }
@@ -253,9 +260,43 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            maxWidth: '100%'
+            maxWidth: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
           }}>
-            {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            <span style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '100%'
+            }}>
+              {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            </span>
+            {/* Streak Fire badge — only when currentStreak >= 2 */}
+            {Number(entry.currentStreak) >= 2 && (
+              <span
+                title={`On a ${entry.currentStreak}-answer streak (best: ${entry.bestStreak ?? 0})`}
+                aria-label={`Streak ${entry.currentStreak}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '2px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  color: '#b45309',
+                  background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                  border: '1px solid #f59e0b',
+                  borderRadius: '999px',
+                  padding: '1px 6px',
+                  flexShrink: 0,
+                  lineHeight: 1.4
+                }}
+              >
+                <span style={{ fontSize: '11px' }}>🔥</span>
+                <span>{entry.currentStreak}</span>
+              </span>
+            )}
           </div>
           <div style={{
             fontSize: '11px',

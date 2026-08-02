@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import { useToast } from '../components/Toast'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
@@ -23,8 +24,10 @@ function StudentRoomPage() {
   const { user, token, logout } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
+  const { showToast } = useToast()
+  // Track previous streak so we know if this answer started a brand-new streak
+  const prevStreakRef = useRef(0)
   const isMobile = useIsMobile()
-
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -328,12 +331,82 @@ function StudentRoomPage() {
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
 
-      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
-      // (from this authenticated POST) — the client no longer emits points:update /
-      // response:submit. The POST returns this student's current rank; surface it so the
-      // leaderboard's "you" pill updates even when outside the broadcast top-N.
-      if (saveData.success && saveData.rank != null) {
-        setMyRank(saveData.rank)
+      // --- Streak Fire: surface streak events as toasts ---
+      // Streak rule under the current spec:
+      //   - correct        -> streak +2
+      //   - wrong          -> streak -3 (no break; floored at 0)
+      //   - skipped Q      -> freeze consumed; streak preserved (no counter change)
+      //   - skipped Q w/o freeze -> silent no-op (streak unchanged)
+      if (saveData.success && saveData.streak) {
+        const {
+          event,            // 'increment' | 'decrement' | 'noop'
+          currentStreak,
+          bestStreak,
+          freezeUsed,       // 'sweep' | null — freeze consumed by a skipped question
+          streakFreezesRemaining,
+        } = saveData.streak
+        const prevStreak = prevStreakRef.current
+
+        // 1) Freeze consumed by a skipped question. Highest priority — overrides other toasts.
+        //    Under the new spec this is the ONLY thing that triggers a freeze toast.
+        if (freezeUsed === 'sweep') {
+          const remainingText = streakFreezesRemaining > 0
+            ? `${streakFreezesRemaining} freeze left`
+            : 'no freezes left'
+          showToast({
+            type: 'freeze_used',
+            message: `🛡️ Freeze used (skipped question)! Streak saved (${currentStreak}🔥) — ${remainingText}.`,
+            duration: 4000,
+          })
+        }
+        // 2) Started a brand-new streak after being at 0 — celebrate the comeback
+        else if (event === 'increment' && prevStreak === 0 && currentStreak >= 1) {
+          showToast({
+            type: 'streak_start',
+            message: `🔥 Streak started! Keep it going!`,
+            duration: 3000,
+          })
+        }
+        // 3) Streak multiplier tier reached! Show off the boosted points.
+        //    `multiplierBoosted` is true on the first answer that crosses a
+        //    threshold — e.g. going from streak 2 → 4 (×2) or 4 → 6 (×3).
+        else if (event === 'increment' && saveData.streak.multiplierBoosted && saveData.response?.multiplier > 1) {
+          const mult = saveData.response.multiplier
+          const base = saveData.response.basePoints
+          const final = saveData.response.points
+          const multEmoji = mult === 5 ? '🌟' : mult === 3 ? '🔥' : '⚡'
+          showToast({
+            type: 'multiplier',
+            message: `${multEmoji} ×${mult} MULTIPLIER! ${base} → ${final} points! (Streak: ${currentStreak}🔥)`,
+            duration: 3500,
+          })
+        }
+        // 4) Streak dropped by 3 due to wrong answer — soft notice only.
+        //    No more "💔 streak broken" toast: under the new rule the streak
+        //    counter survives wrong answers (it just shrinks).
+        else if (event === 'decrement' && currentStreak > 0) {
+          showToast({
+            type: 'warning',
+            message: `Streak −3 → ${currentStreak}🔥. Recover with a correct answer!`,
+            duration: 3500,
+          })
+        }
+        // 5) Default catch-all (correct answer extending a non-zero streak, no
+        //    tier crossing; wrong-answer noop; etc.) — silent.
+
+        // Remember for next round (used by the celebration check)
+        prevStreakRef.current = currentStreak
+      }
+
+      // Emit points:update for leaderboard broadcast
+      if (saveData.success && saveData.response) {
+        socket.emit('points:update', {
+          roomCode: room.code,
+          questionId,
+          studentId: user._id,
+          points: saveData.response.points,
+          isCorrect: saveData.response.isCorrect
+        })
       }
     } catch (err) {
       console.error('Failed to save response:', err)
