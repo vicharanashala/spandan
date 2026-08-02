@@ -533,10 +533,8 @@ function RoomDetailPage() {
     if (room.endedAt) return
 
     try {
-      const updated = await updateRoom(room._id, {
-        isActive: false,
-        endedAt: new Date()
-      })
+      // The server stamps endedAt on this transition; the client does not get to choose it.
+      const updated = await updateRoom(room._id, { isActive: false })
       setRoom(updated)
       navigate(`/teacher/room/${room._id}/results`)
     } catch (err) {
