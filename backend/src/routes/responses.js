@@ -4,6 +4,7 @@ import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { evaluateAnswer, applyStrictModeDeduction } from '../services/penaltyService.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -138,7 +139,13 @@ router.post('/', authorize('student'), async (req, res) => {
       }
     }
 
-    // Check if answer is correct based on question type
+    // Fetch room doc for strictMode setting (and room code for teacher notification).
+    const room = await Room.findById(roomId).select('settings code').lean()
+
+    // Check if answer is correct based on question type.
+    // NOTE: this is computed BEFORE the random-guess check below, because the detector needs to
+    // know whether THIS answer was right or wrong — a fast run of CORRECT answers is a strong
+    // student, not a guesser, and must not be flagged the same way a fast run of WRONG answers is.
     let isCorrect = false
     
     if (question.type === 'MSQ') {
@@ -160,7 +167,126 @@ router.post('/', authorize('student'), async (req, res) => {
       const selectedOptionData = question.options[selectedOptions[0]]
       isCorrect = selectedOptionData?.isCorrect || false
     }
-    
+
+    // --- Random-guess pattern detection: speed + consecutive-fast + accuracy-vs-speed ---
+    // Compute timeTakenInSeconds using server-side start time when available (trustworthy — the
+    // client can't forge it). If questionStartTimes has no entry (e.g. after a server restart),
+    // fall back to the client-supplied responseTime but still run detection — the client time is
+    // less trustworthy (a cheater could inflate it) so it only catches obvious cases, but it's
+    // better than skipping detection entirely every time.
+    const questionStartTimes = req.app.get('questionStartTimes')
+    const startTime = questionStartTimes?.get(String(roomId))
+    let timeTakenInSeconds
+    let serverTimed = false
+    if (startTime != null) {
+      timeTakenInSeconds = (Date.now() - startTime) / 1000
+      serverTimed = true
+      if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+        console.log('[random-guess] timing (server-side)', { roomId: String(roomId), timeTakenInSeconds: timeTakenInSeconds.toFixed(2), startTime })
+      }
+    } else {
+      // Fallback: use client-supplied responseTime. A determined cheater can forge this,
+      // but it still catches the common case where the question was answered immediately.
+      // Cap at 0 to avoid negative values from a misconfigured client clock.
+      timeTakenInSeconds = Math.max(0, responseTime || 0)
+      if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+        console.log('[random-guess] timing (client fallback — server start time missing)', {
+          roomId: String(roomId),
+          timeTakenInSeconds: timeTakenInSeconds.toFixed(2),
+          hint: 'was the question launched via socket? check for "new_question rejected" in server logs'
+        })
+      }
+    }
+    // Always attempt detection now — server-timed is more reliable but client-timed still helps.
+    const canDetect = true
+
+    if (canDetect) {
+      const { insight, penalty } = await evaluateAnswer(String(roomId), String(studentId), {
+        timeTakenInSeconds,
+        timeToAnswerSeconds: question.timeToAnswer || 30,
+        isCorrect,
+        numOptions: Array.isArray(question.options) ? question.options.length : 4,
+        strictMode: room?.settings?.strictMode ?? false
+      })
+
+      // Resolve the student's display name once, only when a signal actually fired — both the
+      // soft insight and the hard penalty notice need it, and it's a wasted DB round-trip on the
+      // (overwhelmingly common) case where neither signal trips.
+      let studentName = null
+      if ((insight || penalty) && room?.code) {
+        const User = (await import('../models/User.js')).default
+        const studentUser = await User.findById(studentId).select('name email').lean()
+        studentName = studentUser?.name || studentUser?.email || 'Unknown'
+      }
+
+      if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+        console.log('[random-guess] evaluateAnswer result', {
+          roomId: String(roomId), studentId: String(studentId),
+          serverTimed,
+          insight: insight ? { streak: insight.streak, accuracyPct: Math.round(insight.accuracy * 100) } : null,
+          penaltyFired: !!penalty, strictMode: room?.settings?.strictMode ?? false
+        })
+      }
+
+      // SOFT signal — teacher-only, never blocks scoring or deducts points.
+      if (insight && room?.code) {
+        if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+          console.log('[random-guess] emitting teacher_insight to', `${room.code}::teacher`)
+        }
+        const io = req.app.get('io')
+        if (io) {
+          io.to(`${room.code}::teacher`).emit('teacher_insight', {
+            studentId: String(studentId),
+            studentName,
+            type: 'random_guess',
+            message: 'Possible random answering detected',
+            streak: insight.streak,
+            accuracyPct: Math.round(insight.accuracy * 100)
+          })
+        } else if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+          console.log('[random-guess] WARN: io not found on app — teacher_insight NOT emitted')
+        }
+      }
+
+      // HARD consequence — only trips at a higher-confidence bar than insight (see penaltyService).
+      // NOTE: evaluateAnswer always resets the streak when the penalty threshold is crossed (the
+      // pattern is treated as a resolved incident regardless of mode). What differs here is whether
+      // the actual punitive consequences fire — they are gated on strictMode so a casual room never
+      // silently rejects answers or deducts points without the teacher opting in.
+      if (penalty && room?.settings?.strictMode) {
+        // Deduct points from the student's existing responses for this room.
+        await applyStrictModeDeduction(String(roomId), String(studentId))
+        const live = req.app.get('liveUpdates')
+        await live?.refreshLeaderboardNow(roomId)
+
+        // Notify the student's own socket only — private, directed only at them, not broadcast.
+        const io = req.app.get('io')
+        const connectedUsers = req.app.get('connectedUsers')
+        const studentSocketId = [...(connectedUsers?.entries() ?? [])]
+          .find(([, uid]) => String(uid) === String(studentId))?.[0]
+        if (studentSocketId && io) {
+          io.to(studentSocketId).emit('random_guess_penalty', { cooldownDuration: 10, pointsDeducted: penalty.pointsDeducted })
+        }
+
+        // Notify the TEACHER ONLY (not the whole room/class — students should never see who else
+        // got flagged) that this student was penalized.
+        if (room?.code && io) {
+          io.to(`${room.code}::teacher`).emit('student_penalized', { studentId: String(studentId), studentName })
+        }
+
+        // Return early — do NOT save a Response doc for the penalized submission in strict mode.
+        return res.status(200).json({
+          success: false,
+          penalized: true,
+          cooldownDuration: 10,
+          pointsDeducted: penalty.pointsDeducted
+        })
+        // When strictMode is OFF: the streak was still reset inside evaluateAnswer (detection keeps
+        // running), but fall through and save the answer normally — no deduction, no rejection.
+      }
+    }
+    // --- End random-guess pattern detection ---
+
     // Time-decay points calculation
     // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)

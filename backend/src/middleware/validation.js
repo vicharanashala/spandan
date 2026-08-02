@@ -38,8 +38,9 @@ export const createRoomSchema = z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),
     requireCorrectAnswer: z.boolean().optional(),
+    strictMode: z.boolean().optional(),
     mode: z.enum(['normal', 'video']).optional(),
-    videoUrl: z.string().max(500).optional()
+    videoUrl: z.string().url('Invalid video URL').max(500).optional()
   }).optional()
 })
 
@@ -48,8 +49,9 @@ export const roomSettingsSchema = z.object({
   allowLateJoin: z.boolean().optional(),
   showResultsImmediately: z.boolean().optional(),
   requireCorrectAnswer: z.boolean().optional(),
+  strictMode: z.boolean().optional(),
   mode: z.enum(['normal', 'video']).optional(),
-  videoUrl: z.string().max(500).optional(),
+  videoUrl: z.string().url('Invalid video URL').max(500).optional(),
   timeToAnswer: z.number().min(5).max(300).optional(),
   points: z.number().min(10).max(1000).optional(),
   segmentTime: z.number().min(1).max(60).optional(),
@@ -67,7 +69,7 @@ export const roomSettingsSchema = z.object({
 export const createQuestionSchema = z.object({
   question: z.string().min(1, 'Question text is required'),
   options: z.array(z.string().min(1, 'Option cannot be empty')).min(2, 'At least 2 options required'),
-  correctOptionIndex: z.number().min(0),
+  correctOptionIndex: z.number().min(0).optional(), // informational only — scoring uses options[].isCorrect
   roomId: z.string(),
   source: z.enum(['manual', 'ai', 'upload', 'transcript']).optional(),
   timer: z.number().min(5).max(300).optional()
@@ -75,8 +77,9 @@ export const createQuestionSchema = z.object({
 
 // Response validation schema
 export const submitResponseSchema = z.object({
-  questionId: z.string(),
-  selectedOption: z.number().min(0),
+  roomId: z.string().min(1, 'roomId is required'),
+  questionId: z.string().min(1, 'questionId is required'),
+  selectedOptions: z.array(z.number().min(0)).min(1, 'At least one option must be selected'),
   responseTime: z.number().min(0)
 })
 

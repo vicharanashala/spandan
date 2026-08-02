@@ -370,6 +370,12 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const questionStartMap = new Map() // roomId(str) -> Unix timestamp ms when current question went live
+
+// Expose in-memory Maps to route handlers via app settings so they can access them
+// without an extra DB round-trip (penalty detection, socket targeting).
+app.set('questionStartTimes', questionStartMap)
+app.set('connectedUsers', connectedUsers)
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -437,8 +443,8 @@ async function verifyRoomOwner(socket, roomCode) {
 // the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
 // of being stuck at 0), while still never seeking past the teacher. Cached so a fresh join gets it
 // immediately without waiting for the next broadcast tick.
-const videoProgress = new Map() // roomCode -> { time }
-const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
+const videoProgress = new Map() // roomCode -> { time, playing }
+const videoPaused = new Map()   // roomCode -> true while the teacher's question popup is open (students hold their video paused)
 
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
@@ -447,6 +453,13 @@ const videoPaused = new Map() // roomCode -> true while the teacher's question p
 // their own answering window. Fire-and-forget.
 async function setLiveQuestion(roomId, questionId) {
   try {
+    // Record when this question went live for server-side timing (penalty detection).
+    // Must be at the very top of the try block — before any awaits — so the timestamp
+    // is captured as close as possible to when the question actually goes live.
+    questionStartMap.set(String(roomId), Date.now())
+    if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+      console.log('[random-guess] setLiveQuestion called', { roomId: String(roomId), questionId: String(questionId), startTime: questionStartMap.get(String(roomId)) })
+    }
     const Room = (await import('./models/Room.js')).default
     const Question = (await import('./models/Question.js')).default
     const GRACE = Number(process.env.POLL_RESPONSE_GRACE_MS) || 10000
@@ -560,8 +573,12 @@ io.on('connection', (socket) => {
       // Authorized → now join the socket room and announce. The room-wide event carries only the
       // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
       socket.join(roomCode)
-      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      // Teacher-only channel — used for private, in-room-only signals (e.g. the random-guess
+      // "teacher_insight" flag and "student_penalized" notice) that must reach the teacher and
+      // NOT the rest of the class, unlike the shared `roomCode` channel which everyone joins above.
+      if (role === 'teacher') socket.join(`${roomCode}::teacher`)
 
+      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
@@ -586,6 +603,7 @@ io.on('connection', (socket) => {
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       socket.leave(roomCode)
+      if (role === 'teacher') socket.leave(`${roomCode}::teacher`)
       const room = await Room.findByCode(roomCode)
 
       let participantCount = 0
@@ -595,7 +613,7 @@ io.on('connection', (socket) => {
         }
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
-
+      // Always emit so the UI can update even if the room lookup failed
       io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
@@ -633,9 +651,12 @@ io.on('connection', (socket) => {
 
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
+    if (process.env.RANDOM_GUESS_DEBUG === 'true') {
+      console.log('[random-guess] new_question event received', { roomCode: data?.roomCode, questionId: data?.question?._id || data?.question?.id, socketRole: socket.data?.role, socketUserId: socket.data?.userId })
+    }
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) {
-      console.warn('new_question rejected — not the room owner:', socket.id)
+      console.warn('new_question rejected — not the room owner:', socket.id, 'role:', socket.data?.role, 'userId:', socket.data?.userId)
       return
     }
     if (data.question) {

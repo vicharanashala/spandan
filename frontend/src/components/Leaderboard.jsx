@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
+const Leaderboard = ({ roomId, token, socket, userId, myRank, penalizedStudents = new Set() }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
@@ -256,6 +256,9 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
             maxWidth: '100%'
           }}>
             {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            {penalizedStudents?.has(entry.studentId) && (
+              <span style={{ marginLeft: '4px', fontSize: '14px' }}>⚠️</span>
+            )}
           </div>
           <div style={{
             fontSize: '11px',

@@ -32,9 +32,6 @@ const roomSchema = new mongoose.Schema({
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
     requireCorrectAnswer: { type: Boolean, default: false },
-    // Video mode: 'normal' = live mic + transcript (default); 'video' = YouTube link, tab-audio transcript
-    mode: { type: String, enum: ['normal', 'video'], default: 'normal' },
-    videoUrl: { type: String, default: '' },
     // Quiz settings
     timeToAnswer: { type: Number, default: 30 },
     points: { type: Number, default: 100 },
@@ -46,7 +43,10 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    strictMode: { type: Boolean, default: false },
+    mode: { type: String, enum: ['normal', 'video'], default: 'normal' },
+    videoUrl: { type: String, default: null }
   }
 }, {
   timestamps: true

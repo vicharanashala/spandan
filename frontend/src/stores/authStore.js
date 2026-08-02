@@ -44,13 +44,17 @@ export const useAuthStore = create(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password })
           })
-          
-          const data = await response.json()
-          
+
+          // Guard: proxy/network errors can return an empty or HTML body (e.g. 502 from Vite
+          // proxy when backend hasn't started yet). Calling .json() on that throws
+          // "Unexpected end of JSON input". Parse safely and fall back to a plain error.
+          let data = {}
+          try { data = await response.json() } catch { /* non-JSON body — leave data as {} */ }
+
           if (!response.ok) {
-            throw new Error(data.error || 'Login failed')
+            throw new Error(data.error || `Login failed (${response.status})`)
           }
-          
+
           set({
             user: data.user,
             token: data.token,
@@ -76,12 +80,13 @@ export const useAuthStore = create(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, email })
           })
-          const data = await response.json()
+          let data = {}
+          try { data = await response.json() } catch { /* non-JSON body */ }
           if (!response.ok) {
-            throw new Error(data.error || 'Failed to send verification code')
+            throw new Error(data.error || `Failed to send verification code (${response.status})`)
           }
           set({ isLoading: false })
-          return data // { message, expiresInSec }
+          return data
         } catch (error) {
           set({ error: error.message, isLoading: false })
           throw error
@@ -96,9 +101,10 @@ export const useAuthStore = create(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, email, password, role, otp })
           })
-          const data = await response.json()
+          let data = {}
+          try { data = await response.json() } catch { /* non-JSON body */ }
           if (!response.ok) {
-            throw new Error(data.error || 'Registration failed')
+            throw new Error(data.error || `Registration failed (${response.status})`)
           }
           set({
             user: data.user,

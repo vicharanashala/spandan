@@ -2,8 +2,9 @@ import express from 'express'
 import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize } from '../middleware/auth.js'
-import { validate, createRoomSchema } from '../middleware/validation.js'
+import { validate, createRoomSchema, roomSettingsSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
+import { clearRoomStreaks } from '../services/penaltyService.js'
 
 const router = express.Router()
 
@@ -140,6 +141,17 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       return res.status(400).json({ error: 'Cannot reactivate an ended room' })
     }
 
+    // Validate settings sub-object when present so invalid values are rejected before any DB write.
+    if (req.body.settings !== undefined) {
+      const result = roomSettingsSchema.safeParse(req.body.settings)
+      if (!result.success) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: result.error.errors.map(e => ({ field: e.path.join('.'), message: e.message }))
+        })
+      }
+    }
+
     const updatedRoom = await updateRoom(req.params.id, req.body)
     
     // If room is being ended, emit socket event to notify all participants
@@ -153,6 +165,8 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       // shared cache instead of each triggering full-room aggregations (the end-session stampede).
       // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
+      // Clean up transient in-memory streak state for this room.
+      clearRoomStreaks(String(room._id))
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })

@@ -400,6 +400,50 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </div>
         </div>
 
+        {/* Strict Mode */}
+        <div style={{ marginBottom: '24px', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                🔒 Strict Mode
+              </label>
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                When ON: confirmed random-guessing (fast + consistently wrong streak) deducts 5 points and rejects the submission. Turn this on for graded assessments only.
+              </p>
+            </div>
+            <button
+              id="strict-mode-toggle"
+              onClick={() => setLocalSettings(prev => ({ ...prev, strictMode: !prev.strictMode }))}
+              style={{
+                flexShrink: 0,
+                width: '52px',
+                height: '28px',
+                borderRadius: '14px',
+                border: 'none',
+                background: localSettings.strictMode ? '#10b981' : '#d1d5db',
+                cursor: 'pointer',
+                position: 'relative',
+                transition: 'background 0.2s'
+              }}
+              aria-label="Toggle strict mode"
+              aria-pressed={!!localSettings.strictMode}
+            >
+              <span style={{
+                position: 'absolute',
+                top: '3px',
+                left: localSettings.strictMode ? '27px' : '3px',
+                width: '22px',
+                height: '22px',
+                borderRadius: '50%',
+                background: 'white',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                transition: 'left 0.2s',
+                display: 'block'
+              }} />
+            </button>
+          </div>
+        </div>
+
         {/* Save Button */}
         <button
           onClick={handleSave}

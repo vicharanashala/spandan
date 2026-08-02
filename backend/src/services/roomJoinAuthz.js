@@ -1,33 +1,43 @@
-// Authorization decision for a socket `room:join`.
-//
-// The socket layer must decide whether a caller may SUBSCRIBE to a room's live
-// channel (questions, counts, leaderboard, results) before doing socket.join.
-// This is a pure function so it is unit-testable; it runs on the server-derived
-// socket identity (role/userId), never on client-claimed fields.
-//
-// Model: rooms are joined by their short code (the intended UX, mirrored by the
-// REST GET /rooms/join/:code). So a student with the code may join an active
-// room, but a teacher may only join a room they OWN, and nobody may subscribe to
-// a room that does not exist or (for students) has ended.
-//
-// Returns { ok: true } or { ok: false, error: '<reason>' }.
+/**
+ * roomJoinAuthz.js
+ *
+ * Pure authorization logic for the room:join socket event.
+ * Keeps the policy in one testable place instead of inline in index.js.
+ *
+ * Returns { ok: true } when the caller is allowed to join, or
+ * { ok: false, error: string } when they should be rejected.
+ */
+
+/**
+ * @param {{ role: string, userId: string, room: object|null }} params
+ * @returns {{ ok: boolean, error?: string }}
+ */
 export function canJoinRoom({ role, userId, room }) {
-  if (!room) return { ok: false, error: 'Room not found' }
+  // Room must exist
+  if (!room) {
+    return { ok: false, error: 'Room not found' }
+  }
 
-  // room.teacher may be a raw ObjectId or a populated user doc — handle both.
-  const teacherId = String(room.teacher?._id ?? room.teacher)
-
+  // Teacher must own the room
   if (role === 'teacher') {
-    return teacherId === String(userId)
-      ? { ok: true }
-      : { ok: false, error: 'Not authorized for this room' }
+    if (String(room.teacher) !== String(userId)) {
+      return { ok: false, error: 'Not authorized to join this room' }
+    }
+    return { ok: true }
   }
 
+  // Students may only join active (non-ended) rooms
   if (role === 'student') {
-    return room.endedAt
-      ? { ok: false, error: 'This room has ended' }
-      : { ok: true }
+    if (!room.isActive || room.endedAt) {
+      return { ok: false, error: 'This room has ended' }
+    }
+    // Late-join gate: if the teacher has disabled it, only allow if the room has no current question yet
+    if (room.settings?.allowLateJoin === false && room.currentQuestion) {
+      return { ok: false, error: 'Late joining is not allowed for this room' }
+    }
+    return { ok: true }
   }
 
+  // Unknown role
   return { ok: false, error: 'Not authorized' }
 }

@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   const rawBase = process.env.VITE_BASE_PATH || env.VITE_BASE_PATH
   const base = rawBase
     ? '/' + rawBase.replace(/^\//, '').replace(/\/+$/, '') + '/'
-    : './'
+    : '/'
 
   return {
     plugins: [react()],
@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      host: true, // bind to 0.0.0.0 so other devices on the LAN can reach it
       proxy: {
         '/api': {
           target: 'http://localhost:3001',

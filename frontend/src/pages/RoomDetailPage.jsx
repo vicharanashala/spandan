@@ -105,10 +105,16 @@ function RoomDetailPage() {
     questionProvider: 'minimax',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    strictMode: false
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [penalizedStudents, setPenalizedStudents] = useState(new Set())
+  // Soft, non-punitive "possible random answering" flags — separate from penalizedStudents.
+  // These are hints, not accusations, so they live in their own dismissible panel rather than
+  // being stamped onto the leaderboard next to a student's name.
+  const [guessInsights, setGuessInsights] = useState([]) // [{ id, studentId, message, streak, accuracyPct, at }]
 
   useEffect(() => {
     if (token) {
@@ -170,6 +176,45 @@ function RoomDetailPage() {
     return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
+  // Listen for penalty events — track which students have been penalized this session
+  useEffect(() => {
+    if (!socket) return
+    const handleStudentPenalized = ({ studentId }) => {
+      setPenalizedStudents(prev => new Set([...prev, studentId]))
+    }
+    socket.on('student_penalized', handleStudentPenalized)
+    return () => {
+      socket.off('student_penalized', handleStudentPenalized)
+    }
+  }, [socket])
+
+  // Listen for soft "random guess" insights — a hint, not an accusation, so it's kept out of the
+  // leaderboard entirely and shown in its own small, dismissible panel instead. Only reaches this
+  // teacher's socket (server emits to the room's private `::teacher` channel).
+  useEffect(() => {
+    if (!socket) return
+    console.log('[random-guess] teacher_insight listener registered. Socket id:', socket.id, '| connected:', socket.connected)
+    const handleTeacherInsight = (data) => {
+      console.log('[random-guess] teacher_insight received:', data)
+      if (!data?.studentId) {
+        console.warn('[random-guess] teacher_insight ignored — missing studentId in payload:', data)
+        return
+      }
+      setGuessInsights(prev => [
+        { id: `${data.studentId}-${Date.now()}`, ...data, at: Date.now() },
+        ...prev
+      ].slice(0, 8)) // cap the list so a long session doesn't grow it unbounded
+    }
+    socket.on('teacher_insight', handleTeacherInsight)
+    return () => {
+      socket.off('teacher_insight', handleTeacherInsight)
+    }
+  }, [socket])
+
+  const dismissGuessInsight = (id) => {
+    setGuessInsights(prev => prev.filter(i => i.id !== id))
+  }
+
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
     if (!socket) return
@@ -201,6 +246,12 @@ function RoomDetailPage() {
 
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    // Start the teacher-side countdown so they can see how long is left on the current poll.
+    // data is the question object for new_question, or { question, timer } for question:started.
+    const q = data?.question || data
+    if (q && typeof q === 'object') {
+      startQuestionTimer(q)
+    }
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -496,7 +547,11 @@ function RoomDetailPage() {
       if (roomData.settings) {
         setRoomSettings(prev => ({
           ...prev,
-          ...roomData.settings
+          ...roomData.settings,
+          // Explicit fallback: rooms created before strictMode was added to the schema
+          // will have strictMode=undefined from the DB. Coerce to boolean so the toggle
+          // in RoomSettingsModal never starts in an indeterminate/undefined state.
+          strictMode: roomData.settings.strictMode ?? false
         }))
       }
       // Load questions for this room from database
@@ -1965,14 +2020,60 @@ function RoomDetailPage() {
             )}
             </div>
             {/* Leaderboard - flexible width */}
-            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Leaderboard
-                </span>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {guessInsights.length > 0 && (
+                <div style={{
+                  background: 'var(--bg-card)',
+                  borderRadius: 'var(--radius-lg)',
+                  border: '1px solid var(--border-color)',
+                  boxShadow: 'var(--shadow-md)',
+                  padding: '14px 16px',
+                  boxSizing: 'border-box'
+                }}>
+                  <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+                    Insights
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {guessInsights.map(item => (
+                      <div key={item.id} style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '8px',
+                        fontSize: '13px',
+                        color: 'var(--text-primary)',
+                        background: 'var(--bg-secondary, rgba(0,0,0,0.03))',
+                        borderRadius: '8px',
+                        padding: '8px 10px'
+                      }}>
+                        <span style={{ fontSize: '14px', lineHeight: '18px' }}>⚠️</span>
+                        <span style={{ flex: 1, lineHeight: '18px' }}>
+                          {/* Deliberately hedged, not an accusation — this is a pattern worth a
+                              glance, not a verdict. */}
+                          <strong>{item.studentName || 'A student'}</strong> — possible random answering detected
+                          {item.streak ? ` (${item.streak} fast answers in a row` : ''}
+                          {typeof item.accuracyPct === 'number' ? `, ~${item.accuracyPct}% correct)` : item.streak ? ')' : ''}
+                        </span>
+                        <button
+                          onClick={() => dismissGuessInsight(item.id)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '18px', padding: 0 }}
+                          aria-label="Dismiss insight"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '20px' }}>🏆</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Leaderboard
+                  </span>
+                </div>
+                <Leaderboard roomId={room?._id} token={token} socket={socket} penalizedStudents={penalizedStudents} />
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
             </div>
           </div>
         </div>

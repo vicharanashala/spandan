@@ -1,8 +1,7 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
-import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -19,21 +18,32 @@ function CreateRoomPage() {
   const [videoUrl, setVideoUrl] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
+  const [strictMode, setStrictMode] = useState(false)
 
   // Video Mode needs a Chromium browser (getDisplayMedia tab-audio capture on the teacher side).
-  const isChromium = /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent)
-  const isValidYouTube = (url) =>
-    /(?:youtube\.com\/(?:watch\?v=|live\/|embed\/)|youtu\.be\/)[\w-]+/.test(url.trim())
+  const isChromium = useMemo(
+    () => /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent),
+    [] // navigator.userAgent never changes within a session
+  )
+  const isValidYouTube = useCallback(
+    (url) => /(?:youtube\.com\/(?:watch\?v=|live\/|embed\/)|youtu\.be\/)[\w-]+/.test(url.trim()),
+    []
+  )
 
   React.useEffect(() => {
     if (token) {
       setAuthToken(token)
     }
-  }, [token])
+  }, [token, setAuthToken])
 
   const handleCreateRoom = async () => {
     if (!roomName.trim()) {
       setError('Please enter a room name')
+      return
+    }
+
+    if (mode === 'video' && !videoUrl.trim()) {
+      setError('Please enter a YouTube URL for Video Mode')
       return
     }
 
@@ -46,7 +56,7 @@ function CreateRoomPage() {
     setError('')
 
     try {
-      const settings = { mode }
+      const settings = { strictMode, mode }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
       const room = await createRoom(roomName.trim(), settings)
       navigate(`/teacher/room/${room._id}`)
@@ -212,14 +222,18 @@ function CreateRoomPage() {
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {[
                   { key: 'normal', title: 'Normal', desc: 'Live mic + transcript' },
-                  { key: 'video', title: 'Video', desc: 'YouTube video or live link' }
+                  { key: 'video',  title: 'Video',  desc: 'YouTube video or live link' }
                 ].map((opt) => {
                   const active = mode === opt.key
                   return (
                     <button
                       key={opt.key}
                       type="button"
-                      onClick={() => setMode(opt.key)}
+                      onClick={() => {
+                        setMode(opt.key)
+                        if (opt.key !== 'video') setVideoUrl('')
+                        setError('')
+                      }}
                       style={{
                         flex: 1,
                         minWidth: '160px',
@@ -233,9 +247,7 @@ function CreateRoomPage() {
                       }}
                     >
                       <div style={{ fontSize: '14px', fontWeight: 600 }}>{opt.title}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                        {opt.desc}
-                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>{opt.desc}</div>
                     </button>
                   )
                 })}
@@ -292,6 +304,22 @@ function CreateRoomPage() {
                 )}
               </div>
             )}
+
+            {/* Strict Mode Toggle */}
+            <div className="flex items-center gap-3 mb-6">
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={strictMode}
+                  onChange={(e) => setStrictMode(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-500 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+              <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                Strict Mode — deducts 5 points on penalty
+              </span>
+            </div>
 
             <div style={{
               display: 'flex',

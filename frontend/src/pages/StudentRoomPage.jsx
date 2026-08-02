@@ -26,6 +26,9 @@ function StudentRoomPage() {
   const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
+  // roomRef mirrors room state so socket event handlers always read the latest value
+  // without needing to be re-registered every time room changes (stale closure fix).
+  const roomRef = useRef(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [currentQuestion, setCurrentQuestion] = useState(null)
@@ -40,6 +43,10 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const [isPenalized, setIsPenalized] = useState(false)
+  const [cooldownRemaining, setCooldownRemaining] = useState(0)
+  const [penaltyPointsDeducted, setPenaltyPointsDeducted] = useState(0)
+  const cooldownIntervalRef = useRef(null)
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -112,9 +119,10 @@ function StudentRoomPage() {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            // Time expired - use ref so we always have the latest room value
+            const r = roomRef.current
+            if (r?._id && user?._id) {
+              fetchPastResponses(r._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -131,15 +139,17 @@ function StudentRoomPage() {
         timerIntervalRef.current = null
       }
       
-      // Only fetch if room and user are available
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      // Use ref so we always have the latest room value
+      const r = roomRef.current
+      if (r?._id && user?._id) {
+        fetchPastResponses(r._id, user._id)
       }
       setResults(data?.results || null)
       setCurrentQuestion(null)
     }
 
     const handleNewQuestion = (question) => {
+      console.log('[StudentRoom] new_question received:', question)
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -157,9 +167,10 @@ function StudentRoomPage() {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            // Use ref so we always have the latest room value
+            const r = roomRef.current
+            if (r?._id && user?._id) {
+              fetchPastResponses(r._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -173,8 +184,9 @@ function StudentRoomPage() {
     // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
     // room's questions so any missed one surfaces without the student manually refreshing.
     const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      const r = roomRef.current
+      if (r?._id && user?._id) {
+        fetchPastResponses(r._id, user._id)
       }
     }
 
@@ -200,9 +212,28 @@ function StudentRoomPage() {
       setSessionEnded(true)
       const delay = Math.random() * RESULTS_NAV_JITTER_MS
       resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/results`)
+        navigate(`/student/room/${roomRef.current?._id}/results`)
       }, delay)
     })
+
+    const handleRandomGuessPenalty = ({ cooldownDuration, pointsDeducted }) => {
+      setIsPenalized(true)
+      setCooldownRemaining(cooldownDuration)
+      setPenaltyPointsDeducted(pointsDeducted)
+      if (cooldownIntervalRef.current) clearInterval(cooldownIntervalRef.current)
+      cooldownIntervalRef.current = setInterval(() => {
+        setCooldownRemaining(prev => {
+          if (prev <= 1) {
+            clearInterval(cooldownIntervalRef.current)
+            cooldownIntervalRef.current = null
+            setIsPenalized(false)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+    }
+    socket.on('random_guess_penalty', handleRandomGuessPenalty)
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
@@ -213,7 +244,9 @@ function StudentRoomPage() {
       socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      socket.off('random_guess_penalty', handleRandomGuessPenalty)
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      if (cooldownIntervalRef.current) clearInterval(cooldownIntervalRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -222,6 +255,7 @@ function StudentRoomPage() {
     try {
       const roomData = await joinRoomByCode(roomCode)
       setRoom(roomData)
+      roomRef.current = roomData
       if (user?._id && socket) {
         // Join via socket - room:joined confirms the student was added to RoomMember
         return new Promise((resolve, reject) => {
@@ -297,17 +331,19 @@ function StudentRoomPage() {
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
 
-    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
-    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
-    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
-    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
-    const jitterMs = Math.floor(Math.random() * 2000)
+    // Client-side jitter: originally introduced to spread submissions across 0–2 s so a
+    // synchronized classroom doesn't burst the server simultaneously. However, the artificial
+    // delay also pushes the server-received timestamp past the ultra-fast threshold (2.5 s for
+    // a 30 s question), silently defeating random-guess detection even for an instant click.
+    // The request now goes out immediately; natural network + OS scheduling variability across
+    // hundreds of concurrent students provides sufficient spread without a forced sleep.
+    const jitterMs = 0 // kept for logging context only — no longer applied
 
     console.log('[StudentRoom] Submitting answer:', {
       questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
     })
 
-    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
+
 
     // Save to MongoDB
     try {
@@ -327,6 +363,10 @@ function StudentRoomPage() {
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
+
+      if (saveData.penalized) {
+        setSubmitted(false)
+      }
 
       // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
       // (from this authenticated POST) — the client no longer emits points:update /
@@ -564,7 +604,8 @@ function StudentRoomPage() {
               color: 'white',
               boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
               maxWidth: '100%',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              position: 'relative'
             }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
@@ -599,7 +640,7 @@ function StudentRoomPage() {
                   const optionLabel = String.fromCharCode(65 + index)
                   
                   const handleOptionClick = () => {
-                    if (submitted) return
+                    if (submitted || isPenalized) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
                       setSelectedOptions(prev => 
@@ -617,13 +658,13 @@ function StudentRoomPage() {
                     <button
                       key={index}
                       onClick={handleOptionClick}
-                      disabled={submitted}
+                      disabled={submitted || isPenalized}
                       style={{
                         width: '100%',
                         minHeight: '48px',
                         boxSizing: 'border-box',
                         padding: isMobile ? '14px 16px' : '20px 24px',
-                        background: submitted
+                        background: (submitted || isPenalized)
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
@@ -631,7 +672,7 @@ function StudentRoomPage() {
                         color: 'white',
                         fontSize: isMobile ? '16px' : '18px',
                         textAlign: 'left',
-                        cursor: submitted ? 'default' : 'pointer',
+                        cursor: (submitted || isPenalized) ? 'default' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         gap: isMobile ? '12px' : '16px'
@@ -706,6 +747,44 @@ function StudentRoomPage() {
                 >
                   Submit Answer
                 </button>
+              )}
+
+              {/* Cooldown Overlay */}
+              {isPenalized && currentQuestion && (
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  background: 'rgba(0, 0, 0, 0.75)',
+                  borderRadius: 'var(--radius-lg)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 10,
+                  padding: '32px'
+                }}>
+                  <div style={{
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    borderRadius: '16px',
+                    padding: '32px',
+                    textAlign: 'center',
+                    border: '2px solid rgba(255, 255, 255, 0.3)',
+                    maxWidth: '400px',
+                    width: '100%'
+                  }}>
+                    <p style={{ fontSize: '48px', margin: '0 0 16px' }}>⚠️</p>
+                    <p style={{ fontSize: '18px', fontWeight: '700', color: 'white', margin: '0 0 8px' }}>
+                      You are answering too fast.
+                      {penaltyPointsDeducted > 0 && ' -5 points deducted.'}
+                    </p>
+                    <p style={{ fontSize: '24px', fontWeight: '700', color: '#ffd700', margin: '0' }}>
+                      Cooldown: {cooldownRemaining}s
+                    </p>
+                  </div>
+                </div>
               )}
             </div>
           ) : (
