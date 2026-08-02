@@ -1,5 +1,5 @@
 import express from 'express'
-import { register, login, getUserById, checkEmailExists, updateUserRole, updateProfile, resetOwnPassword } from '../services/authService.js'
+import { register, login, getUserById, checkEmailExists, updateProfile, resetOwnPassword } from '../services/authService.js'
 import { generateResetToken, verifyResetToken, resetPassword } from '../services/passwordService.js'
 import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
@@ -72,23 +72,12 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   }
 })
 
-// Update user role (called after registration role selection)
-router.put('/role', authenticate, async (req, res) => {
-  try {
-    const { role } = req.body
-    if (!['teacher', 'student'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' })
-    }
-    
-    const user = await updateUserRole(req.user._id, role)
-    res.json({ 
-      message: 'Role updated successfully',
-      user 
-    })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// NOTE: there is deliberately no endpoint for changing a user's own role. Role is decided once, at
+// the point of provisioning — by the registrant in /register/verify, or by Samagama's admin flags in
+// /samagama-auto-login (which never re-evaluates it on later logins, to prevent elevation). A
+// self-service PUT /role existed here and let any student promote itself to teacher, which is the
+// key to every `role === 'teacher'` gate in the codebase. Role changes belong in an admin path with
+// its own authorization, not in a route the subject of the change can call.
 
 // Get current user
 router.get('/me', authenticate, async (req, res) => {
@@ -99,15 +88,11 @@ router.get('/me', authenticate, async (req, res) => {
   }
 })
 
-// Check email availability
-router.get('/check-email/:email', async (req, res) => {
-  try {
-    const exists = await checkEmailExists(req.params.email)
-    res.json({ available: !exists })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// NOTE: there is deliberately no public "is this email registered?" endpoint. One existed here and
+// answered for any address, unauthenticated and unmetered — a clean account-enumeration oracle, and
+// the first step of the SSO-placeholder takeover reported in August. Registration does not need it:
+// /register/send-otp performs the same check internally and is the only place the answer is given,
+// behind otpLimiter and only to someone who can trigger a mail to that address.
 
 // Forgot password - send reset email
 router.post('/forgot-password', async (req, res) => {
