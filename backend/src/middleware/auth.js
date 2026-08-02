@@ -2,7 +2,15 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import User from '../models/User.js'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+// Signing key for every Spandan session token, exported so there is exactly one place it is read
+// from. There is deliberately no default: a fallback lets a deploy that lost its environment come
+// up signing tokens with a value published in this repository, which is a silent, total auth
+// bypass. Refusing to start is the safe failure.
+export const JWT_SECRET = process.env.JWT_SECRET
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required — refusing to start without it')
+}
+
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '30d'
 
 // Short-TTL in-memory cache of authenticated users. Every protected request used to

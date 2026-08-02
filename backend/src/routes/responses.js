@@ -246,37 +246,31 @@ router.post('/', authorize('student'), async (req, res) => {
   }
 })
 
-// GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
-router.get('/', async (req, res) => {
+// GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room, for the OWNING teacher.
+//
+// This route returns raw response documents with the question populated, i.e. every participant's
+// answers plus `options[].isCorrect` — the answer key. It used to admit any room member, scoping to
+// a single student only when the CALLER chose to pass `studentId`, so a student could omit it and
+// read the whole room's answers and answer key, live or long after the session.
+//
+// Room members have purpose-built routes that already withhold what they must not see:
+// GET /responses/room/:roomId/student/:studentId (own results, answer key withheld while the poll
+// is live) and GET /questions (approved-only, `isCorrect` stripped). So this one is teacher-only.
+router.get('/', authorize('teacher'), async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
     const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId, studentId, page = 1, limit = 50 } = req.query
-    const currentUser = req.user
 
     // Must provide at least roomId
     if (!roomId) {
       return res.status(400).json({ error: 'roomId is required' })
     }
 
-    // Verify room exists
     const room = await Room.findById(roomId)
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' })
-    }
-
-    // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-    
-    // If student is querying a different student's data, deny
-    if (currentUser.role === 'student' && studentId && studentId !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to view other students\' responses' })
-    }
-
-    if (!isTeacher && !isStudentMember) {
-      return res.status(403).json({ error: 'Not authorized to access responses for this room' })
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ error: ownership.error })
     }
 
     const filter = { roomId }

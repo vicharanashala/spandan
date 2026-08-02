@@ -1,6 +1,13 @@
 import User from '../models/User.js'
 import { sendWelcomeEmail } from './emailService.js'
 
+// Every Samagama-SSO account provisioned before samagamaService switched to a random password was
+// created with this exact literal, hashed like a real password. The string is public (it is in this
+// repository's history), so those accounts are all logged-in-able by anyone who knows the email.
+// New accounts no longer use it, but the old hashes remain in the database, so the credential is
+// refused here — for every account, unconditionally. It was never a password anyone chose.
+const LEGACY_SSO_PLACEHOLDER_PASSWORD = 'samagama-sso-placeholder'
+
 export const register = async (name, email, password, role) => {
   // Check if user already exists
   const existingUser = await User.findOne({ email: email.toLowerCase() })
@@ -27,6 +34,10 @@ export const register = async (name, email, password, role) => {
 }
 
 export const login = async (email, password) => {
+  if (password === LEGACY_SSO_PLACEHOLDER_PASSWORD) {
+    throw new Error('Invalid email or password')
+  }
+
   const user = await User.findOne({ email: email.toLowerCase() })
   if (!user) {
     throw new Error('Invalid email or password')

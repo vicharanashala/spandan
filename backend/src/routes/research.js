@@ -19,9 +19,12 @@ import crypto from 'crypto'
 
 const router = express.Router()
 
-// Simple constant-time-ish key check.
+// Simple constant-time-ish key check. There is no default key: the export lane reads every
+// teacher's sessions and every student's email, so with RESEARCH_API_KEY unset it stays closed to
+// everyone rather than opening on a value published in this repository. (Unlike JWT_SECRET this is
+// not required to boot — the lane is optional, so an unconfigured deploy simply does not have it.)
 function requireResearchKey(req, res, next) {
-  const expected = process.env.RESEARCH_API_KEY || 'local-dev-research-key'
+  const expected = process.env.RESEARCH_API_KEY || ''
   const got = req.header('X-Research-Key') || ''
   if (!expected || got.length !== expected.length ||
       !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected))) {
