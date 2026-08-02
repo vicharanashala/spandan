@@ -55,10 +55,32 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
   }))
 }
 
-export const updateRoom = async (roomId, updates) => {
+// The only fields a teacher may change on their own room. Everything else on the schema is either
+// server-derived (endedAt, currentQuestion, code, createdAt) or an ownership record (teacher), and
+// must not be settable from a request body: this used to $set the body wholesale, so `endedAt: null`
+// walked straight past the route's "cannot reactivate an ended room" guard and reopened a finished
+// session to new responses, and `teacher` could be reassigned to another account outright.
+const ROOM_UPDATABLE_FIELDS = ['name', 'isActive', 'settings']
+
+export const updateRoom = async (roomId, updates = {}) => {
+  const $set = {}
+  for (const field of ROOM_UPDATABLE_FIELDS) {
+    if (updates[field] !== undefined) $set[field] = updates[field]
+  }
+
+  // Ending a room is a state transition, not a value the caller supplies: the server stamps the
+  // time it actually happened. Only the first transition stamps it, so re-sending isActive:false
+  // cannot move the end time of a session that has already finished.
+  const ending = $set.isActive === false
+  if (ending) {
+    const current = await Room.findById(roomId).select('endedAt').lean()
+    if (!current) throw new Error('Room not found')
+    if (!current.endedAt) $set.endedAt = new Date()
+  }
+
   const room = await Room.findByIdAndUpdate(
     roomId,
-    { $set: updates },
+    { $set },
     { new: true, runValidators: true }
   )
 
@@ -68,8 +90,8 @@ export const updateRoom = async (roomId, updates) => {
 
   // If this update ends the room, drop the room-live cache so POST /responses re-reads Mongo, sees
   // endedAt, and refuses further submits (Phase 3). This is the real end path (PUT /rooms/:id with
-  // isActive:false / endedAt). Non-fatal if Redis is unavailable.
-  if (updates && (updates.isActive === false || updates.endedAt)) {
+  // isActive:false). Non-fatal if Redis is unavailable.
+  if (ending) {
     await invalidateRoomLive(roomId)
   }
 

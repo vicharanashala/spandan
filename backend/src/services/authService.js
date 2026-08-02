@@ -84,17 +84,6 @@ export const resetOwnPassword = async (userId, oldPassword, newPassword) => {
   return true
 }
 
-export const updateUserRole = async (userId, role) => {
-  const user = await User.findById(userId)
-  if (!user) {
-    throw new Error('User not found')
-  }
-  
-  user.role = role
-  await user.save()
-  return user
-}
-
 export const updateProfile = async (userId, profileData) => {
   const user = await User.findById(userId)
   if (!user) {
