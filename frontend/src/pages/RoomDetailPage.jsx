@@ -19,6 +19,8 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { createAudioQualityDetector } from '../services/audioQualityDetector'
+import { applyNoiseSuppression, preloadNoiseSuppressor } from '../services/noiseSuppressionService'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -50,7 +52,10 @@ function RoomDetailPage() {
   // MediaRecorder refs for server-side Whisper transcription
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
-  const streamRef = useRef(null)
+  const streamRef = useRef(null)        // clean (denoised) stream used by MediaRecorder
+  const rawStreamRef = useRef(null)     // original getUserMedia stream — tracks stopped on cleanup
+  const audioDetectorRef = useRef(null)
+  const noiseSuppressionDisposeRef = useRef(null)
   const transcriptionIntervalRef = useRef(null)
   const finalTranscriptRef = useRef('')
   const accumulatedTranscriptRef = useRef('')
@@ -115,6 +120,10 @@ function RoomDetailPage() {
       setAuthToken(token)
       loadRoom()
       checkServerTranscription()
+      // Pre-warm the RNNoise worklet bundle in the browser HTTP cache so it is
+      // ready before the teacher clicks "Start Recording". Fire-and-forget —
+      // this never blocks page render and is safe to ignore if it fails.
+      preloadNoiseSuppressor()
     }
 
     return () => {
@@ -700,11 +709,45 @@ function RoomDetailPage() {
     }
 
     try {
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Request microphone access with WebRTC built-in noise processing enabled
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      })
+      rawStreamRef.current = stream  // keep a handle so we can stop mic tracks on cleanup
       streamRef.current = stream
 
-      // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
+      // Apply RNNoise noise suppression (Step 3: Lightweight Noise Removal).
+      // applyNoiseSuppression handles its own errors and falls back to WebRTC-only
+      // suppression if the AudioWorklet cannot load. Logs which method was used.
+      const suppression = await applyNoiseSuppression(stream)
+      const cleanStream = suppression.cleanStream
+      noiseSuppressionDisposeRef.current = suppression.dispose
+      console.log(`[NoiseSuppression] Active method: ${suppression.method}`)
+
+      // Initialize Audio Quality Detector on the clean (denoised) stream
+      try {
+        const detector = createAudioQualityDetector(cleanStream, {
+          onIssue: (issue) => {
+            console.log('[AUDIO QUALITY ISSUE]', issue.message)
+            setModelStatus(issue.message)
+          },
+          onClear: () => {
+            console.log('[AUDIO QUALITY CLEAR]')
+            setModelStatus('Listening...')
+          }
+        })
+        audioDetectorRef.current = detector
+        detector.start()
+      } catch (err) {
+        console.error('Failed to start Audio Quality Detector:', err)
+      }
+
+      // Initialize MediaRecorder on the clean (denoised) stream
+      // try OGG first as it handles chunking better than WebM
       let selectedMimeType = 'audio/ogg'
       const possibleTypes = [
         'audio/ogg;codecs=opus',
@@ -721,6 +764,8 @@ function RoomDetailPage() {
       }
       audioChunksRef.current = []
       selectedMimeTypeRef.current = selectedMimeType
+      // Store the clean stream so startTranscriptionWindow picks it up
+      streamRef.current = cleanStream
 
       // Initialize segment
       setTranscript('')
@@ -752,6 +797,18 @@ function RoomDetailPage() {
   const stopRecording = async () => {
     recordingActiveRef.current = false
 
+    // Stop Audio Quality Detector
+    if (audioDetectorRef.current) {
+      audioDetectorRef.current.stop()
+      audioDetectorRef.current = null
+    }
+
+    // Dispose noise suppression pipeline
+    if (noiseSuppressionDisposeRef.current) {
+      noiseSuppressionDisposeRef.current()
+      noiseSuppressionDisposeRef.current = null
+    }
+
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
       clearTimeout(transcriptionIntervalRef.current)
@@ -772,11 +829,15 @@ function RoomDetailPage() {
     await new Promise(resolve => setTimeout(resolve, 500))
     await processTranscriptionQueue()
 
-    // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    // Stop the raw mic stream tracks to release the microphone indicator.
+    // (streamRef now holds the synthetic clean stream — its tracks are virtual.)
+    if (rawStreamRef.current) {
+      rawStreamRef.current.getTracks().forEach(track => track.stop())
+      rawStreamRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
