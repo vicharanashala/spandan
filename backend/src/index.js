@@ -1,3 +1,8 @@
+// Must be the first import: ES modules are evaluated in import order, so anything that reads
+// process.env at module scope (JWT_SECRET in middleware/auth.js, for one) is loaded below this and
+// would otherwise see an environment the .env file had not been merged into yet.
+import 'dotenv/config'
+
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -5,27 +10,20 @@ import rateLimit from 'express-rate-limit'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
-import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
+import { JWT_SECRET } from './middleware/auth.js'
 
 // Import routes
-import authRoutes from './routes/auth.js'
-import roomRoutes from './routes/rooms.js'
-import questionRoutes from './routes/questions.js'
-import transcriptionRoutes from './routes/transcription.js'
-import transcriptRoutes from './routes/transcripts.js'
-import responseRoutes from './routes/responses.js'
-import researchRoutes from './routes/research.js'
+import { API_ROUTES } from './apiRoutes.js'
+import { assertRoutePoliciesDeclared, publicRoute } from './middleware/routePolicy.js'
 
 // Import models for reference
 import './models/index.js'
-
-dotenv.config()
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
@@ -322,6 +320,16 @@ const leaderboardLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later' }
 })
 
+const transcribeLimiter = rateLimit({
+  store: rlStore('rl:transcribe:'),
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  // Each request costs real CPU on the whisper service, so this path gets a much tighter cap than
+  // the blanket 50k apiLimiter. A teacher recording continuously sends one chunk per ~10s (≈90 per
+  // window); this leaves room for several teachers behind one venue IP and still bounds abuse.
+  max: 2000,
+  message: { error: 'Too many transcription requests, please try again later' }
+})
+
 const otpLimiter = rateLimit({
   store: rlStore('rl:otp:'),
   windowMs: 60 * 60 * 1000, // 1 hour
@@ -343,6 +351,7 @@ app.use(express.json({ limit: '10mb' }))
 app.use('/api/', apiLimiter)           // general /api/ routes
 app.use('/api/auth/', authLimiter)     // auth routes
 app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
+app.use('/api/transcription/transcribe', transcribeLimiter)  // CPU-bound whisper path
 app.use('/api/responses/', responseLimiter)  // response submission routes
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
 
@@ -350,16 +359,17 @@ app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard route
 app.use(requestTimeout)
 
 // API Routes
-app.use('/api/auth', authRoutes)
-app.use('/api/rooms', roomRoutes)
-app.use('/api/questions', questionRoutes)
-app.use('/api/transcription', transcriptionRoutes)
-app.use('/api/transcripts', transcriptRoutes)
-app.use('/api/responses', responseRoutes)
-app.use('/api/research', researchRoutes)
+for (const [basePath, router] of API_ROUTES) {
+  app.use(basePath, router)
+}
+
+// Every route must say who may call it. Refusing to boot on an undeclared one turns the failure
+// that actually keeps happening — a handler nobody remembered to guard — into a deploy-time crash
+// with the offending routes named, rather than an endpoint quietly open to the internet.
+assertRoutePoliciesDeclared(API_ROUTES)
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', publicRoute, (req, res) => {
   res.json({ 
     status: 'ok', 
     version: '0.5.0',
@@ -371,13 +381,11 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-
 // Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
 // handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
 // Throws on an invalid/expired token.
 async function authenticateSocket(socket, token) {
-  const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
+  const decoded = jwt.verify(token, JWT_SECRET)
   const User = (await import('./models/User.js')).default
   const u = await User.findById(decoded.userId).select('role').lean()
   socket.data.userId = decoded.userId

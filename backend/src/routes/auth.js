@@ -1,11 +1,12 @@
 import express from 'express'
-import { register, login, getUserById, checkEmailExists, updateUserRole, updateProfile, resetOwnPassword } from '../services/authService.js'
+import { register, login, getUserById, checkEmailExists, updateProfile, resetOwnPassword } from '../services/authService.js'
 import { generateResetToken, verifyResetToken, resetPassword } from '../services/passwordService.js'
 import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
 import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
+import { publicRoute } from '../middleware/routePolicy.js'
 import { findOrCreateSamagamaUser, verifySamagamaToken } from '../services/samagamaService.js'
 
 const router = express.Router()
@@ -18,7 +19,7 @@ const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{
 // belong to the registrant (blocks fake/typo/bot signups).
 
 // Step 1 — request a verification code for a not-yet-registered email.
-router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
+router.post('/register/send-otp', publicRoute, validate(sendOtpSchema), async (req, res) => {
   try {
     const { email, name } = req.validatedBody
     if (await checkEmailExists(email)) {
@@ -35,7 +36,7 @@ router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
 })
 
 // Step 2 — verify the code and create the account.
-router.post('/register/verify', validate(verifyRegistrationSchema), async (req, res) => {
+router.post('/register/verify', publicRoute, validate(verifyRegistrationSchema), async (req, res) => {
   try {
     const { name, email, password, role, otp } = req.validatedBody
     await verifyRegistrationOtp(email, otp) // throws on invalid/expired/too-many-attempts
@@ -56,7 +57,7 @@ router.post('/register/verify', validate(verifyRegistrationSchema), async (req, 
 })
 
 // Login
-router.post('/login', validate(loginSchema), async (req, res) => {
+router.post('/login', publicRoute, validate(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.validatedBody
     const user = await login(email, password)
@@ -72,23 +73,12 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   }
 })
 
-// Update user role (called after registration role selection)
-router.put('/role', authenticate, async (req, res) => {
-  try {
-    const { role } = req.body
-    if (!['teacher', 'student'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' })
-    }
-    
-    const user = await updateUserRole(req.user._id, role)
-    res.json({ 
-      message: 'Role updated successfully',
-      user 
-    })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// NOTE: there is deliberately no endpoint for changing a user's own role. Role is decided once, at
+// the point of provisioning — by the registrant in /register/verify, or by Samagama's admin flags in
+// /samagama-auto-login (which never re-evaluates it on later logins, to prevent elevation). A
+// self-service PUT /role existed here and let any student promote itself to teacher, which is the
+// key to every `role === 'teacher'` gate in the codebase. Role changes belong in an admin path with
+// its own authorization, not in a route the subject of the change can call.
 
 // Get current user
 router.get('/me', authenticate, async (req, res) => {
@@ -99,18 +89,14 @@ router.get('/me', authenticate, async (req, res) => {
   }
 })
 
-// Check email availability
-router.get('/check-email/:email', async (req, res) => {
-  try {
-    const exists = await checkEmailExists(req.params.email)
-    res.json({ available: !exists })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// NOTE: there is deliberately no public "is this email registered?" endpoint. One existed here and
+// answered for any address, unauthenticated and unmetered — a clean account-enumeration oracle, and
+// the first step of the SSO-placeholder takeover reported in August. Registration does not need it:
+// /register/send-otp performs the same check internally and is the only place the answer is given,
+// behind otpLimiter and only to someone who can trigger a mail to that address.
 
 // Forgot password - send reset email
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', publicRoute, async (req, res) => {
   try {
     const { email } = req.body
     
@@ -143,7 +129,7 @@ router.post('/forgot-password', async (req, res) => {
 })
 
 // Reset password with token
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', publicRoute, async (req, res) => {
   try {
     const { token, password } = req.body
     
@@ -210,7 +196,7 @@ router.put('/password', authenticate, async (req, res) => {
 // returns. The client's own claims about email/name/admin are never trusted.
 // ==========================================
 
-router.post('/samagama-auto-login', async (req, res) => {
+router.post('/samagama-auto-login', publicRoute, async (req, res) => {
   try {
     // Accept the Samagama token from the Authorization header or the body.
     const authHeader = req.headers.authorization || ''

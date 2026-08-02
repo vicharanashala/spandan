@@ -3,7 +3,7 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
-import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { roomAccess } from '../middleware/roomAccess.js'
 
 const router = express.Router()
 
@@ -107,32 +107,24 @@ router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
 })
 
 // Create a question (for manual creation)
-// Authorization: teacher only
-router.post('/', authorize('teacher'), async (req, res) => {
+// Authorization: the teacher who owns the room named in the body — a role check alone would let any
+// teacher inject an immediately-approved question, answer key and all, into a stranger's live room.
+router.post('/', roomAccess('owner'), async (req, res) => {
   try {
     const Question = (await import('../models/Question.js')).default
-    const { 
-      roomId, 
-      type, 
-      question, 
-      options, 
-      timeToAnswer = 30, 
+    const {
+      roomId,
+      type,
+      question,
+      options,
+      timeToAnswer = 30,
       points = 100,
       status = 'approved',
       segmentIndex = 0
     } = req.body
 
-    if (!roomId || !type || !question || !options) {
+    if (!type || !question || !options) {
       return res.status(400).json({ error: 'Missing required fields' })
-    }
-
-    // Authorization: only the room's OWNING teacher may add questions to it. Without this,
-    // any teacher could inject questions into another teacher's room by supplying its roomId.
-    const Room = (await import('../models/Room.js')).default
-    const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
     }
 
     // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
@@ -159,26 +151,11 @@ router.post('/', authorize('teacher'), async (req, res) => {
 })
 
 // GET /api/questions?roomId=xxx - Get all questions for a room
-router.get('/', async (req, res) => {
+router.get('/', roomAccess('member'), async (req, res) => {
   try {
     const { roomId, page = 1, limit = 50 } = req.query
-    if (!roomId) {
-      return res.status(400).json({ error: 'roomId is required' })
-    }
-
     const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    const currentUser = req.user
-
-    // Check access: teacher owns room OR student is member
-    const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-
-    if (!isTeacher && !isStudentMember) {
-      return res.status(403).json({ error: 'Not authorized to access questions for this room' })
-    }
+    const isTeacher = req.isRoomOwner
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1)
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))

@@ -16,19 +16,23 @@
 // launched to and answered by students; approved-but-unlaunched questions are correctly excluded).
 import express from 'express'
 import crypto from 'crypto'
+import { declarePolicy } from '../middleware/routePolicy.js'
 
 const router = express.Router()
 
-// Simple constant-time-ish key check.
-function requireResearchKey(req, res, next) {
-  const expected = process.env.RESEARCH_API_KEY || 'local-dev-research-key'
+// Simple constant-time-ish key check. There is no default key: the export lane reads every
+// teacher's sessions and every student's email, so with RESEARCH_API_KEY unset it stays closed to
+// everyone rather than opening on a value published in this repository. (Unlike JWT_SECRET this is
+// not required to boot — the lane is optional, so an unconfigured deploy simply does not have it.)
+const requireResearchKey = declarePolicy((req, res, next) => {
+  const expected = process.env.RESEARCH_API_KEY || ''
   const got = req.header('X-Research-Key') || ''
   if (!expected || got.length !== expected.length ||
       !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected))) {
     return res.status(401).json({ error: 'Invalid or missing X-Research-Key' })
   }
   next()
-}
+}, 'research-key')
 
 // GET /api/research/sessions
 //   ?since=<ISO>            cursor on endedAt (default: beginning of time → everything)

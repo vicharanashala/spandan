@@ -2,7 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
-import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { roomAccess } from '../middleware/roomAccess.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
 
@@ -246,38 +246,20 @@ router.post('/', authorize('student'), async (req, res) => {
   }
 })
 
-// GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room/student
-router.get('/', async (req, res) => {
+// GET /api/responses?roomId=xxx&studentId=yyy - Get responses for a room, for the OWNING teacher.
+//
+// This route returns raw response documents with the question populated, i.e. every participant's
+// answers plus `options[].isCorrect` — the answer key. It used to admit any room member, scoping to
+// a single student only when the CALLER chose to pass `studentId`, so a student could omit it and
+// read the whole room's answers and answer key, live or long after the session.
+//
+// Room members have purpose-built routes that already withhold what they must not see:
+// GET /responses/room/:roomId/student/:studentId (own results, answer key withheld while the poll
+// is live) and GET /questions (approved-only, `isCorrect` stripped). So this one is teacher-only.
+router.get('/', roomAccess('owner'), async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId, studentId, page = 1, limit = 50 } = req.query
-    const currentUser = req.user
-
-    // Must provide at least roomId
-    if (!roomId) {
-      return res.status(400).json({ error: 'roomId is required' })
-    }
-
-    // Verify room exists
-    const room = await Room.findById(roomId)
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' })
-    }
-
-    // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-    
-    // If student is querying a different student's data, deny
-    if (currentUser.role === 'student' && studentId && studentId !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to view other students\' responses' })
-    }
-
-    if (!isTeacher && !isStudentMember) {
-      return res.status(403).json({ error: 'Not authorized to access responses for this room' })
-    }
 
     const filter = { roomId }
     if (studentId) filter.studentId = studentId
@@ -382,26 +364,14 @@ router.get('/stats/student/:studentId', async (req, res) => {
 })
 
 // GET /api/responses/stats/room/:roomId - Get room stats for teacher
-router.get('/stats/room/:roomId', async (req, res) => {
+router.get('/stats/room/:roomId', roomAccess('owner'), async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
     const Question = (await import('../models/Question.js')).default
-    const Room = (await import('../models/Room.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
 
     const { roomId } = req.params
-    const currentUser = req.user
-
-    // Get room and verify teacher ownership
-    const room = await Room.findById(roomId)
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' })
-    }
-
-    // Only the room owner (teacher) can view detailed stats
-    if (room.teacher.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
-    }
+    const room = req.room
 
     // Ended rooms serve stats from the shared snapshot (built once at room end). A miss (live room,
     // Redis off, cache error) falls through to a direct compute that uses ONE grouped aggregation
@@ -477,40 +447,22 @@ router.get('/stats/room/:roomId', async (req, res) => {
 })
 
 // GET /api/responses/room/:roomId/student/:studentId - Get all questions with student's responses
-router.get('/room/:roomId/student/:studentId', async (req, res) => {
+router.get('/room/:roomId/student/:studentId', roomAccess('member'), async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
     const Question = (await import('../models/Question.js')).default
     const mongoose = (await import('mongoose')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
-    
-    const { roomId, studentId } = req.params
-    const currentUser = req.user
 
-    // Teachers can view any student's responses for their own room
-    // Students can only view their own responses
-    const room = await Room.findById(roomId)
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' })
-    }
-    
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
-    const isSelf = currentUser._id.toString() === studentId
-    
-    // Allow if teacher owns room OR if student is viewing their own data
-    if (!isTeacher && !isSelf) {
+    const { roomId, studentId } = req.params
+    const room = req.room
+
+    // roomAccess admitted the owning teacher or a joined student. The teacher may read any of
+    // their room's students; a student may read only themselves.
+    const isTeacher = req.isRoomOwner
+    if (!isTeacher && req.user._id.toString() !== studentId) {
       return res.status(403).json({ error: 'Not authorized to view this student\'s responses' })
     }
     
-    // If student, verify they are a member of this room
-    if (!isTeacher && isSelf) {
-      const isMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-      if (!isMember) {
-        return res.status(403).json({ error: 'Not a member of this room' })
-      }
-    }
-
     // Ended rooms serve this student's per-question breakdown from the shared snapshot — an O(1)
     // hash lookup instead of re-reading their responses + all questions on every results-page load.
     // A miss (live room, Redis off, or a non-responder not stored in the snapshot) falls through to
@@ -622,20 +574,13 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 })
 
 // GET /api/responses/counts/:roomId - Get per-question answer counts
-router.get('/counts/:roomId', async (req, res) => {
+// Only the room's OWNING teacher may read per-question counts. This endpoint is used only by the
+// teacher's room view; students receive live counts over the socket instead.
+router.get('/counts/:roomId', roomAccess('owner'), async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
-    const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
-
-    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
-    // used only by the teacher's room view; students receive live counts over the socket instead.
-    const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
-    }
 
     const toObjectId = (id) => {
       if (!id) return null
@@ -664,32 +609,20 @@ router.get('/counts/:roomId', async (req, res) => {
 
 // GET /api/responses/leaderboard/:roomId - Get ranked leaderboard for a room
 // Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
-router.get('/leaderboard/:roomId', async (req, res) => {
+router.get('/leaderboard/:roomId', roomAccess('member'), async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
     const User = (await import('../models/User.js')).default
-    const Room = (await import('../models/Room.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId } = req.params
     const currentUser = req.user
+    const room = req.room
+    const isTeacher = req.isRoomOwner
 
     const toObjectId = (id) => {
       if (!id) return null
       if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
       return new mongoose.Types.ObjectId(id)
-    }
-
-    // Check if teacher owns the room
-    const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
-    
-    // Check if student is a member of the room
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
-    
-    // Deny access if neither
-    if (!isTeacher && !isStudentMember) {
-      return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 
     // Ended rooms serve the ranked board from the shared results snapshot, so a stampede of
@@ -774,18 +707,11 @@ router.get('/leaderboard/:roomId', async (req, res) => {
 // (one row per student, one column per question). Reuses buildSnapshot (a single
 // aggregation pass = the exact data the results page renders), so it adds no new heavy
 // queries; a one-off download does not need the stampede cache. Rows are streamed.
-router.get('/room/:roomId/export', async (req, res) => {
+router.get('/room/:roomId/export', roomAccess('owner'), async (req, res) => {
   try {
-    const Room = (await import('../models/Room.js')).default
     const User = (await import('../models/User.js')).default
     const { roomId } = req.params
-    const currentUser = req.user
-
-    const room = await Room.findById(roomId).lean()
-    if (!room) return res.status(404).json({ error: 'Room not found' })
-    if (room.teacher.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to export this room' })
-    }
+    const room = req.room
 
     const { leaderboard, byStudent, stats } = await resultsSnapshot.buildSnapshot(roomId)
 

@@ -75,6 +75,32 @@ JWT_SECRET=your-secret-key
 | **Teacher** | Create rooms, manage questions, approve responses, view results |
 | **Student** | Join rooms, answer questions, view own history |
 
+## Authorization
+
+Every API route must declare who may call it. The server refuses to start if one does not, naming
+the offenders — so a handler nobody remembered to guard fails the deploy instead of shipping open.
+
+Declare a policy by using one of these middlewares on the route:
+
+| Middleware | Means |
+|---|---|
+| `publicRoute` | Unauthenticated by design (login, registration, password reset) |
+| `authenticate` | Any signed-in user |
+| `authorize('teacher')` | A role, and nothing more |
+| `roomAccess('owner')` | The teacher who owns the room named in the request |
+| `roomAccess('member')` | That teacher, or a student who has joined the room |
+
+`roomAccess` finds the room id in the params, query or body, loads it once, and hands the handler
+`req.room` plus `req.isRoomOwner` — so routes serving both audiences branch on that rather than
+working out ownership again. It is the only place the rule lives.
+
+Run `npm run routes` in `backend/` to print the current policy for every route.
+
+Declaring *a* policy does not prove it is the *right* one. That is pinned by
+`backend/src/__tests__/routeAccessMatrix.test.js`, which states, for every route, which of five
+kinds of caller — anonymous, outside student, member student, other teacher, owning teacher — gets
+in. Adding a route fails that suite until it has a row.
+
 ## License
 
 Private — All rights reserved
