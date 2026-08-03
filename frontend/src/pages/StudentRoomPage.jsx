@@ -17,6 +17,12 @@ import { API_URL } from '../config.js'
 // delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
 const RESULTS_NAV_JITTER_MS = 4000
 
+// Same idea for the poll-timer expiry. Every student in the room gets question:started in the same
+// broadcast, so every student's answering timer expires within the same second — and each one used
+// to refetch their whole question list right then, unspread. Jitter the ones that still need to run
+// (see handleTimerExpiry) so the requests arrive smeared instead of as one N-wide spike.
+const REFETCH_JITTER_MS = 3000
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
@@ -31,6 +37,9 @@ function StudentRoomPage() {
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
+  // Mirrors `submitted` for the answering-timer callback, which runs from an interval closure created
+  // when the poll opened and would otherwise always read the initial `false`.
+  const submittedRef = useRef(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
@@ -91,10 +100,30 @@ function StudentRoomPage() {
   useEffect(() => {
     if (!socket) return
 
+    // The answering timer ran out. Whether we need to re-read the question list depends on whether
+    // this student answered:
+    //
+    //   answered  -> no. handleSubmitAnswer already refetched, and the poll is STILL the room's live
+    //                one at expiry, so the endpoint deliberately withholds the same things it did
+    //                then (correct option, isCorrect, points are only revealed once the next launch
+    //                supersedes this poll). The request would return what we already have. This is
+    //                the majority of the room and was the bulk of the spike.
+    //   missed    -> yes. This is the only thing that puts the question into their Past list, so it
+    //                still runs — jittered, because every unanswered timer expires in the same second.
+    //
+    // Known ceiling: the server's room-question list is cached for ~10s, so a student who answers in
+    // the first seconds of a freshly-approved poll can see it appear in Past one poll late. It
+    // self-heals on their next submit; invalidating that cache on approval is the fix if it matters.
+    const handleTimerExpiry = () => {
+      if (submittedRef.current || !room?._id || !user?._id) return
+      setTimeout(() => fetchPastResponses(room._id, user._id), Math.random() * REFETCH_JITTER_MS)
+    }
+
     const handleQuestionStarted = (data) => {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      submittedRef.current = false
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -112,10 +141,7 @@ function StudentRoomPage() {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
+            handleTimerExpiry()
             setCurrentQuestion(null)
             return 0
           }
@@ -150,6 +176,7 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      submittedRef.current = false
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -157,10 +184,7 @@ function StudentRoomPage() {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
+            handleTimerExpiry()
             setCurrentQuestion(null)
             return 0
           }
@@ -295,6 +319,7 @@ function StudentRoomPage() {
     // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
     // even though the network POST itself is deferred by a small random delay.
     setSubmitted(true)
+    submittedRef.current = true
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
 
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
