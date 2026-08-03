@@ -26,7 +26,7 @@
 import mongoose from 'mongoose'
 import { isRedisEnabled, getRedisClient } from '../config/redis.js'
 import { computeRanked } from './leaderboardAgg.js'
-import { buildDistribution, distinctNumericOptions } from './optionDistribution.js'
+import { buildDistribution, responseOptionIndices } from './optionDistribution.js'
 
 const SNAPSHOT_TTL_MS = 600000 // 10 min — an ended room's results never change; rebuilt on miss.
 const LOCK_MS = 10000          // single-flight build lock
@@ -111,7 +111,7 @@ export async function buildSnapshot(roomId) {
         answered: !!resp,
         ...(resp && {
           selectedOption: resp.selectedOption,
-          selectedOptions: resp.selectedOptions || [resp.selectedOption],
+          selectedOptions: responseOptionIndices(resp),
           isCorrect: resp.isCorrect,
           responseTime: resp.responseTime,
           pointsEarned: resp.points
@@ -128,7 +128,7 @@ export async function buildSnapshot(roomId) {
     const answerCounts = {}
     const correctCount = list.filter((r) => r.isCorrect).length
     q.options.forEach((opt, idx) => {
-      const c = list.filter((r) => distinctNumericOptions(r.selectedOptions || [r.selectedOption]).includes(idx)).length
+      const c = list.filter((r) => responseOptionIndices(r).includes(idx)).length
       answerCounts[idx] = c
     })
     return {

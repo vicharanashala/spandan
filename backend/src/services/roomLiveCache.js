@@ -1,4 +1,4 @@
-// Shared per-room "live state" cache — { currentQuestion, endedAt } — used by POST /responses to
+// Shared per-room "live state" cache — { currentQuestion, currentQuestionStartedAt, endedAt } — used by POST /responses to
 // decide whether a poll is still answerable (Phase 3 response-window enforcement) WITHOUT a Mongo
 // read on every submit. The value lives in Redis (shared across both prod instances), so it stays
 // consistent without any in-process cache-coherence dance.
@@ -19,12 +19,12 @@ const KEY = (roomId) => `live:room:${roomId}`
 const TTL_SEC = Number(process.env.ROOM_LIVE_CACHE_TTL_SEC) || 7200 // 2h backstop; refreshed each launch
 
 // Poll launched → room is live and this is the current question.
-export async function setRoomLive(roomId, questionId) {
+export async function setRoomLive(roomId, questionId, startedAt = Date.now()) {
   if (!isRedisEnabled()) return
   try {
     await getRedisClient().set(
       KEY(roomId),
-      JSON.stringify({ currentQuestion: String(questionId), endedAt: null }),
+      JSON.stringify({ currentQuestion: String(questionId), currentQuestionStartedAt: startedAt, endedAt: null }),
       { EX: TTL_SEC }
     )
   } catch { /* non-fatal — POST /responses falls back to a fresh Mongo read */ }
@@ -45,14 +45,15 @@ export async function getRoomLive(Room, roomId) {
       const v = await getRedisClient().get(KEY(roomId))
       if (v) {
         const o = JSON.parse(v)
-        return { currentQuestion: o.currentQuestion || null, endedAt: o.endedAt || null }
+        return { currentQuestion: o.currentQuestion || null, currentQuestionStartedAt: o.currentQuestionStartedAt || null, endedAt: o.endedAt || null }
       }
     } catch { /* fall through to Mongo */ }
   }
-  const room = await Room.findById(roomId).select('currentQuestion endedAt').lean()
+  const room = await Room.findById(roomId).select('currentQuestion currentQuestionStartedAt endedAt').lean()
   if (!room) return null
   return {
     currentQuestion: room.currentQuestion ? String(room.currentQuestion) : null,
+    currentQuestionStartedAt: room.currentQuestionStartedAt || null,
     endedAt: room.endedAt || null
   }
 }

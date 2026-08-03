@@ -115,7 +115,8 @@ function RoomResultsPage() {
           responsesData[qStat.questionId] = {
             totalResponses: qStat.totalResponses,
             correctCount: qStat.correctCount || 0,
-            answerCounts: qStat.answerCounts || {}
+            answerCounts: qStat.answerCounts || {},
+            distribution: qStat.distribution || null
           }
         })
 
@@ -349,6 +350,17 @@ function RoomResultsPage() {
                 {questions.map((q, index) => {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
+                  const distributionOptions = Array.isArray(qStats.distribution?.options)
+                    ? qStats.distribution.options
+                    : (q.options || []).map((_, optionIndex) => {
+                        const count = Number(qStats.answerCounts?.[optionIndex] || 0)
+                        const total = Number(qStats.totalResponses || 0)
+                        return {
+                          optionIndex,
+                          count,
+                          percentage: total > 0 ? Number(((count / total) * 100).toFixed(2)) : 0
+                        }
+                      })
 
                   // Teacher: show class percentage. Student: show their result
                   const correctRate = isTeacher && qStats.totalResponses > 0
@@ -434,6 +446,9 @@ function RoomResultsPage() {
                             {q.options && q.options.map((opt, optIdx) => {
                               const isCorrect = opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
+                              const optionStat = distributionOptions[optIdx] || {}
+                              const optionCount = Number(optionStat.count) || 0
+                              const optionPercentage = Math.max(0, Math.min(100, Number(optionStat.percentage) || 0))
 
                               // For student: highlight their selection. For teacher: highlight correct answer
                               const showAsSelected = isTeacher ? isCorrect : isSelected
@@ -453,6 +468,7 @@ function RoomResultsPage() {
                                   display: 'flex',
                                   alignItems: 'center',
                                   gap: '12px',
+                                  flexWrap: isTeacher ? 'wrap' : 'nowrap',
                                   minWidth: 0
                                 }}>
                                   <span style={{
@@ -474,6 +490,8 @@ function RoomResultsPage() {
                                     fontSize: '14px',
                                     color: 'var(--text-primary)',
                                     fontWeight: isCorrect ? 600 : 400,
+                                    flex: isTeacher ? 1 : undefined,
+                                    overflowWrap: 'anywhere',
                                     minWidth: 0
                                   }}>
                                     {opt.text}
@@ -486,6 +504,18 @@ function RoomResultsPage() {
                                   )}
                                   {!isTeacher && isCorrect && !isSelected && (
                                     <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+                                  )}
+                                  {isTeacher && (
+                                    <div style={{ flex: '1 0 100%', minWidth: 0, marginTop: '2px' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', color: 'var(--text-secondary)', fontSize: '11px', fontVariantNumeric: 'tabular-nums' }}>
+                                        <div style={{ flex: 1, height: '8px', background: 'var(--border-color)', borderRadius: '999px', overflow: 'hidden' }}>
+                                          <div style={{ width: `${optionPercentage}%`, height: '100%', minWidth: optionPercentage > 0 ? '4px' : 0, background: isCorrect ? '#059669' : 'var(--accent)', borderRadius: '999px', transition: 'width 250ms ease' }} />
+                                        </div>
+                                        <span style={{ minWidth: '92px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                          {optionPercentage}% · {optionCount} {optionCount === 1 ? 'response' : 'responses'}
+                                        </span>
+                                      </div>
+                                    </div>
                                   )}
                                 </div>
                               )

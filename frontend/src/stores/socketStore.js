@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_PATH, SOCKET_URL } from '../config.js'
 import useAuthStore from './authStore.js'
 
 export const useSocketStore = create((set, get) => ({
@@ -22,8 +22,14 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: SOCKET_PATH,
       transports: ['websocket', 'polling']
+    })
+
+    socket.on('connect_error', (error) => {
+      if (import.meta.env.DEV) {
+        console.warn('[Socket.IO] connect_error:', error?.message || 'connection failed')
+      }
     })
 
     socket.on('connect', () => {

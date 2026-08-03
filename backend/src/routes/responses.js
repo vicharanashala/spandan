@@ -3,7 +3,7 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { debug } from '../utils/debug.js'
-import { buildDistribution, ensureRoomSeeded, getRoomDistributions } from '../services/optionDistribution.js'
+import { buildDistribution, ensureRoomSeeded, getRoomDistributions, responseOptionIndices } from '../services/optionDistribution.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -228,7 +228,17 @@ router.post('/', authorize('student'), async (req, res) => {
     // Return this student's current rank ("rank on submit") from the last settled board — it may
     // lag during a burst (Option A), but the student still gets their points immediately below.
     const live = req.app.get('liveUpdates')
-    if (!isBatchEnabled()) await live?.recordResponse?.(roomId, questionId, selectedOptions)
+    const aggregateUpdated = !isBatchEnabled()
+      ? await live?.recordResponse?.(roomId, questionId, selectedOptions)
+      : false
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[live] student answered', {
+        roomId: String(roomId),
+        questionId: String(questionId),
+        aggregateUpdated: aggregateUpdated === true,
+        batched: isBatchEnabled()
+      })
+    }
     live?.scheduleCounts(roomId)
     live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
@@ -427,7 +437,14 @@ router.get('/stats/room/:roomId', async (req, res) => {
       Response.distinct('studentId', { roomId }),
       RoomMember.countDocuments({ roomId }),
       Question.find({ roomId }).lean(),
-      Response.aggregate([{ $match: { roomId: roomObjId } }, { $group: { _id: '$questionId', count: { $sum: 1 } } }]),
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        { $group: {
+          _id: '$questionId',
+          count: { $sum: 1 },
+          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }
+        } }
+      ]),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
         { $project: { questionId: 1, values: { $setUnion: [{ $ifNull: ['$selectedOptions', []] }, ['$selectedOption']] } } },
@@ -440,6 +457,7 @@ router.get('/stats/room/:roomId', async (req, res) => {
     // (all responses for the question, matching the old responses.length).
     const countsByQuestion = new Map()
     const totalByQuestion = new Map(questionTotals.map((g) => [g._id.toString(), g.count]))
+    const correctByQuestion = new Map(questionTotals.map((g) => [g._id.toString(), g.correctCount || 0]))
     for (const g of grouped) {
       const qid = g._id.q ? g._id.q.toString() : null
       if (!qid) continue
@@ -452,7 +470,7 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const questionStats = questions.map((q) => {
       const perOption = countsByQuestion.get(q._id.toString()) || new Map()
       const answerCounts = {}
-      const correctCount = list.filter((r) => r.isCorrect).length
+      const correctCount = correctByQuestion.get(q._id.toString()) || 0
       q.options.forEach((opt, idx) => {
         const c = perOption.get(idx) || 0
         answerCounts[idx] = c
@@ -610,7 +628,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         ...(isActive ? { resultPending: true } : {}),
         ...(studentResponse && {
           selectedOption: studentResponse.selectedOption,
-          selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
+          selectedOptions: responseOptionIndices(studentResponse),
           responseTime: studentResponse.responseTime,
           // isCorrect + pointsEarned both reveal correctness → withhold for the live poll, send once past.
           ...(isActive ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
@@ -621,7 +639,9 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
 
     res.json({
       success: true,
-      questions: questionsWithResponses
+      questions: questionsWithResponses,
+      currentQuestionId: activeQid,
+      currentQuestionStartedAt: activeQid ? (room.currentQuestionStartedAt || null) : null
     })
   } catch (error) {
     console.error('Error fetching student room responses:', error)

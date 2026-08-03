@@ -20,6 +20,7 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { applyDistributionUpdate, initializeQuestionDistribution } from '../lib/livePollingState.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -80,6 +81,7 @@ function RoomDetailPage() {
   const [lastPollQuestionId, setLastPollQuestionId] = useState(null)
   const [pollEnded, setPollEnded] = useState(true)
   const questionTimerRef = useRef(null)
+  const questionTimerQuestionIdRef = useRef(null)
 
 
   // Question generation
@@ -113,6 +115,13 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
   const [optionDistributions, setOptionDistributions] = useState({}) // questionId -> option distribution
+  // A counts request can be older than a live socket event. Keep its version so the initial
+  // REST snapshot cannot overwrite a newer distribution received over Socket.IO.
+  const liveDistributionVersionRef = useRef(0)
+  const activeQuestionIdRef = useRef(null)
+  useEffect(() => {
+    activeQuestionIdRef.current = lastPollQuestionId ? String(lastPollQuestionId) : null
+  }, [lastPollQuestionId])
 
   useEffect(() => {
     if (token) {
@@ -130,6 +139,7 @@ function RoomDetailPage() {
         clearInterval(questionTimerRef.current)
         questionTimerRef.current = null
       }
+      questionTimerQuestionIdRef.current = null
       if (segmentTimerRef.current) {
         clearInterval(segmentTimerRef.current)
       }
@@ -148,7 +158,7 @@ function RoomDetailPage() {
     if (!socket) return
 
     const handleRoomJoined = (data) => {
-      console.log('Teacher joined room successfully')
+      if (import.meta.env.DEV) console.debug('[live] teacher room joined', { roomCode: data?.roomCode })
       setIsRoomJoined(true)
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
@@ -172,12 +182,22 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
     const handleCounts = (payload) => {
+      liveDistributionVersionRef.current += 1
       if (payload?.counts) setAnswerCounts(payload.counts)
-      // Keep compatibility with older servers that included distributions on this event.
-      if (payload?.distributions) setOptionDistributions(payload.distributions)
     }
     const handleDistribution = (payload) => {
-      if (payload?.distributions) setOptionDistributions(payload.distributions)
+      liveDistributionVersionRef.current += 1
+      const incomingRoomId = payload?.roomId ? String(payload.roomId) : null
+      const incomingQuestionId = payload?.questionId ? String(payload.questionId) : null
+      if (incomingRoomId !== String(roomId) || incomingQuestionId !== activeQuestionIdRef.current) return
+
+      const question = generatedQuestions.find(q => String(q._id) === incomingQuestionId) || activeQuestion
+      setOptionDistributions(prev => applyDistributionUpdate(prev, payload, roomId, activeQuestionIdRef.current, question))
+      if (import.meta.env.DEV) console.debug('[live] distribution received', {
+        roomId: incomingRoomId,
+        questionId: incomingQuestionId,
+        totalResponses: payload.totalResponses
+      })
     }
     socket.on('counts:updated', handleCounts)
     socket.on('poll:distribution:updated', handleDistribution)
@@ -185,7 +205,7 @@ function RoomDetailPage() {
       socket.off('counts:updated', handleCounts)
       socket.off('poll:distribution:updated', handleDistribution)
     }
-  }, [socket])
+  }, [socket, roomId, generatedQuestions, activeQuestion])
 
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
@@ -193,12 +213,14 @@ function RoomDetailPage() {
 
   const startQuestionTimer = (question) => {
     const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const questionId = String(question?._id || question?.id || '')
 
     // Clear any existing timer
     if (questionTimerRef.current) {
       clearInterval(questionTimerRef.current)
       questionTimerRef.current = null
     }
+    questionTimerQuestionIdRef.current = questionId
 
     setActiveQuestion(question)
     setPollEnded(false)
@@ -206,11 +228,14 @@ function RoomDetailPage() {
 
     questionTimerRef.current = setInterval(() => {
       setQuestionTimeLeft(prev => {
+        if (questionTimerQuestionIdRef.current !== questionId) return prev
         if (prev <= 1) {
           clearInterval(questionTimerRef.current)
           questionTimerRef.current = null
+          questionTimerQuestionIdRef.current = null
           setActiveQuestion(null)
           setPollEnded(true)
+          setLastPollQuestionId(null)
           return 0
         }
         return prev - 1
@@ -218,12 +243,22 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const handleQuestionLaunched = (data) => {
+    const handleQuestionLaunched = (data) => {
     const question = data?.question || data
     const questionId = data?.questionId || question?._id
     if (!questionId) return
     const fullQuestion = generatedQuestions.find((item) => String(item._id) === String(questionId)) || question
-    setLastPollQuestionId(String(questionId))
+    const currentQuestionId = String(questionId)
+    if (import.meta.env.DEV) console.debug('[live] teacher question launched', { questionId: currentQuestionId })
+    setLastPollQuestionId(currentQuestionId)
+    // Keep each question's statistics isolated. The live view starts at zero while the
+    // previously completed question remains available under its own key in the state map.
+    setOptionDistributions(prev => {
+      // The same-question launch can be the canonical replay sent after refresh/reconnect.
+      // Preserve the REST/socket aggregate already restored for that question.
+      if (activeQuestionIdRef.current === currentQuestionId || lastPollQuestionId === currentQuestionId) return prev
+      return initializeQuestionDistribution(prev, fullQuestion, activeQuestionIdRef.current)
+    })
     startQuestionTimer(fullQuestion)
   }
 
@@ -233,9 +268,11 @@ function RoomDetailPage() {
       clearInterval(questionTimerRef.current)
       questionTimerRef.current = null
     }
+    questionTimerQuestionIdRef.current = null
     setActiveQuestion(null)
     setQuestionTimeLeft(0)
     setPollEnded(true)
+    setLastPollQuestionId(null)
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -552,6 +589,7 @@ function RoomDetailPage() {
   }
 
   const loadQuestions = async (rid) => {
+    const countsSnapshotVersion = liveDistributionVersionRef.current
     try {
       // Load ALL questions (pages past the API's 50/page cap) so large rooms show every question,
       // not just the first 50.
@@ -563,10 +601,11 @@ function RoomDetailPage() {
       })
       if (countsRes.ok) {
         const countsData = await countsRes.json()
-        if (countsData.counts) {
-          setAnswerCounts(countsData.counts)
+        // Do not let a stale initial REST response roll back state already delivered live.
+        if (liveDistributionVersionRef.current === countsSnapshotVersion) {
+          if (countsData.counts) setAnswerCounts(countsData.counts)
+          if (countsData.distributions) setOptionDistributions(countsData.distributions)
         }
-        if (countsData.distributions) setOptionDistributions(countsData.distributions)
       }
     } catch (err) {
       console.error('Failed to load questions:', err)

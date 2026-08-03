@@ -11,7 +11,7 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { computeRanked } from './services/leaderboardAgg.js'
-import { buildTeacherDistributionPayload, getMongoDistributions, getRoomDistributions, recordResponse, teacherDistributionRoom } from './services/optionDistribution.js'
+import { buildTeacherDistributionUpdatePayload, getMongoDistributions, getRoomDistributions, recordResponse, teacherDistributionRoom } from './services/optionDistribution.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -28,8 +28,24 @@ import './models/index.js'
 dotenv.config()
 
 const BASE_PATH = process.env.BASE_PATH || ''
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
-
+const configuredFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+const configuredFrontendOrigin = (() => {
+  try { return new URL(configuredFrontendUrl).origin }
+  catch { return configuredFrontendUrl.replace(/\/$/, '') }
+})()
+const CORS_ORIGINS = [...new Set([
+  configuredFrontendOrigin,
+  ...(process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map((value) => {
+    try { return new URL(value.trim()).origin }
+    catch { return value.trim().replace(/\/$/, '') }
+  })
+])]
+const isAllowedOrigin = (origin) => (
+  !origin ||
+  CORS_ORIGINS.includes(origin) ||
+  origin.startsWith('http://localhost:') ||
+  origin.startsWith('http://127.0.0.1:')
+)
 // Request timeout middleware - defined BEFORE use due to hoisting
 const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
@@ -59,14 +75,7 @@ const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
-      if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
-      if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-        return callback(null, true)
-      }
+      if (isAllowedOrigin(origin)) return callback(null, true)
       callback(new Error('Not allowed by CORS'))
     },
     methods: ['GET', 'POST'],
@@ -103,6 +112,7 @@ app.set('io', io)
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
 const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
+const LIVE_DEBUG = process.env.NODE_ENV !== 'production'
 // Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
 const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
 const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
@@ -134,7 +144,18 @@ async function broadcastCounts(roomId) {
     const roomCode = await resolveRoomCode(roomId)
     if (roomCode) {
       io.to(roomCode).emit('counts:updated', { counts })
-      io.to(teacherDistributionRoom(roomCode)).emit('poll:distribution:updated', buildTeacherDistributionPayload(distributions))
+      const teacherRoom = teacherDistributionRoom(roomCode)
+      Object.entries(distributions).forEach(([questionId, distribution]) => {
+        io.to(teacherRoom).emit(
+          'poll:distribution:updated',
+          buildTeacherDistributionUpdatePayload(roomId, questionId, distribution)
+        )
+        if (LIVE_DEBUG) console.debug('[live] distribution emitted', {
+          roomId: String(roomId),
+          questionId: String(questionId),
+          totalResponses: distribution.totalResponses
+        })
+      })
     }
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
@@ -354,9 +375,21 @@ const otpLimiter = rateLimit({
 })
 
 // Middleware
-app.use(helmet())
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      'script-src': ["'self'", 'https://accounts.google.com'],
+      'frame-src': ["'self'", 'https://accounts.google.com'],
+      'connect-src': ["'self'", 'https://accounts.google.com']
+    }
+  }
+}))
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) return callback(null, true)
+    callback(new Error('Not allowed by CORS'))
+  },
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
@@ -466,6 +499,7 @@ const videoPaused = new Map() // roomCode -> true while the teacher's question p
 // desync-safe "poll is live" signal — a per-student/teacher timer can't be, since each student runs
 // their own answering window. Fire-and-forget.
 async function setLiveQuestion(roomId, questionId) {
+  const startedAt = new Date()
   try {
     const Room = (await import('./models/Room.js')).default
     const Question = (await import('./models/Question.js')).default
@@ -481,12 +515,13 @@ async function setLiveQuestion(roomId, questionId) {
     }
     // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
     await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
-    await Room.updateOne({ _id: roomId }, { currentQuestion: questionId })
+    await Room.updateOne({ _id: roomId }, { currentQuestion: questionId, currentQuestionStartedAt: startedAt })
     // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
     // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.
     const { setRoomLive } = await import('./services/roomLiveCache.js')
-    await setRoomLive(roomId, questionId)
-  } catch { /* non-fatal */ }
+    await setRoomLive(roomId, questionId, startedAt.getTime())
+    return startedAt.getTime()
+  } catch { return null }
 }
 
 // Remove answer-revealing fields (which option is correct, and the explanation) from a question
@@ -580,6 +615,27 @@ io.on('connection', (socket) => {
 
       io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
 
+      // A reconnecting client may have missed the original launch broadcast. Replay the current
+      // question to that socket from the authoritative room state; this avoids restoring a stale
+      // local question after refresh/reconnect. The teacher resolves its own full local question
+      // copy by ID, while students receive the sanitized payload below.
+      if (room && room.currentQuestion) {
+        const Question = (await import('./models/Question.js')).default
+        const activeQuestion = await Question.findById(room.currentQuestion).lean()
+        if (activeQuestion) {
+          const startTime = room.currentQuestionStartedAt
+            ? new Date(room.currentQuestionStartedAt).getTime()
+            : Date.now()
+          const elapsed = Math.max(0, Math.floor((Date.now() - startTime) / 1000))
+          const timer = Math.max(0, (activeQuestion.timeToAnswer || 30) - elapsed)
+          socket.emit('question:started', {
+            ...sanitizeQuestionForStudents(activeQuestion),
+            timer,
+            startTime
+          })
+        }
+      }
+
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
@@ -634,12 +690,12 @@ io.on('connection', (socket) => {
   socket.on('question:start', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
-    if (data.questionId) setLiveQuestion(room._id, data.questionId)
+    const startedAt = data.questionId ? await setLiveQuestion(room._id, data.questionId) : null
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
       timer: data.timer,
-      startTime: Date.now()
+      startTime: startedAt || Date.now()
     })
   })
 
@@ -660,7 +716,7 @@ io.on('connection', (socket) => {
     }
     if (data.question) {
       const qId = data.question._id || data.question.id
-      if (qId) setLiveQuestion(room._id, qId)
+      const startedAt = qId ? await setLiveQuestion(room._id, qId) : null
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
   })

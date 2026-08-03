@@ -28,6 +28,12 @@ const roomSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
   },
+  // Canonical start time for the current poll. This lets a refresh/reconnect reconstruct the
+  // remaining client timer instead of relying on a stale in-memory React timer.
+  currentQuestionStartedAt: {
+    type: Date,
+    default: null
+  },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },

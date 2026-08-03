@@ -39,6 +39,7 @@ function StudentRoomPage() {
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
+  const timerQuestionIdRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
@@ -92,14 +93,15 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
+      const questionId = String(data?._id || data?.question?._id || '')
+      if (import.meta.env.DEV) console.debug('[live] student question launched', { questionId })
+      timerQuestionIdRef.current = questionId
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
+      // Reconnect replay supplies the remaining timer in data.timer. Do not replace it with
+      // the question's original full duration.
+      setTimeLeft(data.timer || data.question?.timeToAnswer || 30)
       
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -109,9 +111,11 @@ function StudentRoomPage() {
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
+          if (timerQuestionIdRef.current !== questionId) return prev
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
+            timerQuestionIdRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
             if (room?._id && user?._id) {
               fetchPastResponses(room._id, user._id)
@@ -130,6 +134,7 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
+      timerQuestionIdRef.current = null
       
       // Only fetch if room and user are available
       if (room?._id && user?._id) {
@@ -140,6 +145,8 @@ function StudentRoomPage() {
     }
 
     const handleNewQuestion = (question) => {
+      const questionId = String(question?._id || question?.id || '')
+      timerQuestionIdRef.current = questionId
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -154,9 +161,11 @@ function StudentRoomPage() {
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
+          if (timerQuestionIdRef.current !== questionId) return prev
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
+            timerQuestionIdRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
             if (room?._id && user?._id) {
               fetchPastResponses(room._id, user._id)
@@ -169,15 +178,6 @@ function StudentRoomPage() {
       }, 1000)
     }
 
-    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
-    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
-    // room's questions so any missed one surfaces without the student manually refreshing.
-    const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
-      }
-    }
-
     const handleVideoProgress = (data) => {
       const t = Number(data?.time)
       if (!Number.isFinite(t)) return
@@ -186,15 +186,7 @@ function StudentRoomPage() {
 
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
-
-    socket.on('question:started', handleQuestionStarted)
-    socket.on('question:ended', handleQuestionEnded)
-    socket.on('new_question', handleNewQuestion)
-    socket.on('video:progress', handleVideoProgress)
-    socket.on('video:pause', handleVideoPause)
-    socket.on('video:resume', handleVideoResume)
-    socket.on('connect', handleReconnect)
-    socket.on('room:ended', () => {
+    const handleRoomEnded = () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
       setSessionEnded(true)
@@ -202,7 +194,15 @@ function StudentRoomPage() {
       resultsNavTimerRef.current = setTimeout(() => {
         navigate(`/student/room/${room?._id}/results`)
       }, delay)
-    })
+    }
+
+    socket.on('question:started', handleQuestionStarted)
+    socket.on('question:ended', handleQuestionEnded)
+    socket.on('new_question', handleNewQuestion)
+    socket.on('video:progress', handleVideoProgress)
+    socket.on('video:pause', handleVideoPause)
+    socket.on('video:resume', handleVideoResume)
+    socket.on('room:ended', handleRoomEnded)
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
@@ -211,9 +211,11 @@ function StudentRoomPage() {
       socket.off('video:progress', handleVideoProgress)
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
-      socket.off('connect', handleReconnect)
-      socket.off('room:ended')
+      socket.off('room:ended', handleRoomEnded)
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+      timerIntervalRef.current = null
+      timerQuestionIdRef.current = null
     }
   }, [socket, navigate, room?._id])
 
@@ -271,6 +273,23 @@ function StudentRoomPage() {
       const data = await response.json()
       if (data.success && data.questions) {
         setPastResponses(data.questions)
+        // The response endpoint also returns the canonical live question. This is the REST
+        // recovery path for an initial load or a reconnect where the launch event was missed.
+        const currentQuestionId = data.currentQuestionId ? String(data.currentQuestionId) : null
+        const restoredQuestion = currentQuestionId
+          ? data.questions.find(q => String(q._id) === currentQuestionId)
+          : null
+        if (restoredQuestion) {
+          setCurrentQuestion(restoredQuestion)
+          setSelectedOptions(restoredQuestion.selectedOptions || [])
+          setSubmitted(Boolean(restoredQuestion.answered))
+          const total = restoredQuestion.timeToAnswer || 30
+          const startedAt = data.currentQuestionStartedAt ? new Date(data.currentQuestionStartedAt).getTime() : Date.now()
+          const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+          setTimeLeft(Math.max(0, total - elapsed))
+        } else if (!currentQuestionId) {
+          setCurrentQuestion(null)
+        }
         // If student has already answered polls, disable leave button
         if (data.questions.some(q => q.answered)) {
           setHasAnsweredPoll(true)
