@@ -219,13 +219,14 @@ router.post('/', authorize('student'), async (req, res) => {
     }
 
     // Live answer-counts update immediately (throttled) so the teacher's "X/total answered"
-    // badge stays current; the ranked leaderboard is DEFERRED to a quiet-debounce (fires once
-    // the answer burst has drained) so its expensive recompute never competes with the burst.
-    // Return this student's current rank ("rank on submit") from the last settled board — it may
-    // lag during a burst (Option A), but the student still gets their points immediately below.
+    // badge stays current. The ranked leaderboard is NOT triggered from here: answering is the
+    // burst, and its expensive recompute must never compete with it — it is recomputed once per
+    // question, at the next launch (see setLiveQuestion in index.js).
+    // Return this student's current rank ("rank on submit") from the board as of this question's
+    // launch — it does not count the answer just submitted (Option A), but the student still gets
+    // their points immediately below.
     const live = req.app.get('liveUpdates')
     live?.scheduleCounts(roomId)
-    live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
     // Withhold the answerer's OWN correctness (isCorrect + points) from the immediate response while

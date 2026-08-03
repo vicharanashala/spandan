@@ -87,7 +87,7 @@ if (redis.enabled) {
 // Make io accessible to routes
 app.set('io', io)
 
-// --- Live answer-counts + DEFERRED (quiet-debounce) leaderboard broadcasts (Phase 1 + 2A) ---
+// --- Live answer-counts + PER-QUESTION leaderboard broadcasts (Phase 1 + 2A) ---
 // A live question can draw ~1000 answers in seconds. We split the room's live signal in two so
 // the expensive part stays OUT of the answer burst (which otherwise saturates the event loop and
 // starves the next question's broadcast — the root cause of the missed-poll incident):
@@ -95,21 +95,23 @@ app.set('io', io)
 //      close a poll. Cheap (one count-only aggregation), so it stays LIVE on a short throttle,
 //      coalesced across a burst (multi-instance: SET-NX so only one instance emits per window).
 //  (2) Ranked LEADERBOARD — expensive (per-student aggregation + name resolution) and nobody
-//      studies it mid-burst, so it is DEFERRED: recomputed + broadcast only once the room has
-//      been QUIET for LEADERBOARD_IDLE_MS (i.e. the answer burst has drained), plus a forced
-//      refresh when the room ends. Scoring is UNAFFECTED — points are still computed and saved
-//      per-response in the REST handler; only the read-side leaderboard recompute is deferred,
-//      and Mongo stays authoritative.
+//      studies it mid-burst, so it is NOT answer-driven at all: it is recomputed + broadcast at
+//      the QUESTION BOUNDARY (setLiveQuestion — the teacher launching the next question, when the
+//      previous poll's answers are in and the room is idle) plus a forced refresh when the room
+//      ends. That bounds the recompute to once per question instead of once per lull in answer
+//      traffic. Scoring is UNAFFECTED — points are still computed and saved per-response in the
+//      REST handler; only the read-side leaderboard recompute is deferred, and Mongo stays
+//      authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
-const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
-// Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
-const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
-const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
+// Rank cache feeds "rank on submit", and is now only rewritten at each question boundary — so it
+// must outlive a whole question window (answering time + however long the teacher lingers).
+const RANK_CACHE_TTL_S = Number(process.env.LEADERBOARD_RANK_TTL_S) || 1800
+const roomLive = new Map() // roomId(str) -> { countsTimer, roomCode, rankByStudent, total }
 
 function getRoomState(id) {
   let s = roomLive.get(id)
-  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  if (!s) { s = { countsTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
   return s
 }
 
@@ -205,59 +207,17 @@ async function broadcastLeaderboard(roomId) {
   }
 }
 
-// Debounce: each answer (re)starts the window; the board fires only after LEADERBOARD_IDLE_MS of
-// no new answers (burst drained). Multi-instance: a shared Redis activity key — refreshed per
-// answer on whichever instance handled it — is the global quiet signal, and an NX lock makes
-// exactly one instance emit (the adapter fans it out to all).
-async function scheduleLeaderboardRefresh(roomId) {
-  const id = String(roomId)
-  if (redis.enabled) {
-    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => {})
-    ensureLbChecker(id)
-    return
-  }
-  const s = getRoomState(id)
-  if (s.lbTimer) clearTimeout(s.lbTimer)
-  s.lbTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.lbTimer = null; broadcastLeaderboard(id) }, LEADERBOARD_IDLE_MS)
-}
-
-function ensureLbChecker(id, delayMs = LEADERBOARD_IDLE_MS) {
-  const s = getRoomState(id)
-  if (s.lbCheckTimer) return
-  s.lbCheckTimer = setTimeout(() => runLbCheck(id), delayMs)
-}
-
-async function runLbCheck(id) {
-  const s = getRoomState(id)
-  s.lbCheckTimer = null
-  try {
-    // The activity key's remaining TTL tells us exactly how long since the last answer. If it's
-    // still alive, re-arm for precisely that remainder (so the board fires ~IDLE_MS after the LAST
-    // answer, not up to 2×IDLE later); once it's gone, one instance takes the NX lock and emits.
-    const pttl = await redis.client.pTTL(`live:lb:act:${id}`)
-    if (pttl > 0) { ensureLbChecker(id, pttl + 200); return }
-    const won = await redis.client.set(`live:lb:lock:${id}`, INSTANCE_ID, { NX: true, PX: 3000 })
-    if (won === 'OK') await broadcastLeaderboard(id)
-  } catch (e) {
-    await broadcastLeaderboard(id) // redis hiccup — emit locally rather than stall the board
-  }
-}
-
-// Force an immediate leaderboard recompute + broadcast (e.g. when a room ends) so the final,
-// settled board is complete regardless of where the debounce window happened to be.
+// Recompute + broadcast the board now. Called at each question boundary (setLiveQuestion) and when
+// the room ends. Both callers are single events handled by exactly ONE instance — the teacher's
+// socket / the owner's REST request — so no cross-instance lock is needed; the adapter fans the
+// emit out to the rest.
 async function refreshLeaderboardNow(roomId) {
-  const id = String(roomId)
-  if (redis.enabled) {
-    try { await redis.client.del(`live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
-  } else {
-    const s = roomLive.get(id)
-    if (s?.lbTimer) { clearTimeout(s.lbTimer); s.lbTimer = null }
-  }
-  await broadcastLeaderboard(id)
+  await broadcastLeaderboard(String(roomId))
 }
 
-// Last-computed rank for a student ("rank on submit"); refreshed when the board settles, so it
-// may lag during an active burst (Option A — the student still gets their points immediately).
+// Last-computed rank for a student ("rank on submit"); refreshed at each question boundary, so it
+// reflects the board as of the current question's launch (Option A — the student still gets their
+// points immediately).
 async function getCachedStudentRank(roomId, studentId) {
   const id = String(roomId)
   if (redis.enabled) {
@@ -275,7 +235,6 @@ async function getCachedStudentRank(roomId, studentId) {
 
 app.set('liveUpdates', {
   scheduleCounts: scheduleCountsBroadcast,
-  scheduleLeaderboard: scheduleLeaderboardRefresh,
   refreshLeaderboardNow,
   getRank: getCachedStudentRank
 })
@@ -445,6 +404,11 @@ const videoPaused = new Map() // roomCode -> true while the teacher's question p
 // stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
 // desync-safe "poll is live" signal — a per-student/teacher timer can't be, since each student runs
 // their own answering window. Fire-and-forget.
+//
+// It is also the room's QUESTION BOUNDARY, and therefore the sole live trigger for the ranked
+// leaderboard: by the time the next question launches, the outgoing poll's answers are in and the
+// room is idle, so the expensive recompute runs exactly once per question instead of once per lull
+// in answer traffic. Both callers await nothing here, so the launch broadcast is never delayed by it.
 async function setLiveQuestion(roomId, questionId) {
   try {
     const Room = (await import('./models/Room.js')).default
@@ -467,6 +431,10 @@ async function setLiveQuestion(roomId, questionId) {
     const { setRoomLive } = await import('./services/roomLiveCache.js')
     await setRoomLive(roomId, questionId)
   } catch { /* non-fatal */ }
+  // Publish the board for the questions answered SO FAR (i.e. everything up to the one just
+  // superseded). Runs after the live-question bookkeeping so a slow aggregation can never hold up
+  // closing the outgoing poll.
+  await refreshLeaderboardNow(roomId)
 }
 
 // Remove answer-revealing fields (which option is correct, and the explanation) from a question
@@ -605,9 +573,9 @@ io.on('connection', (socket) => {
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
   // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) and the deferred
-  // leaderboard are now emitted server-side from the authenticated REST submit handler — see the
-  // scheduleCountsBroadcast()/scheduleLeaderboardRefresh() broadcasters above and routes/responses.js.
+  // ~N^2 leaderboard-refetch storm. Live answer-count updates are now emitted server-side from the
+  // authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js), and the
+  // ranked leaderboard from the owner-verified question boundary (setLiveQuestion → refreshLeaderboardNow).
 
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
