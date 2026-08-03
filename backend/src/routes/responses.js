@@ -2,6 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
 
@@ -625,7 +626,16 @@ router.get('/counts/:roomId', async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
+    const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
+
+    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
+    // used only by the teacher's room view; students receive live counts over the socket instead.
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ error: ownership.error })
+    }
 
     const toObjectId = (id) => {
       if (!id) return null
@@ -707,7 +717,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       // request, and this endpoint is polled heavily during live sessions.
       const studentIds = leaderboardData.map(entry => entry._id)
       const users = await User.find({ _id: { $in: studentIds } })
-        .select('name email')
+        .select('name')
         .lean()
       const userById = new Map(users.map(u => [u._id.toString(), u]))
 
@@ -716,7 +726,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
         return {
           rank: index + 1,
           studentId: entry._id.toHexString(),
-          studentName: user?.name || user?.email || 'Unknown Student',
+          studentName: user?.name || 'Unknown Student',
           totalPoints: entry.totalPoints,
           correctCount: entry.correctCount,
           totalAnswered: entry.totalAnswered

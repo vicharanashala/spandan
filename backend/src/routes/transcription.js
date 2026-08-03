@@ -1,4 +1,5 @@
 import express from 'express'
+import { authenticate, authorize } from '../middleware/auth.js'
 import { transcribe as sarvamTranscribe } from '../services/sarvamTranscriptionService.js'
 
 const router = express.Router()
@@ -13,7 +14,7 @@ const TRANSCRIBE_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS) || 30000
 let whisperDownLogged = false
 
 // Health/status check (proxied to the transcription service)
-router.get('/status', async (req, res) => {
+router.get('/status', authenticate, async (req, res) => {
   try {
     const r = await fetch(`${TRANSCRIPTION_URL}/health`, { signal: AbortSignal.timeout(3000) })
     const data = await r.json()
@@ -32,7 +33,7 @@ router.get('/status', async (req, res) => {
 })
 
 // Transcribe an audio chunk — routes to Whisper (default) or Sarvam based on provider
-router.post('/transcribe', async (req, res) => {
+router.post('/transcribe', authenticate, authorize('teacher'), async (req, res) => {
   if (!req.body || !req.body.audio) {
     return res.status(400).json({ error: 'No audio provided' })
   }

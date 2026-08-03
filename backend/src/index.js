@@ -10,6 +10,7 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
+import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 
 // Import routes
@@ -432,6 +433,13 @@ async function verifyRoomOwner(socket, roomCode) {
   }
 }
 
+// Video mode: the teacher periodically broadcasts their current playback position. Students use it as
+// the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
+// of being stuck at 0), while still never seeking past the teacher. Cached so a fresh join gets it
+// immediately without waiting for the next broadcast tick.
+const videoProgress = new Map() // roomCode -> { time }
+const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
+
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
 // stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
@@ -531,26 +539,40 @@ io.on('connection', (socket) => {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.join(roomCode)
+      // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
+      // caller is allowed in (teacher must own it; student may join an active room by code).
       const room = await Room.findByCode(roomCode)
-
-      let participantCount = 0
-      if (room) {
-        // Only students are added to RoomMember (not teachers)
-        if (role === 'student') {
-          await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: userId },
-            { roomId: room._id, studentId: userId, joinedAt: new Date() },
-            { upsert: true, new: true }
-          )
-        }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      const decision = canJoinRoom({ role, userId, room })
+      if (!decision.ok) {
+        socket.emit('room:error', { error: decision.error })
+        return
       }
 
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
+      if (role === 'student') {
+        await RoomMember.findOneAndUpdate(
+          { roomId: room._id, studentId: userId },
+          { roomId: room._id, studentId: userId, joinedAt: new Date() },
+          { upsert: true, new: true }
+        )
+      }
+
+      // Authorized → now join the socket room and announce. The room-wide event carries only the
+      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
+      socket.join(roomCode)
+      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+
+      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+
+      // Seed the joining socket with the teacher's last known video position (video mode) so a
+      // reload/late-join can immediately seek forward up to where the class is.
+      const vp = videoProgress.get(roomCode)
+      if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
+      // If the teacher's question popup is currently open, a late-joining student must start paused.
+      if (videoPaused.get(roomCode)) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
+      socket.emit('room:error', { error: 'Failed to join room' })
     }
   })
 
@@ -621,6 +643,31 @@ io.on('connection', (socket) => {
       if (qId) setLiveQuestion(room._id, qId)
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
+  })
+
+  // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
+  // Teacher-only; students receive it and cannot forge it.
+  socket.on('video:progress', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const time = Number(data?.time)
+    if (!Number.isFinite(time)) return
+    const playing = !!data?.playing
+    videoProgress.set(data.roomCode, { time, playing })
+    socket.to(data.roomCode).emit('video:progress', { time, playing })
+  })
+
+  // Teacher's question popup opened → students hold their video paused for the whole popup window.
+  socket.on('video:pause', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, true)
+    socket.to(data.roomCode).emit('video:pause')
+  })
+
+  // Teacher's popup closed → students resume and jump to the live edge (handled client-side).
+  socket.on('video:resume', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, false)
+    socket.to(data.roomCode).emit('video:resume')
   })
 
   socket.on('disconnect', () => {

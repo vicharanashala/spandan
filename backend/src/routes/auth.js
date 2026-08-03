@@ -6,7 +6,7 @@ import { generateToken } from '../middleware/auth.js'
 import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
-import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
+import { findOrCreateSamagamaUser, verifySamagamaToken } from '../services/samagamaService.js'
 
 const router = express.Router()
 
@@ -205,32 +205,29 @@ router.put('/password', authenticate, async (req, res) => {
 // ==========================================
 // SAMAGAMA SEAMLESS SSO
 // User visits https://samagama.in/spandan/ while logged into Samagama.
-// Frontend calls Samagama API, then sends user data here for auto-provisioning.
+// The client sends its Samagama session token; the server verifies that token
+// with Samagama and provisions the Spandan account from the identity Samagama
+// returns. The client's own claims about email/name/admin are never trusted.
 // ==========================================
 
 router.post('/samagama-auto-login', async (req, res) => {
   try {
-    const { email, name, isAdmin, isSuperAdmin } = req.body
+    // Accept the Samagama token from the Authorization header or the body.
+    const authHeader = req.headers.authorization || ''
+    const samagamaToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : (req.body && req.body.samagamaToken)
 
-    if (!email || !name) {
-      return res.status(400).json({ error: 'Missing required user data from Samagama' })
-    }
+    // Verify the token with Samagama and use ONLY the identity it returns.
+    const verifiedUser = await verifySamagamaToken(samagamaToken)
 
-    // Build Samagama user object from the data frontend sent
-    const samagamaUser = {
-      email,
-      name,
-      isAdmin: isAdmin || false,
-      isSuperAdmin: isSuperAdmin || false
-    }
-
-    // Find or create user in Spandan
-    const user = await findOrCreateSamagamaUser(samagamaUser)
+    // Find or create the Spandan user from the verified identity.
+    const user = await findOrCreateSamagamaUser(verifiedUser)
 
     // Generate Spandan JWT
     const token = generateToken(user._id)
 
-    console.log(`Samagama auto-login: ${email} (${user.role})`)
+    console.log(`Samagama auto-login: ${verifiedUser.email} (${user.role})`)
 
     res.json({
       message: 'Auto-login successful',
@@ -238,8 +235,11 @@ router.post('/samagama-auto-login', async (req, res) => {
       token
     })
   } catch (error) {
-    console.error('Samagama auto-login error:', error.message)
-    res.status(500).json({ error: error.message || 'Auto-login failed' })
+    const status = error.status || 500
+    if (status >= 500) console.error('Samagama auto-login error:', error.message)
+    res.status(status).json({
+      error: status >= 500 ? 'Auto-login failed' : error.message
+    })
   }
 })
 
