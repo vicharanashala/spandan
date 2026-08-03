@@ -1,0 +1,51 @@
+/* Light Theme (default) */
+:root {
+  --bg-primary: #f8f9fb;
+  --bg-secondary: #ffffff;
+  --bg-gradient: linear-gradient(135deg, #f8f9fb 90%, #e0e7ff 100%);
+  --text-primary: #1f2937;
+  --text-secondary: #6b7280;
+  --border-color: #e5e7eb;
+  --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --header-bg: linear-gradient(to right, #1e40af, #3b82f6);
+}
+
+/* Dark Theme */
+[data-theme="dark"] {
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --bg-gradient: linear-gradient(135deg, #111827 90%, #1f2937 100%);
+  --text-primary: #f9fafb;
+  --text-secondary: #9ca3af;
+  --border-color: #374151;
+  --card-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  --header-bg: linear-gradient(to right, #1e3a5f, #2563eb);
+}
+
+/* Global styles for dark mode */
+[data-theme="dark"] body,
+[data-theme="dark"] {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .card {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="dark"] .text-secondary {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] input {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .sidebar {
+  background: var(--bg-secondary);
+  box-shadow: 2px 0 20px rgba(0,0,0,0.3);
+}
