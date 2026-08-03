@@ -19,6 +19,12 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import MicDeviceSelector from '../components/MicDeviceSelector'
+import AudioSetupWizard from '../components/AudioSetupWizard'
+import SystemAudioSetupModal from '../components/SystemAudioSetupModal'
+import { captureMicOnly, captureDualDevice, captureWithSystemAudio } from '../services/audioCaptureService'
+import { supportsSystemAudioCapture } from '../utils/browserDetect'
+
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -60,6 +66,18 @@ function RoomDetailPage() {
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
   const mediaRecorderStopPromiseRef = useRef(null)
+
+  // Audio capture & device state
+  const [primaryAudioDevice, setPrimaryAudioDevice] = useState(null)
+  const [secondaryAudioDevice, setSecondaryAudioDevice] = useState(
+    () => localStorage.getItem('spandan-secondary-audio-device') || null
+  )
+  const [audioCaptureMode, setAudioCaptureMode] = useState('mic-only') // 'mic-only' | 'dual-device' | 'system-audio'
+  const [showAudioSetupWizard, setShowAudioSetupWizard] = useState(false)
+  const [showAudioSetupModal, setShowAudioSetupModal] = useState(false)
+  const cleanupAudioRef = useRef(null)
+  const [audioWarning, setAudioWarning] = useState(null)
+
 
   // Transcription queue for ordered processing
   const transcriptionQueueRef = useRef([])
@@ -103,6 +121,7 @@ function RoomDetailPage() {
     questionsPerSegment: 2,
     difficulty: 'medium',
     questionProvider: 'minimax',
+    transcriptionProvider: 'sarvam',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
     points: 100
@@ -134,6 +153,25 @@ function RoomDetailPage() {
       joinRoom(room.code, user._id)
     }
   }, [room?.code, user?._id])
+
+  // First-time audio setup wizard for teachers
+  useEffect(() => {
+    if (room && user?.role === 'teacher' && !localStorage.getItem('spandan-audio-setup-complete')) {
+      setShowAudioSetupWizard(true)
+    }
+  }, [room, user?.role])
+
+  // Sync capture mode when secondary audio device changes
+  useEffect(() => {
+    if (secondaryAudioDevice) {
+      setAudioCaptureMode('dual-device')
+      localStorage.setItem('spandan-secondary-audio-device', secondaryAudioDevice)
+    } else if (audioCaptureMode === 'dual-device') {
+      setAudioCaptureMode('mic-only')
+      localStorage.removeItem('spandan-secondary-audio-device')
+    }
+  }, [secondaryAudioDevice])
+
 
   // Listen for room:joined event
   useEffect(() => {
@@ -174,34 +212,47 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      // Clear any existing timer
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            setActiveQuestion(null)
+
+            // Emit question:end to socket when timer expires
+            if (socket && isConnected && room?.code) {
+              console.log('[TIMER EXPIRED] Emitting question:end for:', question._id)
+              socket.emit('question:end', { roomCode: room.code, questionId: question._id })
+            }
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      if (!data) return
+      let q = data
+      if (data.question && typeof data.question === 'object') {
+        q = data.question
+      }
+      if (!q || typeof q.question !== 'string') return
+      startQuestionTimer(q)
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -209,8 +260,12 @@ function RoomDetailPage() {
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
     }
-  }, [socket, roomSettings.timeToAnswer])
+  }, [socket, roomSettings.timeToAnswer, room?.code])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -616,7 +671,7 @@ function RoomDetailPage() {
         return
       }
 
-      const result = await transcribeAudio(wavBlob)
+      const result = await transcribeAudio(wavBlob, roomSettings.transcriptionProvider || 'whisper')
       addToTranscriptionQueue(sequence, result.text || '')
     } catch (error) {
       console.error(`[TRANSCRIPTION] Error for sequence ${sequence}:`, error.message)
@@ -675,9 +730,10 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
+    setAudioWarning(null)
 
     // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
     // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
@@ -700,17 +756,59 @@ function RoomDetailPage() {
     }
 
     try {
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
+      let stream = null
+      let cleanup = null
 
-      // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
-      let selectedMimeType = 'audio/ogg'
+      if (secondaryAudioDevice) {
+        try {
+          // Universal dual-device audio mixing (e.g. Stereo Mix / VB-Cable)
+          const result = await captureDualDevice(primaryAudioDevice, secondaryAudioDevice)
+          stream = result.combinedStream
+          cleanup = result.cleanup
+        } catch (dualErr) {
+          console.warn('[AUDIO] Dual-device capture failed, falling back to mic-only:', dualErr)
+          setAudioWarning('Failed to access secondary Virtual Audio Cable. Capturing microphone only.')
+          setAudioCaptureMode('mic-only')
+          setSecondaryAudioDevice(null)
+          const result = await captureMicOnly(primaryAudioDevice)
+          stream = result.stream
+          cleanup = result.cleanup
+        }
+      } else if (audioCaptureMode === 'system-audio' && supportsSystemAudioCapture()) {
+        try {
+          // Native Chrome/Edge system audio capture (getDisplayMedia)
+          const result = await captureWithSystemAudio(primaryAudioDevice)
+          stream = result.combinedStream
+          cleanup = result.cleanup
+          result.onSystemAudioEnded?.(() => {
+            console.log('[AUDIO] System audio ended by user, reverting to mic-only')
+            setAudioCaptureMode('mic-only')
+          })
+        } catch (sysErr) {
+          console.warn('[AUDIO] System audio capture failed or cancelled, falling back to mic-only:', sysErr)
+          setAudioCaptureMode('mic-only')
+          const result = await captureMicOnly(primaryAudioDevice)
+          stream = result.stream
+          cleanup = result.cleanup
+        }
+      } else {
+        // Default: mic only
+        const result = await captureMicOnly(primaryAudioDevice)
+        stream = result.stream
+        cleanup = result.cleanup
+      }
+
+      streamRef.current = stream
+      cleanupAudioRef.current = cleanup
+
+
+      // Initialize MediaRecorder - try WebM first as it is universally decodeable by AudioContext
+      let selectedMimeType = 'audio/webm;codecs=opus'
       const possibleTypes = [
-        'audio/ogg;codecs=opus',
-        'audio/ogg',
         'audio/webm;codecs=opus',
-        'audio/webm'
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg'
       ]
       for (const mimeType of possibleTypes) {
         if (MediaRecorder.isTypeSupported(mimeType)) {
@@ -745,7 +843,11 @@ function RoomDetailPage() {
 
     } catch (error) {
       console.error('Error starting recording:', error)
-      setModelStatus('Microphone access denied')
+      if (error.name === 'NotAllowedError' || error.message?.includes('Permission denied')) {
+        setModelStatus('Microphone access denied')
+      } else {
+        setModelStatus(`Error: ${error.message || 'Recording failed'}`)
+      }
     }
   }
 
@@ -772,11 +874,14 @@ function RoomDetailPage() {
     await new Promise(resolve => setTimeout(resolve, 500))
     await processTranscriptionQueue()
 
-    // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    // Stop all tracks and cleanup Web Audio context
+    if (cleanupAudioRef.current) {
+      cleanupAudioRef.current()
+      cleanupAudioRef.current = null
+    } else if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -1044,7 +1149,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            token
           })
         }
       }
@@ -1086,7 +1192,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            token
           })
         }
       }
@@ -1133,7 +1240,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            token
           })
           console.log('new_question event emitted successfully')
         } else {
@@ -1330,25 +1438,58 @@ function RoomDetailPage() {
                 borderRadius: '8px',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px',
+                gap: '16px',
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
-                <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
-                </span>
-                <span style={{
-                  fontSize: '20px',
-                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
-                  fontWeight: '700',
-                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
-                }}>
-                  {questionTimeLeft}s
-                </span>
-                {questionTimeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    TIME!
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
+                    ⏱️ Answer
                   </span>
-                )}
+                  <span style={{
+                    fontSize: '20px',
+                    color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981',
+                    fontWeight: '700',
+                    animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+                  }}>
+                    {questionTimeLeft}s
+                  </span>
+                  {questionTimeLeft <= 5 && (
+                    <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
+                      TIME!
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (socket && isConnected && room?.code && activeQuestion) {
+                      console.log('[MANUAL END POLL] Emitting question:end for:', activeQuestion._id)
+                      socket.emit('question:end', { roomCode: room.code, questionId: activeQuestion._id })
+                    }
+                    if (questionTimerRef.current) {
+                      clearInterval(questionTimerRef.current)
+                      questionTimerRef.current = null
+                    }
+                    setActiveQuestion(null)
+                    setQuestionTimeLeft(0)
+                  }}
+                  style={{
+                    padding: '4px 10px',
+                    background: '#dc2626',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'background 0.2s',
+                    outline: 'none'
+                  }}
+                  onMouseOver={(e) => e.target.style.backgroundColor = '#b91c1c'}
+                  onMouseOut={(e) => e.target.style.backgroundColor = '#dc2626'}
+                >
+                  🛑 End Poll
+                </button>
               </div>
             )}
             {activeQuestion && questionTimeLeft === 0 && (
@@ -1437,10 +1578,17 @@ function RoomDetailPage() {
                 onClose={() => setShowSettings(false)}
                 settings={roomSettings}
                 onSave={async (newSettings) => {
+                  const oldProvider = roomSettings.transcriptionProvider || 'whisper'
+                  const newProvider = newSettings.transcriptionProvider || 'whisper'
+                  
+                  if (oldProvider !== newProvider) {
+                    console.log(`[SETTINGS CHANGE] Switching transcription provider: ${oldProvider} -> ${newProvider}`)
+                  }
+
                   setRoomSettings(newSettings)
                   // Persist settings to backend
                   try {
-                    await fetch(`${API_URL}/rooms/${room._id}`, {
+                    const response = await fetch(`${API_URL}/rooms/${room._id}`, {
                       method: 'PUT',
                       headers: {
                         'Content-Type': 'application/json',
@@ -1448,6 +1596,13 @@ function RoomDetailPage() {
                       },
                       body: JSON.stringify({ settings: newSettings })
                     })
+                    
+                    if (response.ok) {
+                      const data = await response.json()
+                      if (data.log) {
+                        console.log(`[SERVER LOG] ${data.log}`)
+                      }
+                    }
                   } catch (err) {
                     console.error('Failed to save room settings:', err)
                   }
@@ -1628,8 +1783,8 @@ function RoomDetailPage() {
                   background: isEnded
                     ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
                     : (isRecording
-                        ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                        : 'linear-gradient(135deg, #10b981, #059669)'),
+                      ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                      : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
                   cursor: isEnded ? 'not-allowed' : 'pointer',
@@ -1646,13 +1801,13 @@ function RoomDetailPage() {
               >
                 {isRecording ? (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
                 ) : (
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
                   </svg>
                 )}
               </button>
@@ -1667,24 +1822,169 @@ function RoomDetailPage() {
                 </p>
               </div>
 
-              {/* Live indicator */}
-              {isRecording && (
+              {/* Live indicator & Audio Mode Badge */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                {isRecording && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 10px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '20px'
+                  }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
+                    <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>LIVE</span>
+                  </div>
+                )}
+
+                {/* Audio capture mode badge */}
                 <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 12px',
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  borderRadius: '20px'
+                  fontSize: '11px',
+                  padding: '4px 8px',
+                  borderRadius: '12px',
+                  fontWeight: '600',
+                  background: audioCaptureMode !== 'mic-only' ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-primary)',
+                  color: audioCaptureMode !== 'mic-only' ? '#10b981' : 'var(--text-secondary)',
+                  border: '1px solid ' + (audioCaptureMode !== 'mic-only' ? '#10b981' : 'var(--border-color)')
                 }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
+                  {audioCaptureMode === 'system-audio' && '🔊 System Audio Active'}
+                  {audioCaptureMode === 'dual-device' && '🎙️🔊 Dual Audio Active'}
+                  {audioCaptureMode === 'mic-only' && '🎤 Mic Only'}
                 </div>
-              )}
+              </div>
+
+              {/* System Audio & Device Selector Controls */}
+              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '10px', margin: '4px 0' }}>
+                {/* Native System Audio Toggle for Chrome / Edge */}
+                {supportsSystemAudioCapture() && (
+                  <div style={{
+                    display: 'flex',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    padding: '2px',
+                    boxSizing: 'border-box'
+                  }}>
+                    <button
+                      type="button"
+                      disabled={isRecording}
+                      onClick={() => {
+                        setAudioCaptureMode('mic-only')
+                        setSecondaryAudioDevice(null)
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '5px 8px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        background: audioCaptureMode === 'mic-only' ? 'var(--bg-card)' : 'transparent',
+                        color: audioCaptureMode === 'mic-only' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        fontSize: '11px',
+                        fontWeight: '600',
+                        cursor: isRecording ? 'not-allowed' : 'pointer',
+                        boxShadow: audioCaptureMode === 'mic-only' ? 'var(--shadow-sm)' : 'none'
+                      }}
+                    >
+                      🎤 Mic Only
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isRecording}
+                      onClick={() => {
+                        setAudioCaptureMode('system-audio')
+                        setSecondaryAudioDevice(null)
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '5px 8px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        background: audioCaptureMode === 'system-audio' ? '#3b82f6' : 'transparent',
+                        color: audioCaptureMode === 'system-audio' ? 'white' : 'var(--text-secondary)',
+                        fontSize: '11px',
+                        fontWeight: '600',
+                        cursor: isRecording ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      🎙️🔊 Mic + System
+                    </button>
+                  </div>
+                )}
+
+                {/* Device Selector */}
+                <MicDeviceSelector
+                  primaryDeviceId={primaryAudioDevice}
+                  secondaryDeviceId={secondaryAudioDevice}
+                  onPrimaryChange={setPrimaryAudioDevice}
+                  onSecondaryChange={(secId) => {
+                    setSecondaryAudioDevice(secId)
+                    if (secId) {
+                      setAudioCaptureMode('dual-device')
+                    } else if (audioCaptureMode === 'dual-device') {
+                      setAudioCaptureMode('mic-only')
+                    }
+                  }}
+                  onShowSetupGuide={() => setShowAudioSetupModal(true)}
+                  disabled={isRecording}
+                />
+
+                {/* Fallback Notice for Unsupported Browsers (Firefox, Safari) */}
+                {!supportsSystemAudioCapture() && (
+                  <div style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid rgba(245, 158, 11, 0.25)',
+                    color: '#d97706',
+                    fontSize: '11px',
+                    lineHeight: '1.4',
+                    marginTop: '2px',
+                    boxSizing: 'border-box'
+                  }}>
+                    ℹ️ Native system audio capture is not supported on Firefox/Safari. 
+                    <button 
+                      type="button"
+                      onClick={() => setShowAudioSetupModal(true)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#3b82f6',
+                        textDecoration: 'underline',
+                        padding: '0 4px',
+                        font: 'inherit',
+                        cursor: 'pointer',
+                        fontWeight: '600'
+                      }}
+                    >
+                      Open Setup Guide
+                    </button>
+                    to capture system audio using a Virtual Cable.
+                  </div>
+                )}
+
+                {/* Device Capture Error Warning */}
+                {audioWarning && (
+                  <div style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    color: '#ef4444',
+                    fontSize: '11px',
+                    lineHeight: '1.4',
+                    marginTop: '4px',
+                    boxSizing: 'border-box'
+                  }}>
+                    ⚠️ {audioWarning}
+                  </div>
+                )}
+              </div>
               </>
               )}
 
               {/* Settings Labels Below Mic */}
+
               <div style={{
                 width: '100%',
                 background: 'var(--bg-primary)',
@@ -1693,6 +1993,10 @@ function RoomDetailPage() {
                 fontSize: '11px'
               }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Transcription:</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.transcriptionProvider || 'whisper'}</span>
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Provider:</span>
                     <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{roomSettings.questionProvider || 'minimax'}</span>
@@ -1819,150 +2123,150 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
-              <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                Session Questions
-              </span>
-              {generatedQuestions.length > 0 && (
-                <span style={{
-                  padding: '2px 10px',
-                  background: '#d1fae5',
-                  color: '#059669',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  fontWeight: '600'
-                }}>
-                  {generatedQuestions.length}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px' }}>📝</span>
+                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Session Questions
                 </span>
-              )}
-            </div>
-
-            {generatedQuestions.length > 0 ? (
-              <div style={{ position: 'relative' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                {generatedQuestions.map((q, index) => (
-                  <div key={q._id || index} style={{
-                    padding: '14px 16px',
-                    background: 'var(--bg-primary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '12px'
+                {generatedQuestions.length > 0 && (
+                  <span style={{
+                    padding: '2px 10px',
+                    background: '#d1fae5',
+                    color: '#059669',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
                   }}>
-                    <span style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: '#3b82f6',
-                      color: 'white',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      flexShrink: 0
-                    }}>
-                      {index + 1}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
-                        }}>
-                          {q.type}
-                        </span>
-                        <span style={{
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
-                        }}>
-                          {q.points || 100} pts
-                        </span>
-                      </div>
-                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
-                        {q.question}
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {(q.options || []).map((opt, optIdx) => {
-                          const letter = String.fromCharCode(65 + optIdx)
-                          return (
-                            <div key={optIdx} style={{
-                              padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
-                              borderRadius: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
-                            }}>
-                              <span style={{
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '50%',
-                                background: opt.isCorrect ? '#059669' : 'var(--border-color)',
-                                color: 'white',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontWeight: '700',
-                                flexShrink: 0
-                              }}>
-                                {letter}
-                              </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
-                                {opt.text}
-                              </span>
-                              {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                    {generatedQuestions.length}
+                  </span>
+                )}
+              </div>
+
+              {generatedQuestions.length > 0 ? (
+                <div style={{ position: 'relative' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                    {generatedQuestions.map((q, index) => (
+                      <div key={q._id || index} style={{
+                        padding: '14px 16px',
+                        background: 'var(--bg-primary)',
+                        borderRadius: '10px',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '12px'
                       }}>
-                        {answerCounts[q._id] || 0}/{totalParticipants}
-                      </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
-                    </div>
+                        <span style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '50%',
+                          background: '#3b82f6',
+                          color: 'white',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          flexShrink: 0
+                        }}>
+                          {index + 1}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
+                              color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                            }}>
+                              {q.type}
+                            </span>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: '#fef3c7',
+                              color: '#92400e'
+                            }}>
+                              {q.points || 100} pts
+                            </span>
+                          </div>
+                          <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
+                            {q.question}
+                          </p>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {(q.options || []).map((opt, optIdx) => {
+                              const letter = String.fromCharCode(65 + optIdx)
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '8px 12px',
+                                  background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
+                                  border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                                  borderRadius: '6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                  fontSize: '13px',
+                                  color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
+                                }}>
+                                  <span style={{
+                                    width: '22px',
+                                    height: '22px',
+                                    borderRadius: '50%',
+                                    background: opt.isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '11px',
+                                    fontWeight: '700',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
+                                  </span>
+                                  <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                                    {opt.text}
+                                  </span>
+                                  {opt.isCorrect && (
+                                    <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
+                          <span style={{
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
+                            color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                          }}>
+                            {answerCounts[q._id] || 0}/{totalParticipants}
+                          </span>
+                          <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              {generatedQuestions.length > 6 && (
-                <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                  {generatedQuestions.length > 6 && (
+                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                  )}
+                </div>
+              ) : (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '32px',
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px'
+                }}>
+                  No questions generated yet. Start recording to auto-generate questions.
+                </div>
               )}
-              </div>
-            ) : (
-              <div style={{
-                textAlign: 'center',
-                padding: '32px',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}>
-                No questions generated yet. Start recording to auto-generate questions.
-              </div>
-            )}
             </div>
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
@@ -2101,6 +2405,31 @@ function RoomDetailPage() {
         />
       )}
 
+      {/* First-Time Audio Setup Wizard */}
+      {showAudioSetupWizard && (
+        <AudioSetupWizard
+          onComplete={(detectedDeviceId) => {
+            setShowAudioSetupWizard(false)
+            if (detectedDeviceId) {
+              setSecondaryAudioDevice(detectedDeviceId)
+            }
+          }}
+          onSkip={() => setShowAudioSetupWizard(false)}
+        />
+      )}
+
+      {/* Re-openable System Audio Setup Modal */}
+      {showAudioSetupModal && (
+        <SystemAudioSetupModal
+          onClose={() => setShowAudioSetupModal(false)}
+          onDeviceDetected={(detectedDeviceId) => {
+            if (detectedDeviceId) {
+              setSecondaryAudioDevice(detectedDeviceId)
+            }
+          }}
+        />
+      )}
+
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
@@ -2120,3 +2449,4 @@ function RoomDetailPage() {
 }
 
 export default RoomDetailPage
+

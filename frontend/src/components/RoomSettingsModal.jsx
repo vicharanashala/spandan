@@ -129,6 +129,39 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </p>
         </div>
 
+        {/* Transcription Provider */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            🎤 Transcription Provider
+          </label>
+          <select
+            value={localSettings.transcriptionProvider || 'whisper'}
+            onChange={(e) => setLocalSettings(prev => ({ ...prev, transcriptionProvider: e.target.value }))}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="whisper">🖥️ Whisper (Local, Free)</option>
+            <option value="sarvam">🇮🇳 Sarvam Saaras V3 (Indian Accent)</option>
+          </select>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Sarvam is optimized for Indian English &amp; Hinglish. Requires API key in .env
+          </p>
+        </div>
+
         {/* Questions per Segment */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{

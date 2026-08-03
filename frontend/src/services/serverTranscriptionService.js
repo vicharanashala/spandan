@@ -2,12 +2,18 @@ import useAuthStore from '../stores/authStore'
 
 import { API_URL } from '../config.js'
 
-// Transcribe audio using server-side Whisper
-export const transcribeAudio = async (audioBlob) => {
+// Transcribe audio using server-side Whisper or Sarvam
+export const transcribeAudio = async (audioBlob, provider = 'whisper', language) => {
   const token = useAuthStore.getState().token
   
   // Convert blob to base64
   const base64 = await blobToBase64(audioBlob)
+  
+  // Build request body — include language for Sarvam (hi-IN, en-IN, unknown, etc.)
+  const body = { audio: base64, provider }
+  if (language) {
+    body.language = language
+  }
   
   const response = await fetch(`${API_URL}/transcription/transcribe`, {
     method: 'POST',
@@ -15,15 +21,17 @@ export const transcribeAudio = async (audioBlob) => {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`
     },
-    body: JSON.stringify({ audio: base64 })
+    body: JSON.stringify(body)
   })
   
   if (!response.ok) {
-    throw new Error(`Transcription failed: ${response.statusText}`)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.error || `Transcription failed: ${response.statusText}`)
   }
   
   return response.json()
 }
+
 
 // Convert blob to base64
 export const blobToBase64 = (blob) => {
