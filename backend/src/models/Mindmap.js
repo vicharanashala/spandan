@@ -10,8 +10,16 @@ const mindmapSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  segmentIndex: {
+    type: Number,
+    required: false
+  },
   markdown: {
     type: String,
+    required: true
+  },
+  expiresAt: {
+    type: Date,
     required: true
   },
   createdAt: {
@@ -19,6 +27,9 @@ const mindmapSchema = new mongoose.Schema({
     default: Date.now
   }
 })
+
+// TTL index to automatically delete documents when expiresAt is reached
+mindmapSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
 const Mindmap = mongoose.model('Mindmap', mindmapSchema)
 

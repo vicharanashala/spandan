@@ -452,6 +452,15 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+      
+      // Auto-trigger mind map generation for this chunk
+      console.log('[MINDMAP] Auto-triggering mind map generation for segment', segmentIndex)
+      fetch(`${API_URL}/mindmap/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ transcript: text, roomCode: room.code, roomId: room._id, segmentIndex })
+      }).catch(err => console.error('[MINDMAP] Auto-generation failed:', err))
+
       if (data.success && data.questions && data.questions.length > 0) {
         return data.questions.map(q => ({
           ...q,

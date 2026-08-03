@@ -13,7 +13,7 @@ router.use(authenticate)
 // POST /api/mindmap/generate
 // Authorization: teacher only
 router.post('/generate', authorize('teacher'), async (req, res) => {
-  const { transcript, roomCode, roomId } = req.body
+  const { transcript, roomCode, roomId, segmentIndex } = req.body
   // Grab io from the Express app now, while we still have `req` — avoids the
   // circular `await import('../index.js')` inside the async background block.
   const io = req.app.get('io')
@@ -85,7 +85,9 @@ ${transcript}`
       // socket event, the DB copy is already there to catch them.
       if (roomId) {
         try {
-          await Mindmap.create({ roomId, markdown })
+          // Default expiry is 24 hours. When the room ends, roomService will update this to 5 hours.
+          const defaultExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+          await Mindmap.create({ roomId, markdown, segmentIndex, expiresAt: defaultExpiresAt })
         } catch (saveErr) {
           console.error('[mindmap] Failed to save mindmap to DB:', saveErr.message)
           // Don't block the broadcast just because persistence failed — students
@@ -94,7 +96,7 @@ ${transcript}`
       }
 
       // io was captured from req.app above — no circular import needed.
-      io.to(roomCode).emit('mindmap_shared', { markdown })
+      io.to(roomCode).emit('mindmap_shared', { markdown, segmentIndex })
       console.log(`[mindmap] Background generation complete, broadcasted to room ${roomCode}.`)
 
     } catch (error) {
@@ -112,7 +114,7 @@ ${transcript}`
 router.get('/room/:roomId', async (req, res) => {
   try {
     const { roomId } = req.params
-    const mindmaps = await Mindmap.find({ roomId }).sort({ createdAt: 1 })
+    const mindmaps = await Mindmap.find({ roomId }).sort({ segmentIndex: 1, createdAt: 1 })
     res.json({ success: true, mindmaps: mindmaps.map(m => m.markdown) })
   } catch (error) {
     console.error('[mindmap] Failed to fetch room mindmaps:', error)
