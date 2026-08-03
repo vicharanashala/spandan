@@ -410,7 +410,7 @@ function RoomDetailPage() {
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
         questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
-      }, { signal: genAbortRef.current.signal })
+      }, { signal: genAbortRef.current.signal, roomId })
 
       setIsGeneratingQuestions(false)
       if (data.success && data.questions && data.questions.length > 0) {
@@ -446,7 +446,7 @@ function RoomDetailPage() {
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
         questionTypeMix: typeMix
-      }, { signal: genAbortRef.current.signal })
+      }, { signal: genAbortRef.current.signal, roomId })
 
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
