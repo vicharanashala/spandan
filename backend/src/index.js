@@ -55,7 +55,13 @@ const requestTimeout = (req, res, next) => {
 
 const app = express()
 const httpServer = createServer(app)
+// The client always connects with path '/spandan/socket.io' (frontend/src/stores/socketStore.js),
+// and both proxies forward it verbatim: the Vite dev proxy (frontend/vite.config.js) and the
+// production static server (server.js, BASE_PATH/socket.io -> /spandan/socket.io). If the server
+// keeps the Socket.IO default path '/socket.io', the handshake 404s and the client stays stuck in
+// "Reconnecting..." forever — the persistent-student-reconnection bug. Mount at the client path.
 const io = new Server(httpServer, {
+  path: '/spandan/socket.io',
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
@@ -511,6 +517,16 @@ io.on('connection', (socket) => {
       return
     }
     if (data.question) {
+      // Stamp launchedAt BEFORE broadcasting so a student whose socket reconnects in the same
+      // instant can recover the question via GET /rooms/:code/active-question.
+      if (data.question._id) {
+        try {
+          const Question = (await import('./models/Question.js')).default
+          await Question.findByIdAndUpdate(data.question._id, { launchedAt: new Date() })
+        } catch (e) {
+          console.warn('[new_question] Failed to set launchedAt:', e.message)
+        }
+      }
       io.to(data.roomCode).emit('new_question', data.question)
     }
   })

@@ -38,18 +38,113 @@ function StudentRoomPage() {
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
+  const roomRef = useRef(room)
+  useEffect(() => {
+    roomRef.current = room
+  }, [room])
+
+  const fetchSessionState = async () => {
+    if (!room?._id || !room?.code || !user?._id || !token) return
+
+    try {
+      const [responsesRes, activeRes] = await Promise.all([
+        fetch(`${API_URL}/responses/room/${room._id}/student/${user._id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch(`${API_URL}/rooms/${room.code}/active-question`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      ])
+
+      let activeQuestion = null
+      if (activeRes.ok && activeRes.status !== 204) {
+        const activeData = await activeRes.json()
+        activeQuestion = activeData?.question || null
+      }
+
+      if (responsesRes.ok) {
+        const responsesData = await responsesRes.json()
+        if (responsesData.success && responsesData.questions) {
+          setPastResponses(responsesData.questions)
+          if (responsesData.questions.some(q => q.answered)) {
+            setHasAnsweredPoll(true)
+          }
+
+          if (activeQuestion) {
+            const pastActive = responsesData.questions.find(q => q._id === activeQuestion._id)
+
+            // Recover the accurate remaining time from the server's launchedAt so a reconnected
+            // student's countdown matches the live one instead of restarting at timeToAnswer.
+            const launchedTime = new Date(activeQuestion.launchedAt).getTime()
+            const elapsedSeconds = Math.max(0, Math.floor((Date.now() - launchedTime) / 1000))
+            const remainingTime = Math.max(0, activeQuestion.timeToAnswer - elapsedSeconds)
+
+            if (remainingTime > 0) {
+              // Clear any existing timer
+              if (timerIntervalRef.current) {
+                clearInterval(timerIntervalRef.current)
+                timerIntervalRef.current = null
+              }
+
+              setCurrentQuestion(activeQuestion)
+              setTimeLeft(remainingTime)
+
+              // If the student already answered this question before reconnecting, restore the
+              // submitted state + selections so they don't get a fresh submit-ready page.
+              if (pastActive && pastActive.answered) {
+                setSubmitted(true)
+                setSelectedOptions(pastActive.selectedOptions || [pastActive.selectedOption])
+              } else {
+                setSubmitted(false)
+                setSelectedOptions([])
+              }
+
+              // Count down in both cases (answered and not), mirroring the live handleNewQuestion
+              // timer, so the recovered countdown doesn't freeze after a reconnect.
+              timerIntervalRef.current = setInterval(() => {
+                setTimeLeft(prev => {
+                  if (prev <= 1) {
+                    clearInterval(timerIntervalRef.current)
+                    timerIntervalRef.current = null
+                    fetchPastResponses(roomRef.current._id, user._id)
+                    setCurrentQuestion(null)
+                    return 0
+                  }
+                  return prev - 1
+                })
+              }, 1000)
+            } else {
+              // Active question expired
+              setCurrentQuestion(null)
+            }
+          } else {
+            setCurrentQuestion(null)
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[StudentRoom] Failed to sync session state:', err)
+    }
+  }
+
   useEffect(() => {
     if (!token || !socket) return
     setAuthToken(token)
     joinSession()
     return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user._id)
+      const currentRoom = roomRef.current
+      if (currentRoom?.code) {
+        leaveRoom(currentRoom.code, user._id)
       }
     }
   }, [token, socket])
 
-
+  // Sync state on socket connect/reconnect or when room changes
+  useEffect(() => {
+    if (isConnected && room?._id) {
+      fetchSessionState()
+    }
+  }, [isConnected, room?._id])
 
   useEffect(() => {
     if (!socket) return
@@ -76,8 +171,8 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            if (roomRef.current?._id && user?._id) {
+              fetchPastResponses(roomRef.current._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -95,8 +190,8 @@ function StudentRoomPage() {
       }
       
       // Only fetch if room and user are available
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      if (roomRef.current?._id && user?._id) {
+        fetchPastResponses(roomRef.current._id, user._id)
       }
       setResults(data?.results || null)
       setCurrentQuestion(null)
@@ -121,8 +216,8 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
+            if (roomRef.current?._id && user?._id) {
+              fetchPastResponses(roomRef.current._id, user._id)
             }
             setCurrentQuestion(null)
             return 0
@@ -132,26 +227,16 @@ function StudentRoomPage() {
       }, 1000)
     }
 
-    // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
-    // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
-    // room's questions so any missed one surfaces without the student manually refreshing.
-    const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
-      }
-    }
-
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
-    socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
       setSessionEnded(true)
       const delay = Math.random() * RESULTS_NAV_JITTER_MS
       resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/results`)
+        navigate(`/student/room/${roomRef.current?._id}/results`)
       }, delay)
     })
 
@@ -159,11 +244,10 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
-      socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
-  }, [socket, navigate, room?._id])
+  }, [socket, navigate])
 
   const joinSession = async () => {
     setIsLoading(true)
@@ -199,7 +283,7 @@ function StudentRoomPage() {
     }
   }
   
-  const fetchPastResponses = async (roomId, studentId) => {
+  async function fetchPastResponses(roomId, studentId) {
     // Defensive: don't call if room or user not ready
     if (!roomId || !studentId) {
       console.warn('fetchPastResponses skipped: missing roomId or studentId', { roomId, studentId })
