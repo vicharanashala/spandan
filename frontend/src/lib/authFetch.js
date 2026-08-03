@@ -33,6 +33,7 @@ export function installAuthFetchInterceptor() {
     const response = await originalFetch(...args)
     try {
       if (response.status === 401 && isOurApiUrl(args[0]) && useAuthStore.getState().token) {
+        console.warn('[Spandan AuthFetch] Intercepted 401 response from backend for URL:', args[0])
         useAuthStore.getState().handleSessionExpired()
       }
     } catch {
