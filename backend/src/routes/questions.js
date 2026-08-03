@@ -1,14 +1,32 @@
 import express from 'express'
+import rateLimit from 'express-rate-limit'
+import { RedisStore } from 'rate-limit-redis'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { isRedisEnabled, getRedisClient } from '../config/redis.js'
+import Room from '../models/Room.js'
 
 const router = express.Router()
 
 // Apply authentication to all routes
 router.use(authenticate)
+
+// Each request here is a real (paid) LLM call, unlike the rest of this router — so it gets its
+// own tighter, per-user limit rather than relying on the general apiLimiter (index.js), which is
+// sized for high-volume student polling, not for gating an expensive external API. Keyed by user,
+// not IP, since a classroom's students (and teachers) can sit behind one shared NAT IP.
+const generateLimiter = rateLimit({
+  store: isRedisEnabled()
+    ? new RedisStore({ prefix: 'rl:gen:', sendCommand: (...args) => getRedisClient().sendCommand(args) })
+    : undefined,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 40, // generous for a live class generating per-segment, tight enough to bound LLM spend
+  keyGenerator: (req) => String(req.user?._id || req.ip),
+  message: { success: false, error: 'Too many generation requests, please try again later' }
+})
 
 // Get available AI providers - accessible by authenticated users
 router.get('/providers', (req, res) => {
@@ -26,12 +44,14 @@ router.get('/providers', (req, res) => {
 })
 
 // POST /api/questions/generate - Generate questions from transcript
-// Authorization: teacher only
-router.post('/generate', authorize('teacher'), async (req, res) => {
+// Authorization: teacher only, and only for a room that teacher actually owns — this is a real
+// paid LLM call, so it must be tied to a legitimate room/lesson rather than accepting any
+// transcript from any teacher account with no further context.
+router.post('/generate', authorize('teacher'), generateLimiter, async (req, res) => {
   try {
-    const { transcript, config } = req.body
-    const { 
-      numQuestions = 2, 
+    const { transcript, config, roomId } = req.body
+    const {
+      numQuestions = 2,
       difficulty = 'medium',
       provider = 'minimax',
       questionTypeMix = null
@@ -42,6 +62,19 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
         success: false,
         error: 'Transcript is required'
       })
+    }
+
+    if (!roomId) {
+      return res.status(400).json({
+        success: false,
+        error: 'roomId is required'
+      })
+    }
+
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ success: false, error: ownership.error })
     }
 
     const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }

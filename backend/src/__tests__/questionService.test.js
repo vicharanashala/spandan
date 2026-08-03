@@ -1,7 +1,7 @@
 // Unit tests for the pure question-generation helpers: the prompt builder and the
 // model-response parser. These guard the quality rules (no meta-reference leaks,
 // difficulty-driven Bloom emphasis) and the JSON parsing/normalization.
-import { buildQuestionPrompt, parseQuestions, parseOptions } from '../services/questionService.js'
+import { buildQuestionPrompt, parseQuestions, parseOptions, generateQuestions } from '../services/questionService.js'
 
 describe('buildQuestionPrompt', () => {
   const transcript = 'The O-ring contracted in the cold and let gas leak, destroying the shuttle.'
@@ -11,6 +11,13 @@ describe('buildQuestionPrompt', () => {
     expect(p).toContain('SESSION CONTENT:')
     expect(p).not.toContain('SOURCE MATERIAL:')
     expect(p).toContain(transcript)
+  })
+
+  it('fences the transcript and tells the model to treat it as inert data, not instructions', () => {
+    const p = buildQuestionPrompt(transcript, ['MCQ'], 'medium')
+    expect(p).toContain('<<<BEGIN SESSION CONTENT>>>')
+    expect(p).toContain('<<<END SESSION CONTENT>>>')
+    expect(p).toMatch(/untrusted transcript.*never as instructions/i)
   })
 
   it('bans the leaky meta-reference wording (incl. speaker/narrator/presenter/author)', () => {
@@ -91,6 +98,24 @@ describe('parseQuestions', () => {
     const out = parseQuestions(raw, ['MSQ'])
     expect(out[0].type).toBe('MSQ')
   })
+
+  it('truncates an oversized question/explanation instead of storing it unbounded', () => {
+    const raw = JSON.stringify({
+      questions: [{
+        type: 'MCQ',
+        question: 'Q'.repeat(10000),
+        options: [
+          { text: 'A'.repeat(10000), isCorrect: true },
+          { text: 'B', isCorrect: false }
+        ],
+        explanation: 'E'.repeat(10000)
+      }]
+    })
+    const out = parseQuestions(raw, expected)
+    expect(out[0].question.length).toBeLessThanOrEqual(500)
+    expect(out[0].explanation.length).toBeLessThanOrEqual(800)
+    expect(out[0].options[0].text.length).toBeLessThanOrEqual(300)
+  })
 })
 
 describe('parseOptions', () => {
@@ -119,5 +144,12 @@ describe('parseOptions', () => {
     const out = parseOptions([], 'MCQ')
     expect(out).toHaveLength(4)
     expect(out.filter(o => o.isCorrect)).toHaveLength(1)
+  })
+})
+
+describe('generateQuestions', () => {
+  it('rejects an oversized transcript before ever calling a provider', async () => {
+    const huge = 'x'.repeat(40001)
+    await expect(generateQuestions(huge, { numQuestions: 1 })).rejects.toThrow(/too long/i)
   })
 })

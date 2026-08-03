@@ -21,14 +21,14 @@ export const getAIProviders = async () => {
 export const requestQuestionGeneration = async (transcript, config, opts = {}) => {
   const token = useAuthStore.getState().token
   const authHeader = { 'Authorization': `Bearer ${token}` }
-  const { signal } = opts
+  const { signal, roomId } = opts
   const pollIntervalMs = opts.pollIntervalMs || 2500
   const maxWaitMs = opts.maxWaitMs || 6 * 60 * 1000
 
   const res = await fetch(`${API_URL}/questions/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader },
-    body: JSON.stringify({ transcript, config }),
+    body: JSON.stringify({ transcript, config, roomId }),
     signal
   })
   const data = await res.json()
