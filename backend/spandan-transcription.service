@@ -27,6 +27,11 @@ RestartSec=3
 # Environment=TRANSCRIPTION_MODEL=base
 # Environment=TRANSCRIPTION_DEVICE=cpu
 # Environment=TRANSCRIPTION_COMPUTE=int8
+# CPU budget — see the comment above these settings in transcription_server.py. Defaults keep this
+# service inside one core so it doesn't contend with Node/Mongo on a 2-vCPU box. Raise on a bigger
+# box or a dedicated transcription host.
+# Environment=TRANSCRIPTION_CPU_THREADS=1
+# Environment=TRANSCRIPTION_BEAM_SIZE=1
 
 [Install]
 WantedBy=multi-user.target

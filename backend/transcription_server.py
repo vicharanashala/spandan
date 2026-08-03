@@ -29,6 +29,26 @@ MODEL_SIZE = os.environ.get("TRANSCRIPTION_MODEL", "base")
 COMPUTE_TYPE = os.environ.get("TRANSCRIPTION_COMPUTE", "int8")  # int8 = CPU-efficient
 DEVICE = os.environ.get("TRANSCRIPTION_DEVICE", "cpu")          # set "cuda" on a GPU box
 
+# CPU budget. This service shares a 2-vCPU box with the Node API, MongoDB and Redis, and it runs
+# CONTINUOUSLY while a teacher records — including while students are answering a poll, which is the
+# moment the box is most contended. What matters here is CPU-SECONDS CONSUMED, not how fast a single
+# window finishes: a 10s window only has to be transcribed in well under 10s to keep up.
+#
+# CTranslate2 defaults to min(4, cores) intra-op threads, which on this box means 4 OpenMP threads
+# oversubscribing 2 cores at very poor parallel efficiency. Measured on a 10s slice of lecture speech
+# (base/int8), mean of 3 runs, transcript byte-identical in every configuration:
+#
+#   threads  beam   wall     CPU-seconds
+#   4 (dflt)   5    1.154s     4.609      <- previous defaults
+#   1          5    1.825s     1.812
+#   1          1    1.481s     1.479      <- these defaults: 3.1x less CPU, wall still 0.15x realtime
+#
+# So: pin to one thread and take the ~28% longer wall time, because the window budget absorbs it and
+# the other core stays free for the event loop. Both are env-overridable — raise CPU_THREADS on a
+# bigger box, and raise BEAM_SIZE if a future model/language shows a real accuracy gain from it.
+CPU_THREADS = int(os.environ.get("TRANSCRIPTION_CPU_THREADS", "1"))
+BEAM_SIZE = int(os.environ.get("TRANSCRIPTION_BEAM_SIZE", "1"))
+
 # Model instance + lock (WhisperModel.transcribe is not concurrency-safe)
 model = None
 model_lock = threading.Lock()
@@ -37,11 +57,13 @@ model_lock = threading.Lock()
 def load_model():
     """Load Faster Whisper model once at startup."""
     global model
-    print(f"Loading Faster Whisper model '{MODEL_SIZE}' ({DEVICE}/{COMPUTE_TYPE})...")
+    print(f"Loading Faster Whisper model '{MODEL_SIZE}' ({DEVICE}/{COMPUTE_TYPE}, "
+          f"cpu_threads={CPU_THREADS}, beam_size={BEAM_SIZE})...")
     model = WhisperModel(
         MODEL_SIZE,
         device=DEVICE,
         compute_type=COMPUTE_TYPE,
+        cpu_threads=CPU_THREADS,
         download_root=os.path.expanduser("~/.cache/huggingface/hub"),
     )
     print(f"Faster Whisper model '{MODEL_SIZE}' loaded successfully!")
@@ -70,7 +92,7 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
             segments, info = model.transcribe(
                 audio_float32,
                 language="en",
-                beam_size=5,
+                beam_size=BEAM_SIZE,
                 vad_filter=False,  # keep all audio, including pauses
             )
             # segments is a generator; materialize inside the lock.
