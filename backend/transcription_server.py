@@ -28,6 +28,11 @@ PORT = int(os.environ.get("TRANSCRIPTION_PORT", "3003"))
 MODEL_SIZE = os.environ.get("TRANSCRIPTION_MODEL", "base")
 COMPUTE_TYPE = os.environ.get("TRANSCRIPTION_COMPUTE", "int8")  # int8 = CPU-efficient
 DEVICE = os.environ.get("TRANSCRIPTION_DEVICE", "cpu")          # set "cuda" on a GPU box
+DEFAULT_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "en") # e.g. "en" or "hi" or None (auto-detect). Default to "en" for Hinglish.
+DEFAULT_PROMPT = os.environ.get(
+    "TRANSCRIPTION_PROMPT", 
+    "Hinglish transcription: kya chal raha hai? kaise ho? code update kar diya. what is the status of the project?"
+)
 
 # Model instance + lock (WhisperModel.transcribe is not concurrency-safe)
 model = None
@@ -48,7 +53,7 @@ def load_model():
     sys.stdout.flush()
 
 
-def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
+def transcribe_audio(audio_base64: str, sample_rate: int = 16000, language: str = None, prompt: str = None) -> dict:
     """Transcribe base64-encoded 16-bit PCM (optionally WAV-wrapped) audio."""
     if model is None:
         return {"error": "Model not loaded"}
@@ -65,13 +70,24 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
 
+        # Determine target language (priority: request param -> env var -> None for auto-detect)
+        target_lang = language or DEFAULT_LANGUAGE
+        if target_lang == "":
+            target_lang = None
+
+        # Determine target prompt (priority: request param -> env var)
+        target_prompt = prompt or DEFAULT_PROMPT
+        if target_prompt == "":
+            target_prompt = None
+
         # Serialize the actual inference (single model instance).
         with model_lock:
             segments, info = model.transcribe(
                 audio_float32,
-                language="en",
+                language=target_lang,
                 beam_size=5,
-                vad_filter=False,  # keep all audio, including pauses
+                initial_prompt=target_prompt,
+                vad_filter=True,  # filters out silence/noise to prevent loop hallucinations
             )
             # segments is a generator; materialize inside the lock.
             full_text = ""
@@ -97,10 +113,16 @@ class TranscriptionHandler(BaseHTTPRequestHandler):
         pass  # suppress default per-request logging
 
     def _json(self, status, payload):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            # Client disconnected before response was fully sent (normal when stopping audio recording)
+            pass
+        except Exception as e:
+            print(f"[HTTP] Failed writing response: {e}", file=sys.stderr)
 
     def do_GET(self):
         if self.path == "/health":
@@ -120,10 +142,12 @@ class TranscriptionHandler(BaseHTTPRequestHandler):
             data = json.loads(body.decode("utf-8"))
             audio = data.get("audio", "")
             sample_rate = data.get("sampleRate", 16000)
+            language = data.get("language", None)
+            prompt = data.get("prompt", None)
             if not audio:
                 self._json(400, {"error": "No audio provided"})
                 return
-            result = transcribe_audio(audio, sample_rate)
+            result = transcribe_audio(audio, sample_rate, language, prompt)
             print(f"[TRANSCRIBE] bytes={len(audio)} text='{result.get('text', '')[:50]}' "
                   f"lang={result.get('language', '?')}")
             sys.stdout.flush()

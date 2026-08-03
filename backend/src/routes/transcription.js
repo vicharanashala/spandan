@@ -1,4 +1,5 @@
 import express from 'express'
+import { transcribe as sarvamTranscribe } from '../services/sarvamTranscriptionService.js'
 
 const router = express.Router()
 
@@ -9,23 +10,47 @@ const router = express.Router()
 // and the API stays fully responsive for everyone else.
 const TRANSCRIPTION_URL = process.env.TRANSCRIPTION_SERVICE_URL || 'http://127.0.0.1:3003'
 const TRANSCRIBE_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS) || 30000
+let whisperDownLogged = false
 
 // Health/status check (proxied to the transcription service)
 router.get('/status', async (req, res) => {
   try {
     const r = await fetch(`${TRANSCRIPTION_URL}/health`, { signal: AbortSignal.timeout(3000) })
     const data = await r.json()
-    res.json({ status: data.loaded ? 'ready' : 'loading', model: data.model || 'unknown' })
+    res.json({
+      status: data.loaded ? 'ready' : 'loading',
+      model: data.model || 'unknown',
+      sarvamAvailable: !!process.env.SARVAM_API_KEY
+    })
   } catch (err) {
-    res.status(503).json({ status: 'unavailable', error: 'Transcription service not reachable' })
+    res.status(503).json({
+      status: 'unavailable',
+      error: 'Transcription service not reachable',
+      sarvamAvailable: !!process.env.SARVAM_API_KEY
+    })
   }
 })
 
-// Transcribe an audio chunk — forwarded to the faster-whisper service
+// Transcribe an audio chunk — routes to Whisper (default) or Sarvam based on provider
 router.post('/transcribe', async (req, res) => {
   if (!req.body || !req.body.audio) {
     return res.status(400).json({ error: 'No audio provided' })
   }
+
+  const provider = req.body.provider || 'whisper'
+
+  // ── Sarvam AI path ──
+  if (provider === 'sarvam') {
+    try {
+      const result = await sarvamTranscribe(req.body.audio, req.body.language)
+      return res.json(result)
+    } catch (err) {
+      console.error('Sarvam transcription error:', err.message)
+      return res.status(502).json({ error: err.message })
+    }
+  }
+
+  // ── Whisper path (default) — falls back to Sarvam if Whisper is unreachable ──
   try {
     const r = await fetch(`${TRANSCRIPTION_URL}/transcribe`, {
       method: 'POST',
@@ -37,6 +62,22 @@ router.post('/transcribe', async (req, res) => {
     res.status(r.status).json(data)
   } catch (err) {
     const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError'
+
+    // Auto-fallback to Sarvam when Whisper service is down
+    if (!timedOut && process.env.SARVAM_API_KEY) {
+      if (!whisperDownLogged) {
+        console.warn('Whisper service unreachable — falling back to Sarvam for transcription')
+        whisperDownLogged = true
+      }
+      try {
+        const result = await sarvamTranscribe(req.body.audio, req.body.language)
+        return res.json(result)
+      } catch (sarvamErr) {
+        console.error('Sarvam fallback also failed:', sarvamErr.message)
+        return res.status(502).json({ error: 'Both Whisper and Sarvam transcription failed' })
+      }
+    }
+
     console.error('Transcription proxy error:', err.message)
     res.status(502).json({ error: timedOut ? 'Transcription timed out' : 'Transcription service unavailable' })
   }
