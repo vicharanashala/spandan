@@ -57,7 +57,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const toIdStr = (id) => (id && id.toString ? id.toString() : String(id))
 
 // Build the entire room's results in one pass. ~5 DB ops total for the whole room (vs ~3N per
-// request today): computeRanked (1 agg + 1 name lookup), one Question.find, one Response.find,
+// request today): computeRanked (incremental — see leaderboardAgg.js), one Question.find, one Response.find,
 // one RoomMember count. Returns the three artifacts ready to cache.
 export async function buildSnapshot(roomId) {
   const { Response, Question, RoomMember } = await models()

@@ -2,6 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { computeRanked } from '../services/leaderboardAgg.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
@@ -666,19 +667,10 @@ router.get('/counts/:roomId', async (req, res) => {
 // Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
 router.get('/leaderboard/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
-    const User = (await import('../models/User.js')).default
     const Room = (await import('../models/Room.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId } = req.params
     const currentUser = req.user
-
-    const toObjectId = (id) => {
-      if (!id) return null
-      if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
-      return new mongoose.Types.ObjectId(id)
-    }
 
     // Check if teacher owns the room
     const room = await Room.findById(roomId)
@@ -700,38 +692,10 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
     if (!leaderboard) {
-      // Aggregate points per student
-      const leaderboardData = await Response.aggregate([
-        { $match: { roomId: toObjectId(roomId) } },
-        { $group: {
-          _id: '$studentId',
-          totalPoints: { $sum: '$points' },
-          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-          totalAnswered: { $sum: 1 }
-        }},
-        { $sort: { totalPoints: -1 } }
-      ])
-
-      // Resolve student names in a SINGLE batched query instead of one findById per
-      // participant. The old N+1 loop issued up to 1000 user lookups per leaderboard
-      // request, and this endpoint is polled heavily during live sessions.
-      const studentIds = leaderboardData.map(entry => entry._id)
-      const users = await User.find({ _id: { $in: studentIds } })
-        .select('name')
-        .lean()
-      const userById = new Map(users.map(u => [u._id.toString(), u]))
-
-      leaderboard = leaderboardData.map((entry, index) => {
-        const user = userById.get(entry._id.toString())
-        return {
-          rank: index + 1,
-          studentId: entry._id.toHexString(),
-          studentName: user?.name || 'Unknown Student',
-          totalPoints: entry.totalPoints,
-          correctCount: entry.correctCount,
-          totalAnswered: entry.totalAnswered
-        }
-      })
+      // Same shared, incremental aggregation the live socket board and the results snapshot use —
+      // this endpoint used to carry its own copy of it, which was a second full-room re-aggregation
+      // per request and a standing risk of the two boards drifting apart.
+      leaderboard = (await computeRanked(roomId)).full
     }
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
