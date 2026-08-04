@@ -17,6 +17,7 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
+import AdminPage from './pages/AdminPage'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
@@ -174,6 +175,12 @@ function App() {
         <Route path="/teacher/help" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <HelpPage />
+          </ProtectedRoute>
+        } />
+        {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
+        <Route path="/admin" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <AdminPage />
           </ProtectedRoute>
         } />
         <Route path="/student" element={

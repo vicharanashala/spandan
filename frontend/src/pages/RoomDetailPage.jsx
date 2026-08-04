@@ -647,7 +647,13 @@ function RoomDetailPage() {
       }
 
       mediaRecorder.onstop = async () => {
-        if (transcriptionIntervalRef.current) {
+        // This recorder may have been SUPERSEDED by a newer window (a fast pause->play, or a
+        // pause->play that lands during the transcription round-trip below, starts a fresh
+        // recorder and repoints mediaRecorderRef). A superseded recorder must not touch the shared
+        // stop-timer or re-arm the loop, or it would clear the new window's timer and spawn a
+        // duplicate recorder — which is what silently stalls transcription on production. It still
+        // ships its own captured audio.
+        if (mediaRecorderRef.current === mediaRecorder && transcriptionIntervalRef.current) {
           clearTimeout(transcriptionIntervalRef.current)
           transcriptionIntervalRef.current = null
         }
@@ -657,7 +663,8 @@ function RoomDetailPage() {
         await sendForTranscription(audioBlob, sequence)
         resolve()
 
-        if (recordingActiveRef.current) {
+        // Re-check identity AFTER the async send: only the current window may re-arm the loop.
+        if (mediaRecorderRef.current === mediaRecorder && recordingActiveRef.current) {
           startTranscriptionWindow()
         }
       }

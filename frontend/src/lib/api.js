@@ -62,6 +62,12 @@ export const authApi = {
   checkEmail: (email) => api.get(`/auth/check-email/${email}`)
 }
 
+export const adminApi = {
+  listTeacherRequests: (status = 'pending') => api.get(`/admin/teacher-requests?status=${status}`),
+  approve: (id) => api.post(`/admin/teacher-requests/${id}/approve`, {}),
+  reject: (id, reason = '') => api.post(`/admin/teacher-requests/${id}/reject`, { reason })
+}
+
 export const roomApi = {
   create: (name, settings) => api.post('/rooms', { name, settings }),
   getAll: () => api.get('/rooms'),

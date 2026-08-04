@@ -41,6 +41,7 @@ function AuthPage() {
   const [isLogin, setIsLogin] = useState(true)
   const [formData, setFormData] = useState({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
   const [validationError, setValidationError] = useState('')
+  const [pendingMsg, setPendingMsg] = useState('')
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('')
   const [forgotPasswordMsg, setForgotPasswordMsg] = useState('')
@@ -102,6 +103,7 @@ function AuthPage() {
     e.preventDefault()
     clearError()
     setValidationError('')
+    setPendingMsg('')
 
     if (!validateForm()) return
 
@@ -141,6 +143,15 @@ function AuthPage() {
     }
     try {
       const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue)
+      // Teacher accounts require admin approval: no session is created. Send the registrant
+      // back to the login screen with an "approval pending" message instead of a dashboard.
+      if (data.pendingApproval) {
+        setOtpSent(false)
+        setOtpValue('')
+        setIsLogin(true)
+        setPendingMsg(data.message || 'Your teacher account is pending admin approval. You can sign in once an administrator approves it.')
+        return
+      }
       navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
     } catch (err) {
       setValidationError(err.message || 'Registration failed')
@@ -479,6 +490,21 @@ function AuthPage() {
               fontSize: '14px'
             }}>
               Your session expired. Please sign in again.
+            </div>
+          )}
+
+          {/* Teacher account pending admin approval (shown after a teacher registers) */}
+          {pendingMsg && (
+            <div style={{
+              background: isDark ? 'rgba(34,197,94,0.15)' : '#f0fdf4',
+              border: `1px solid ${isDark ? 'rgba(34,197,94,0.3)' : '#bbf7d0'}`,
+              borderRadius: 'var(--radius-sm)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              color: isDark ? '#86efac' : '#15803d',
+              fontSize: '14px'
+            }}>
+              {pendingMsg}
             </div>
           )}
 

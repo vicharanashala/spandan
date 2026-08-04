@@ -100,6 +100,13 @@ export const useAuthStore = create(
           if (!response.ok) {
             throw new Error(data.error || 'Registration failed')
           }
+          // Teacher accounts are created pending admin approval: the server returns no token
+          // and no session is established. The caller shows the pending message and returns
+          // the user to the login screen.
+          if (data.pendingApproval || !data.token) {
+            set({ isLoading: false })
+            return data
+          }
           set({
             user: data.user,
             token: data.token,

@@ -162,19 +162,34 @@ router.post('/', authorize('student'), async (req, res) => {
     }
     
     // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
+    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - respTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)
     const maxPoints = question.points || 100
     const tta = question.timeToAnswer || 30
-    const respTime = responseTime || 0
+
+    // Guard 1 (input validation): responseTime is client-supplied. A genuine value is
+    // `tta - timeLeft` and therefore always falls within [0, tta]. Anything outside that range
+    // is forged or untrusted (e.g. a negative value crafted to inflate the score), so we treat it
+    // as the slowest possible answer (respTime = tta -> 10% floor for a correct answer). Honest
+    // clients keep their fair, receipt-based timing; a forged value can never earn a bonus.
+    // NOTE: we intentionally do NOT clamp a negative to 0 — that would award full (max) points.
+    const rawRespTime = Number(responseTime)
+    const respTime = (Number.isFinite(rawRespTime) && rawRespTime >= 0 && rawRespTime <= tta)
+      ? rawRespTime
+      : tta
     let points = 0
-    
+
     if (isCorrect) {
       const timeRemaining = Math.max(0, tta - respTime)
       const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
       points = Math.round(maxPoints * timeDecayFactor)
     }
     // Incorrect answers get 0 points
+
+    // Guard 2 (defense in depth): a single answer can never be worth more than the question's
+    // configured max points, nor go below 0 — regardless of the decay factor or any future change
+    // upstream. This hard-caps the stored score to the valid [0, maxPoints] range.
+    points = Math.max(0, Math.min(points, maxPoints))
 
     const responseData = {
       roomId,

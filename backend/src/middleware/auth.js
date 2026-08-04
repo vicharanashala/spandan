@@ -54,6 +54,20 @@ export const authenticate = async (req, res, next) => {
       })
     }
 
+    // Force-logout unapproved teachers. A teacher whose account is pending or rejected may still
+    // hold a valid token — issued before approval was required, or before an admin revoked them.
+    // Returning 401 makes the client's global fetch interceptor drop the session and send them to
+    // the login screen (which then explains they are awaiting approval). Login separately blocks
+    // them, so they cannot get back in until approved. Approve/reject clears the auth cache, so
+    // this takes effect on their very next request rather than after the cache TTL.
+    if (user.role === 'teacher' && user.teacherApprovalStatus !== 'approved') {
+      return res.status(401).json({
+        error: 'Approval required',
+        code: 'TEACHER_NOT_APPROVED',
+        message: 'Your teacher account is awaiting admin approval. Please sign in once it is approved.'
+      })
+    }
+
     req.user = user
     next()
   } catch (error) {
@@ -91,6 +105,39 @@ export const authorize = (...roles) => {
 
     next()
   }
+}
+
+// Defense-in-depth gate for teacher-only actions. The primary control is that an
+// unapproved teacher is never issued a JWT (blocked at /register/verify and /login),
+// so this normally never fires; it covers the edge cases where a token already exists
+// (approval revoked mid-session, or a student self-promoted to teacher via PUT /role).
+// Place AFTER authenticate + authorize('teacher') on every teacher write/session route.
+export const requireApprovedTeacher = (req, res, next) => {
+  if (req.user && req.user.role === 'teacher' && req.user.teacherApprovalStatus !== 'approved') {
+    return res.status(403).json({
+      error: 'Approval pending',
+      code: 'TEACHER_NOT_APPROVED',
+      message: 'Your teacher account is awaiting admin approval.'
+    })
+  }
+  next()
+}
+
+// Admins are identified by the persisted isAdmin flag OR a bootstrap allowlist from the
+// SPANDAN_ADMIN_EMAILS env var (comma-separated), so the first admin can act before any
+// isAdmin flag is set in the DB. Never trust a client-supplied admin claim.
+const ADMIN_EMAILS = (process.env.SPANDAN_ADMIN_EMAILS || '')
+  .split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
+
+export const authorizeAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated', message: 'Please sign in.' })
+  }
+  const isAdmin = req.user.isAdmin === true || ADMIN_EMAILS.includes((req.user.email || '').toLowerCase())
+  if (!isAdmin) {
+    return res.status(403).json({ error: 'Access denied', message: 'Admin access required.' })
+  }
+  next()
 }
 
 export const generateToken = (userId) => {
