@@ -69,11 +69,17 @@ function looksCorrupted (label) {
     'everyone','everybody','all','class','guys','friends','folks','people',
     'students','student','teacher','classroom'
   ])
-  // Full set for the all-greetings check (rule 0).
+  // Full set for the all-greetings check (rule 0). NOTE: 'intro',
+  // 'overview', 'introduction', 'topic', 'lesson', etc. are LEGITIMATE
+  // topic labels on their own (e.g. test fixture uses 'Intro' as a marker
+  // name, real lessons are labeled 'Topic: Photosynthesis'). Do NOT add
+  // them here or rule 0 wipes everything that isn't already a known
+  // greeting. Greeting-led labels (e.g. 'Hello guys') are caught by the
+  // SALUTATION gate at 0b/0c using the strict SALUTATION set above.
   const GREETING = new Set([
     ...SALUTATION,
-    'lecture','lesson','topic','subject','chapter','section','part','unit',
-    'session','discussion','overview','introduction','intro'
+    'lecture','lesson','subject','chapter','section','part','unit',
+    'session','discussion'
   ])
   const CONNECTORS = new Set([
     'which','where','when','that','who','whom','whose','how','why',

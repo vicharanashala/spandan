@@ -40,3 +40,4 @@ _css.js
 _restart-*.ps1
 backend.log
 backend.err.log
+analysis/
