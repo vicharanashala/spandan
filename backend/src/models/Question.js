@@ -27,6 +27,10 @@ const questionSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  sessionIndex: {
+    type: Number,
+    default: 1
+  },
   status: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],
@@ -43,6 +47,16 @@ const questionSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  predictedAccuracy: {
+    type: Number,
+    min: 0,
+    max: 100
+  },
+  actualAccuracy: {
+    type: Number,
+    min: 0,
+    max: 100
   },
   createdAt: {
     type: Date,

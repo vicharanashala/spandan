@@ -78,6 +78,11 @@ function RoomDetailPage() {
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const questionTimerRef = useRef(null)
 
+  // Teacher Calibration states
+  const [teacherGuess, setTeacherGuess] = useState(50)
+  const [isSavingCalibration, setIsSavingCalibration] = useState(false)
+  const [calibrationResults, setCalibrationResults] = useState(null)
+
 
   // Question generation
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
@@ -92,6 +97,7 @@ function RoomDetailPage() {
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
+  const [showPastQuestions, setShowPastQuestions] = useState(false)
   // Segment pause/resume state
   const [isSegmentPaused, setIsSegmentPaused] = useState(false)
   const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
@@ -170,10 +176,6 @@ function RoomDetailPage() {
     return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
-  // Listen for question launch events to show timer to teacher
-  useEffect(() => {
-    if (!socket) return
-
   const startQuestionTimer = (question) => {
     const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
@@ -191,7 +193,8 @@ function RoomDetailPage() {
         if (prev <= 1) {
           clearInterval(questionTimerRef.current)
           questionTimerRef.current = null
-          setActiveQuestion(null)
+          // We do NOT clear activeQuestion to null here anymore so that the calibration view stays visible 
+          // even after the timer expires, letting the teacher submit their guess if they haven't yet.
           return 0
         }
         return prev - 1
@@ -199,9 +202,19 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+  // Listen for question launch events to show timer to teacher
+  useEffect(() => {
+    if (!socket) return
+
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      const q = data?.question || data
+      if (q && q.question) {
+        setCalibrationResults(null)
+        setTeacherGuess(50)
+        startQuestionTimer(q)
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -529,8 +542,37 @@ function RoomDetailPage() {
     }
   }
 
+  const handleEndSession = async () => {
+    try {
+      const response = await fetch(`${API_URL}/rooms/${room._id}/end-session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const completedSession = data.completedSessionIndex || 1
+        navigate(`/teacher/room/${room._id}/results?sessionIndex=${completedSession}`)
+      } else {
+        const errData = await response.json()
+        alert('Failed to end session: ' + (errData.error || 'Unknown error'))
+      }
+    } catch (err) {
+      console.error('Failed to end session:', err)
+      alert('Error ending session')
+    }
+  }
+
   const handleEndRoom = async () => {
     if (room.endedAt) return
+    
+    const confirmClose = window.confirm(
+      "Are you sure you want to end this room permanently?\n\nThis will close the room code forever. You will be redirected to the overall cumulative stats for all sessions."
+    )
+    if (!confirmClose) return
 
     try {
       const updated = await updateRoom(room._id, {
@@ -538,7 +580,7 @@ function RoomDetailPage() {
         endedAt: new Date()
       })
       setRoom(updated)
-      navigate(`/teacher/room/${room._id}/results`)
+      navigate(`/teacher/room/${room._id}/results?sessionIndex=all`)
     } catch (err) {
       setError(err.message)
     }
@@ -1040,6 +1082,10 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
+        setCalibrationResults(null)
+        setTeacherGuess(50)
+        startQuestionTimer(data.question)
+
         // Emit to students via socket
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -1082,6 +1128,10 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
+
+        setCalibrationResults(null)
+        setTeacherGuess(50)
+        startQuestionTimer(data.question)
 
         if (socket && isConnected) {
           socket.emit('new_question', {
@@ -1127,6 +1177,10 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
+        setCalibrationResults(null)
+        setTeacherGuess(50)
+        startQuestionTimer(data.question)
+
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
         console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
@@ -1147,6 +1201,64 @@ function RoomDetailPage() {
     } catch (error) {
       console.error('Failed to create question:', error)
       alert('Failed to create question')
+    }
+  }
+
+  const handleCalibrateSubmit = async () => {
+    if (!activeQuestion) return
+    setIsSavingCalibration(true)
+    try {
+      const response = await fetch(`${API_URL}/questions/${activeQuestion._id}/calibrate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ predictedAccuracy: teacherGuess })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const updatedQuestion = data.question
+        
+        const drift = teacherGuess - updatedQuestion.actualAccuracy
+        setCalibrationResults({
+          predicted: teacherGuess,
+          actual: updatedQuestion.actualAccuracy,
+          drift: drift,
+          score: 100 - Math.abs(drift)
+        })
+
+        // Reload questions to update accuracy on the dashboard
+        loadQuestions(room._id)
+
+        // Notify students via socket that the poll is ended
+        if (socket && isConnected) {
+          socket.emit('question:end', {
+            roomCode: room.code,
+            questionId: activeQuestion._id,
+            results: {
+              predictedAccuracy: teacherGuess,
+              actualAccuracy: updatedQuestion.actualAccuracy
+            }
+          })
+        }
+
+        // Close the active question
+        setActiveQuestion(null)
+        if (questionTimerRef.current) {
+          clearInterval(questionTimerRef.current)
+          questionTimerRef.current = null
+        }
+      } else {
+        const errorData = await response.json()
+        alert('Failed to save calibration: ' + (errorData.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Calibration error:', error)
+      alert('Error saving calibration data')
+    } finally {
+      setIsSavingCalibration(false)
     }
   }
 
@@ -1456,20 +1568,36 @@ function RoomDetailPage() {
               />
             </div>
 
-            {/* End Room Button */}
+            {/* Action Buttons: End Session / End Room */}
             {!isEnded && (
-              <button onClick={handleEndRoom} style={{
-                padding: '8px 16px',
-                background: '#ef4444',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: '600',
-                cursor: 'pointer'
-              }}>
-                End Room
-              </button>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={handleEndSession} style={{
+                  padding: '8px 16px',
+                  background: 'linear-gradient(135deg, #10b981, #059669)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)'
+                }}>
+                  ⏱️ End Session
+                </button>
+                <button onClick={handleEndRoom} style={{
+                  padding: '8px 16px',
+                  background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(239, 68, 68, 0.2)'
+                }}>
+                  🚫 End Room Permanently
+                </button>
+              </div>
             )}
           </div>
 
@@ -1838,10 +1966,146 @@ function RoomDetailPage() {
               )}
             </div>
 
+            {/* Active Poll / Intuition Calibration Panel */}
+            {activeQuestion && (
+              <div style={{
+                background: 'linear-gradient(135deg, var(--bg-card), var(--bg-primary))',
+                borderRadius: '12px',
+                border: '2px solid #3b82f6',
+                padding: '20px',
+                marginBottom: '20px',
+                boxShadow: '0 4px 20px rgba(59, 130, 246, 0.1)'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)', padding: '4px 10px', borderRadius: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    📡 Live Poll Active
+                  </span>
+                  <span style={{ fontSize: '14px', fontWeight: '600', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981' }}>
+                    ⏱️ {questionTimeLeft}s remaining
+                  </span>
+                </div>
+                
+                <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {activeQuestion.question}
+                </h3>
+
+                {/* Calibration Slider */}
+                <div style={{
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '16px' }}>🔮</span>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                      Predict Student Accuracy
+                    </span>
+                  </div>
+                  <p style={{ margin: '0 0 16px 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    What % of the class do you think will get this question right?
+                  </p>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px' }}>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={teacherGuess}
+                      onChange={(e) => setTeacherGuess(Number(e.target.value))}
+                      style={{
+                        flex: 1,
+                        accentColor: '#3b82f6',
+                        cursor: 'pointer',
+                        height: '6px',
+                        background: 'var(--border-color)',
+                        borderRadius: '3px'
+                      }}
+                    />
+                    <span style={{ fontSize: '22px', fontWeight: '800', color: '#3b82f6', minWidth: '60px', textAlign: 'right' }}>
+                      {teacherGuess}%
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={handleCalibrateSubmit}
+                    disabled={isSavingCalibration}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      background: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.2)'
+                    }}
+                  >
+                    {isSavingCalibration ? '⏱️ Calibrating...' : '🔮 Submit Prediction & Reveal'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Calibration Success / Results Celebration */}
+            {calibrationResults && (
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.05), rgba(59, 130, 246, 0.05))',
+                borderRadius: '12px',
+                border: '2px solid #10b981',
+                padding: '20px',
+                marginBottom: '20px',
+                boxShadow: '0 4px 20px rgba(16, 185, 129, 0.1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '700', color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '4px 10px', borderRadius: '20px', textTransform: 'uppercase' }}>
+                    🎯 Intuition Calibrated!
+                  </span>
+                  <button 
+                    onClick={() => setCalibrationResults(null)}
+                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '14px' }}
+                  >
+                    ✕ Dismiss
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', textAlign: 'center', marginTop: '8px' }}>
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Your Guess</div>
+                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#3b82f6', marginTop: '4px' }}>{calibrationResults.predicted}%</div>
+                  </div>
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Actual Correct</div>
+                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#10b981', marginTop: '4px' }}>{calibrationResults.actual}%</div>
+                  </div>
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Intuition Score</div>
+                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#8b5cf6', marginTop: '4px' }}>{calibrationResults.score}/100</div>
+                  </div>
+                </div>
+
+                <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-primary)', textAlign: 'center', fontWeight: '500' }}>
+                  {calibrationResults.drift === 0 && "🔮 Perfect! Your teaching intuition is absolutely psychic."}
+                  {calibrationResults.drift > 0 && `⚠️ Overestimated class understanding by +${calibrationResults.drift}%.`}
+                  {calibrationResults.drift < 0 && `📉 Underestimated class understanding by ${calibrationResults.drift}%.`}
+                </p>
+              </div>
+            )}
+
             {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                {generatedQuestions.map((q, index) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
+                  {(() => {
+                    const currentSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) === (room?.sessionIndex || 1))
+                    const pastSessionQuestions = generatedQuestions.filter(q => (q.sessionIndex || 1) < (room?.sessionIndex || 1))
+
+                    const renderQuestionCard = (q, index) => {
+                      return (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
                     background: 'var(--bg-primary)',
@@ -1887,6 +2151,29 @@ function RoomDetailPage() {
                           color: '#92400e'
                         }}>
                           {q.points || 100} pts
+                        </span>
+                        {q.predictedAccuracy !== undefined && q.predictedAccuracy !== null && (
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            background: '#e0e7ff',
+                            color: '#4338ca'
+                          }}>
+                            🔮 Guess: {q.predictedAccuracy}% | Actual: {q.actualAccuracy}% (Drift: {q.predictedAccuracy - q.actualAccuracy > 0 ? `+${q.predictedAccuracy - q.actualAccuracy}` : q.predictedAccuracy - q.actualAccuracy}%)
+                          </span>
+                        )}
+                        <span style={{
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          fontSize: '10px',
+                          fontWeight: '600',
+                          background: 'var(--bg-secondary)',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid var(--border-color)'
+                        }}>
+                          Session {q.sessionIndex || 1}
                         </span>
                       </div>
                       <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
@@ -1947,11 +2234,69 @@ function RoomDetailPage() {
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
                     </div>
                   </div>
-                ))}
-              </div>
-              {generatedQuestions.length > 6 && (
-                <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
-              )}
+                      )
+                    }
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        {/* Current Session Questions */}
+                        <div>
+                          <h3 style={{ margin: '0 0 12px 0', fontSize: '13px', fontWeight: '700', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            🟢 Current Session Questions ({currentSessionQuestions.length})
+                          </h3>
+                          {currentSessionQuestions.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              {currentSessionQuestions.map((q, idx) => renderQuestionCard(q, idx))}
+                            </div>
+                          ) : (
+                            <div style={{ padding: '20px', border: '1.5px dashed var(--border-color)', borderRadius: '10px', color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center' }}>
+                              No questions launched in this session yet.
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Past Sessions Accordion */}
+                        {pastSessionQuestions.length > 0 && (
+                          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                            <button
+                              onClick={() => setShowPastQuestions(!showPastQuestions)}
+                              style={{
+                                width: '100%',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '12px 16px',
+                                background: 'var(--bg-secondary)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '8px',
+                                color: 'var(--text-primary)',
+                                fontWeight: '600',
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                                outline: 'none',
+                                transition: 'background 0.2s'
+                              }}
+                            >
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                📁 Past Sessions' History ({pastSessionQuestions.length})
+                              </span>
+                              <span>{showPastQuestions ? '▲' : '▼'}</span>
+                            </button>
+
+                            {showPastQuestions && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
+                                {pastSessionQuestions.map((q, idx) => renderQuestionCard(q, currentSessionQuestions.length + idx))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </div>
+                {generatedQuestions.length > 6 && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+                )}
               </div>
             ) : (
               <div style={{

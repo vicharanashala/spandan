@@ -162,6 +162,45 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
   }
 })
 
+// End current session of a room (increments sessionIndex, clears active question, room remains active)
+router.post('/:id/end-session', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const room = await Room.findById(req.params.id)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    if (room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only the room owner can end the session' })
+    }
+
+    const completedSessionIndex = room.sessionIndex || 1
+    
+    // Increment sessionIndex and clear currentQuestion
+    room.sessionIndex = completedSessionIndex + 1
+    room.currentQuestion = null
+    await room.save()
+
+    // Emit socket event to notify all students to fetch results for the ended session
+    const io = req.app.get('io')
+    if (io) {
+      io.to(room.code).emit('room:session-ended', { 
+        roomId: room._id, 
+        sessionIndex: completedSessionIndex 
+      })
+    }
+
+    res.json({ 
+      message: 'Session ended successfully', 
+      completedSessionIndex,
+      nextSessionIndex: room.sessionIndex
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Delete room
 router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
