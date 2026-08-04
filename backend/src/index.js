@@ -21,6 +21,9 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import doubtRoutes from './routes/doubts.js'
+import topicRoutes from './routes/topics.js'
+import confusionRoutes from './routes/confusion.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
 
@@ -337,6 +340,9 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/doubts', doubtRoutes)
+app.use('/api/topics', topicRoutes)
+app.use('/api/confusion', confusionRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
 
@@ -591,12 +597,37 @@ io.on('connection', (socket) => {
   // from the authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js),
   // and the ranked leaderboard is folded per-segment via POST /responses/leaderboard/:id/segment-done.
 
+// Helper: on every new-poll boundary (whether from MCQ question:start or
+  // manual new_question), close any active ConfusionEvent + clear its
+  // feedback tally for this room, and update the anti-spam marker so prior
+  // signals no longer block clicks on this new poll. Best-effort — we
+  // still emit the original poll event even if the reset fails so the UX
+  // is never blocked. Runs AFTER the owner check so unauthorized callers
+  // never trigger a reset.
+  const resetPollState = async (roomCode) => {
+    if (!roomCode) return
+    try {
+      const { resetPollStateForRoom } = await import('./services/confusionEventService.js')
+      const { markPollStarted } = await import('./services/doubtService.js')
+      const { Room } = await import('./models/index.js')
+      const room = await Room.findOne({ code: roomCode }).select('_id').lean()
+      if (room) {
+        await resetPollStateForRoom(room._id)
+        markPollStarted(room._id)
+        io.to(roomCode).emit('poll:reset', { roomId: String(room._id) })
+      }
+    } catch (e) {
+      console.warn('[socket] poll reset failed:', e.message)
+    }
+  }
+
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
+    await resetPollState(data.roomCode)
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
@@ -620,10 +651,143 @@ io.on('connection', (socket) => {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
+    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
+      await resetPollState(data.roomCode)
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+    } else {
+      console.error('new_question event missing roomCode or question:', data)
+    }
+  })
+
+  // Contextual Doubt-Anchored Polling: real-time student signal
+  socket.on('doubt:signal', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { recordDoubt, broadcastRecordedDoubt } = await import('./services/doubtService.js')
+      const { Room } = await import('./models/index.js')
+      const result = await recordDoubt({
+        roomId: data.roomId,
+        userId,
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: typeof data.recordingOffsetMs === 'number' ? data.recordingOffsetMs : null,
+        utteranceSnapshot: data.utteranceSnapshot || '',
+        clientSentAt: data.clientSentAt || null,
+        client: 'socket'
+      })
+      if (!result.ok) {
+        socket.emit('doubt:ignored', { reason: result.reason, retryAfterMs: result.retryAfterMs })
+        return
+      }
+      // Load the minimal Room fields needed for room-based broadcasting so
+      // broadcastRecordedDoubt() can emit to the right socket.io room.
+      // (HTTP route already has this loaded from its authorization check.)
+      const room = await Room.findById(data.roomId).select('_id code')
+      if (!room) return
+      // Shared broadcast step — identical to HTTP POST /api/doubts:
+      // emits doubt:new, then confusion:update / confusion:closed.
+      await broadcastRecordedDoubt({
+        io,
+        room,
+        userId,
+        payload: data,
+        signal: result.signal
+      })
+      socket.emit('doubt:confirmed', {
+        segmentIndex: data.segmentIndex || 0,
+        recordingOffsetLabel: result.signal.recordingOffsetLabel
+      })
+    } catch (err) {
+      console.error('[socket] doubt:signal error:', err.message)
+    }
+  })
+
+  // ============================================================================
+  // NEW: Live position broadcast (so students know what the teacher is on)
+  // ============================================================================
+  socket.on('teacher:position', async (data) => {
+    try {
+      if (!data || !data.roomCode) return
+      // Forward to everyone in the room EXCEPT the teacher themselves
+      // (they don't need to see their own position broadcast)
+      socket.to(data.roomCode).emit('teacher:position', {
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: data.recordingOffsetMs || 0,
+        recordingOffsetLabel: data.recordingOffsetLabel || '00:00',
+        utterance: data.utterance || '',
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:position error:', err.message)
+    }
+  })
+
+  // NEW: Teacher announces the start of the recording session
+  socket.on('teacher:session-start', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { startRoomSession } = await import('./services/doubtService.js')
+      const result = await startRoomSession(data.roomId, userId)
+      if (!result.ok) return
+      // Broadcast to everyone in the room
+      io.to(data.roomCode).emit('teacher:session-start', {
+        roomId: String(data.roomId),
+        roomStartedAt: result.roomStartedAt,
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:session-start error:', err.message)
+    }
+  })
+
+  // NEW: Teacher sets a topic marker -- broadcast to room so students + UI sync
+  socket.on('teacher:topic-set', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { setTopic } = await import('./services/topicService.js')
+      const result = await setTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        startMs: data.startMs,
+        endMs: data.endMs,
+        label: data.label,
+        note: data.note
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-set', {
+        marker: result.marker
+      })
+    } catch (err) {
+      console.error('[socket] teacher:topic-set error:', err.message)
+    }
+  })
+
+  // NEW: Teacher removes a topic marker
+  socket.on('teacher:topic-delete', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { deleteTopic } = await import('./services/topicService.js')
+      const result = await deleteTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        markerId: data.markerId
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-delete', { markerId: data.markerId })
+    } catch (err) {
+      console.error('[socket] teacher:topic-delete error:', err.message)
     }
   })
 
