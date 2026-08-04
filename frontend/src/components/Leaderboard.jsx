@@ -112,7 +112,7 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
 
   const renderRank = (entry, index) => {
     const rank = entry.rank
-    const isCurrentUser = entry.isCurrentUser
+    const isCurrentUser = entry.isCurrentUser || entry.studentId === userId
 
     // Top-3 and the current-user row always render on a LIGHT gradient background in BOTH
     // themes (gold/silver/bronze/blue). var(--text-primary) flips to near-white in dark mode,
@@ -122,7 +122,6 @@ const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
     const nameColor = isHighlighted ? '#1f2937' : 'var(--text-primary)'
     const subColor = isHighlighted ? '#6b7280' : 'var(--text-secondary)'
     const pointsColor = rank === 1 ? '#f59e0b' : isHighlighted ? '#1f2937' : 'var(--text-primary)'
-
     // If not teacher and there's a gap between current entry and previous
     // AND this entry is the user's rank (and not in top 10 shown), show ellipsis before
     if (!isTeacher && index === 10 && userRank && userRank > 10) {

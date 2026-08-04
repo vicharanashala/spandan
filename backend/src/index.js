@@ -103,7 +103,7 @@ app.set('io', io)
 //      and Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
 const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
-const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
 // Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
 const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
 const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
@@ -194,12 +194,31 @@ async function broadcastLeaderboard(roomId) {
       s.total = full.length
     }
 
-    if (roomCode) {
-      io.to(roomCode).emit('leaderboard:updated', {
-        leaderboard: full.slice(0, LEADERBOARD_TOP_N),
-        totalParticipants: full.length,
-        counts
-      })
+    const sockets = await io.in(roomCode).fetchSockets();
+
+    const studentMap = new Map();
+
+    full.forEach(entry => {
+        studentMap.set(entry.studentId.toString(), entry);
+    });
+
+    for (const socket of sockets) {
+      const visibleLeaderboard = full.slice(0, LEADERBOARD_TOP_N);
+
+      const me = studentMap.get(socket.data.userId);
+
+      if (me && me.rank > 10) {
+          visibleLeaderboard.push({
+              ...me,
+              isCurrentUser: true
+          });
+      }
+
+      socket.emit("leaderboard:updated", {
+          leaderboard: visibleLeaderboard,
+          totalParticipants: full.length,
+          counts
+      });
     }
   } catch (err) {
     console.error('broadcastLeaderboard error:', err.message)
