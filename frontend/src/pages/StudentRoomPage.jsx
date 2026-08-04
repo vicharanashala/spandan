@@ -40,6 +40,36 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const [toastMessage, setToastMessage] = useState('')
+  const toastTimeoutRef = useRef(null)
+  const isMouseDownRef = useRef(false)
+  const dragTriggeredRef = useRef(false)
+
+  const triggerCopyWarning = (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    setToastMessage('Copying question text is not allowed!')
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage('')
+    }, 3000)
+  }
+
+  const handleMouseDown = () => {
+    isMouseDownRef.current = true
+    dragTriggeredRef.current = false
+  }
+
+  const handleMouseMove = (e) => {
+    if (isMouseDownRef.current && !dragTriggeredRef.current) {
+      dragTriggeredRef.current = true
+      triggerCopyWarning(e)
+    }
+  }
+
+  const handleMouseUp = () => {
+    isMouseDownRef.current = false
+    dragTriggeredRef.current = false
+  }
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -96,17 +126,17 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
-      
+
       if (data.question && data.question.timeToAnswer) {
         setTimeLeft(data.question.timeToAnswer)
       }
-      
+
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -130,7 +160,7 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       // Only fetch if room and user are available
       if (room?._id && user?._id) {
         fetchPastResponses(room._id, user._id)
@@ -146,12 +176,12 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
-      
+
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
-      
+
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -250,7 +280,7 @@ function StudentRoomPage() {
       setIsLoading(false)
     }
   }
-  
+
   const fetchPastResponses = async (roomId, studentId) => {
     // Defensive: don't call if room or user not ready
     if (!roomId || !studentId) {
@@ -453,6 +483,30 @@ function StudentRoomPage() {
       maxWidth: '100vw',
       overflowX: 'hidden'
     }}>
+      {/* Warning Toast Notification */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          top: '24px',
+          right: '24px',
+          zIndex: 9999,
+          background: '#ef4444',
+          color: '#ffffff',
+          padding: '12px 20px',
+          borderRadius: '10px',
+          boxShadow: '0 10px 25px rgba(239, 68, 68, 0.4)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          fontWeight: '600',
+          fontSize: '14px',
+          border: '1px solid rgba(255, 255, 255, 0.2)'
+        }}>
+          <span style={{ fontSize: '18px' }}>⚠️</span>
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
@@ -557,14 +611,22 @@ function StudentRoomPage() {
 
           {/* Live Question */}
           {currentQuestion ? (
-            <div style={{
+            <div 
+              onCopy={triggerCopyWarning}
+              onSelectStart={triggerCopyWarning}
+              onContextMenu={triggerCopyWarning}
+            style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
               borderRadius: 'var(--radius-lg)',
               padding: isMobile ? '20px 16px' : '32px',
               color: 'white',
               boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
               maxWidth: '100%',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
+              MozUserSelect: 'none',
+              msUserSelect: 'none'
             }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
@@ -584,7 +646,28 @@ function StudentRoomPage() {
               </div>
 
               {/* Question */}
-              <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
+              <h2
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                onSelectStart={triggerCopyWarning}
+                onCopy={triggerCopyWarning}
+                onContextMenu={triggerCopyWarning}
+                onDragStart={triggerCopyWarning}
+                style={{
+                  fontSize: isMobile ? '20px' : '24px',
+                  fontWeight: '700',
+                  textAlign: 'center',
+                  marginBottom: isMobile ? '24px' : '32px',
+                  wordBreak:'break-word',
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
+                  MozUserSelect: 'none',
+                  msUserSelect: 'none',
+                  cursor: 'default'
+                }}
+              >
                 {currentQuestion.question}
               </h2>
 
@@ -592,18 +675,18 @@ function StudentRoomPage() {
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
                 {currentQuestion.options && currentQuestion.options.map((option, index) => {
                   const isMSQ = currentQuestion.type === 'MSQ'
-                  const isSelected = isMSQ 
+                  const isSelected = isMSQ
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
                   const optionText = typeof option === 'string' ? option : option.text
                   const optionLabel = String.fromCharCode(65 + index)
-                  
+
                   const handleOptionClick = () => {
                     if (submitted) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
-                      setSelectedOptions(prev => 
-                        prev.includes(index) 
+                      setSelectedOptions(prev =>
+                        prev.includes(index)
                           ? prev.filter(i => i !== index)
                           : [...prev, index]
                       )
@@ -612,7 +695,7 @@ function StudentRoomPage() {
                       setSelectedOptions([index])
                     }
                   }
-                  
+
                   return (
                     <button
                       key={index}
@@ -909,24 +992,42 @@ function StudentRoomPage() {
                                   color: 'white',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontWeight: '700',
-                                  fontSize: '14px',
-                                  flexShrink: 0
+                                  gap: '12px'
                                 }}>
-                                  {letter}
-                                </span>
-                                <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
-                                  {option.text || option}
-                                </span>
-                                {label && (
-                                  <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
-                                    {label}
+                                  <span style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: 'white',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: '700',
+                                    fontSize: '14px',
+                                    flexShrink: 0
+                                  }}>
+                                    {letter}
                                   </span>
-                                )}
-                              </div>
-                            )
-                          })}
+                                  <span style={{ fontSize: '14px', color: textColor, fontWeight: isCorrect ? '600' : '400' }}>
+                                    {option.text || option}
+                                  </span>
+                                  {label && (
+                                    <span style={{ fontSize: '12px', color: textColor, fontWeight: '600', marginLeft: 'auto' }}>
+                                      {label}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          {/* Missed question notice */}
+                          {!q.answered && (
+                            <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
+                              ⚠️ You did not answer this question
+                            </p>
+                          )}
                         </div>
                         
                         {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
