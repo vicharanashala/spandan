@@ -461,8 +461,10 @@ async function setLiveQuestion(roomId, questionId) {
     if (outgoing && String(outgoing) !== String(questionId)) {
       await Question.updateOne({ _id: outgoing }, { $set: { closeAt: new Date(Date.now() + GRACE) } })
     }
-    // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
-    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
+    // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched) and set startedAt.
+    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null, startedAt: new Date() } })
+    const { invalidateQuestionCache } = await import('./routes/responses.js')
+    invalidateQuestionCache(questionId)
     await Room.updateOne({ _id: roomId }, { currentQuestion: questionId })
     // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
     // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.

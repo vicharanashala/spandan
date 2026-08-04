@@ -48,6 +48,10 @@ const questionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  startedAt: {
+    type: Date,
+    default: null
+  },
   // Phase 3 (response-window enforcement): once this poll is superseded by the next launch, responses
   // are accepted only until closeAt (= supersede time + POLL_RESPONSE_GRACE_MS). It is null while the
   // poll is live/current or has never been superseded. Stops a bot back-filling answers to polls that

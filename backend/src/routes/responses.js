@@ -39,6 +39,12 @@ async function isRoomMember(RoomMember, roomId, studentId) {
 const QUESTION_TTL_MS = Number(process.env.QUESTION_CACHE_TTL_MS) || 30000
 const questionCache = new Map() // questionId -> { q, expiresAt(ms) }
 
+export function invalidateQuestionCache(questionId) {
+  if (questionId) {
+    questionCache.delete(String(questionId))
+  }
+}
+
 async function getQuestionCached(Question, questionId) {
   const id = String(questionId)
   const hit = questionCache.get(id)
@@ -116,6 +122,10 @@ router.post('/', authorize('student'), async (req, res) => {
       return res.status(404).json({ error: 'Question not found' })
     }
 
+    if (!question.startedAt) {
+      return res.status(409).json({ error: 'poll_not_live' })
+    }
+
     // Phase 3 — response-window enforcement. A poll is answerable only while it is the room's LIVE
     // poll (room.currentQuestion), or briefly after it is superseded (until its closeAt = next-launch
     // time + POLL_RESPONSE_GRACE_MS, which covers in-flight/late submits — see setLiveQuestion). Any
@@ -161,12 +171,13 @@ router.post('/', authorize('student'), async (req, res) => {
       isCorrect = selectedOptionData?.isCorrect || false
     }
     
-    // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
+    // Time-decay points calculation (server-computed response time)
+    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - respTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)
     const maxPoints = question.points || 100
     const tta = question.timeToAnswer || 30
-    const respTime = responseTime || 0
+    const serverElapsedSec = (Date.now() - new Date(question.startedAt).getTime()) / 1000
+    const respTime = Math.min(Math.max(serverElapsedSec, 0), tta)
     let points = 0
     
     if (isCorrect) {
