@@ -1,0 +1,316 @@
+/* Commented out to prevent breaking global styling
+body {
+    background-color: #ffdd40;
+}
+
+.wrapper {
+    position: relative;
+    display: flex;
+    width: 100%;
+    height: 90vh;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+}
+*/
+
+.bell .material-icons {
+    font-size: 28px !important;
+}
+
+.bell {
+    position: relative;
+    display: inline-block;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.bell .anchor {
+    transform-origin: center top;
+    display: inline-block;
+    margin: 0;
+    padding: 0;
+    transition: color 0.2s ease;
+}
+
+/* Base states for layers when not ringing */
+.bell .layer-1 {
+    color: #ea7508;
+    z-index: 9;
+    opacity: 0;
+    display: none;
+}
+
+.bell .layer-2 {
+    color: #ff8818;
+    z-index: 8;
+}
+
+.bell .layer-3 {
+    color: #ea7508;
+    z-index: 7;
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: none;
+}
+
+/* Active ringing states */
+.bell.ringing .layer-1 {
+    display: inline-block;
+    animation: animation-layer-1 5000ms infinite;
+}
+
+.bell.ringing .layer-2 {
+    color: #ea7508;
+    position: absolute;
+    top: 0;
+    left: 0;
+    animation: animation-layer-2 5000ms infinite;
+}
+
+.bell.ringing .layer-3 {
+    display: inline-block;
+    animation: animation-layer-3 5000ms infinite;
+}
+
+@keyframes animation-layer-1 {
+    0% {
+        transform: rotate(0deg);
+        opacity: 0;
+    }
+
+    8.0% {
+        transform: rotate(0deg);
+        opacity: 0;
+    }
+
+    12.0% {
+        transform: rotate(42deg);
+        opacity: .5;
+    }
+
+    16.0% {
+        transform: rotate(-35deg);
+        opacity: .4;
+    }
+
+    20.0% {
+        transform: rotate(0deg);
+        opacity: .1;
+    }
+
+    23.0% {
+        transform: rotate(28deg);
+        opacity: .3;
+    }
+
+    26.0% {
+        transform: rotate(-20deg);
+        opacity: .2;
+    }
+
+    29.0% {
+        transform: rotate(0deg);
+        opacity: .1;
+    }
+
+    31.0% {
+        transform: rotate(16deg);
+        opacity: 0;
+    }
+
+    33.0% {
+        transform: rotate(-12deg);
+        opacity: 0;
+    }
+
+    35.0% {
+        transform: rotate(0deg);
+        opacity: 0;
+    }
+
+    37.0% {
+        transform: rotate(-6deg);
+        opacity: 0;
+    }
+
+    39.0% {
+        transform: rotate(0deg);
+        opacity: 0;
+    }
+}
+
+@keyframes animation-layer-2 {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    8.0% {
+        transform: rotate(0deg);
+    }
+
+    12.0% {
+        transform: rotate(42deg);
+    }
+
+    16.0% {
+        transform: rotate(-35deg);
+    }
+
+    20.0% {
+        transform: rotate(0deg);
+    }
+
+    23.0% {
+        transform: rotate(28deg);
+    }
+
+    26.0% {
+        transform: rotate(-20deg);
+    }
+
+    29.0% {
+        transform: rotate(0deg);
+    }
+
+    31.0% {
+        transform: rotate(16deg);
+    }
+
+    33.0% {
+        transform: rotate(-12deg);
+    }
+
+    35.0% {
+        transform: rotate(0deg);
+    }
+
+    37.0% {
+        transform: rotate(-6deg);
+    }
+
+    39.0% {
+        transform: rotate(0deg);
+    }
+
+    40.0% {
+        transform: rotate(6deg);
+    }
+
+    44.0% {
+        transform: rotate(-3deg);
+    }
+
+    49.0% {
+        transform: rotate(2deg);
+    }
+
+    55.0% {
+        transform: rotate(0deg);
+    }
+
+    62.0% {
+        transform: rotate(1deg);
+    }
+
+    70.0% {
+        transform: rotate(0deg);
+    }
+}
+
+@keyframes animation-layer-3 {
+    0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    8.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    12.0% {
+        transform: rotate(52deg);
+        opacity: .5;
+    }
+
+    16.0% {
+        transform: rotate(-48deg);
+        opacity: .4;
+    }
+
+    20.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    23.0% {
+        transform: rotate(42deg);
+        opacity: .3;
+    }
+
+    26.0% {
+        transform: rotate(-30deg);
+        opacity: .2;
+    }
+
+    29.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    31.0% {
+        transform: rotate(26deg);
+        opacity: .15;
+    }
+
+    33.0% {
+        transform: rotate(-18deg);
+        opacity: .1;
+    }
+
+    35.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    37.0% {
+        transform: rotate(-12deg);
+        opacity: .8;
+    }
+
+    40.0% {
+        transform: rotate(6deg);
+        opacity: 1;
+    }
+
+    44.0% {
+        transform: rotate(-3deg);
+        opacity: .8;
+    }
+
+    49.0% {
+        transform: rotate(2deg);
+        opacity: 1;
+    }
+
+    55.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+
+    62.0% {
+        transform: rotate(1deg);
+        opacity: 1;
+    }
+
+    70.0% {
+        transform: rotate(0deg);
+        opacity: 1;
+    }
+}

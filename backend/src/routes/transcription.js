@@ -18,7 +18,9 @@ router.get('/status', authenticate, async (req, res) => {
     const data = await r.json()
     res.json({ status: data.loaded ? 'ready' : 'loading', model: data.model || 'unknown' })
   } catch (err) {
-    res.status(503).json({ status: 'unavailable', error: 'Transcription service not reachable' })
+    // Return 200 OK so the browser doesn't log a scary network error.
+    // The frontend correctly checks status.status === 'unavailable' to handle this gracefully.
+    res.json({ status: 'unavailable', error: 'Transcription service not reachable' })
   }
 })
 

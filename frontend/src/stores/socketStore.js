@@ -93,6 +93,11 @@ export const useSocketStore = create((set, get) => ({
       console.log('New question received:', data)
     })
 
+    socket.on('new_announcement', (data) => {
+      console.log('New announcement received globally:', data)
+      localStorage.setItem('has_new_announcement', 'true')
+    })
+
     set({ socket })
   },
 
