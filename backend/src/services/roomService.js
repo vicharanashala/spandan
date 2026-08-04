@@ -3,6 +3,7 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
+import { invalidateRoomLive } from './roomLiveCache.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -16,7 +17,7 @@ export const createRoom = async (name, teacherId, settings = {}) => {
 }
 
 export const getRoomById = async (id) => {
-  const room = await Room.findById(id).populate('teacher', 'name email')
+  const room = await Room.findById(id).populate('teacher', 'name')
   if (!room) {
     throw new Error('Room not found')
   }
@@ -24,7 +25,7 @@ export const getRoomById = async (id) => {
 }
 
 export const getRoomByCode = async (code) => {
-  const room = await Room.findOne({ code: code.toUpperCase() }).populate('teacher', 'name email')
+  const room = await Room.findOne({ code: code.toUpperCase() }).populate('teacher', 'name')
   if (!room) {
     throw new Error('Room not found')
   }
@@ -60,11 +61,18 @@ export const updateRoom = async (roomId, updates) => {
     { $set: updates },
     { new: true, runValidators: true }
   )
-  
+
   if (!room) {
     throw new Error('Room not found')
   }
-  
+
+  // If this update ends the room, drop the room-live cache so POST /responses re-reads Mongo, sees
+  // endedAt, and refuses further submits (Phase 3). This is the real end path (PUT /rooms/:id with
+  // isActive:false / endedAt). Non-fatal if Redis is unavailable.
+  if (updates && (updates.isActive === false || updates.endedAt)) {
+    await invalidateRoomLive(roomId)
+  }
+
   return room
 }
 
@@ -111,11 +119,15 @@ export const deactivateRoom = async (roomId) => {
     { $set: { isActive: false, endedAt: new Date() } },
     { new: true, runValidators: true }
   )
-  
+
   if (!room) {
     throw new Error('Room not found')
   }
-  
+
+  // Drop the room-live cache so POST /responses re-reads Mongo and sees endedAt → refuses further
+  // submits (Phase 3 response-window). Non-fatal if Redis is unavailable.
+  await invalidateRoomLive(roomId)
+
   return room
 }
 

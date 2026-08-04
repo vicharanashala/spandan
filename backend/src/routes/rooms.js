@@ -1,14 +1,14 @@
 import express from 'express'
 import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
-import { authorize } from '../middleware/auth.js'
+import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 
 const router = express.Router()
 
 // Create new room
-router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema), async (req, res) => {
+router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, validate(createRoomSchema), async (req, res) => {
   try {
     const { name, settings } = req.validatedBody
     const room = await createRoom(name, req.user._id, settings)
@@ -69,8 +69,12 @@ router.get('/:id', authenticate, async (req, res) => {
     if (!isOwner && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
-    
-    res.json({ room })
+
+    // Seed the live participant count so a teacher opening/refreshing the room sees the current
+    // number immediately (the room:joined/room:left socket events keep it updated after load).
+    const participants = await RoomMember.countDocuments({ roomId: req.params.id })
+
+    res.json({ room, participants })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -123,7 +127,7 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 })
 
 // Update room
-router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     
@@ -159,7 +163,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 })
 
 // Delete room
-router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     

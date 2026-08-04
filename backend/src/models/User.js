@@ -33,6 +33,34 @@ const userSchema = new mongoose.Schema({
     enum: ['teacher', 'student'],
     required: [true, 'Role is required']
   },
+  // Teacher accounts must be approved by an admin before they can sign in or use any
+  // teacher functionality. Students are 'approved' by default (the field is only
+  // consulted when role === 'teacher'). New teacher registrations start 'pending'.
+  teacherApprovalStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  // Grants access to the admin approval page and endpoints. Set only via the migration
+  // script or another admin; never client-settable.
+  isAdmin: {
+    type: Boolean,
+    default: false
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  approvedAt: {
+    type: Date,
+    default: null
+  },
+  rejectionReason: {
+    type: String,
+    default: '',
+    maxlength: [500, 'Rejection reason cannot exceed 500 characters']
+  },
   profileImage: {
     type: String,
     default: ''

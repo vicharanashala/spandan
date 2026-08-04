@@ -2,6 +2,9 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { computeRankedIncremental } from '../services/leaderboardCache.js'
+import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { debug } from '../utils/debug.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -48,6 +51,43 @@ async function getQuestionCached(Question, questionId) {
   }
   return q
 }
+
+// The GET /responses/room/:id/student/:id read path fetches the room's FULL approved-question list.
+// That list is student-INDEPENDENT (identical for everyone in the room), yet every student hits the
+// endpoint when their poll timer expires — at classroom scale that is hundreds of identical
+// Question.find + serializations per poll transition. Cache the list per room so the herd collapses
+// to ~one query per TTL per instance. The per-student response merge in the handler stays fresh (it
+// comes from a separate Response.find); the cached array is only ever read, never mutated. Staleness
+// is bounded by the TTL and benign: a question is approved at launch (~a poll-length before its poll
+// ends), so it is always in the cache by the time students read; the live question arrives via the
+// new_question socket, not this endpoint.
+const ROOM_QUESTIONS_TTL_MS = Number(process.env.ROOM_QUESTIONS_CACHE_TTL_MS) || 10000
+const roomQuestionsCache = new Map()    // roomId(str) -> { questions, expiresAt(ms) }
+const roomQuestionsInflight = new Map() // roomId(str) -> Promise<questions>  (single-flight)
+
+async function getRoomQuestionsCached(Question, roomObjectId) {
+  const key = String(roomObjectId)
+  const hit = roomQuestionsCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.questions
+  // Single-flight: if a query for this room is already running, share it instead of firing another.
+  // This matters most at a congested transition where the whole room misses at once and the first
+  // query is slow — without this, everyone who arrives before it returns would each hit Mongo.
+  const inflight = roomQuestionsInflight.get(key)
+  if (inflight) return inflight
+  const p = (async () => {
+    try {
+      const questions = await Question.find({ roomId: roomObjectId, status: 'approved' })
+        .sort({ createdAt: -1 }).lean()
+      if (roomQuestionsCache.size > 50000) roomQuestionsCache.clear()
+      roomQuestionsCache.set(key, { questions, expiresAt: Date.now() + ROOM_QUESTIONS_TTL_MS })
+      return questions
+    } finally {
+      roomQuestionsInflight.delete(key)
+    }
+  })()
+  roomQuestionsInflight.set(key, p)
+  return p
+}
 // ----------------------------------------------------------------------------------------------
 
 // POST /api/responses - Save a student's answer
@@ -77,6 +117,28 @@ router.post('/', authorize('student'), async (req, res) => {
       return res.status(404).json({ error: 'Question not found' })
     }
 
+    // Phase 3 — response-window enforcement. A poll is answerable only while it is the room's LIVE
+    // poll (room.currentQuestion), or briefly after it is superseded (until its closeAt = next-launch
+    // time + POLL_RESPONSE_GRACE_MS, which covers in-flight/late submits — see setLiveQuestion). Any
+    // other case — an old poll a bot tries to back-fill, a never-launched question, or ANY poll once
+    // the room has ended — is refused. This does not weaken the live poll (still answerable) and
+    // reveals nothing; it only closes the back-fill hole. Room is read fresh (the live pointer must
+    // not be stale); closeAt is read fresh only on the rare non-current path (the cached question copy
+    // can lag the stamp written on launch), so the hot path stays a single small room read.
+    const Room = (await import('../models/Room.js')).default
+    const { getRoomLive } = await import('../services/roomLiveCache.js')
+    const roomLive = await getRoomLive(Room, roomId) // Redis hit → no Mongo read; miss/Redis-off → Mongo
+    if (!roomLive || roomLive.endedAt) {
+      return res.status(409).json({ error: 'poll_closed' })
+    }
+    if (String(questionId) !== String(roomLive.currentQuestion || '')) {
+      const fresh = await Question.findById(questionId).select('closeAt')
+      const closeAt = fresh?.closeAt ? new Date(fresh.closeAt).getTime() : 0
+      if (!closeAt || Date.now() >= closeAt) {
+        return res.status(409).json({ error: 'poll_closed' })
+      }
+    }
+
     // Check if answer is correct based on question type
     let isCorrect = false
     
@@ -101,19 +163,34 @@ router.post('/', authorize('student'), async (req, res) => {
     }
     
     // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - responseTime) / tta) : 0
+    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - respTime) / tta) : 0
     // Minimum 10% of max points for correct answers (even if time runs out)
     const maxPoints = question.points || 100
     const tta = question.timeToAnswer || 30
-    const respTime = responseTime || 0
+
+    // Guard 1 (input validation): responseTime is client-supplied. A genuine value is
+    // `tta - timeLeft` and therefore always falls within [0, tta]. Anything outside that range
+    // is forged or untrusted (e.g. a negative value crafted to inflate the score), so we treat it
+    // as the slowest possible answer (respTime = tta -> 10% floor for a correct answer). Honest
+    // clients keep their fair, receipt-based timing; a forged value can never earn a bonus.
+    // NOTE: we intentionally do NOT clamp a negative to 0 — that would award full (max) points.
+    const rawRespTime = Number(responseTime)
+    const respTime = (Number.isFinite(rawRespTime) && rawRespTime >= 0 && rawRespTime <= tta)
+      ? rawRespTime
+      : tta
     let points = 0
-    
+
     if (isCorrect) {
       const timeRemaining = Math.max(0, tta - respTime)
       const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
       points = Math.round(maxPoints * timeDecayFactor)
     }
     // Incorrect answers get 0 points
+
+    // Guard 2 (defense in depth): a single answer can never be worth more than the question's
+    // configured max points, nor go below 0 — regardless of the decay factor or any future change
+    // upstream. This hard-caps the stored score to the valid [0, maxPoints] range.
+    points = Math.max(0, Math.min(points, maxPoints))
 
     const responseData = {
       roomId,
@@ -148,9 +225,8 @@ router.post('/', authorize('student'), async (req, res) => {
             error: 'Already responded to this question',
             existingResponse: existingResponse ? {
               selectedOption: existingResponse.selectedOption,
-              selectedOptions: existingResponse.selectedOptions,
-              isCorrect: existingResponse.isCorrect,
-              points: existingResponse.points
+              selectedOptions: existingResponse.selectedOptions
+              // isCorrect + points withheld — same reason as the success response above.
             } : undefined
           })
         }
@@ -158,23 +234,24 @@ router.post('/', authorize('student'), async (req, res) => {
       }
     }
 
-    // Live answer-counts update immediately (throttled) so the teacher's "X/total answered"
-    // badge stays current; the ranked leaderboard is DEFERRED to a quiet-debounce (fires once
-    // the answer burst has drained) so its expensive recompute never competes with the burst.
-    // Return this student's current rank ("rank on submit") from the last settled board — it may
-    // lag during a burst (Option A), but the student still gets their points immediately below.
+    // Live answer-counts update immediately (throttled) so the teacher's "X/total answered" badge
+    // stays current. The ranked leaderboard is NOT triggered from here: it is recomputed once per
+    // segment, when the teacher's question pop-up closes (the 'leaderboard:segment-done' socket
+    // event, see index.js). Return this student's current rank ("rank on submit") from the board as
+    // of the last segment fold (Option A) — the student still gets their points immediately below.
     const live = req.app.get('liveUpdates')
     live?.scheduleCounts(roomId)
-    live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
+    // Withhold the answerer's OWN correctness (isCorrect + points) from the immediate response while
+    // the session is live — otherwise a student (or a dummy / second account) learns the answer the
+    // instant they submit, straight from the Network tab, and can relay it. The answer is still
+    // SCORED and saved server-side; the student sees their result via the results path once polls are
+    // no longer live. The client only uses `rank` from this response, so nothing it renders changes.
+    const { isCorrect: _omitIsCorrect, points: _omitPoints, ...safeResponse } = savedResponse
     res.status(201).json({
       success: true,
-      response: {
-        ...savedResponse,
-        isCorrect,
-        points
-      },
+      response: safeResponse,
       rank: rankInfo.rank ?? null,
       totalParticipants: rankInfo.totalParticipants ?? null
     })
@@ -477,7 +554,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     }).lean()
     
     // Debug log
-    console.log(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
+    debug(`[responses] Fetched ${responses.length} responses for student ${studentId} in room ${roomId}`)
     
     // Create a map of questionId -> response for quick lookup
     // Use a helper to safely convert any ID to string
@@ -492,42 +569,58 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const responseMap = {}
     responses.forEach(r => {
       const qId = toIdString(r.questionId)
-      console.log(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
+      debug(`[responses] Response for questionId: ${qId}, selectedOption: ${r.selectedOption}, isCorrect: ${r.isCorrect}`)
       responseMap[qId] = r
     })
 
-    // Get all approved questions for this room (launched to students)
-    const questions = await Question.find({ 
-      roomId: roomObjectId, 
-      status: 'approved'
-    }).sort({ createdAt: -1 }).lean()  // Sort by newest first (latest asked question on top)
+    // Get all approved questions for this room (launched to students). Cached per-room (short TTL)
+    // because this list is identical for every student and the whole room hits this endpoint at once
+    // when a poll ends — see getRoomQuestionsCached. Sorted newest-first (latest asked on top).
+    const questions = await getRoomQuestionsCached(Question, roomObjectId)
 
-    console.log(`[responses] Found ${questions.length} questions for room ${roomId}`)
+    debug(`[responses] Found ${questions.length} questions for room ${roomId}`)
+
+    // While the room is LIVE, the currently-active poll (room.currentQuestion) must not reveal its
+    // correct answer to ANYONE — not even a student who already answered (else a dummy / second
+    // account could answer randomly, read isCorrect/points, and relay it). We still return the
+    // question with the student's marked answer (the frontend renders it neutrally), but strip which
+    // option is correct and withhold the student's own isCorrect + pointsEarned until the poll is no
+    // longer current (next launch / room end → revealed via the normal path / results snapshot).
+    const activeQid = (!ended && room?.currentQuestion) ? String(room.currentQuestion) : null
 
     // Merge questions with response data
     const questionsWithResponses = questions.map(q => {
       const qIdStr = toIdString(q._id)
       const studentResponse = responseMap[qIdStr]
+      const isActive = !!activeQid && qIdStr === activeQid
+      // Strip which option is correct for the still-live poll. Map to NEW objects — the question list
+      // is a shared cache and must never be mutated (see the cache's read-only invariant).
+      const options = isActive
+        ? q.options.map(o => (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o)
+        : q.options
       
       if (studentResponse) {
-        console.log(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
+        debug(`[responses] Matched question ${qIdStr} with response, selectedOption: ${studentResponse.selectedOption}`)
       }
       
       return {
         _id: qIdStr,
         question: q.question,
         type: q.type,
-        options: q.options,
+        options,
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
         answered: !!studentResponse,
+        // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
+        // a "missed" tag if unanswered — no correct/incorrect until it is revealed.
+        ...(isActive ? { resultPending: true } : {}),
         ...(studentResponse && {
           selectedOption: studentResponse.selectedOption,
           selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
-          isCorrect: studentResponse.isCorrect,
           responseTime: studentResponse.responseTime,
-          pointsEarned: studentResponse.points
+          // isCorrect + pointsEarned both reveal correctness → withhold for the live poll, send once past.
+          ...(isActive ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
         }),
         createdAt: q.createdAt
       }
@@ -548,7 +641,16 @@ router.get('/counts/:roomId', async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
+    const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
+
+    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
+    // used only by the teacher's room view; students receive live counts over the socket instead.
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ error: ownership.error })
+    }
 
     const toObjectId = (id) => {
       if (!id) return null
@@ -575,23 +677,33 @@ router.get('/counts/:roomId', async (req, res) => {
   }
 })
 
+// POST /api/responses/leaderboard/:roomId/segment-done — the teacher's frontend calls this when a
+// question pop-up closes (that segment's questions are all answered). It schedules the coalesced
+// per-segment leaderboard fold (see index.js scheduleSegmentFold): after LEADERBOARD_SEGMENT_DELAY_MS
+// the server folds that segment into the shared running total and broadcasts once. Owner-only.
+router.post('/leaderboard/:roomId/segment-done', async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const { roomId } = req.params
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) return res.status(ownership.status).json({ error: ownership.error })
+    req.app.get('liveUpdates')?.scheduleSegmentFold(roomId)
+    res.status(202).json({ success: true })
+  } catch (error) {
+    console.error('segment-done error:', error)
+    res.status(500).json({ error: 'Failed to schedule leaderboard update' })
+  }
+})
+
 // GET /api/responses/leaderboard/:roomId - Get ranked leaderboard for a room
 // Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
 router.get('/leaderboard/:roomId', async (req, res) => {
   try {
-    const mongoose = (await import('mongoose')).default
-    const Response = (await import('../models/Response.js')).default
-    const User = (await import('../models/User.js')).default
     const Room = (await import('../models/Room.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     const { roomId } = req.params
     const currentUser = req.user
-
-    const toObjectId = (id) => {
-      if (!id) return null
-      if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
-      return new mongoose.Types.ObjectId(id)
-    }
 
     // Check if teacher owns the room
     const room = await Room.findById(roomId)
@@ -613,38 +725,11 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
     if (!leaderboard) {
-      // Aggregate points per student
-      const leaderboardData = await Response.aggregate([
-        { $match: { roomId: toObjectId(roomId) } },
-        { $group: {
-          _id: '$studentId',
-          totalPoints: { $sum: '$points' },
-          correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
-          totalAnswered: { $sum: 1 }
-        }},
-        { $sort: { totalPoints: -1 } }
-      ])
-
-      // Resolve student names in a SINGLE batched query instead of one findById per
-      // participant. The old N+1 loop issued up to 1000 user lookups per leaderboard
-      // request, and this endpoint is polled heavily during live sessions.
-      const studentIds = leaderboardData.map(entry => entry._id)
-      const users = await User.find({ _id: { $in: studentIds } })
-        .select('name email')
-        .lean()
-      const userById = new Map(users.map(u => [u._id.toString(), u]))
-
-      leaderboard = leaderboardData.map((entry, index) => {
-        const user = userById.get(entry._id.toString())
-        return {
-          rank: index + 1,
-          studentId: entry._id.toHexString(),
-          studentName: user?.name || user?.email || 'Unknown Student',
-          totalPoints: entry.totalPoints,
-          correctCount: entry.correctCount,
-          totalAnswered: entry.totalAnswered
-        }
-      })
+      // Live room: serve the CACHED per-segment board (read-only, NO fold), so the board is stable
+      // within a segment and changes only when a segment fold runs. The cache advances via the
+      // per-segment trigger POST /leaderboard/:roomId/segment-done — not on this read. (Ended rooms
+      // are served from the snapshot above; room end does a full recompute.)
+      leaderboard = (await computeRankedIncremental(roomId, { fold: false })).full
     }
 
     // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
