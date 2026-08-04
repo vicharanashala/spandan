@@ -113,6 +113,20 @@ export const setCurrentQuestion = async (roomId, questionId) => {
   return room
 }
 
+export const setRoomDifficulty = async (roomId, difficulty) => {
+  const room = await Room.findByIdAndUpdate(
+    roomId,
+    { $set: { 'settings.difficulty': difficulty } },
+    { new: true, runValidators: true }
+  )
+
+  if (!room) {
+    throw new Error('Room not found')
+  }
+
+  return room
+}
+
 export const deactivateRoom = async (roomId) => {
   const room = await Room.findByIdAndUpdate(
     roomId,

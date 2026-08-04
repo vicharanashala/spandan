@@ -406,6 +406,7 @@ function RoomDetailPage() {
       // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
       // job internally and returns the same { success, questions } shape either way.
       const data = await requestQuestionGeneration(text, {
+        roomId: room._id,
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
@@ -413,6 +414,9 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+      if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
+        setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
+      }
       if (data.success && data.questions && data.questions.length > 0) {
         return data.questions.map(q => ({
           ...q,
@@ -442,6 +446,7 @@ function RoomDetailPage() {
       genAbortRef.current = new AbortController()
       // Helper handles both the sync response and the async (jobId → poll) path.
       const data = await requestQuestionGeneration(text, {
+        roomId: room._id,
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
@@ -450,6 +455,10 @@ function RoomDetailPage() {
 
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
+
+      if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
+        setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
+      }
 
       if (data.success && data.questions && data.questions.length > 0) {
         const markedQuestions = data.questions.map(q => ({
@@ -1715,7 +1724,9 @@ function RoomDetailPage() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>
+                      {roomSettings.difficulty}{roomSettings.adaptiveDifficulty ? ' (auto)' : ''}
+                    </span>
                   </div>
                 </div>
               </div>
