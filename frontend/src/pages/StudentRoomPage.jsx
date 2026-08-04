@@ -139,7 +139,11 @@ function StudentRoomPage() {
       setCurrentQuestion(null)
     }
 
-    const handleNewQuestion = (question) => {
+    const handleNewQuestion = (payload) => {
+      // Manual launches carry room-level presentation options alongside the question.
+      const question = payload?.question && typeof payload.question === 'object'
+        ? payload.question
+        : payload
       // Handle manually created questions from teacher
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -150,7 +154,7 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
+      setTimeLeft(question?.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {

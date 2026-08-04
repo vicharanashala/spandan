@@ -97,7 +97,7 @@ router.post('/', authorize('student'), async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const { roomId, questionId, selectedOptions, responseTime, confidence } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember) — cached (Fix 4), DB fallback on miss.
@@ -199,7 +199,8 @@ router.post('/', authorize('student'), async (req, res) => {
       selectedOptions, // Store all selections for MSQ
       isCorrect,
       responseTime: respTime,
-      points
+      points,
+      confidence: question.confidenceRequired ? confidence : null
     }
 
     // Persist. DEFAULT path: save() immediately and let the unique index
@@ -595,7 +596,8 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       const isActive = !!activeQid && qIdStr === activeQid
       // Strip which option is correct for the still-live poll. Map to NEW objects — the question list
       // is a shared cache and must never be mutated (see the cache's read-only invariant).
-      const options = isActive
+      const withholdResults = isActive || (q.silentMode && !q.resultsRevealed)
+      const options = withholdResults
         ? q.options.map(o => (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o)
         : q.options
       
@@ -611,16 +613,17 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
+        resultsRevealed: !q.silentMode || q.resultsRevealed,
         answered: !!studentResponse,
         // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
         // a "missed" tag if unanswered — no correct/incorrect until it is revealed.
-        ...(isActive ? { resultPending: true } : {}),
+        ...(withholdResults ? { resultPending: true } : {}),
         ...(studentResponse && {
           selectedOption: studentResponse.selectedOption,
           selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
           responseTime: studentResponse.responseTime,
           // isCorrect + pointsEarned both reveal correctness → withhold for the live poll, send once past.
-          ...(isActive ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
+          ...(withholdResults ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
         }),
         createdAt: q.createdAt
       }

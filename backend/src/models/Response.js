@@ -36,6 +36,11 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  confidence: {
+    type: String,
+    enum: ['sure', 'unsure', 'guessing', null],
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now

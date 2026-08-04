@@ -1117,6 +1117,8 @@ function RoomDetailPage() {
           type: questionData.type,
           question: questionData.question,
           options: questionData.options,
+          silentMode: Boolean(questionData.silentMode),
+          confidenceRequired: Boolean(questionData.confidenceRequired),
           timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
           points: questionData.points || roomSettings.points || 100,
           status: 'approved'
@@ -1133,7 +1135,8 @@ function RoomDetailPage() {
         if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
-            question: data.question
+            question: data.question,
+            anonymousMode: Boolean(room?.settings?.anonymousMode)
           })
           console.log('new_question event emitted successfully')
         } else {

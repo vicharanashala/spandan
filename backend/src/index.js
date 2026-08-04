@@ -643,7 +643,10 @@ io.on('connection', (socket) => {
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+        io.to(data.roomCode).emit('new_question', {
+          question: sanitizeQuestionForStudents(data.question),
+          anonymousMode: data.anonymousMode || false
+        })
     }
   })
 
