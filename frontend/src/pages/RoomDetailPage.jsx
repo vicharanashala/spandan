@@ -164,7 +164,10 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
     const handleCounts = (payload) => {
-      if (payload?.counts) setAnswerCounts(payload.counts)
+      // The payload is a PARTIAL map — just the poll whose tally moved — so merge it in. Replacing
+      // would zero out every earlier question's badge, since the server no longer re-counts polls
+      // that are already closed. The full map is seeded once by loadQuestions() on mount.
+      if (payload?.counts) setAnswerCounts(prev => ({ ...prev, ...payload.counts }))
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)

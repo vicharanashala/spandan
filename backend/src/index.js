@@ -106,13 +106,19 @@ const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
 // Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
 const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
-const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
+const roomLive = new Map() // roomId(str) -> { lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
 
 function getRoomState(id) {
   let s = roomLive.get(id)
-  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  if (!s) { s = { lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
   return s
 }
+
+// Teacher-only side channel for a room. Live answer counts and the participant counter are read by
+// the teacher's room view and by nobody else, so they are emitted here instead of to `roomCode`.
+// Sending them room-wide cost one frame per student per update — ~N times the delivery for a payload
+// N-1 clients parse and discard.
+const staffRoom = (roomCode) => `${roomCode}:staff`
 
 async function resolveRoomCode(roomId) {
   const s = getRoomState(String(roomId))
@@ -123,58 +129,70 @@ async function resolveRoomCode(roomId) {
   return s.roomCode
 }
 
-// (1) Live answer counts — cheap count-only aggregation, throttled/coalesced per window.
-async function broadcastCounts(roomId) {
+// (1) Live answer counts — one indexed count for the ONE question whose tally just changed,
+// throttled/coalesced per window, delivered to the teacher only.
+//
+// This used to re-group every response in the room on every tick and emit the whole {qId: count} map
+// room-wide. Both halves were waste: the counts of already-closed polls cannot change, so re-summing
+// them re-derives constants (and the scan grows for the whole session — by question 20 it re-reads
+// ~20x the rows it needs), and only the teacher's answer badge ever reads the result.
+//
+// Scoping to the answered question makes this a pure COUNT_SCAN on the existing
+// {roomId, questionId, studentId} index — no documents fetched, no grouping. The caller passes the
+// questionId from the response it just saved, which is exactly the tally that moved: correct during
+// the normal single-live-poll case AND during the grace window, when a straggler answers the
+// outgoing poll while a new one is already live (a room-live lookup would miss those).
+//
+// The payload is now partial, so the client MERGES it into its map rather than replacing it — see
+// the counts:updated handler in RoomDetailPage.
+async function broadcastCounts(roomId, questionId) {
   try {
     const Response = (await import('./models/Response.js')).default
-    const roomObjId = new mongoose.Types.ObjectId(roomId)
-    const countAgg = await Response.aggregate([
-      { $match: { roomId: roomObjId } },
-      { $group: { _id: '$questionId', count: { $sum: 1 } } }
-    ])
-    const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+    if (!roomCode) return
+    const count = await Response.countDocuments({
+      roomId: new mongoose.Types.ObjectId(String(roomId)),
+      questionId: new mongoose.Types.ObjectId(String(questionId))
+    })
+    io.to(staffRoom(roomCode)).emit('counts:updated', { counts: { [String(questionId)]: count } })
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
 }
 
-async function scheduleCountsBroadcast(roomId) {
+// Throttle key is per (room, question), not per room: during the grace window two polls can be
+// receiving answers at once and they must not suppress each other's update.
+const countsTimers = new Map() // `${roomId}:${questionId}` -> timeout (no-Redis path only)
+
+async function scheduleCountsBroadcast(roomId, questionId) {
+  if (!questionId) return
   const id = String(roomId)
+  const key = `${id}:${questionId}`
   if (redis.enabled) {
     try {
-      const won = await redis.client.set(`live:cnt:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
-      if (won === 'OK') setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+      const won = await redis.client.set(`live:cnt:sched:${key}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
+      if (won === 'OK') setTimeout(() => broadcastCounts(id, questionId), LIVE_THROTTLE_MS)
     } catch (e) {
-      setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+      setTimeout(() => broadcastCounts(id, questionId), LIVE_THROTTLE_MS)
     }
     return
   }
-  const s = getRoomState(id)
-  if (s.countsTimer) return // already scheduled; the trailing run picks up the latest DB state
-  s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
+  if (countsTimers.has(key)) return // already scheduled; the trailing run picks up the latest DB state
+  countsTimers.set(key, setTimeout(() => {
+    countsTimers.delete(key)
+    broadcastCounts(id, questionId)
+  }, LIVE_THROTTLE_MS))
 }
 
 // (2) Ranked leaderboard — full aggregation + name resolution + rank cache. Deferred/forced only.
 async function broadcastLeaderboard(roomId) {
   try {
-    const Response = (await import('./models/Response.js')).default
-    const roomObjId = new mongoose.Types.ObjectId(roomId)
-
-    // Ranked board comes from the shared helper (single source of truth); the per-question answer
-    // counts stay here (live-only concern). Both run in one round-trip via Promise.all.
-    const [{ full, rankByStudent }, countAgg] = await Promise.all([
-      computeRanked(roomId),
-      Response.aggregate([
-        { $match: { roomId: roomObjId } },
-        { $group: { _id: '$questionId', count: { $sum: 1 } } }
-      ])
-    ])
-
-    const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    // Ranked board comes from the shared helper (single source of truth). This used to also run a
+    // second full per-question count aggregation and ship it in the payload — but no client reads
+    // `counts` off leaderboard:updated (students apply only the board; the teacher's Leaderboard just
+    // refetches, and its answer badge is fed by counts:updated). It was a whole room-wide aggregation
+    // computed and broadcast for nobody, so it is gone.
+    const { full, rankByStudent } = await computeRanked(roomId)
 
     const roomCode = await resolveRoomCode(roomId)
 
@@ -197,8 +215,7 @@ async function broadcastLeaderboard(roomId) {
     if (roomCode) {
       io.to(roomCode).emit('leaderboard:updated', {
         leaderboard: full.slice(0, LEADERBOARD_TOP_N),
-        totalParticipants: full.length,
-        counts
+        totalParticipants: full.length
       })
     }
   } catch (err) {
@@ -559,12 +576,22 @@ io.on('connection', (socket) => {
         )
       }
 
-      // Authorized → now join the socket room and announce. The room-wide event carries only the
-      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
+      // Authorized → now join the socket room and announce.
       socket.join(roomCode)
+      // canJoinRoom already proved a teacher owns this room, so the staff channel is authorized here.
+      if (role === 'teacher') socket.join(staffRoom(roomCode))
       const participantCount = await RoomMember.countDocuments({ roomId: room._id })
 
-      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      // The ack goes to the JOINER (both roles use it to know the join landed; students gate their
+      // first data fetch on it), and the running participant count goes to the teacher, who is its
+      // only consumer. Announcing every join room-wide made a class start O(N^2): the k-th of 700
+      // students triggered k deliveries, ~245,000 in total, to keep one teacher-side counter current.
+      // The event still carries only the aggregate count, never the joiner's userId (which would let
+      // any peer harvest participant IDs).
+      socket.emit('room:joined', { roomCode, participants: participantCount })
+      if (role !== 'teacher') {
+        io.to(staffRoom(roomCode)).emit('room:joined', { roomCode, participants: participantCount })
+      }
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
@@ -588,6 +615,7 @@ io.on('connection', (socket) => {
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       socket.leave(roomCode)
+      socket.leave(staffRoom(roomCode)) // no-op for students; drops a departing teacher from staff
       const room = await Room.findByCode(roomCode)
 
       let participantCount = 0
@@ -598,10 +626,14 @@ io.on('connection', (socket) => {
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      // Same split as room:join, and it also fixes two bugs in the room-wide version: the leaver
+      // never got their own ack (they had already left the channel), while every OTHER student did
+      // and cleared their socket-store room state on someone else's departure.
+      socket.emit('room:left', { roomCode, participants: participantCount })
+      io.to(staffRoom(roomCode)).emit('room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
+      socket.emit('room:left', { roomCode, participants: 0 })
     }
   })
 

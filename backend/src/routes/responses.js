@@ -224,7 +224,9 @@ router.post('/', authorize('student'), async (req, res) => {
     // Return this student's current rank ("rank on submit") from the last settled board — it may
     // lag during a burst (Option A), but the student still gets their points immediately below.
     const live = req.app.get('liveUpdates')
-    live?.scheduleCounts(roomId)
+    // Pass the question this answer belongs to: the broadcaster counts only that poll, and during
+    // the grace window that is not necessarily the room's current one.
+    live?.scheduleCounts(roomId, questionId)
     live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
@@ -489,23 +491,27 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const currentUser = req.user
 
     // Teachers can view any student's responses for their own room
-    // Students can only view their own responses
-    const room = await Room.findById(roomId)
+    // Students can only view their own responses.
+    // Every student in the room hits this endpoint at each poll transition, so keep it to the four
+    // fields actually used below and skip Mongoose hydration.
+    const room = await Room.findById(roomId).select('teacher endedAt currentQuestion').lean()
     if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
-    
+
     const isTeacher = room.teacher.toString() === currentUser._id.toString()
     const isSelf = currentUser._id.toString() === studentId
-    
+
     // Allow if teacher owns room OR if student is viewing their own data
     if (!isTeacher && !isSelf) {
       return res.status(403).json({ error: 'Not authorized to view this student\'s responses' })
     }
-    
-    // If student, verify they are a member of this room
+
+    // If student, verify they are a member of this room — same cached check the POST hot path uses
+    // (confirmed memberships only, DB fallback on miss), so a room-wide burst of these reads does
+    // not become a room-wide burst of membership queries.
     if (!isTeacher && isSelf) {
-      const isMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
+      const isMember = await isRoomMember(RoomMember, roomId, currentUser._id)
       if (!isMember) {
         return res.status(403).json({ error: 'Not a member of this room' })
       }
