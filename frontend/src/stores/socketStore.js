@@ -15,8 +15,13 @@ export const useSocketStore = create((set, get) => ({
 
   connect: (token) => {
     const { socket: existingSocket } = get()
-    if (existingSocket?.connected) {
-      console.log('Socket already connected, skipping')
+    // Keep one Socket.IO client for the lifetime of the authenticated app. A socket can be
+    // temporarily disconnected while it is connecting or auto-reconnecting; creating another
+    // client in that window races the old Engine.IO transport and makes the dev proxy write to a
+    // socket the browser has already closed (ECONNABORTED).
+    if (existingSocket) {
+      if (existingSocket.connected) console.log('Socket already connected, skipping')
+      else console.log('Socket already exists, waiting for connection/reconnect')
       return
     }
 

@@ -75,4 +75,36 @@ describe('live polling state', () => {
     const duplicate = applyDistributionUpdate(first, update('room-a', 'q1', 1, { 0: 1 }), 'room-a', 'q1', q1)
     expect(duplicate.q1.totalResponses).toBe(1)
   })
+
+  it('recalculates every option percentage from each live event', () => {
+    const first = applyDistributionUpdate({}, update('room-a', 'q1', 1, { 0: 1, 1: 0, 2: 0 }), 'room-a', 'q1', q1)
+    const second = applyDistributionUpdate(first, {
+      roomId: 'room-a',
+      questionId: 'q1',
+      totalResponses: 2,
+      optionCounts: { 0: 1, 1: 1, 2: 0 },
+      // Deliberately stale percentages: the live state must derive them from counts.
+      options: [
+        { optionIndex: 0, count: 1, percentage: 100 },
+        { optionIndex: 1, count: 1, percentage: 0 },
+        { optionIndex: 2, count: 0, percentage: 0 }
+      ]
+    }, 'room-a', 'q1', q1)
+
+    expect(second.q1.options).toEqual([
+      { optionIndex: 0, count: 1, percentage: 50 },
+      { optionIndex: 1, count: 1, percentage: 50 },
+      { optionIndex: 2, count: 0, percentage: 0 }
+    ])
+    expect(second.q1.options).not.toBe(first.q1.options)
+  })
+
+  it('keeps live distributions independent across multiple questions', () => {
+    const q1State = applyDistributionUpdate({}, update('room-a', 'q1', 1, { 0: 1, 1: 0, 2: 0 }), 'room-a', 'q1', q1)
+    const bothQuestions = applyDistributionUpdate(q1State, update('room-a', 'q2', 2, { 0: 1, 1: 1 }), 'room-a', 'q2', q2)
+    const updatedQ1 = applyDistributionUpdate(bothQuestions, update('room-a', 'q1', 2, { 0: 1, 1: 1, 2: 0 }), 'room-a', 'q1', q1)
+
+    expect(updatedQ1.q1.options.map(option => option.percentage)).toEqual([50, 50, 0])
+    expect(updatedQ1.q2.options.map(option => option.percentage)).toEqual([50, 50])
+  })
 })

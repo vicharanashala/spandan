@@ -41,6 +41,17 @@ function StudentRoomPage() {
   const timerIntervalRef = useRef(null)
   const timerQuestionIdRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  const questionEpochRef = useRef(0)
+  const completedQuestionIdsRef = useRef(new Set())
+
+  // Keep one authoritative history-sync path for every completion signal. The answer POST can
+  // still be in flight when a student's local timer reaches zero, so the submit path re-syncs
+  // again after persistence completes when this question has already ended.
+  const syncStudentHistoryAfterCompletion = (questionId) => {
+    const normalizedId = questionId ? String(questionId) : null
+    if (normalizedId) completedQuestionIdsRef.current.add(normalizedId)
+    if (room?._id && user?._id) fetchPastResponses(room._id, user._id)
+  }
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -93,15 +104,20 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      const questionId = String(data?._id || data?.question?._id || '')
+      // question:started is sent in two forms: a nested { question, timer } payload for an
+      // explicit start and a flat replay payload on reconnect. Normalize both before storing so
+      // the render, timer, and submit path all reference the same question object.
+      const question = data?.question?._id ? { ...data.question, timer: data.timer, startTime: data.startTime } : data
+      const questionId = String(question?._id || question?.id || '')
       if (import.meta.env.DEV) console.debug('[live] student question launched', { questionId })
+      questionEpochRef.current += 1
       timerQuestionIdRef.current = questionId
-      setCurrentQuestion(data)
+      setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
       // Reconnect replay supplies the remaining timer in data.timer. Do not replace it with
       // the question's original full duration.
-      setTimeLeft(data.timer || data.question?.timeToAnswer || 30)
+      setTimeLeft(typeof question.timer === 'number' ? question.timer : question.timeToAnswer || 30)
       
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -116,11 +132,9 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             timerQuestionIdRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
+            questionEpochRef.current += 1
             setCurrentQuestion(null)
+            syncStudentHistoryAfterCompletion(questionId)
             return 0
           }
           return prev - 1
@@ -135,17 +149,19 @@ function StudentRoomPage() {
         timerIntervalRef.current = null
       }
       timerQuestionIdRef.current = null
+      questionEpochRef.current += 1
       
-      // Only fetch if room and user are available
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
-      }
       setResults(data?.results || null)
       setCurrentQuestion(null)
+      // The ended payload identifies the poll but does not contain the student's finalized
+      // correctness/points record. Refresh the same authoritative history endpoint used during
+      // session initialization so the completed question appears without a browser refresh.
+      syncStudentHistoryAfterCompletion(data?.questionId)
     }
 
     const handleNewQuestion = (question) => {
       const questionId = String(question?._id || question?.id || '')
+      questionEpochRef.current += 1
       timerQuestionIdRef.current = questionId
       // Handle manually created questions from teacher
       // Clear any existing timer
@@ -166,11 +182,9 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             timerQuestionIdRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
+            questionEpochRef.current += 1
             setCurrentQuestion(null)
+            syncStudentHistoryAfterCompletion(questionId)
             return 0
           }
           return prev - 1
@@ -260,6 +274,7 @@ function StudentRoomPage() {
       return
     }
     try {
+      const requestEpoch = questionEpochRef.current
       console.log('[StudentRoom] Fetching past responses for room:', roomId, 'student:', studentId)
       const response = await fetch(`${API_URL}/responses/room/${roomId}/student/${studentId}`, {
         headers: {
@@ -273,6 +288,9 @@ function StudentRoomPage() {
       const data = await response.json()
       if (data.success && data.questions) {
         setPastResponses(data.questions)
+        // A lifecycle socket event may have arrived while this REST request was in flight. Do not
+        // let the older snapshot overwrite the newer socket-owned current question.
+        if (requestEpoch !== questionEpochRef.current) return
         // The response endpoint also returns the canonical live question. This is the REST
         // recovery path for an initial load or a reconnect where the launch event was missed.
         const currentQuestionId = data.currentQuestionId ? String(data.currentQuestionId) : null
@@ -286,7 +304,13 @@ function StudentRoomPage() {
           const total = restoredQuestion.timeToAnswer || 30
           const startedAt = data.currentQuestionStartedAt ? new Date(data.currentQuestionStartedAt).getTime() : Date.now()
           const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-          setTimeLeft(Math.max(0, total - elapsed))
+          const remaining = Math.max(0, total - elapsed)
+          if (remaining === 0) {
+            setCurrentQuestion(null)
+            setTimeLeft(0)
+          } else {
+            setTimeLeft(remaining)
+          }
         } else if (!currentQuestionId) {
           setCurrentQuestion(null)
         }
@@ -315,6 +339,16 @@ function StudentRoomPage() {
     // even though the network POST itself is deferred by a small random delay.
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    // Submission ends this student's view of the active poll immediately. The server request below
+    // still records/scorers the answer exactly as before; only the local view changes to waiting.
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current)
+      timerIntervalRef.current = null
+    }
+    timerQuestionIdRef.current = null
+    questionEpochRef.current += 1
+    setCurrentQuestion(null)
+    setTimeLeft(0)
 
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
     // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
@@ -358,9 +392,16 @@ function StudentRoomPage() {
       console.error('Failed to save response:', err)
     }
 
-    if (roomId && studentId) {
-      fetchPastResponses(roomId, studentId)
+    // If the local timer or question:ended signal completed this question while the answer POST
+    // was still in flight, refresh once more after the authoritative response save has completed.
+    if (completedQuestionIdsRef.current.has(String(questionId))) {
+      syncStudentHistoryAfterCompletion(questionId)
     }
+
+    // Do not immediately rehydrate the question from REST here. That request can finish after a
+    // newer question:started socket event and overwrite the live question with the old room state.
+    // The socket lifecycle is authoritative after submission; REST remains the initial/reconnect
+    // recovery path in joinSession.
   }
 
   const leaveSession = () => {

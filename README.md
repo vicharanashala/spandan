@@ -68,6 +68,18 @@ MONGODB_URI=mongodb://localhost:27017/spandan
 JWT_SECRET=your-secret-key
 ```
 
+### Google Sign-In
+
+Google Sign-In uses Google Identity Services ID tokens. Create a Web application OAuth client in
+Google Cloud Console, then put its client ID in both `frontend/.env` as
+`VITE_GOOGLE_CLIENT_ID` and `backend/.env` as `GOOGLE_CLIENT_ID`. Restart both dev servers after
+changing environment files.
+
+For local development, add `http://localhost:5173` under **Authorized JavaScript origins**. This
+flow uses the Google Identity Services button and server-side ID-token verification, so it does
+not require a client secret or a backend OAuth callback URI. Never commit the real client ID or
+other credentials; the ignored `.env` files are the place to paste local values.
+
 ## Roles
 
 | Role | Capabilities |

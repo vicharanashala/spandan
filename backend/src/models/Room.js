@@ -34,6 +34,13 @@ const roomSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // Set when the current poll's answering window closes. The currentQuestion reference is
+  // retained for history/grace-period checks, but this field prevents REST/socket recovery from
+  // treating a completed poll as live.
+  currentQuestionEndedAt: {
+    type: Date,
+    default: null
+  },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },

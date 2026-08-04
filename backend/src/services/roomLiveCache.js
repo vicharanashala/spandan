@@ -1,4 +1,4 @@
-// Shared per-room "live state" cache — { currentQuestion, currentQuestionStartedAt, endedAt } — used by POST /responses to
+// Shared per-room "live state" cache — { currentQuestion, currentQuestionStartedAt, questionEndedAt, endedAt } — used by POST /responses to
 // decide whether a poll is still answerable (Phase 3 response-window enforcement) WITHOUT a Mongo
 // read on every submit. The value lives in Redis (shared across both prod instances), so it stays
 // consistent without any in-process cache-coherence dance.
@@ -24,7 +24,7 @@ export async function setRoomLive(roomId, questionId, startedAt = Date.now()) {
   try {
     await getRedisClient().set(
       KEY(roomId),
-      JSON.stringify({ currentQuestion: String(questionId), currentQuestionStartedAt: startedAt, endedAt: null }),
+      JSON.stringify({ currentQuestion: String(questionId), currentQuestionStartedAt: startedAt, questionEndedAt: null, endedAt: null }),
       { EX: TTL_SEC }
     )
   } catch { /* non-fatal — POST /responses falls back to a fresh Mongo read */ }
@@ -45,15 +45,21 @@ export async function getRoomLive(Room, roomId) {
       const v = await getRedisClient().get(KEY(roomId))
       if (v) {
         const o = JSON.parse(v)
-        return { currentQuestion: o.currentQuestion || null, currentQuestionStartedAt: o.currentQuestionStartedAt || null, endedAt: o.endedAt || null }
+        return {
+          currentQuestion: o.currentQuestion || null,
+          currentQuestionStartedAt: o.currentQuestionStartedAt || null,
+          questionEndedAt: o.questionEndedAt || null,
+          endedAt: o.endedAt || null
+        }
       }
     } catch { /* fall through to Mongo */ }
   }
-  const room = await Room.findById(roomId).select('currentQuestion currentQuestionStartedAt endedAt').lean()
+  const room = await Room.findById(roomId).select('currentQuestion currentQuestionStartedAt currentQuestionEndedAt endedAt').lean()
   if (!room) return null
   return {
     currentQuestion: room.currentQuestion ? String(room.currentQuestion) : null,
     currentQuestionStartedAt: room.currentQuestionStartedAt || null,
+    questionEndedAt: room.currentQuestionEndedAt || null,
     endedAt: room.endedAt || null
   }
 }

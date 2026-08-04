@@ -62,7 +62,26 @@ function GoogleSignInButton({ onCredential, disabled = false, isDark = false, is
   }, [isDark, isMobile])
 
   if (configurationError) {
-    return <div style={{ color: 'var(--text-secondary)', fontSize: '12px', textAlign: 'center' }}>{configurationError}</div>
+    return (
+      <div
+        role="status"
+        aria-disabled="true"
+        style={{
+          minHeight: '42px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 16px',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          color: 'var(--text-secondary)',
+          fontSize: '12px',
+          opacity: 0.7
+        }}
+      >
+        {configurationError}
+      </div>
+    )
   }
 
   return (

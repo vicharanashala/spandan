@@ -110,16 +110,17 @@ app.set('io', io)
 //      per-response in the REST handler; only the read-side leaderboard recompute is deferred,
 //      and Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
+const DISTRIBUTION_THROTTLE_MS = Number(process.env.DISTRIBUTION_UPDATE_THROTTLE_MS) || 250
 const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
 const LIVE_DEBUG = process.env.NODE_ENV !== 'production'
 // Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
 const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
-const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
+const roomLive = new Map() // roomId(str) -> { countsTimer, distributionTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
 
 function getRoomState(id) {
   let s = roomLive.get(id)
-  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  if (!s) { s = { countsTimer: null, distributionTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
   return s
 }
 
@@ -144,21 +145,58 @@ async function broadcastCounts(roomId) {
     const roomCode = await resolveRoomCode(roomId)
     if (roomCode) {
       io.to(roomCode).emit('counts:updated', { counts })
-      const teacherRoom = teacherDistributionRoom(roomCode)
-      Object.entries(distributions).forEach(([questionId, distribution]) => {
-        io.to(teacherRoom).emit(
-          'poll:distribution:updated',
-          buildTeacherDistributionUpdatePayload(roomId, questionId, distribution)
-        )
-        if (LIVE_DEBUG) console.debug('[live] distribution emitted', {
-          roomId: String(roomId),
-          questionId: String(questionId),
-          totalResponses: distribution.totalResponses
-        })
-      })
     }
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
+  }
+}
+
+// Option distributions have a smaller payload and can be refreshed more frequently than the
+// answer-count badge. This is deliberately a separate short-window batch so a burst of hundreds
+// of submissions produces one distribution event per question per window, not one per answer.
+async function broadcastDistributions(roomId) {
+  try {
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+    const Question = (await import('./models/Question.js')).default
+    const questions = await Question.find({ roomId: roomObjId }).select('_id options').lean()
+    const distributions = await getRoomDistributions(roomId, questions) || await getMongoDistributions(roomId, questions)
+    const roomCode = await resolveRoomCode(roomId)
+    if (!roomCode) return
+    const teacherRoom = teacherDistributionRoom(roomCode)
+    Object.entries(distributions || {}).forEach(([questionId, distribution]) => {
+      io.to(teacherRoom).emit(
+        'poll:distribution:updated',
+        buildTeacherDistributionUpdatePayload(roomId, questionId, distribution)
+      )
+      if (LIVE_DEBUG) console.debug('[live] distribution emitted', {
+        roomId: String(roomId),
+        questionId: String(questionId),
+        totalResponses: distribution.totalResponses,
+        batched: true
+      })
+    })
+  } catch (err) {
+    console.error('broadcastDistributions error:', err.message)
+  }
+}
+
+// A teacher can join/reconnect after a distribution broadcast has already happened. Replay the
+// current keyed aggregates directly to that teacher so the live view does not depend on catching a
+// past event or doing a browser refresh.
+async function emitTeacherDistributionSnapshot(socket, roomId) {
+  try {
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+    const Question = (await import('./models/Question.js')).default
+    const questions = await Question.find({ roomId: roomObjId }).select('_id options').lean()
+    const distributions = await getRoomDistributions(roomId, questions) || await getMongoDistributions(roomId, questions)
+    Object.entries(distributions || {}).forEach(([questionId, distribution]) => {
+      socket.emit(
+        'poll:distribution:updated',
+        buildTeacherDistributionUpdatePayload(roomId, questionId, distribution)
+      )
+    })
+  } catch (error) {
+    console.error('teacher distribution snapshot error:', error.message)
   }
 }
 
@@ -190,6 +228,40 @@ async function scheduleCountsBroadcast(roomId) {
   const s = getRoomState(id)
   if (s.countsTimer) return
   s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
+}
+
+async function scheduleDistributionBroadcast(roomId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    try {
+      const won = await redis.client.set(`live:dist:sched:${id}`, INSTANCE_ID, { NX: true, PX: DISTRIBUTION_THROTTLE_MS })
+      if (won === 'OK') {
+        const state = getRoomState(id)
+        state.distributionTimer = setTimeout(() => {
+          const current = roomLive.get(id)
+          if (current) current.distributionTimer = null
+          broadcastDistributions(id)
+        }, DISTRIBUTION_THROTTLE_MS)
+      }
+    } catch (e) {
+      const state = getRoomState(id)
+      if (!state.distributionTimer) {
+        state.distributionTimer = setTimeout(() => {
+          const current = roomLive.get(id)
+          if (current) current.distributionTimer = null
+          broadcastDistributions(id)
+        }, DISTRIBUTION_THROTTLE_MS)
+      }
+    }
+    return
+  }
+  const s = getRoomState(id)
+  if (s.distributionTimer) return
+  s.distributionTimer = setTimeout(() => {
+    const current = roomLive.get(id)
+    if (current) current.distributionTimer = null
+    broadcastDistributions(id)
+  }, DISTRIBUTION_THROTTLE_MS)
 }
 // (2) Ranked leaderboard — full aggregation + name resolution + rank cache. Deferred/forced only.
 async function broadcastLeaderboard(roomId) {
@@ -284,10 +356,11 @@ async function refreshLeaderboardNow(roomId) {
   const id = String(roomId)
   const state = roomLive.get(id)
   if (state?.countsTimer) { clearTimeout(state.countsTimer); state.countsTimer = null }
+  if (state?.distributionTimer) { clearTimeout(state.distributionTimer); state.distributionTimer = null }
   if (state?.lbTimer) { clearTimeout(state.lbTimer); state.lbTimer = null }
   if (state?.lbCheckTimer) { clearTimeout(state.lbCheckTimer); state.lbCheckTimer = null }
   if (redis.enabled) {
-    try { await redis.client.del(`live:cnt:sched:${id}`, `live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
+    try { await redis.client.del(`live:cnt:sched:${id}`, `live:dist:sched:${id}`, `live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
   }
   try {
     await broadcastLeaderboard(id)
@@ -315,6 +388,7 @@ async function getCachedStudentRank(roomId, studentId) {
 
 app.set('liveUpdates', {
   scheduleCounts: scheduleCountsBroadcast,
+  scheduleDistribution: scheduleDistributionBroadcast,
   recordResponse: (roomId, questionId, selectedOptions) => recordResponse(roomId, questionId, selectedOptions),
   scheduleLeaderboard: scheduleLeaderboardRefresh,
   refreshLeaderboardNow,
@@ -515,7 +589,11 @@ async function setLiveQuestion(roomId, questionId) {
     }
     // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
     await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
-    await Room.updateOne({ _id: roomId }, { currentQuestion: questionId, currentQuestionStartedAt: startedAt })
+    await Room.updateOne({ _id: roomId }, {
+      currentQuestion: questionId,
+      currentQuestionStartedAt: startedAt,
+      currentQuestionEndedAt: null
+    })
     // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
     // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.
     const { setRoomLive } = await import('./services/roomLiveCache.js')
@@ -601,6 +679,7 @@ io.on('connection', (socket) => {
       if (room) {
         if (role === 'teacher' && room.teacher.toString() === String(userId)) {
           socket.join(teacherDistributionRoom(room.code))
+          await emitTeacherDistributionSnapshot(socket, room._id)
         }
         // Only students are added to RoomMember (not teachers)
         if (role === 'student') {
@@ -619,7 +698,7 @@ io.on('connection', (socket) => {
       // question to that socket from the authoritative room state; this avoids restoring a stale
       // local question after refresh/reconnect. The teacher resolves its own full local question
       // copy by ID, while students receive the sanitized payload below.
-      if (room && room.currentQuestion) {
+      if (room && room.currentQuestion && !room.currentQuestionEndedAt) {
         const Question = (await import('./models/Question.js')).default
         const activeQuestion = await Question.findById(room.currentQuestion).lean()
         if (activeQuestion) {
@@ -628,11 +707,13 @@ io.on('connection', (socket) => {
             : Date.now()
           const elapsed = Math.max(0, Math.floor((Date.now() - startTime) / 1000))
           const timer = Math.max(0, (activeQuestion.timeToAnswer || 30) - elapsed)
-          socket.emit('question:started', {
-            ...sanitizeQuestionForStudents(activeQuestion),
-            timer,
-            startTime
-          })
+          if (timer > 0) {
+            socket.emit('question:started', {
+              ...sanitizeQuestionForStudents(activeQuestion),
+              timer,
+              startTime
+            })
+          }
         }
       }
 
@@ -700,10 +781,27 @@ io.on('connection', (socket) => {
   })
 
   socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    const endedAt = new Date()
+    if (data?.questionId && String(room.currentQuestion || '') === String(data.questionId)) {
+      const graceMs = Number(process.env.POLL_RESPONSE_GRACE_MS) || 10000
+      await Room.updateOne(
+        { _id: room._id, currentQuestion: data.questionId },
+        { currentQuestionEndedAt: endedAt }
+      )
+      const Question = (await import('./models/Question.js')).default
+      await Question.updateOne(
+        { _id: data.questionId },
+        { closeAt: new Date(endedAt.getTime() + graceMs) }
+      )
+      const { invalidateRoomLive } = await import('./services/roomLiveCache.js')
+      await invalidateRoomLive(room._id)
+    }
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
-      results: data.results
+      results: data.results,
+      endedAt
     })
   })
 

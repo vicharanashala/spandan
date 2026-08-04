@@ -130,7 +130,14 @@ router.post('/', authorize('student'), async (req, res) => {
     if (!roomLive || roomLive.endedAt) {
       return res.status(409).json({ error: 'poll_closed' })
     }
-    if (String(questionId) !== String(roomLive.currentQuestion || '')) {
+    const isCurrentQuestion = String(questionId) === String(roomLive.currentQuestion || '')
+    if (isCurrentQuestion && roomLive.questionEndedAt) {
+      const fresh = await Question.findById(questionId).select('closeAt')
+      const closeAt = fresh?.closeAt ? new Date(fresh.closeAt).getTime() : 0
+      if (!closeAt || Date.now() >= closeAt) {
+        return res.status(409).json({ error: 'poll_closed' })
+      }
+    } else if (!isCurrentQuestion) {
       const fresh = await Question.findById(questionId).select('closeAt')
       const closeAt = fresh?.closeAt ? new Date(fresh.closeAt).getTime() : 0
       if (!closeAt || Date.now() >= closeAt) {
@@ -240,6 +247,7 @@ router.post('/', authorize('student'), async (req, res) => {
       })
     }
     live?.scheduleCounts(roomId)
+    live?.scheduleDistribution?.(roomId)
     live?.scheduleLeaderboard(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
@@ -597,7 +605,17 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     // question with the student's marked answer (the frontend renders it neutrally), but strip which
     // option is correct and withhold the student's own isCorrect + pointsEarned until the poll is no
     // longer current (next launch / room end → revealed via the normal path / results snapshot).
-    const activeQid = (!ended && room?.currentQuestion) ? String(room.currentQuestion) : null
+    const candidateActiveQid = (!ended && room?.currentQuestion && !room.currentQuestionEndedAt)
+      ? String(room.currentQuestion)
+      : null
+    const activeQuestion = candidateActiveQid
+      ? questions.find(q => toIdString(q._id) === candidateActiveQid)
+      : null
+    const startedAt = room?.currentQuestionStartedAt ? new Date(room.currentQuestionStartedAt).getTime() : 0
+    const elapsed = startedAt ? Math.max(0, Date.now() - startedAt) : 0
+    const activeQid = candidateActiveQid && activeQuestion && (!startedAt || elapsed < (Number(activeQuestion.timeToAnswer) || 30) * 1000)
+      ? candidateActiveQid
+      : null
 
     // Merge questions with response data
     const questionsWithResponses = questions.map(q => {

@@ -13,20 +13,19 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
-import OptionDistribution from '../components/OptionDistribution'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
-import { applyDistributionUpdate, initializeQuestionDistribution } from '../lib/livePollingState.js'
+import { applyDistributionEvent, initializeQuestionDistribution } from '../lib/livePollingState.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, endQuestion } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
   const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
@@ -115,10 +114,19 @@ function RoomDetailPage() {
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
   const [optionDistributions, setOptionDistributions] = useState({}) // questionId -> option distribution
+  const roomRef = useRef(room)
+  const roomSettingsRef = useRef(roomSettings)
+  const questionEpochRef = useRef(0)
+  roomRef.current = room
+  roomSettingsRef.current = roomSettings
   // A counts request can be older than a live socket event. Keep its version so the initial
   // REST snapshot cannot overwrite a newer distribution received over Socket.IO.
   const liveDistributionVersionRef = useRef(0)
   const activeQuestionIdRef = useRef(null)
+  const generatedQuestionsRef = useRef(generatedQuestions)
+  const activeQuestionRef = useRef(activeQuestion)
+  generatedQuestionsRef.current = generatedQuestions
+  activeQuestionRef.current = activeQuestion
   useEffect(() => {
     activeQuestionIdRef.current = lastPollQuestionId ? String(lastPollQuestionId) : null
   }, [lastPollQuestionId])
@@ -189,15 +197,13 @@ function RoomDetailPage() {
       liveDistributionVersionRef.current += 1
       const incomingRoomId = payload?.roomId ? String(payload.roomId) : null
       const incomingQuestionId = payload?.questionId ? String(payload.questionId) : null
-      if (incomingRoomId !== String(roomId) || incomingQuestionId !== activeQuestionIdRef.current) return
+      if (incomingRoomId !== String(roomId) || !incomingQuestionId) return
 
-      const question = generatedQuestions.find(q => String(q._id) === incomingQuestionId) || activeQuestion
-      setOptionDistributions(prev => applyDistributionUpdate(prev, payload, roomId, activeQuestionIdRef.current, question))
-      if (import.meta.env.DEV) console.debug('[live] distribution received', {
-        roomId: incomingRoomId,
-        questionId: incomingQuestionId,
-        totalResponses: payload.totalResponses
-      })
+      const question = generatedQuestionsRef.current.find(q => String(q._id) === incomingQuestionId) || activeQuestionRef.current
+      // Keep distributions keyed by their own question ID. Filtering against the current-question
+      // ref here could discard a valid first answer during a question transition; rendering selects
+      // the current key separately.
+      setOptionDistributions(prev => applyDistributionEvent(prev, payload, roomId, question))
     }
     socket.on('counts:updated', handleCounts)
     socket.on('poll:distribution:updated', handleDistribution)
@@ -205,14 +211,14 @@ function RoomDetailPage() {
       socket.off('counts:updated', handleCounts)
       socket.off('poll:distribution:updated', handleDistribution)
     }
-  }, [socket, roomId, generatedQuestions, activeQuestion])
+  }, [socket, roomId])
 
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
     if (!socket) return
 
   const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const timeToAnswer = question.timeToAnswer || roomSettingsRef.current.timeToAnswer || 30
     const questionId = String(question?._id || question?.id || '')
 
     // Clear any existing timer
@@ -229,13 +235,16 @@ function RoomDetailPage() {
     questionTimerRef.current = setInterval(() => {
       setQuestionTimeLeft(prev => {
         if (questionTimerQuestionIdRef.current !== questionId) return prev
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          questionTimerQuestionIdRef.current = null
+          if (prev <= 1) {
+            clearInterval(questionTimerRef.current)
+            questionTimerRef.current = null
+            questionTimerQuestionIdRef.current = null
+            const currentRoom = roomRef.current
+            if (socket && currentRoom?.code) {
+              endQuestion({ roomCode: currentRoom.code, questionId })
+            }
           setActiveQuestion(null)
           setPollEnded(true)
-          setLastPollQuestionId(null)
           return 0
         }
         return prev - 1
@@ -243,27 +252,34 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-    const handleQuestionLaunched = (data) => {
+  const handleQuestionLaunched = (data) => {
     const question = data?.question || data
     const questionId = data?.questionId || question?._id
     if (!questionId) return
-    const fullQuestion = generatedQuestions.find((item) => String(item._id) === String(questionId)) || question
+    const fullQuestion = generatedQuestionsRef.current.find((item) => String(item._id) === String(questionId)) || question
     const currentQuestionId = String(questionId)
+    const previousQuestionId = activeQuestionIdRef.current
+    questionEpochRef.current += 1
     if (import.meta.env.DEV) console.debug('[live] teacher question launched', { questionId: currentQuestionId })
+    // Keep the live-event filter in sync synchronously, before React schedules the state update.
+    // This prevents the first distribution event for a newly started question from being checked
+    // against the previous question ID.
+    activeQuestionIdRef.current = currentQuestionId
     setLastPollQuestionId(currentQuestionId)
     // Keep each question's statistics isolated. The live view starts at zero while the
     // previously completed question remains available under its own key in the state map.
     setOptionDistributions(prev => {
       // The same-question launch can be the canonical replay sent after refresh/reconnect.
       // Preserve the REST/socket aggregate already restored for that question.
-      if (activeQuestionIdRef.current === currentQuestionId || lastPollQuestionId === currentQuestionId) return prev
-      return initializeQuestionDistribution(prev, fullQuestion, activeQuestionIdRef.current)
+      if (previousQuestionId === currentQuestionId) return prev
+      return initializeQuestionDistribution(prev, fullQuestion, previousQuestionId)
     })
     startQuestionTimer(fullQuestion)
   }
 
   const handleQuestionEnded = (data) => {
-    if (data?.questionId && lastPollQuestionId && String(data.questionId) !== String(lastPollQuestionId)) return
+    if (data?.questionId && activeQuestionIdRef.current && String(data.questionId) !== String(activeQuestionIdRef.current)) return
+    questionEpochRef.current += 1
     if (questionTimerRef.current) {
       clearInterval(questionTimerRef.current)
       questionTimerRef.current = null
@@ -272,19 +288,24 @@ function RoomDetailPage() {
     setActiveQuestion(null)
     setQuestionTimeLeft(0)
     setPollEnded(true)
-    setLastPollQuestionId(null)
   }
 
-    socket.on('new_question', handleQuestionLaunched)
-    socket.on('question:started', handleQuestionLaunched)
+    const handleNewQuestion = (data) => {
+      handleQuestionLaunched(data)
+    }
+    const handleQuestionStarted = (data) => {
+      handleQuestionLaunched(data)
+    }
+    socket.on('new_question', handleNewQuestion)
+    socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
 
     return () => {
-      socket.off('new_question', handleQuestionLaunched)
-      socket.off('question:started', handleQuestionLaunched)
+      socket.off('new_question', handleNewQuestion)
+      socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
     }
-  }, [socket, roomSettings.timeToAnswer, generatedQuestions, lastPollQuestionId])
+  }, [socket])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -561,14 +582,19 @@ function RoomDetailPage() {
 
   const loadRoom = async () => {
     setIsLoading(true)
+    const requestEpoch = questionEpochRef.current
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
-      if (roomData?.currentQuestion) {
-        setLastPollQuestionId(String(roomData.currentQuestion))
-        setPollEnded(Boolean(roomData.endedAt))
-      } else {
-        setPollEnded(true)
+      // This request may have started before a question lifecycle socket event. Do not let an
+      // older REST snapshot move the teacher back to a previous question after that event.
+      if (requestEpoch === questionEpochRef.current) {
+        if (roomData?.currentQuestion) {
+          setLastPollQuestionId(String(roomData.currentQuestion))
+          setPollEnded(Boolean(roomData.endedAt))
+        } else {
+          setPollEnded(true)
+        }
       }
       // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
       if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
@@ -1231,10 +1257,6 @@ function RoomDetailPage() {
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
-
-  const pollQuestion = generatedQuestions.find((question) => String(question._id) === String(lastPollQuestionId)) || activeQuestion
-  const pollDistribution = lastPollQuestionId ? optionDistributions[String(lastPollQuestionId)] : null
-  const pollIsActive = !pollEnded
 
   if (isLoading) {
     return (
@@ -1918,15 +1940,6 @@ function RoomDetailPage() {
               )}
             </div>
 
-            {pollQuestion && pollDistribution && (
-              <OptionDistribution
-                question={pollQuestion}
-                distribution={pollDistribution}
-                totalParticipants={totalParticipants}
-                isActive={pollIsActive}
-                isMobile={isMobile}
-              />
-            )}
             {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
@@ -1984,13 +1997,22 @@ function RoomDetailPage() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         {(q.options || []).map((opt, optIdx) => {
                           const letter = String.fromCharCode(65 + optIdx)
+                          const distribution = optionDistributions[String(q._id)]
+                          const optionStat = distribution?.options?.find(option => Number(option.optionIndex) === optIdx)
+                          const totalResponses = Number(distribution?.totalResponses ?? answerCounts[q._id]) || 0
+                          const count = Number(optionStat?.count) || 0
+                          const percentage = totalResponses
+                            ? Math.max(0, Math.min(100, Number(((count / totalResponses) * 100).toFixed(2))))
+                            : 0
+                          const accent = opt.isCorrect ? '#059669' : '#3b82f6'
                           return (
                             <div key={optIdx} style={{
                               padding: '8px 12px',
                               background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
                               border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
                               borderRadius: '6px',
-                              display: 'flex',
+                              display: 'grid',
+                              gridTemplateColumns: '22px minmax(0, 1fr) 86px 18px',
                               alignItems: 'center',
                               gap: '8px',
                               fontSize: '13px',
@@ -2011,12 +2033,21 @@ function RoomDetailPage() {
                               }}>
                                 {letter}
                               </span>
-                              <span style={{ fontWeight: opt.isCorrect ? '600' : '400' }}>
+                              <span style={{ minWidth: 0, fontWeight: opt.isCorrect ? '600' : '400' }}>
                                 {opt.text}
+                              </span>
+                              <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                {percentage}% {'·'} {count}
+                              </span>
+                              <span style={{ display: 'none', marginLeft: 'auto', color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                                {percentage}% Â· {count}
                               </span>
                               {opt.isCorrect && (
                                 <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
                               )}
+                              <div style={{ gridColumn: '1 / -1', height: '7px', marginTop: '2px', background: 'var(--border-color)', borderRadius: '999px', overflow: 'hidden' }}>
+                                <div style={{ width: `${percentage}%`, height: '100%', minWidth: percentage > 0 ? '4px' : 0, background: accent, borderRadius: '999px', transition: 'width 250ms ease' }} />
+                              </div>
                             </div>
                           )
                         })}
