@@ -1,5 +1,5 @@
 import express from 'express'
-import { register, login, getUserById, checkEmailExists, updateUserRole, updateProfile, resetOwnPassword } from '../services/authService.js'
+import { register, login, getUserById, checkEmailExists, updateProfile, resetOwnPassword } from '../services/authService.js'
 import { generateResetToken, verifyResetToken, resetPassword } from '../services/passwordService.js'
 import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
@@ -72,22 +72,13 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   }
 })
 
-// Update user role (called after registration role selection)
-router.put('/role', authenticate, async (req, res) => {
-  try {
-    const { role } = req.body
-    if (!['teacher', 'student'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' })
-    }
-    
-    const user = await updateUserRole(req.user._id, role)
-    res.json({ 
-      message: 'Role updated successfully',
-      user 
-    })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+// SECURITY FIX: Disabled endpoint to prevent role escalation.
+// Role is set once at registration (services/authService.js register()) or derived from
+// Samagama SSO (services/samagamaService.js), and must never be updated via self-service afterward.
+// Verified that there is no legitimate frontend caller (frontend authStore.js updateRole() only
+// mutates local Zustand state and never calls /api/auth/role).
+router.put('/role', authenticate, (req, res) => {
+  return res.status(403).json({ error: 'Role modification is disabled' })
 })
 
 // Get current user
