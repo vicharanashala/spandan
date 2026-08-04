@@ -5,6 +5,7 @@ import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { isRoomHost } from '../services/roomService.js'
 const router = express.Router()
 
 // Apply authentication to all routes
@@ -281,8 +282,8 @@ router.get('/', async (req, res) => {
       return res.status(404).json({ error: 'Room not found' })
     }
 
-    // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    // Check access: room host (owner or co-host) OR student member
+    const isTeacher = isRoomHost(room, currentUser._id)
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
     
     // If student is querying a different student's data, deny
@@ -413,8 +414,8 @@ router.get('/stats/room/:roomId', async (req, res) => {
       return res.status(404).json({ error: 'Room not found' })
     }
 
-    // Only the room owner (teacher) can view detailed stats
-    if (room.teacher.toString() !== currentUser._id.toString()) {
+    // Only the room host (owner or co-host) can view detailed stats
+    if (!isRoomHost(room, currentUser._id)) {
       return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
     }
 
@@ -510,7 +511,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       return res.status(404).json({ error: 'Room not found' })
     }
     
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = isRoomHost(room, currentUser._id)
     const isSelf = currentUser._id.toString() === studentId
     
     // Allow if teacher owns room OR if student is viewing their own data
@@ -707,7 +708,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
 
     // Check if teacher owns the room
     const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = room && isRoomHost(room, currentUser._id)
     
     // Check if student is a member of the room
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
@@ -781,7 +782,7 @@ router.get('/room/:roomId/export', async (req, res) => {
 
     const room = await Room.findById(roomId).lean()
     if (!room) return res.status(404).json({ error: 'Room not found' })
-    if (room.teacher.toString() !== currentUser._id.toString()) {
+    if (!isRoomHost(room, currentUser._id)) {
       return res.status(403).json({ error: 'Not authorized to export this room' })
     }
 

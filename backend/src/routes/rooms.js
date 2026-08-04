@@ -1,5 +1,5 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom, isRoomHost, getRoomsByCoHost, removeCoHost, generateCoHostInvite, joinAsCoHost } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -22,7 +22,7 @@ router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, val
   }
 })
 
-// Get rooms for current teacher
+// Get rooms for current teacher (owned) + rooms they co-host
 router.get('/', authenticate, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query
@@ -31,15 +31,15 @@ router.get('/', authenticate, async (req, res) => {
     const skip = (pageNum - 1) * limitNum
 
     if (req.user.role === 'teacher') {
-      const [rooms, total] = await Promise.all([
-        getRoomsByTeacher(req.user._id, { skip, limit: limitNum }),
-        req.user.model || Promise.resolve(null)
-      ])
-      // Count total rooms for teacher
       const Room = (await import('../models/Room.js')).default
-      const totalCount = await Room.countDocuments({ teacher: req.user._id })
-      res.json({ 
+      const [rooms, coHostRooms, totalCount] = await Promise.all([
+        getRoomsByTeacher(req.user._id, { skip, limit: limitNum }),
+        getRoomsByCoHost(req.user._id),
+        Room.countDocuments({ teacher: req.user._id })
+      ])
+      res.json({
         rooms,
+        coHostRooms,
         pagination: {
           page: pageNum,
           limit: limitNum,
@@ -55,18 +55,16 @@ router.get('/', authenticate, async (req, res) => {
   }
 })
 
-// Get room by ID
+// Get room by ID — owner, co-hosts, and student members can access
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
-    // Check if user is the room teacher (owner) or a student member
-    const isOwner = room.teacher._id.toString() === req.user._id.toString()
+
+    const isHost = isRoomHost(room, req.user._id)
     const isStudentMember = await RoomMember.findOne({ roomId: req.params.id, studentId: req.user._id })
-    
-    // Only the room owner OR room members can access
-    if (!isOwner && !isStudentMember) {
+
+    if (!isHost && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
 
@@ -74,7 +72,12 @@ router.get('/:id', authenticate, async (req, res) => {
     // number immediately (the room:joined/room:left socket events keep it updated after load).
     const participants = await RoomMember.countDocuments({ roomId: req.params.id })
 
-    res.json({ room, participants })
+    // Let the client know their role so the UI can hide owner-only controls
+    res.json({
+      room,
+      participants,
+      isOwner: room.teacher._id.toString() === req.user._id.toString()
+    })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -176,6 +179,33 @@ router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
+  }
+})
+
+// ─── Co-host management routes (owner-only except GET) ───────────────────────
+
+// Generate a co-host invite code — owner only, multi-use, 24h code TTL
+// Body: { coHostDuration: <ms> | null }  — null means "until session ends"
+router.post('/:id/cohost-invite', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const coHostDuration = req.body?.coHostDuration ?? null  // null = until session ends
+    const invite = await generateCoHostInvite(req.params.id, req.user._id, coHostDuration)
+    res.json(invite)
+  } catch (error) {
+    const status = error.message === 'Room not found' ? 404 : 403
+    res.status(status).json({ error: error.message })
+  }
+})
+
+// Teacher submits an invite code to join a room as co-host
+router.post('/join-as-cohost', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const { code } = req.body
+    if (!code) return res.status(400).json({ error: 'code is required' })
+    const result = await joinAsCoHost(code, req.user._id)
+    res.json(result)
+  } catch (error) {
+    res.status(400).json({ error: error.message })
   }
 })
 

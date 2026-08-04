@@ -3,6 +3,7 @@ import { authenticate, authorize, requireApprovedTeacher } from '../middleware/a
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
+import { isRoomHost } from '../services/roomService.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
 const router = express.Router()
@@ -171,9 +172,9 @@ router.get('/', async (req, res) => {
     const RoomMember = (await import('../models/RoomMember.js')).default
     const currentUser = req.user
 
-    // Check access: teacher owns room OR student is member
+    // Check access: room host (owner or co-host) OR student member
     const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = room && isRoomHost(room, currentUser._id)
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
 
     if (!isTeacher && !isStudentMember) {

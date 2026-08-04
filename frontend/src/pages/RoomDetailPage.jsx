@@ -38,6 +38,17 @@ function RoomDetailPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showCoHostModal, setShowCoHostModal] = useState(false)
+  const [coHostInvite, setCoHostInvite] = useState(null)    // { code, expiresAt, coHostDuration }
+  const [coHostInviteLoading, setCoHostInviteLoading] = useState(false)
+  const [coHostCodeCopied, setCoHostCodeCopied] = useState(false)
+  // Duration the owner sets for how long a teacher stays a co-host after redeeming the code.
+  // Stored in ms; null = until the session ends (no expiry).
+  const [coHostDuration, setCoHostDuration] = useState(3600000)  // default 1 hour
+
+  // True when the logged-in teacher is a co-host (not the room owner).
+  // Used to show the 'Co-Host' badge and hide owner-only controls.
+  const isCoHost = room && user && room.teacher?._id?.toString() !== user._id?.toString()
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
 
@@ -201,6 +212,12 @@ function RoomDetailPage() {
 
   const handleQuestionLaunched = (data) => {
     console.log('[QUESTION LAUNCHED]', data)
+    // Start the countdown timer so all teachers see the live window
+    startQuestionTimer(data)
+    // Refresh questions from DB so all teachers (owner, co-hosts) get the full
+    // question data in their Past Questions list — the socket broadcast is
+    // sanitized (answers stripped), so we re-fetch to get the complete record.
+    if (room?._id) loadQuestions(room._id)
   }
 
     socket.on('new_question', handleQuestionLaunched)
@@ -210,7 +227,8 @@ function RoomDetailPage() {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
     }
-  }, [socket, roomSettings.timeToAnswer])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, roomSettings.timeToAnswer, room?._id])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -1225,7 +1243,24 @@ function RoomDetailPage() {
         <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
+                {isCoHost && (
+                  <span style={{
+                    background: 'rgba(139, 92, 246, 0.18)',
+                    color: '#c4b5fd',
+                    border: '1px solid rgba(139, 92, 246, 0.45)',
+                    borderRadius: '20px',
+                    padding: '3px 11px',
+                    fontSize: '11px',
+                    fontWeight: '700',
+                    whiteSpace: 'nowrap',
+                    letterSpacing: '0.6px',
+                    textTransform: 'uppercase',
+                    flexShrink: 0
+                  }}>👥 Co-Host</span>
+                )}
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1293,6 +1328,37 @@ function RoomDetailPage() {
                 {copied ? '✓ Copied' : '📋 Copy'}
               </button>
             </div>
+
+            {/* Co-host invite code button — owner only */}
+            {!isCoHost && !isEnded && (
+              <button
+                onClick={async () => {
+                  setShowCoHostModal(true)
+                  // Always generate a fresh code when opening the modal so the
+                  // duration the owner just picked is applied to the new code.
+                  setCoHostInviteLoading(true)
+                  setCoHostInvite(null)
+                  try {
+                    const res = await fetch(`${API_URL}/rooms/${room._id}/cohost-invite`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                      body: JSON.stringify({ coHostDuration })
+                    })
+                    const data = await res.json()
+                    if (res.ok) setCoHostInvite(data)
+                  } catch (e) { console.error(e) }
+                  finally { setCoHostInviteLoading(false) }
+                }}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
+                  padding: '8px 16px', border: '2px solid #7c3aed44', borderRadius: '10px',
+                  background: '#7c3aed11', cursor: 'pointer', color: '#7c3aed'
+                }}
+              >
+                <span style={{ fontSize: '22px' }}>🎫</span>
+                <span style={{ fontSize: '11px', fontWeight: '700', whiteSpace: 'nowrap' }}>Co-host Code</span>
+              </button>
+            )}
 
             {/* Live participant count — seeded on load, kept current by room:joined / room:left */}
             <div style={{
@@ -1379,8 +1445,8 @@ function RoomDetailPage() {
               </div>
             )}
 
-            {/* Paste & Generate Button */}
-            {!isEnded && (
+            {/* Paste & Generate Button — owner only, co-hosts cannot alter transcripts */}
+            {!isEnded && !isCoHost && (
               <button
                 onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
                 style={{
@@ -1620,31 +1686,32 @@ function RoomDetailPage() {
                   <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
                     {videoSessionActive
                       ? (isTranscribing ? 'Listening to tab audio...' : 'Session ready - press play to capture.')
-                      : 'Share this tab’s audio, then play the video to capture the lecture.'}
+                      : 'Share this tab's audio, then play the video to capture the lecture.'}
                     {'  '}{modelStatus}
                   </p>
                 </div>
               )}
 
-              {/* Mic controls (normal mode) */}
+              {/* Mic controls (normal mode) — disabled for co-hosts */}
               {!isVideoMode && (
               <>
-              {/* Mic Button */}
+              {/* Mic Button — disabled for co-hosts (they cannot record/transcribe) */}
               <button
-                onClick={toggleRecording}
-                disabled={isEnded}
+                onClick={isCoHost ? undefined : toggleRecording}
+                disabled={isEnded || isCoHost}
+                title={isCoHost ? 'Recording is only available to the room owner' : undefined}
                 style={{
                   width: '80px',
                   height: '80px',
                   borderRadius: '50%',
-                  background: isEnded
+                  background: (isEnded || isCoHost)
                     ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
                     : (isRecording
                         ? 'linear-gradient(135deg, #dc2626, #ef4444)'
                         : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
-                  cursor: isEnded ? 'not-allowed' : 'pointer',
+                  cursor: (isEnded || isCoHost) ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1671,8 +1738,8 @@ function RoomDetailPage() {
 
               {/* Status Text */}
               <div style={{ textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
-                  {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
+                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: (isRecording && !isCoHost) ? '#ef4444' : 'var(--text-primary)' }}>
+                  {isCoHost ? 'Not available' : (isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording'))}
                 </p>
                 <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
                   {modelStatus}
@@ -2113,6 +2180,126 @@ function RoomDetailPage() {
           onNext={handleTextQuestionClose}
           isLast={true}
         />
+      )}
+
+      {/* Co-host invite code modal */}
+      {showCoHostModal && (
+        <div
+          onClick={() => setShowCoHostModal(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-card)', borderRadius: '16px', padding: '32px',
+              width: '400px', maxWidth: '92vw', boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
+              textAlign: 'center'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3 style={{ margin: 0, fontSize: '17px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                🎫 Co-host Invite Code
+              </h3>
+              <button
+                onClick={() => setShowCoHostModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+              >✕</button>
+            </div>
+
+            {/* Duration picker — owner sets how long the co-host relationship lasts */}
+            <div style={{ marginBottom: '20px', textAlign: 'left' }}>
+              <label style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-secondary)', letterSpacing: '0.5px', textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
+                Co-host valid for
+              </label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {[
+                  { label: '30 min', value: 30 * 60 * 1000 },
+                  { label: '1 hour', value: 60 * 60 * 1000 },
+                  { label: '2 hours', value: 2 * 60 * 60 * 1000 },
+                  { label: '4 hours', value: 4 * 60 * 60 * 1000 },
+                  { label: 'Until session ends', value: null }
+                ].map(opt => (
+                  <button
+                    key={opt.label}
+                    onClick={() => setCoHostDuration(opt.value)}
+                    style={{
+                      padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '600',
+                      cursor: 'pointer', transition: 'all 0.15s ease',
+                      background: coHostDuration === opt.value ? '#7c3aed' : 'var(--bg-primary)',
+                      color: coHostDuration === opt.value ? '#fff' : 'var(--text-secondary)',
+                      border: coHostDuration === opt.value ? '2px solid #7c3aed' : '2px solid var(--border-color)'
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {coHostInviteLoading ? (
+              <div style={{ padding: '24px 0', color: 'var(--text-secondary)', fontSize: '14px' }}>Generating code…</div>
+            ) : coHostInvite ? (
+              <>
+                <div style={{
+                  fontSize: '34px', fontWeight: '800', letterSpacing: '8px', color: '#7c3aed',
+                  fontFamily: '"Courier New", monospace', padding: '18px 0', background: '#7c3aed0d',
+                  borderRadius: '10px', marginBottom: '14px'
+                }}>
+                  {coHostInvite.code}
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(coHostInvite.code)
+                    setCoHostCodeCopied(true)
+                    setTimeout(() => setCoHostCodeCopied(false), 2000)
+                  }}
+                  style={{
+                    width: '100%', padding: '10px', marginBottom: '10px',
+                    background: coHostCodeCopied ? '#10b981' : '#7c3aed',
+                    color: '#fff', border: 'none', borderRadius: '8px',
+                    fontSize: '14px', fontWeight: '700', cursor: 'pointer'
+                  }}
+                >
+                  {coHostCodeCopied ? '✓ Copied!' : '📋 Copy Code'}
+                </button>
+                <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Share this code with any teacher · multiple teachers can use it.
+                  {coHostInvite.coHostDuration
+                    ? ` They will be co-host for ${coHostInvite.coHostDuration >= 3600000 ? (coHostInvite.coHostDuration / 3600000) + 'h' : (coHostInvite.coHostDuration / 60000) + ' min'}.`
+                    : ' They will be co-host until the session ends.'}
+                </p>
+                <button
+                  onClick={async () => {
+                    setCoHostInviteLoading(true)
+                    setCoHostInvite(null)
+                    try {
+                      const res = await fetch(`${API_URL}/rooms/${room._id}/cohost-invite`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ coHostDuration })
+                      })
+                      const data = await res.json()
+                      if (res.ok) setCoHostInvite(data)
+                    } catch (e) { console.error(e) }
+                    finally { setCoHostInviteLoading(false) }
+                  }}
+                  style={{
+                    background: 'none', border: '1px solid var(--border-color)',
+                    borderRadius: '8px', padding: '8px 16px', fontSize: '13px',
+                    color: 'var(--text-secondary)', cursor: 'pointer'
+                  }}
+                >
+                  🔄 Regenerate with new duration
+                </button>
+              </>
+            ) : (
+              <div style={{ padding: '24px 0', color: '#ef4444', fontSize: '14px' }}>Failed to generate code. Try again.</div>
+            )}
+          </div>
+        </div>
       )}
 
       <style>{`

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
@@ -6,6 +6,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import useIsMobile from '../hooks/useIsMobile'
+import { API_URL } from '../config.js'
 
 function ManageRoomPage() {
   const navigate = useNavigate()
@@ -17,6 +18,7 @@ function ManageRoomPage() {
     if (token) {
       setAuthToken(token)
       fetchRooms()
+      fetchCoHostRooms()
     }
   }, [token])
 
@@ -28,6 +30,11 @@ function ManageRoomPage() {
         console.error('Failed to delete room:', err)
       }
     }
+  }
+
+  const isOwner = (room) => {
+    const teacherId = room.teacher?._id || room.teacher
+    return teacherId?.toString() === user?._id?.toString()
   }
 
   // Filter only active rooms (not ended)
@@ -227,21 +234,24 @@ function ManageRoomPage() {
                     >
                       Manage
                     </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteRoom(room._id) }}
-                      style={{
-                        padding: '11px 16px',
-                        background: '#ef4444',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '14px',
-                        fontWeight: '600',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      ✕
-                    </button>
+                    {/* Delete — owner only */}
+                    {isOwner(room) && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteRoom(room._id) }}
+                        style={{
+                          padding: '11px 16px',
+                          background: '#ef4444',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 'var(--radius)',
+                          fontSize: '14px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -259,6 +269,64 @@ function ManageRoomPage() {
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
               <p style={{ margin: 0 }}>No active rooms.</p>
             </div>
+          )}
+
+          {/* Co-hosting section */}
+          {coHostRooms.length > 0 && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', marginTop: '36px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                <h2 style={{ margin: 0, fontSize: isMobile ? '17px' : '18px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  🤝 Co-hosting
+                  <span style={{ fontSize: '12px', fontWeight: 500, background: '#7c3aed', color: 'white', borderRadius: '999px', padding: '2px 10px' }}>
+                    {coHostRooms.length}
+                  </span>
+                </h2>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+                {coHostRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    onClick={() => navigate(`/teacher/room/${room._id}`)}
+                    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--shadow-lg)' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)' }}
+                    style={{
+                      display: 'flex', flexDirection: 'column', padding: '24px',
+                      background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)',
+                      border: '2px solid #7c3aed33', boxShadow: 'var(--shadow-md)',
+                      minHeight: '150px', minWidth: 0, cursor: 'pointer',
+                      transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                      boxSizing: 'border-box', position: 'relative'
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: '14px', right: '14px',
+                      fontSize: '11px', fontWeight: 600, background: '#7c3aed22',
+                      color: '#7c3aed', borderRadius: '999px', padding: '3px 10px',
+                      border: '1px solid #7c3aed44'
+                    }}>Co-host</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h3 style={{ margin: '0 0 10px', fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.01em', paddingRight: '70px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>Owner: <strong>{room.teacher?.name || 'Unknown'}</strong></p>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>Code: <strong style={{ color: '#7c3aed', letterSpacing: '1px' }}>{room.code}</strong></p>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>{room.questionCount || 0} questions</p>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/teacher/room/${room._id}`) }}
+                      style={{
+                        marginTop: '20px', padding: '11px 18px',
+                        background: 'linear-gradient(135deg, #7c3aed, #9333ea)',
+                        color: '#fff', border: 'none', borderRadius: 'var(--radius)',
+                        fontSize: '14px', fontWeight: 600, cursor: 'pointer'
+                      }}
+                    >
+                      Enter Session →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>

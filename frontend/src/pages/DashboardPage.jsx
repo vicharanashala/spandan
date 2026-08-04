@@ -21,6 +21,7 @@ function DashboardPage() {
   const [videoUrl, setVideoUrl] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [coHostRooms, setCoHostRooms] = useState([])
 
   // Video Mode needs a Chromium browser (getDisplayMedia tab-audio capture on the teacher side).
   const isChromium = /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent)
@@ -53,6 +54,7 @@ function DashboardPage() {
 
       const allRooms = roomsData.rooms || []
       const activeRooms = allRooms.filter(r => !r.endedAt)
+      setCoHostRooms((roomsData.coHostRooms || []).filter(r => !r.endedAt))
 
       // Fetch all questions for teacher's rooms
       let totalPolls = 0
@@ -469,6 +471,91 @@ function DashboardPage() {
                 <p style={{ margin: 0 }}>No rooms yet. Create your first room above!</p>
               </div>
             )}
+
+          {/* Co-hosting Section */}
+          {coHostRooms.length > 0 && (
+            <>
+              <h2 style={{ margin: '32px 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                🤝 Co-hosting
+                <span style={{ fontSize: '12px', fontWeight: 500, background: '#7c3aed', color: 'white', borderRadius: '999px', padding: '2px 10px' }}>
+                  {coHostRooms.length}
+                </span>
+              </h2>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
+                gap: '16px'
+              }}>
+                {coHostRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    onClick={() => navigate(`/teacher/room/${room._id}`)}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-2px)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = 'translateY(0)'
+                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                    }}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '20px',
+                      background: 'var(--bg-card)',
+                      borderRadius: 'var(--radius-lg)',
+                      border: '2px solid #7c3aed33',
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      minWidth: 0,
+                      cursor: 'pointer',
+                      transition: 'transform 0.18s ease, box-shadow 0.18s ease',
+                      boxSizing: 'border-box',
+                      position: 'relative'
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: '12px', right: '12px',
+                      fontSize: '11px', fontWeight: 600, background: '#7c3aed22',
+                      color: '#7c3aed', borderRadius: '999px', padding: '2px 8px',
+                      border: '1px solid #7c3aed44'
+                    }}>Co-host</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px', letterSpacing: '-0.01em', paddingRight: '64px' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Owner: <strong>{room.teacher?.name || 'Unknown'}</strong>
+                      </p>
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: '#7c3aed', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        {room.questionCount || 0} questions
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/teacher/room/${room._id}`) }}
+                      style={{
+                        marginTop: '16px',
+                        padding: '10px 16px',
+                        background: 'linear-gradient(135deg, #7c3aed, #9333ea)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 'var(--radius)',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 10px rgba(124,58,237,.25)'
+                      }}
+                    >
+                      Enter Session →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -8,6 +8,7 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'join-as-guest', label: 'Join as Co-host', icon: '🎫', path: '/teacher/join-as-guest' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/teacher/help' },
   ],
   student: [

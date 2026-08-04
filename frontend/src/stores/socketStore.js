@@ -54,6 +54,16 @@ export const useSocketStore = create((set, get) => ({
         if (data.expired) {
           useAuthStore.getState().handleSessionExpired()
         }
+      } else {
+        // Successful auth → re-join any room we were in. This handles the race where
+        // room:join (emitted from the 'connect' handler) fires before the server's
+        // authenticate event finishes populating socket.data — meaning the server refused
+        // the join with "Not authenticated". Re-joining here guarantees the host-status
+        // cache is always warmed after auth completes.
+        const { joinedRoom } = get()
+        if (joinedRoom?.roomCode) {
+          socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId })
+        }
       }
     })
 

@@ -29,9 +29,15 @@ export default defineConfig(({ mode }) => {
           target: 'http://localhost:3001',
           changeOrigin: true
         },
-        '/socket.io': {
+        // The socket.io client uses path '/spandan/socket.io' (matching the production nginx
+        // rewrite), but the backend socket.io server listens on the default '/socket.io'.
+        // This rewrite bridges the two so WebSocket connections work through the Vite proxy
+        // the same way they do behind nginx in production.
+        '/spandan/socket.io': {
           target: 'http://localhost:3001',
-          ws: true
+          ws: true,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/spandan\/socket\.io/, '/socket.io')
         }
       }
     }

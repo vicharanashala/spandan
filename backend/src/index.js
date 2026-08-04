@@ -401,16 +401,30 @@ function scheduleSocketExpiry(socket) {
 }
 
 // Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
-// Returns the room doc when the socket is the room's teacher-owner, else null. Returning the room
-// (not just a bool) lets callers use room._id (e.g. to mark the current question) without re-looking
-// it up; truthiness of the result is still a valid owner check.
+// Returns a room-like object { _id } if the socket's authenticated user is the owner or a co-host,
+// or null otherwise. Host status is cached on socket.data.hostedRooms at room:join time so this
+// function never needs to hit MongoDB during a live session — critical for reliability when Atlas
+// DNS is briefly flaky.
 async function verifyRoomOwner(socket, roomCode) {
   if (socket.data?.role !== 'teacher' || !roomCode) return null
+
+  // Fast path: use the host-status we already verified at room:join time.
+  const cachedId = socket.data?.hostedRooms?.[roomCode]
+  if (cachedId) return { _id: cachedId }
+
+  // Cold path: socket joined before this cache existed (e.g. after a server restart mid-session)
+  // — fall back to a live DB look-up and then warm the cache.
   try {
     const Room = (await import('./models/Room.js')).default
+    const { isRoomHost } = await import('./services/roomService.js')
     const room = await Room.findByCode(roomCode)
-    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
-  } catch {
+    if (!room || !isRoomHost(room, socket.data.userId)) return null
+    // Warm the cache so the next event is fast.
+    if (!socket.data.hostedRooms) socket.data.hostedRooms = {}
+    socket.data.hostedRooms[roomCode] = room._id
+    return room
+  } catch (err) {
+    console.error('[verifyRoomOwner] DB error:', err.message)
     return null
   }
 }
@@ -528,6 +542,16 @@ io.on('connection', (socket) => {
       if (!decision.ok) {
         socket.emit('room:error', { error: decision.error })
         return
+      }
+
+      // Cache host status so verifyRoomOwner never needs to re-query the DB mid-session.
+      // This is needed for co-hosts: isRoomHost checks the coHosts[] subdocuments.
+      if (role === 'teacher' && room) {
+        const { isRoomHost } = await import('./services/roomService.js')
+        if (isRoomHost(room, userId)) {
+          if (!socket.data.hostedRooms) socket.data.hostedRooms = {}
+          socket.data.hostedRooms[roomCode] = room._id
+        }
       }
 
       // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
