@@ -111,15 +111,9 @@ router.get('/me', authenticate, async (req, res) => {
   }
 })
 
-// Check email availability
-router.get('/check-email/:email', async (req, res) => {
-  try {
-    const exists = await checkEmailExists(req.params.email)
-    res.json({ available: !exists })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// GET /check-email/:email removed: it was an unauthenticated account-enumeration oracle (returned
+// whether an email is registered) with no callers. Email availability is covered by POST /register
+// (returns "email already registered") and the OTP signup flow.
 
 // Forgot password - send reset email
 router.post('/forgot-password', async (req, res) => {

@@ -58,8 +58,7 @@ export const api = {
 export const authApi = {
   login: (email, password) => api.post('/auth/login', { email, password }),
   register: (name, email, password, role) => api.post('/auth/register', { name, email, password, role }),
-  getMe: () => api.get('/auth/me'),
-  checkEmail: (email) => api.get(`/auth/check-email/${email}`)
+  getMe: () => api.get('/auth/me')
 }
 
 export const adminApi = {

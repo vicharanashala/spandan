@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
@@ -32,7 +33,6 @@ function StudentRoomPage() {
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
-  const [myRank, setMyRank] = useState(null) // this student's latest rank, returned by the submit POST
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
@@ -334,13 +334,9 @@ function StudentRoomPage() {
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
 
-      // Phase 1: the server now emits the throttled leaderboard/answer-count updates itself
-      // (from this authenticated POST) — the client no longer emits points:update /
-      // response:submit. The POST returns this student's current rank; surface it so the
-      // leaderboard's "you" pill updates even when outside the broadcast top-N.
-      if (saveData.success && saveData.rank != null) {
-        setMyRank(saveData.rank)
-      }
+      // Phase 1: the server emits the throttled leaderboard/answer-count updates itself from this
+      // authenticated POST — the client no longer emits points:update / response:submit. The
+      // leaderboard (incl. this student's own row) refreshes once per segment, not per submit.
     } catch (err) {
       console.error('Failed to save response:', err)
     }
@@ -705,8 +701,8 @@ function StudentRoomPage() {
             </div>
           )}
 
-          {/* Live Question */}
-          {currentQuestion ? (
+          {/* Live Question — only mounted while a poll is live */}
+          {currentQuestion && (
             <div style={{
               background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
               borderRadius: 'var(--radius-lg)',
@@ -858,9 +854,12 @@ function StudentRoomPage() {
                 </button>
               )}
             </div>
-          ) : (
-            /* Waiting State - Show Passed Questions */
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          )}
+
+          {/* Waiting State (Show Passed Questions) — persistent: display-toggled, NOT unmounted, so the
+              Leaderboard keeps its socket subscription and updates ONLY on the once-per-segment
+              leaderboard:updated push, instead of re-fetching on every poll's remount. */}
+          <div style={{ display: currentQuestion ? 'none' : 'flex', flexDirection: 'column', gap: '24px' }}>
               {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
               {!isVideoMode && (
               <div style={{
@@ -1104,11 +1103,12 @@ function StudentRoomPage() {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
                     🏆 Leaderboard
                   </h3>
-                  <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} myRank={myRank} />
+                  <ErrorBoundary message="Leaderboard unavailable">
+                    <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} />
+                  </ErrorBoundary>
                 </div>
               </div>
             </div>
-          )}
         </div>
       </div>
     </div>

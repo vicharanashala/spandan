@@ -107,7 +107,9 @@ app.set('io', io)
 //      Scoring is UNAFFECTED — points are computed + saved per-response; Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
 const LEADERBOARD_SEGMENT_DELAY_MS = Number(process.env.LEADERBOARD_SEGMENT_DELAY_MS) || 15000
-const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
+// How many ranks are broadcast PUBLICLY to every student. Students below this cutoff receive only
+// their own row privately (see broadcastLeaderboard). Configurable; defaults to the classic top 10.
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
 // Rank cache ("rank on submit") must outlive a whole segment window (answering + review + delay).
 const RANK_CACHE_TTL_S = Number(process.env.LEADERBOARD_RANK_TTL_S) || 1800
 const roomLive = new Map() // roomId(str) -> { countsTimer, segmentFoldTimer, roomCode, rankByStudent, total }
@@ -201,11 +203,30 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
     }
 
     if (roomCode) {
+      // Public room push: the top N only (safe for every student to see) + the aggregate count.
       io.to(roomCode).emit('leaderboard:updated', {
         leaderboard: full.slice(0, LEADERBOARD_TOP_N),
         totalParticipants: full.length,
+        topN: LEADERBOARD_TOP_N,
         counts
       })
+      // Private push: each student ranked BELOW the public cutoff gets ONLY their own row, on their
+      // personal channel — so no student's browser ever receives the full ranking. Students inside
+      // the top N are already in the public payload, so they need no personal push. Runs once per
+      // segment; an emit to an offline user-room is a cheap no-op.
+      for (const e of full) {
+        if (e.rank > LEADERBOARD_TOP_N) {
+          io.to('user:' + e.studentId).emit('leaderboard:you', {
+            rank: e.rank,
+            studentId: e.studentId,
+            studentName: e.studentName,
+            totalPoints: e.totalPoints,
+            correctCount: e.correctCount,
+            totalAnswered: e.totalAnswered,
+            totalParticipants: full.length
+          })
+        }
+      }
     }
   } catch (err) {
     console.error('broadcastLeaderboard error:', err.message)
@@ -542,6 +563,9 @@ io.on('connection', (socket) => {
       // Authorized → now join the socket room and announce. The room-wide event carries only the
       // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
       socket.join(roomCode)
+      // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
+      // (privacy — a student never receives the full board, just the public top 10 + their own rank).
+      socket.join('user:' + userId)
       const participantCount = await RoomMember.countDocuments({ roomId: room._id })
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })

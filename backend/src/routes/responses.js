@@ -7,6 +7,10 @@ import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
 
+// How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
+// socket broadcast cutoff in index.js — both read the same env so the value is a single knob.
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
+
 // Apply authentication to all routes
 router.use(authenticate)
 
@@ -732,35 +736,36 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       leaderboard = (await computeRankedIncremental(roomId, { fold: false })).full
     }
 
-    // Students: top 10 + their rank (with ellipsis). Teachers: full leaderboard.
+    // Students: top N + their own row (with ellipsis) — never the full board. Teachers: full board.
     let visibleLeaderboard = leaderboard
     let userRank = null
-    
+
     if (!isTeacher) {
       // Find current user's rank
       const userEntry = leaderboard.find(e => e.studentId === currentUser._id.toString())
       userRank = userEntry?.rank || null
-      
-      // Get top 10 + user's entry if not in top 10
-      visibleLeaderboard = leaderboard.slice(0, 10)
-      
-      // If user is beyond top 10, add them in the middle
-      if (userEntry && userEntry.rank > 10) {
-        // Check if user is already in top 10 (shouldn't be, but safety check)
-        const alreadyInTop10 = visibleLeaderboard.some(e => e.studentId === userEntry.studentId)
-        if (!alreadyInTop10) {
+
+      // Get the top N + the user's own entry if they're below it
+      visibleLeaderboard = leaderboard.slice(0, LEADERBOARD_TOP_N)
+
+      // If user is beyond the top N, append their own row (the client renders it after a ••• gap)
+      if (userEntry && userEntry.rank > LEADERBOARD_TOP_N) {
+        // Check if user is already in the top N (shouldn't be, but safety check)
+        const alreadyInTopN = visibleLeaderboard.some(e => e.studentId === userEntry.studentId)
+        if (!alreadyInTopN) {
           visibleLeaderboard.push({ ...userEntry, isCurrentUser: true })
           visibleLeaderboard.sort((a, b) => a.rank - b.rank)
         }
       }
     }
 
-    res.json({ 
-      success: true, 
-      leaderboard: visibleLeaderboard, 
+    res.json({
+      success: true,
+      leaderboard: visibleLeaderboard,
       isTeacher,
       userRank,
-      totalParticipants: leaderboard.length
+      totalParticipants: leaderboard.length,
+      topN: LEADERBOARD_TOP_N
     })
   } catch (error) {
     console.error('Error fetching leaderboard:', error)
