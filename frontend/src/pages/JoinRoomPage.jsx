@@ -20,6 +20,7 @@ function JoinRoomPage() {
   const [error, setError] = useState('')
   const [joinedRoom, setJoinedRoom] = useState(null)
   const [isFocused, setIsFocused] = useState(false)
+  const [showCode, setShowCode] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -185,11 +186,17 @@ function JoinRoomPage() {
 
             <div style={{ marginBottom: '24px' }}>
               <input
-                type="text"
+                type={showCode ? 'text' : 'password'}
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
+                
+                onKeyDown={(e) => {
+                if (e.key === 'Enter' && !isDisabled) {
+                   handleJoinRoom()
+                   }
+                }}
                 placeholder="XXXXXX"
                 maxLength={6}
                 style={{
@@ -209,6 +216,20 @@ function JoinRoomPage() {
                   transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
                 }}
               />
+              <button
+               type="button"
+               onClick={() => setShowCode(!showCode)}
+               style={{
+               marginTop: '10px',
+               background: 'transparent',
+               border: 'none',
+               color: 'var(--accent)',
+               cursor: 'pointer',
+               fontWeight: 600
+               }}
+              >
+               {showCode ? 'Hide Code' : 'Show Code'}
+              </button>
             </div>
 
             <button
