@@ -479,6 +479,24 @@ io.use(async (socket, next) => {
   next()
 })
 
+// Closes the RoomPresence interval THIS socket opened for THIS room (see room:join below).
+// Keyed by roomCode rather than a single flat id: nothing here stops one socket from calling
+// room:join for more than one room (Socket.IO sockets can be members of several rooms at
+// once), so a flat socket.data.presenceId would get silently overwritten and orphan the
+// earlier room's interval. Shared by 'room:leave' (clean exit) and 'disconnect' (the common,
+// unclean exit) so the closing logic lives in exactly one place.
+async function closePresenceForRoom(socket, roomCode) {
+  const presenceId = socket.data?.presenceByRoom?.get(roomCode)
+  if (!presenceId) return
+  socket.data.presenceByRoom.delete(roomCode)
+  try {
+    const { closePresenceInterval } = await import('./services/presence.js')
+    await closePresenceInterval(presenceId)
+  } catch (error) {
+    console.error('Error closing presence interval:', error)
+  }
+}
+
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
   // Arm the proactive de-auth for a handshake-authenticated socket (io.use already ran authenticateSocket).
@@ -537,6 +555,21 @@ io.on('connection', (socket) => {
           { roomId: room._id, studentId: userId, joinedAt: new Date() },
           { upsert: true, new: true }
         )
+
+        // Separate, append-only presence log (RoomMember above is a live roster and its row
+        // is deleted on leave — see services/presence.js for why that can't answer "how long
+        // was this student present"). One interval per connection; the id is stashed on the
+        // socket, scoped to this room, so the specific handler that closes it later
+        // (room:leave / disconnect) closes THIS interval and not some other open one.
+        const RoomPresence = (await import('./models/RoomPresence.js')).default
+        const presence = await RoomPresence.create({
+          roomId: room._id,
+          studentId: userId,
+          joinedAt: new Date(),
+          leftAt: null
+        })
+        if (!socket.data.presenceByRoom) socket.data.presenceByRoom = new Map()
+        socket.data.presenceByRoom.set(roomCode, presence._id)
       }
 
       // Authorized → now join the socket room and announce. The room-wide event carries only the
@@ -573,6 +606,7 @@ io.on('connection', (socket) => {
       let participantCount = 0
       if (room) {
         if (role === 'student' && userId) {
+          await closePresenceForRoom(socket, roomCode)
           await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
         }
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
@@ -656,6 +690,15 @@ io.on('connection', (socket) => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
+    // Unclean exit (tab closed, wifi drop, laptop sleep) — the overwhelmingly common way a
+    // student actually leaves, and unlike room:leave it never reaches the client-driven
+    // handler above. Close every presence interval this socket still has open (it may be in
+    // more than one room) via the same function room:leave uses.
+    if (socket.data?.presenceByRoom?.size) {
+      for (const roomCode of Array.from(socket.data.presenceByRoom.keys())) {
+        closePresenceForRoom(socket, roomCode).catch(error => console.error('Error closing presence on disconnect:', error))
+      }
+    }
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
 })
