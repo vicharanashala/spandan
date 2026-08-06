@@ -25,7 +25,7 @@ function RoomDetailPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
-  const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { getRoom, updateRoom, startRoom, setAuthToken } = useRoomStore()
   const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
   // Room code + participant count use a deep blue on light, but that reads too dark on the dark card;
@@ -505,6 +505,16 @@ function RoomDetailPage() {
       setError(err.message)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleStartRoomNow = async () => {
+    if (!room?._id) return
+    try {
+      const updated = await startRoom(room._id)
+      setRoom(updated)
+    } catch (err) {
+      alert(err.message || 'Failed to start room')
     }
   }
 
@@ -1242,6 +1252,70 @@ function RoomDetailPage() {
             </div>
           )}
 
+          {/* Scheduled Room Top Banner */}
+          {room?.status === 'SCHEDULED' && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(234, 179, 8, 0.15), rgba(245, 158, 11, 0.1))',
+              border: '1px solid rgba(234, 179, 8, 0.4)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '16px 20px',
+              marginBottom: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '16px',
+              flexWrap: 'wrap'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    background: 'rgba(234, 179, 8, 0.25)',
+                    color: '#b45309'
+                  }}>
+                    ⏰ Scheduled Room — Session Not Started
+                  </span>
+                  {room.scheduledStartTime && (
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#b45309' }}>
+                      Starts: {new Date(room.scheduledStartTime).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  {totalParticipants === 0 ? (
+                    <>Students entering room code <strong style={{ color: 'var(--text-primary)' }}>{room.code}</strong> will be held in the Waiting Room until you start the session.</>
+                  ) : totalParticipants === 1 ? (
+                    <><strong style={{ color: '#b45309' }}>1 student</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
+                  ) : (
+                    <><strong style={{ color: '#b45309' }}>{totalParticipants} students</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={handleStartRoomNow}
+                style={{
+                  padding: '10px 20px',
+                  background: '#16a34a',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '14px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 10px rgba(22,163,74,.3)',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                ▶ Start Session Now
+              </button>
+            </div>
+          )}
+
           {/* Room Code Row */}
           <div style={{
             display: 'flex',
@@ -1302,14 +1376,15 @@ function RoomDetailPage() {
               justifyContent: 'center',
               gap: '4px',
               padding: '8px 20px',
-              border: '2px solid var(--border-color)',
+              border: room?.status === 'SCHEDULED' ? '2px solid rgba(234, 179, 8, 0.4)' : '2px solid var(--border-color)',
+              background: room?.status === 'SCHEDULED' ? 'rgba(234, 179, 8, 0.08)' : 'transparent',
               borderRadius: '10px'
             }}>
-              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor }}>
+              <span style={{ fontSize: '28px', fontWeight: '700', color: room?.status === 'SCHEDULED' ? '#b45309' : codeColor }}>
                 {totalParticipants}
               </span>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
-                👥 Participants
+              <span style={{ fontSize: '12px', color: room?.status === 'SCHEDULED' ? '#b45309' : 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                {room?.status === 'SCHEDULED' ? '⏳ In Waiting Room' : '👥 Participants'}
               </span>
             </div>
 

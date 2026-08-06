@@ -7,18 +7,22 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 
 function DashboardPage() {
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
-  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
+  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, startRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
+  const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
 
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  const [isScheduled, setIsScheduled] = useState(false)
+  const [scheduledStartTime, setScheduledStartTime] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
 
@@ -93,14 +97,26 @@ function DashboardPage() {
   const handleCreateRoom = async () => {
     if (!roomName.trim()) return
     if (mode === 'video' && !isValidYouTube(videoUrl)) return
+    if (isScheduled && !scheduledStartTime) return
+
     setIsCreating(true)
     try {
       const settings = { mode }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
-      await createRoom(roomName.trim(), settings)
+      const startTime = isScheduled && scheduledStartTime ? new Date(scheduledStartTime).toISOString() : null
+
+      const newRoom = await createRoom(roomName.trim(), settings, startTime)
       setRoomName('')
       setVideoUrl('')
       setMode('normal')
+      setIsScheduled(false)
+      setScheduledStartTime('')
+      await fetchRooms()
+      fetchTeacherStats()
+
+      if (newRoom.status !== 'SCHEDULED') {
+        navigate(`/teacher/room/${newRoom._id}`)
+      }
     } catch (err) {
       console.error('Failed to create room:', err)
     } finally {
@@ -374,11 +390,65 @@ function DashboardPage() {
                     marginTop: '10px'
                   }}>
                     Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio.
-                    Please open Spandan in Chrome or Edge before starting a video room.
                   </div>
                 )}
               </div>
             )}
+
+            {/* Room Scheduling */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={isScheduled}
+                  onChange={(e) => setIsScheduled(e.target.checked)}
+                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }}
+                />
+                ⏰ Schedule room for later
+              </label>
+
+              {isScheduled && (
+                <div style={{ marginTop: '12px' }}>
+                  <label style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    marginBottom: '6px'
+                  }}>
+                    Scheduled Start Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledStartTime}
+                    onChange={(e) => setScheduledStartTime(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius)',
+                      fontSize: '13px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                      background: 'var(--input-bg)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                    Students joining early will be held in the Waiting Room until you click Start Now.
+                  </div>
+                </div>
+              )}
+            </div>
             </div>
           </div>
 
@@ -397,63 +467,142 @@ function DashboardPage() {
                 gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
                 gap: '16px'
               }}>
-                {rooms.filter(r => !r.endedAt).map((room) => (
-                  <div
-                    key={room._id}
-                    onClick={() => navigate(`/teacher/room/${room._id}`)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'translateY(-2px)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'translateY(0)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                    }}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-color)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      minWidth: 0,
-                      cursor: 'pointer',
-                      transition: 'transform 0.18s ease, box-shadow 0.18s ease',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px', letterSpacing: '-0.01em' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions
-                      </p>
-                    </div>
-                    <button
+                {rooms.filter(r => !r.endedAt).map((room) => {
+                  const isScheduled = room.status === 'SCHEDULED' || Boolean(room.scheduledStartTime && room.status !== 'ACTIVE')
+                  const isPastDue = isScheduled && room.scheduledStartTime && new Date() > new Date(room.scheduledStartTime)
+                  return (
+                    <div
+                      key={room._id}
                       onClick={() => navigate(`/teacher/room/${room._id}`)}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-2px)'
+                        e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)'
+                        e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                      }}
                       style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '13px',
-                        fontWeight: 600,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        padding: '20px',
+                        background: isPastDue
+                          ? (isDark ? 'rgba(249, 115, 22, 0.15)' : 'linear-gradient(135deg, #fff7ed, #ffedd5)')
+                          : 'var(--bg-card)',
+                        borderRadius: 'var(--radius-lg)',
+                        border: isPastDue
+                          ? (isDark ? '1px solid rgba(249, 115, 22, 0.5)' : '1px solid #fdba74')
+                          : isScheduled
+                          ? '1px solid rgba(234, 179, 8, 0.4)'
+                          : '1px solid var(--border-color)',
+                        boxShadow: 'var(--shadow-md)',
+                        minHeight: '140px',
+                        minWidth: 0,
                         cursor: 'pointer',
-                        boxShadow: '0 2px 10px rgba(30,64,175,.25)'
+                        transition: 'transform 0.18s ease, box-shadow 0.18s ease, background 0.2s ease',
+                        boxSizing: 'border-box'
                       }}
                     >
-                      Manage →
-                    </button>
-                  </div>
-                ))}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+                          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                            {room.name}
+                          </h3>
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: '12px',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em',
+                            background: isPastDue ? 'rgba(249, 115, 22, 0.25)' : isScheduled ? 'rgba(234,179,8,0.2)' : 'rgba(34,197,94,0.15)',
+                            color: isPastDue ? '#ea580c' : isScheduled ? '#b45309' : '#16a34a',
+                            border: isPastDue ? '1px solid rgba(249, 115, 22, 0.4)' : isScheduled ? '1px solid rgba(234,179,8,0.4)' : '1px solid rgba(34,197,94,0.3)'
+                          }}>
+                            {isScheduled ? 'SCHEDULED' : 'ACTIVE'}
+                          </span>
+                        </div>
+                        <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
+                        </p>
+                        {isScheduled && room.scheduledStartTime && (
+                          <div style={{
+                            margin: '6px 0',
+                            padding: '6px 10px',
+                            background: isPastDue ? 'rgba(249, 115, 22, 0.12)' : 'rgba(234, 179, 8, 0.08)',
+                            borderRadius: '6px',
+                            border: isPastDue ? '1px dashed rgba(249, 115, 22, 0.5)' : '1px dashed rgba(234, 179, 8, 0.4)',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: isPastDue ? '#c2410c' : '#b45309',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px'
+                          }}>
+                            <span>⏰ {isPastDue ? 'Time Passed:' : 'Scheduled:'}</span>
+                            <span>
+                              {new Date(room.scheduledStartTime).toLocaleString(undefined, {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                        )}
+                        <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          {room.questionCount || 0} questions
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                        {isScheduled && (
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation()
+                              try {
+                                await startRoom(room._id)
+                                navigate(`/teacher/room/${room._id}`)
+                              } catch (err) {
+                                alert(err.message || 'Failed to start room')
+                              }
+                            }}
+                            style={{
+                              flex: 1,
+                              padding: '9px 12px',
+                              background: '#16a34a',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: 'var(--radius)',
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            ▶ Start
+                          </button>
+                        )}
+                        <button
+                          onClick={() => navigate(`/teacher/room/${room._id}`)}
+                          style={{
+                            flex: 1,
+                            padding: '9px 12px',
+                            background: 'var(--accent-gradient)',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: 'var(--radius)',
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            boxShadow: '0 2px 10px rgba(30,64,175,.25)'
+                          }}
+                        >
+                          Manage →
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <div style={{
