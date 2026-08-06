@@ -22,7 +22,7 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/socket.io',
+      path: '/spandan/socket.io',
       transports: ['websocket', 'polling']
     })
 
