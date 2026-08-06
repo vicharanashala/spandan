@@ -17,17 +17,21 @@
 // the teacher's download and the results page exactly. Per session we return:
 //   - questions[]: the chronological question legend (Q1 = first asked), each with text, type,
 //     response count and correct%  — the CSV's second block.
-//   - students[]:  one row per student, with points, rank, correct "x/y", accuracy, and a per-question
-//     answers map {Q1: 'correct'|'incorrect'|null}  — the CSV's first block, where the CSV's ✓/✗/blank
-//     cells become 'correct'/'incorrect'/null (null = did not answer that question).
+//   - students[]:  one row per student, with points, rank, correct "x/y", accuracy, presence
+//     (presentSeconds/presentPercent), and a per-question answers map {Q1: 'correct'|'incorrect'|null}
+//     — the CSV's first block, where the CSV's ✓/✗/blank cells become 'correct'/'incorrect'/null
+//     (null = did not answer that question).
 // This mirrors the CSV's STYLE, not its population. Unlike the teacher download (which lists only
-// students who answered), we keep the research population = everyone who joined (roster) UNION anyone
-// who answered: students who joined but never answered are kept as no-show rows (points 0, correct
-// "0/0", accuracy null, rank null, all answers null) so the export accounts for every student in the
-// room. Responders are ranked first (rank 1..N), no-shows follow.
+// students who answered), we keep the research population = everyone who was ever present (from
+// RoomPresence, which — unlike RoomMember — is never deleted on leave, so it also catches a student
+// who joined and left before the room ended) UNION anyone who answered: students who were present but
+// never answered are kept as no-show rows (points 0, correct "0/0", accuracy null, rank null, all
+// answers null, but real presentSeconds/presentPercent) so the export accounts for every student who
+// was genuinely in the room. Responders are ranked first (rank 1..N), no-shows follow.
 import express from 'express'
 import crypto from 'crypto'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import { getPresenceSecondsForRoom } from '../services/presence.js'
 
 const router = express.Router()
 
@@ -58,7 +62,6 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
   try {
     const Room = (await import('../models/Room.js')).default
     const User = (await import('../models/User.js')).default
-    const RoomMember = (await import('../models/RoomMember.js')).default
 
     const since = req.query.since ? new Date(req.query.since) : new Date(0)
     if (isNaN(since.getTime())) return res.status(400).json({ error: 'Invalid since (expect ISO date)' })
@@ -106,13 +109,20 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
         }
       })
 
-      // Population = everyone who joined (roster) UNION anyone who answered. Responders come ranked
-      // from the leaderboard; joined-but-silent students are kept as no-show rows (0/0) so the export
-      // still accounts for every student in the room, not only those who answered (this is where we
-      // deliberately diverge from the teacher CSV, which lists responders only).
-      const roster = await RoomMember.find({ roomId: room._id }).select('studentId').lean()
+      // Presence, bulk-loaded once for the whole room (see presence.js for why this beats a
+      // per-student query). Its key set doubles as the roster: RoomPresence is never deleted on
+      // leave, so — unlike RoomMember — it also catches a student who joined and left before the
+      // room ended.
+      const presenceMap = await getPresenceSecondsForRoom(room._id, room.createdAt, room.endedAt)
+      const sessionDurationSeconds = (new Date(room.endedAt).getTime() - new Date(room.createdAt).getTime()) / 1000
+
+      // Population = everyone who was ever present (roster, from presenceMap) UNION anyone who
+      // answered. Responders come ranked from the leaderboard; present-but-silent students are kept
+      // as no-show rows (0/0) so the export still accounts for every student in the room, not only
+      // those who answered (this is where we deliberately diverge from the teacher CSV, which lists
+      // responders only).
       const responderById = new Map(leaderboard.map((e) => [String(e.studentId), e]))
-      const ids = new Set(roster.map((m) => String(m.studentId)))
+      const ids = new Set(presenceMap.keys())
       leaderboard.forEach((e) => ids.add(String(e.studentId)))
       const idList = [...ids]
 
@@ -122,8 +132,12 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
       const students = idList.map((sid) => {
         const u = userById.get(sid)
         const e = responderById.get(sid)
+        const presentSeconds = presenceMap.get(sid) || 0
+        const presentPercent = sessionDurationSeconds > 0
+          ? Math.min(100, Math.max(0, Math.round((presentSeconds / sessionDurationSeconds) * 100)))
+          : 0
         if (!e) {
-          // Joined but never answered — a no-show row.
+          // Present but never answered — a no-show row.
           const answers = {}
           qCols.forEach((_qc, i) => { answers[`Q${i + 1}`] = null })
           return {
@@ -135,6 +149,8 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
             correctCount: 0,
             answered: 0,
             accuracy: null,
+            presentSeconds,
+            presentPercent,
             answers
           }
         }
@@ -153,6 +169,8 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
           correctCount: e.correctCount,
           answered: e.totalAnswered,
           accuracy: e.totalAnswered ? Number((e.correctCount / e.totalAnswered).toFixed(2)) : null,
+          presentSeconds,
+          presentPercent,
           answers
         }
       })

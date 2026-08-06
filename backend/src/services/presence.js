@@ -54,6 +54,27 @@ export async function getPresenceSeconds(roomId, studentId) {
   return computePresenceSeconds(intervals, room.createdAt, room.endedAt || new Date())
 }
 
+// Bulk version of getPresenceSeconds for callers that need every student in a room (e.g. the
+// research export): one RoomPresence.find for the whole room instead of one query per student,
+// grouped and reduced in memory. Also doubles as this room's presence-derived roster — every
+// studentId with a row here was genuinely in the room at some point, unlike RoomMember, which
+// deletes its row on leave (see the file-level comment above).
+export async function getPresenceSecondsForRoom(roomId, roomCreatedAt, sessionEnd) {
+  const rows = await RoomPresence.find({ roomId }, 'studentId joinedAt leftAt').lean()
+  const byStudent = new Map()
+  for (const r of rows) {
+    const sid = String(r.studentId)
+    let list = byStudent.get(sid)
+    if (!list) { list = []; byStudent.set(sid, list) }
+    list.push(r)
+  }
+  const result = new Map()
+  for (const [sid, intervals] of byStudent) {
+    result.set(sid, computePresenceSeconds(intervals, roomCreatedAt, sessionEnd))
+  }
+  return result
+}
+
 // Closes the presence interval a single socket connection opened. Takes a presence _id
 // (not a roomId/studentId query) because a student can have more than one open interval at
 // once (multiple tabs/devices) — the id is the only unambiguous way to know which one this
