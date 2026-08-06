@@ -550,24 +550,30 @@ io.on('connection', (socket) => {
 
       // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
       if (role === 'student') {
-        await RoomMember.findOneAndUpdate(
-          { roomId: room._id, studentId: userId },
-          { roomId: room._id, studentId: userId, joinedAt: new Date() },
-          { upsert: true, new: true }
-        )
-
-        // Separate, append-only presence log (RoomMember above is a live roster and its row
-        // is deleted on leave — see services/presence.js for why that can't answer "how long
-        // was this student present"). One interval per connection; the id is stashed on the
-        // socket, scoped to this room, so the specific handler that closes it later
-        // (room:leave / disconnect) closes THIS interval and not some other open one.
+        // RoomMember (live roster) and RoomPresence (append-only interval log — see
+        // services/presence.js for why RoomMember's delete-on-leave can't answer "how long was
+        // this student present") are independent writes to different collections, so they run
+        // in parallel rather than one after another. At high concurrent join volume (hundreds of
+        // students joining a live session at once) serial awaits here would double both the join
+        // handler's DB round-trips and its latency per student.
         const RoomPresence = (await import('./models/RoomPresence.js')).default
-        const presence = await RoomPresence.create({
-          roomId: room._id,
-          studentId: userId,
-          joinedAt: new Date(),
-          leftAt: null
-        })
+        const joinedAt = new Date()
+        const [, presence] = await Promise.all([
+          RoomMember.findOneAndUpdate(
+            { roomId: room._id, studentId: userId },
+            { roomId: room._id, studentId: userId, joinedAt },
+            { upsert: true, new: true }
+          ),
+          RoomPresence.create({
+            roomId: room._id,
+            studentId: userId,
+            joinedAt,
+            leftAt: null
+          })
+        ])
+        // One interval per connection; the id is stashed on the socket, scoped to this room, so
+        // the specific handler that closes it later (room:leave / disconnect) closes THIS
+        // interval and not some other open one.
         if (!socket.data.presenceByRoom) socket.data.presenceByRoom = new Map()
         socket.data.presenceByRoom.set(roomCode, presence._id)
       }
@@ -606,8 +612,12 @@ io.on('connection', (socket) => {
       let participantCount = 0
       if (room) {
         if (role === 'student' && userId) {
-          await closePresenceForRoom(socket, roomCode)
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
+          // Independent writes to different collections — run in parallel for the same reason
+          // as room:join above.
+          await Promise.all([
+            closePresenceForRoom(socket, roomCode),
+            RoomMember.deleteOne({ roomId: room._id, studentId: userId })
+          ])
         }
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
