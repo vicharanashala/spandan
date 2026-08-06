@@ -20,6 +20,15 @@ const roomSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  status: {
+    type: String,
+    enum: ['SCHEDULED', 'ACTIVE', 'ENDED'],
+    default: 'ACTIVE'
+  },
+  scheduledStartTime: {
+    type: Date,
+    default: null
+  },
   endedAt: {
     type: Date,
     default: null

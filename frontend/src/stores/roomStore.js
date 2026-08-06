@@ -87,7 +87,7 @@ export const useRoomStore = create((set, get) => ({
     }
   },
 
-  createRoom: async (name, settings = {}) => {
+  createRoom: async (name, settings = {}, scheduledStartTime = null) => {
     const { authToken } = get()
     if (!authToken) throw new Error('Not authenticated')
 
@@ -99,7 +99,7 @@ export const useRoomStore = create((set, get) => ({
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ name, settings })
+        body: JSON.stringify({ name, settings, scheduledStartTime })
       })
 
       const data = await response.json()
@@ -118,6 +118,38 @@ export const useRoomStore = create((set, get) => ({
       return data.room
     } catch (error) {
       set({ error: error.message, isLoading: false })
+      throw error
+    }
+  },
+
+  startRoom: async (roomId) => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+
+    try {
+      const response = await fetch(`${API_URL}/rooms/${roomId}/start`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to start room')
+      }
+
+      const { rooms, currentRoom } = get()
+      set({
+        rooms: rooms.map(r => r._id === roomId ? data.room : r),
+        currentRoom: currentRoom?._id === roomId ? data.room : currentRoom
+      })
+
+      return data.room
+    } catch (error) {
+      set({ error: error.message })
       throw error
     }
   },

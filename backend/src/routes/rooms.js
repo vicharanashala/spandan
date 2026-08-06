@@ -1,5 +1,5 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, startRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -10,8 +10,8 @@ const router = express.Router()
 // Create new room
 router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, validate(createRoomSchema), async (req, res) => {
   try {
-    const { name, settings } = req.validatedBody
-    const room = await createRoom(name, req.user._id, settings)
+    const { name, settings, scheduledStartTime } = req.validatedBody
+    const room = await createRoom(name, req.user._id, settings, scheduledStartTime)
 
     res.status(201).json({
       message: 'Room created successfully',
@@ -19,6 +19,30 @@ router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, val
     })
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// Start a scheduled room
+router.post('/:id/start', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+  try {
+    const roomObj = await getRoomById(req.params.id)
+
+    if (roomObj.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only the room owner can start the room' })
+    }
+
+    const room = await startRoom(req.params.id)
+
+    // Notify connected sockets in the room channel that room has started
+    const io = req.app.get('io')
+    if (io && room.code) {
+      io.to(room.code).emit('room:started', { roomId: room._id, status: 'ACTIVE' })
+    }
+
+    res.json({ message: 'Room started successfully', room })
+  } catch (error) {
+    const status = error.message === 'Room not found' ? 404 : 500
+    res.status(status).json({ error: error.message })
   }
 })
 

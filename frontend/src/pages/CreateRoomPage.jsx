@@ -17,6 +17,8 @@ function CreateRoomPage() {
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  const [isScheduled, setIsScheduled] = useState(false)
+  const [scheduledStartTime, setScheduledStartTime] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -42,14 +44,26 @@ function CreateRoomPage() {
       return
     }
 
+    if (isScheduled && !scheduledStartTime) {
+      setError('Please select a scheduled start time')
+      return
+    }
+
     setIsCreating(true)
     setError('')
 
     try {
       const settings = { mode }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
-      const room = await createRoom(roomName.trim(), settings)
-      navigate(`/teacher/room/${room._id}`)
+      const startTime = isScheduled && scheduledStartTime ? new Date(scheduledStartTime).toISOString() : null
+      const room = await createRoom(roomName.trim(), settings, startTime)
+      
+      // Zoom Flow: If scheduled, return to Teacher Dashboard so teacher sees scheduled room; if immediate, go to room.
+      if (room.status === 'SCHEDULED') {
+        navigate('/teacher')
+      } else {
+        navigate(`/teacher/room/${room._id}`)
+      }
     } catch (err) {
       setError(err.message || 'Failed to create room')
     } finally {
@@ -57,7 +71,7 @@ function CreateRoomPage() {
     }
   }
 
-  const isDisabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
+  const isDisabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl)) || (isScheduled && !scheduledStartTime)
 
   return (
     <div style={{
@@ -287,11 +301,65 @@ function CreateRoomPage() {
                     marginTop: '10px'
                   }}>
                     Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio for
-                    transcription. Please open Spandan in Chrome or Edge before starting a video room.
                   </div>
                 )}
               </div>
             )}
+
+            {/* Room Scheduling */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '14px',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={isScheduled}
+                  onChange={(e) => setIsScheduled(e.target.checked)}
+                  style={{ width: '16px', height: '16px', accentColor: 'var(--accent)' }}
+                />
+                Schedule room for later
+              </label>
+
+              {isScheduled && (
+                <div style={{ marginTop: '12px' }}>
+                  <label style={{
+                    display: 'block',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    marginBottom: '8px'
+                  }}>
+                    Scheduled Start Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledStartTime}
+                    onChange={(e) => setScheduledStartTime(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '11px 14px',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius)',
+                      fontSize: '14px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                      background: 'var(--input-bg)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px' }}>
+                    Students joining early will be held in the Waiting Room until you launch the session.
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div style={{
               display: 'flex',
