@@ -76,6 +76,24 @@ const TEACHER_SECTIONS = [
       'Continue to the next question or segment. When done, "End Room" settles and shows the final leaderboard.',
     ],
   },
+  {
+    icon: '🙋‍♂️', title: 'Handling Student Doubts',
+    body: [
+      'Students can ask text doubts during the lecture without interrupting you.',
+      'Click the "Doubts" button in the top navigation bar to view them.',
+      'You can reply to individual doubts, or group them by topic and resolve them in bulk.',
+      'When you resolve a doubt, it moves to the resolved history. The student will get a private prompt to verify if they understood.',
+    ],
+  },
+  {
+    icon: '📉', title: 'Confusion Analytics (I\'m lost)',
+    body: [
+      'Students can click "I\'m lost" to instantly signal confusion without typing anything.',
+      'Spandan uses AI to automatically detect what topic you were teaching at that exact moment.',
+      'Click "Confusion Analytics" in the top navigation bar to open the analytics panel.',
+      'You will see live confusion alerts, a heatmap of difficult topics, and a timeline. Use the "Ask Students" button to survey the class when you re-explain a topic.',
+    ],
+  },
 ]
 
 const STUDENT_SECTIONS = [
@@ -118,6 +136,22 @@ const STUDENT_SECTIONS = [
     body: [
       'Your score builds up across the whole session from your correct answers and how quickly you answer.',
       'The final leaderboard appears once the teacher ends the room.',
+    ],
+  },
+  {
+    icon: '🙋‍♂️', title: 'Asking questions (Doubts)',
+    body: [
+      'If you have a question during the lecture, click the floating "Q&A / Doubts" button at the bottom right.',
+      'You can type your doubt or upvote questions asked by other students. High-priority doubts move to the top.',
+      'When the teacher resolves your doubt, you will get a private prompt. You can click "Got it!" if you understand, or "Re-Open" if you still need help.',
+    ],
+  },
+  {
+    icon: '🚩', title: 'I\'m lost (Instant Confusion Signal)',
+    body: [
+      'If you suddenly lose track of the lecture, click the floating "I\'m lost" button.',
+      'It instantly sends an anonymous signal to the teacher. The system automatically tags it with the exact topic the teacher was discussing.',
+      'The button has a cooldown to prevent spamming, but you can use it whenever you feel left behind.',
     ],
   },
 ]

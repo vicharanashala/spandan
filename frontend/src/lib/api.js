@@ -89,3 +89,59 @@ export const questionApi = {
 }
 
 export default api
+// Contextual Doubt-Anchored Polling API
+export const doubtApi = {
+  // Existing
+  record: (roomId, segmentIndex, transcriptOffsetMs) =>
+    api.post('/doubts', { roomId, segmentIndex, transcriptOffsetMs }),
+  retract: (roomId) => api.post('/doubts/retract', { roomId }),
+  getForRoom: (roomId) => api.get(`/doubts/room/${roomId}`),
+  getSpikes: (roomId, minMarkCount) =>
+    api.get(`/doubts/room/${roomId}/spikes${minMarkCount ? `?minMarkCount=${minMarkCount}` : ''}`),
+  getForQuestion: (roomId, questionId) =>
+    api.get(`/doubts/room/${roomId}/question/${questionId}`),
+  // NEW: session clock + time-anchored queries
+  startSession: (roomId) => api.post(`/doubts/room/${roomId}/session/start`),
+  getSession: (roomId) => api.get(`/doubts/room/${roomId}/session`),
+  getTimelineSpikes: (roomId, opts = {}) => {
+    const params = new URLSearchParams()
+    if (opts.bucketMs) params.set('bucketMs', opts.bucketMs)
+    if (opts.minMarkCount) params.set('minMarkCount', opts.minMarkCount)
+    const q = params.toString()
+    return api.get(`/doubts/room/${roomId}/spikes/timeline${q ? `?${q}` : ''}`)
+  },
+  getSignals: (roomId, limit = 200) =>
+    api.get(`/doubts/room/${roomId}/signals?limit=${limit}`),
+  // NEW: full record with timing context (replaces record())
+  recordWithContext: (payload) =>
+    api.post('/doubts', {
+      roomId: payload.roomId,
+      segmentIndex: payload.segmentIndex || 0,
+      transcriptOffsetMs: payload.transcriptOffsetMs || 0,
+      recordingOffsetMs: payload.recordingOffsetMs ?? null,
+      utteranceSnapshot: payload.utteranceSnapshot || '',
+      clientSentAt: payload.clientSentAt || Date.now()
+    })
+}
+
+// Topic markers API -- teacher sets "what we were on at this time"
+export const topicApi = {
+  set: (roomId, payload) => api.post(`/topics/room/${roomId}`, payload),
+  remove: (roomId, markerId) => api.delete(`/topics/room/${roomId}/${markerId}`),
+  list: (roomId) => api.get(`/topics/room/${roomId}`)
+}
+
+// Confusion events API -- one live alert per (room, topic).
+// Topic-Aware Confusion: replaces per-spike rows with a single card
+// that re-renders live as students keep pressing "I'm Lost".
+export const confusionApi = {
+  getActive: (roomId) => api.get(`/confusion/room/${roomId}/active`),
+  getLatest: (roomId) => api.get(`/confusion/room/${roomId}/latest`),
+  getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`),
+  getHeatmap: (roomId, opts = {}) => api.get(`/confusion/room/${roomId}/heatmap?bucketMs=${opts.bucketMs || 60000}&windowMs=${opts.windowMs || 600000}`),
+  getTopicHeat: (roomId, topN = 10) => api.get(`/confusion/room/${roomId}/topic-heat?topN=${topN}`),
+  // RECOVERY FLOW: teacher requests student feedback on an active event
+  requestFeedback: (eventId) => api.post(`/confusion/event/${eventId}/request-feedback`),
+  // RECOVERY FLOW: student responds with understood / still_confused
+  submitFeedback: (eventId, answer) => api.post(`/confusion/event/${eventId}/feedback`, { answer })
+}

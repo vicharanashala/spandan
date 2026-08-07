@@ -95,6 +95,11 @@ export const sendRegistrationOtp = async (email, name, otp) => {
   }
 
   try {
+    // If running locally without a real SMTP password, bypass the email so the dev isn't locked out
+    if (config.nodeEnv !== 'production' && (!config.smtpPassword || config.smtpPassword === 'your-gmail-app-password')) {
+      console.log(`[DEMO MODE] OTP email bypassed for ${email}. The OTP is: ${otp}`)
+      return true
+    }
     await transporter.sendMail(mailOptions)
     console.log(`OTP email sent to ${email}`)
     return true
@@ -150,6 +155,11 @@ export const sendWelcomeEmail = async (email, name, role) => {
   }
 
   try {
+    // If running locally without a real SMTP password, bypass the email so the dev isn't locked out
+    if (config.nodeEnv !== 'production' && (!config.smtpPassword || config.smtpPassword === 'your-gmail-app-password')) {
+      console.log(`[DEMO MODE] Welcome email bypassed for ${email}.`)
+      return true
+    }
     await transporter.sendMail(mailOptions)
     console.log(`Welcome email sent to ${email}`)
     return true

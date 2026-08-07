@@ -30,3 +30,13 @@ coverage/
 *.tgz
 .cache/
 # Research plans (local only - stored at /home/spandan/RESEARCH_PLAN.md)
+
+# Local scratch files
+_walk.js
+_find.js
+_procs.js
+_ps*.js
+_css.js
+_restart-*.ps1
+backend.log
+backend.err.log

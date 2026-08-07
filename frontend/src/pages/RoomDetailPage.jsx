@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import useThemeStore from '../stores/themeStore'
+import useTeacherPositionStore from '../stores/teacherPositionStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -15,11 +16,16 @@ import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
+import ConfusionAlertCard from '../components/ConfusionAlertCard'
+import ConfusionTimeline from '../components/ConfusionTimeline'
+import TopicHeatmap from '../components/TopicHeatmap'
+import TopicMarkerBar from '../components/TopicMarkerBar'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import api from '../lib/api.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -39,6 +45,7 @@ function RoomDetailPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showAnalyticsPanel, setShowAnalyticsPanel] = useState(false)
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
 
@@ -70,12 +77,16 @@ function RoomDetailPage() {
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
+  const currentSegmentRef = useRef(0)
+  useEffect(() => { currentSegmentRef.current = currentSegment }, [currentSegment])
   const [segmentTranscript, setSegmentTranscript] = useState('')
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
   // Question timer for teacher visibility
   const [activeQuestion, setActiveQuestion] = useState(null)
+  const teacherPositionBroadcastRef = useRef(null)
+  const roomStartedAtRef = useRef(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const questionTimerRef = useRef(null)
 
@@ -98,6 +109,7 @@ function RoomDetailPage() {
   const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
   // Pending review state - when timer hits zero and questions auto-generated
   const [isPendingReview, setIsPendingReview] = useState(false)
+  const [pollCountdown, setPollCountdown] = useState(null) // 5s countdown state before pushing question
   const [generateQEnabled, setGenerateQEnabled] = useState(true) // fail-safe button
   const [roomSettings, setRoomSettings] = useState({
     segmentTime: 2,
@@ -110,6 +122,15 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // Doubt Raising System state
+  const [doubts, setDoubts] = useState([])
+  const [resolvedDoubts, setResolvedDoubts] = useState([])
+  const [replyTexts, setReplyTexts] = useState({})
+  const [showDoubtsPanel, setShowDoubtsPanel] = useState(false)
+  const [doubtViewMode, setDoubtViewMode] = useState('list') // 'list' | 'topic'
+  const [selectedDoubts, setSelectedDoubts] = useState({}) // { [doubtId]: boolean }
+  const [bulkReplyText, setBulkReplyText] = useState('')
 
   useEffect(() => {
     if (token) {
@@ -131,10 +152,11 @@ function RoomDetailPage() {
   }, [roomId])
 
   useEffect(() => {
-    if (room?.code && user?._id) {
+    if (room?.code && user?._id && isConnected && socket) {
+      console.log('Teacher joining socket room:', room.code)
       joinRoom(room.code, user._id)
     }
-  }, [room?.code, user?._id])
+  }, [room?.code, user?._id, isConnected, socket])
 
   // Listen for room:joined event
   useEffect(() => {
@@ -169,6 +191,98 @@ function RoomDetailPage() {
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)
+  }, [socket])
+
+  // Listen for doubt events
+  useEffect(() => {
+    if (!socket) return
+    
+    const handleDoubtsHistory = (list) => {
+      setDoubts(list.filter(d => !d.resolved))
+      const resList = list.filter(d => d.resolved)
+      setResolvedDoubts(Array.from(new Map(resList.map(item => [item.doubtId, item])).values()))
+    }
+
+    const handleDoubtRaised = (data) => {
+      console.log('New doubt raised:', data)
+      setDoubts(prev => prev.some(d => d.doubtId === data.doubtId) ? prev : [data, ...prev])
+    }
+
+    const handleDoubtUpvoted = (data) => {
+      setDoubts(prev => prev.map(d => d.doubtId === data.doubtId ? { ...d, ...data, upvotes: data.upvotes } : d))
+    }
+
+    const handleDoubtResolved = (data) => {
+      setDoubts(prev => {
+        const d = prev.find(item => item.doubtId === data.doubtId)
+        if (d) {
+          setResolvedDoubts(r => {
+            const filtered = r.filter(item => item.doubtId !== data.doubtId)
+            return [{ ...d, reply: data.reply || d.reply, resolvedAt: new Date().toISOString() }, ...filtered]
+          })
+        }
+        return prev.filter(item => item.doubtId !== data.doubtId)
+      })
+      setSelectedDoubts(prev => {
+        const next = { ...prev }
+        delete next[data.doubtId]
+        return next
+      })
+    }
+
+    const handleDoubtsBulkResolved = (data) => {
+      const ids = Array.isArray(data.doubtIds) ? data.doubtIds : []
+      setDoubts(prev => {
+        const resolved = prev.filter(item => ids.includes(item.doubtId)).map(item => ({
+          ...item,
+          resolved: true,
+          reply: data.reply,
+          resolvedAt: data.resolvedAt || new Date().toISOString()
+        }))
+        if (resolved.length > 0) {
+          setResolvedDoubts(r => {
+            const filtered = r.filter(item => !ids.includes(item.doubtId))
+            return [...resolved, ...filtered]
+          })
+        }
+        return prev.filter(item => !ids.includes(item.doubtId))
+      })
+      setSelectedDoubts(prev => {
+        const next = { ...prev }
+        ids.forEach(id => delete next[id])
+        return next
+      })
+    }
+
+    const handleDoubtReopened = (data) => {
+      setResolvedDoubts(prev => prev.filter(d => d.doubtId !== data.doubtId))
+      setDoubts(prev => {
+        const filtered = prev.filter(d => d.doubtId !== data.doubtId)
+        return [data, ...filtered]
+      })
+    }
+
+    const handleDoubtAcknowledged = (data) => {
+      setResolvedDoubts(prev => prev.map(d => d.doubtId === data.doubtId ? { ...d, acknowledgedUsers: data.acknowledgedUsers, acknowledged: data.acknowledged } : d))
+    }
+
+    socket.on('doubts_history', handleDoubtsHistory)
+    socket.on('doubt_raised', handleDoubtRaised)
+    socket.on('doubt_upvoted', handleDoubtUpvoted)
+    socket.on('doubt_resolved', handleDoubtResolved)
+    socket.on('doubts_bulk_resolved', handleDoubtsBulkResolved)
+    socket.on('doubt_reopened', handleDoubtReopened)
+    socket.on('doubt_acknowledged', handleDoubtAcknowledged)
+
+    return () => {
+      socket.off('doubts_history', handleDoubtsHistory)
+      socket.off('doubt_raised', handleDoubtRaised)
+      socket.off('doubt_upvoted', handleDoubtUpvoted)
+      socket.off('doubt_resolved', handleDoubtResolved)
+      socket.off('doubts_bulk_resolved', handleDoubtsBulkResolved)
+      socket.off('doubt_reopened', handleDoubtReopened)
+      socket.off('doubt_acknowledged', handleDoubtAcknowledged)
+    }
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
@@ -344,7 +458,7 @@ function RoomDetailPage() {
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
-    // Capture transcript
+    // Capture transcript and save if long enough.
     const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
     if (!textToUse || textToUse.length < 50) {
@@ -366,10 +480,20 @@ function RoomDetailPage() {
       return
     }
 
-    // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
-    // never gates generation — a failed/hung transcript POST used to abort the whole segment with no
-    // questions. We save the transcript only after questions are produced (below), fire-and-forget.
+    // Save transcript to database BEFORE generating questions. This guarantees
+    // the backend's auto-topic pipeline (which fires on POST /api/transcripts)
+    // has produced topics by the time question generation runs. A failed save
+    // here aborts generation so we never generate questions from an unsaved
+    // transcript (which would later produce "topic: General Confusion" on
+    // the recovery dashboard). Auto-topic + topic-leak fix depends on this order.
     let generated = null
+    if (!(await saveCurrentSegmentTranscript())) {
+      window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
+      setGenerateQEnabled(true)
+      return
+    }
+
+    // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       generated = await generateQuestionsFromText(textToUse, currentSegment)
@@ -430,7 +554,7 @@ function RoomDetailPage() {
   }
 
   // Handle question generation from pasted text (TextToQuestionsPopup)
-  const handleTextToQuestionsGenerate = async (text, mode) => {
+  const handleTextToQuestionsGenerate = async (text, mode, tone = 'professional') => {
     setShowTextToQuestions(false) // Close the text popup
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
@@ -446,7 +570,8 @@ function RoomDetailPage() {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: typeMix
+        questionTypeMix: typeMix,
+        tone: tone
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingFromText(false)
@@ -676,7 +801,57 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
+  // ============================================================
+  // LIVE TEACHER POSITION BROADCAST
+  // While recording, broadcast our wall-clock recording offset every 2s so
+  // students can attach it to their "I'm lost" signals. Without this,
+  // student signals arrive with recordingOffsetMs=0 and the topic resolver
+  // can't tell what we were teaching when the spike happened.
+  // ============================================================
+  const startTeacherBroadcast = useCallback(() => {
+    // Stop any prior broadcast (defensive)
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    const posStore = useTeacherPositionStore.getState()
+    roomStartedAtRef.current = Date.now()
+    posStore.startSession(room._id, room.code, roomStartedAtRef.current).catch(() => {})
+    // Persist the session start on the backend so Room.roomStartedAt is set.
+    // The auto-topic pipeline (POST /api/transcripts) bails out early when
+    // this field is null, which made brand-new rooms fall back to "General
+    // confusion" instead of generating a real topic marker.
+    api.doubts.startSession(room._id).catch(() => {})
+    teacherPositionBroadcastRef.current = setInterval(() => {
+      const offsetMs = Date.now() - (roomStartedAtRef.current || Date.now())
+      const seg = currentSegmentRef.current ?? 0
+      const utterance = accumulatedTranscriptRef.current?.slice(-200) || ''
+      useTeacherPositionStore.getState().broadcastPosition(room.code, {
+        recordingOffsetMs: offsetMs,
+        segmentIndex: seg,
+        utteranceSnapshot: utterance
+      })
+    }, 2000)
+  }, [room])
+
+  const stopTeacherBroadcast = useCallback(() => {
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    useTeacherPositionStore.getState().reset()
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (teacherPositionBroadcastRef.current) {
+        clearInterval(teacherPositionBroadcastRef.current)
+      }
+    }
+  }, [])
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
@@ -744,6 +919,10 @@ function RoomDetailPage() {
 
       startTranscriptionWindow()
 
+      // Live teacher position broadcast so students can attach their "I'm lost"
+      // signals to the current recording offset (otherwise spikes stack at 00:00).
+      startTeacherBroadcast()
+
     } catch (error) {
       console.error('Error starting recording:', error)
       setModelStatus('Microphone access denied')
@@ -752,6 +931,9 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+
+    // Stop live teacher position broadcast
+    stopTeacherBroadcast()
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
@@ -788,9 +970,33 @@ function RoomDetailPage() {
     setModelStatus('Ready')
   }
 
-  const toggleRecording = () => {
+  // Save whatever transcript we have accumulated for the current segment.
+  // Returns true if saved, false if skipped (too short / error).
+  // Used by both the segment-timer path (handleSegmentComplete) and the
+  // manual stop path (toggleRecording) so auto-topic generation can fire
+  // even when the teacher stops recording before the timer expires.
+  const saveCurrentSegmentTranscript = async () => {
+    const textToUse = (segmentTranscriptRef.current || '').trim() || (transcript || '').trim()
+    if (!textToUse || textToUse.length < 50) {
+      console.log('[SEGMENT] Transcript too short (<50 chars), skipping save')
+      return false
+    }
+    try {
+      await saveTranscript(room._id, currentSegment, textToUse, (roomSettings.segmentTime || 0) * 60)
+      console.log('[SEGMENT] Transcript saved to DB')
+      return true
+    } catch (err) {
+      console.error('[SEGMENT] Failed to save transcript:', err)
+      return false
+    }
+  }
+
+  const toggleRecording = async () => {
     if (isRecording) {
-      stopRecording()
+      await stopRecording()
+      // Manual stop: still flush whatever transcript has accumulated so the
+      // auto-topic pipeline can extract a topic before the next doubt lands.
+      await saveCurrentSegmentTranscript()
     } else {
       startRecording()
     }
@@ -1050,6 +1256,33 @@ function RoomDetailPage() {
     setIsGeneratingQuestions(false)
   }
 
+  const broadcastQuestionWithCountdown = (question) => {
+    if (!socket || !isConnected) return;
+    
+    // Emit prepare_poll to show countdown on student side
+    socket.emit('prepare_poll', {
+      roomCode: room.code
+    });
+    
+    // Set local UI countdown on teacher side
+    setPollCountdown(5);
+    let count = 5;
+    
+    const interval = setInterval(() => {
+      count -= 1;
+      setPollCountdown(count > 0 ? count : null);
+      
+      if (count <= 0) {
+        clearInterval(interval);
+        // Emit actual question to students
+        socket.emit('new_question', {
+          roomCode: room.code,
+          question: question
+        });
+      }
+    }, 1000);
+  };
+
   const handleApproveQuestion = async (question) => {
     try {
       const response = await fetch(`${API_URL}/questions`, {
@@ -1074,14 +1307,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-
-        // Emit to students via socket
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        broadcastQuestionWithCountdown(data.question)
       }
     } catch (error) {
       console.error('Failed to save question:', error)
@@ -1117,13 +1343,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-        }
+        broadcastQuestionWithCountdown(data.question)
       }
     } catch (error) {
       console.error('Failed to save text question:', error)
@@ -1162,19 +1382,7 @@ function RoomDetailPage() {
       if (response.ok) {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
-
-        // Emit to socket for students to receive (include roomCode)
-        console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
-        console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected) {
-          socket.emit('new_question', {
-            roomCode: room.code,
-            question: data.question
-          })
-          console.log('new_question event emitted successfully')
-        } else {
-          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
-        }
+        broadcastQuestionWithCountdown(data.question)
       } else {
         const errorData = await response.json()
         console.error('Failed to save question:', errorData)
@@ -1339,6 +1547,7 @@ function RoomDetailPage() {
 
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {/* Segment Timer Display */}
             {isRecording && (
               <div style={{
@@ -1370,7 +1579,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  ⚠ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1398,7 +1607,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  ⚠ Time's Up!
                 </span>
               </div>
             )}
@@ -1421,7 +1630,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1443,7 +1652,68 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ⚙ Create Q
+              </button>
+            )}
+
+            {/* Doubts Button */}
+            {!isEnded && (
+              <button 
+                onClick={() => setShowDoubtsPanel(!showDoubtsPanel)} 
+                style={{
+                  padding: '8px 16px',
+                  background: doubts.length > 0 ? '#ef4444' : 'var(--nav-hover)',
+                  color: doubts.length > 0 ? 'white' : 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  position: 'relative',
+                  transition: 'background 0.2s'
+                }}
+              >
+                🙋‍♂️ Doubts 
+                {doubts.length > 0 && (
+                  <span style={{
+                    background: 'white',
+                    color: '#ef4444',
+                    borderRadius: '12px',
+                    padding: '2px 8px',
+                    fontSize: '12px',
+                    fontWeight: 'bold',
+                    marginLeft: '4px'
+                  }}>
+                    {doubts.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Confusion Analytics Button */}
+            {!isEnded && (
+              <button 
+                onClick={() => setShowAnalyticsPanel(!showAnalyticsPanel)} 
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--nav-hover)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  position: 'relative',
+                  transition: 'background 0.2s'
+                }}
+              >
+                📉 Confusion Analytics
               </button>
             )}
 
@@ -1465,7 +1735,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ⚙️ Settings
+                ⚙ Settings
               </button>
 
               <RoomSettingsModal
@@ -1507,6 +1777,7 @@ function RoomDetailPage() {
                 End Room
               </button>
             )}
+            </div>
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
@@ -1825,7 +2096,7 @@ function RoomDetailPage() {
                       gap: '4px'
                     }}
                   >
-                    {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                    {isGeneratingQuestions ? '⏳ Generating...' : '⚙ Generate Q'}
                   </button>
                 </div>
               </div>
@@ -1856,7 +2127,7 @@ function RoomDetailPage() {
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
+              <span style={{ fontSize: '20px' }}>📋</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
               </span>
@@ -2003,7 +2274,7 @@ function RoomDetailPage() {
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
+                <span style={{ fontSize: '20px' }}>📋</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Leaderboard
                 </span>
@@ -2015,6 +2286,64 @@ function RoomDetailPage() {
           </div>
         </div>
       </div>
+
+
+      {/* Contextual Doubt-Anchored Polling: live confusion signals for the teacher */}
+      {room?._id && (
+        <>
+          {/* Analytics Sliding Panel */}
+          {showAnalyticsPanel && (
+            <div style={{
+              position: 'fixed',
+              top: 0,
+              right: 0,
+              width: isMobile ? '100%' : '420px',
+              height: '100%',
+              background: 'var(--bg-card)',
+              boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
+              zIndex: 2000,
+              display: 'flex',
+              flexDirection: 'column',
+              borderLeft: '1px solid var(--border-color)',
+              transition: 'transform 0.3s ease-in-out'
+            }}>
+              <div style={{
+                padding: '20px',
+                borderBottom: '1px solid var(--border-color)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <h2 style={{ margin: 0, fontSize: '18px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  📉 Confusion Analytics
+                </h2>
+                <button 
+                  onClick={() => setShowAnalyticsPanel(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    fontSize: '24px',
+                    cursor: 'pointer',
+                    padding: '4px'
+                  }}
+                >&times;</button>
+              </div>
+              
+              <div className="confusion-stack" style={{ padding: '24px', overflowY: 'auto', flex: 1, display: 'block' }}>
+                {/* Milestone 3: ONE live card -- tier-styled, animated count, status pill */}
+                <ConfusionAlertCard roomId={room._id} hasTranscript={!!room?.roomStartedAt} />
+                {/* Milestone 3: ranked topic heat bars */}
+                <TopicHeatmap roomId={room._id} />
+                {/* Milestone 3: history-only timeline (replaces legacy ConfusionSpikePanel live card) */}
+                <ConfusionTimeline roomId={room._id} />
+                {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics */}
+                <TopicMarkerBar roomId={room._id} roomCode={room.code} editable />
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* Question Approval Popup */}
       {showQuestionPopup && pendingQuestions.length > 0 && (
@@ -2141,6 +2470,504 @@ function RoomDetailPage() {
         />
       )}
 
+      {/* Doubts Sliding Panel */}
+      {showDoubtsPanel && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          width: '350px',
+          height: '100%',
+          background: 'var(--bg-card)',
+          boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
+          zIndex: 2000,
+          display: 'flex',
+          flexDirection: 'column',
+          borderLeft: '1px solid var(--border-color)',
+          transition: 'transform 0.3s ease-in-out'
+        }}>
+          <div style={{
+            padding: '20px',
+            borderBottom: '1px solid var(--border-color)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <h2 style={{ margin: 0, fontSize: '18px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              🙋‍♂️ Active Doubts
+              <span style={{
+                background: '#ef4444',
+                color: 'white',
+                borderRadius: '12px',
+                padding: '2px 8px',
+                fontSize: '12px'
+              }}>{doubts.length}</span>
+            </h2>
+            <button 
+              onClick={() => setShowDoubtsPanel(false)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-secondary)',
+                fontSize: '24px',
+                cursor: 'pointer',
+                padding: '4px'
+              }}
+            >&times;</button>
+          </div>
+          
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', boxSizing: 'border-box' }}>
+            {/* Always-Visible View Mode Toggle Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => setDoubtViewMode('list')}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: doubtViewMode === 'list' ? 'var(--primary)' : 'transparent',
+                    color: doubtViewMode === 'list' ? 'white' : 'var(--text-secondary)',
+                    fontWeight: '600',
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  📋 List ({doubts.filter(d => !d.reopened).length})
+                </button>
+                <button
+                  onClick={() => setDoubtViewMode('topic')}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: doubtViewMode === 'topic' ? 'var(--primary)' : 'transparent',
+                    color: doubtViewMode === 'topic' ? 'white' : 'var(--text-secondary)',
+                    fontWeight: '600',
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  🗂️ Group by Topic
+                </button>
+              </div>
+              {Object.values(selectedDoubts).some(Boolean) && (
+                <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#6366f1', background: '#eef2ff', padding: '4px 10px', borderRadius: '12px', border: '1px solid #c7d2fe' }}>
+                  ✔ {Object.keys(selectedDoubts).filter(id => selectedDoubts[id]).length} selected
+                </span>
+              )}
+            </div>
+
+            {/* Sticky Bulk Action Bar ONLY for normal doubts selected */}
+            {Object.values(selectedDoubts).some(Boolean) && (
+              <div style={{
+                position: 'sticky',
+                top: 0,
+                zIndex: 20,
+                background: '#eef2ff',
+                border: '1px solid #818cf8',
+                borderRadius: '10px',
+                padding: '12px',
+                marginBottom: '16px',
+                boxShadow: '0 4px 12px rgba(99, 102, 241, 0.15)',
+                boxSizing: 'border-box'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                  <span style={{ fontWeight: '700', color: '#3730a3', fontSize: '13px' }}>
+                    💬 Bulk Resolve ({Object.keys(selectedDoubts).filter(id => selectedDoubts[id]).length} selected)
+                  </span>
+                  <button
+                    onClick={() => setSelectedDoubts({})}
+                    style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                  >
+                    Clear selection
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Write a bulk explanation note (optional)..."
+                  value={bulkReplyText}
+                  onChange={(e) => setBulkReplyText(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #c7d2fe',
+                    marginBottom: '8px',
+                    fontSize: '13px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const ids = Object.keys(selectedDoubts).filter(id => selectedDoubts[id])
+                    socket.emit('bulk_resolve_doubts', { roomCode: room.code, doubtIds: ids, reply: bulkReplyText || null })
+                    setBulkReplyText('')
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    background: '#6366f1',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '13px'
+                  }}
+                >
+                  ⚡ Resolve Selected Doubts at Once
+                </button>
+              </div>
+            )}
+
+            {/* PRIORITY SECTION: Re-Opened Individual Nuances */}
+            {doubts.filter(d => d.reopened).length > 0 && (
+              <div style={{ marginBottom: '20px', background: '#fff7ed', borderRadius: '12px', padding: '16px', border: '1px solid #fdba74', boxSizing: 'border-box' }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '15px', fontWeight: '700', color: '#c2410c', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  🔥 Priority Re-Opened Nuances: {doubts.filter(d => d.reopened).length} {doubts.filter(d => d.reopened).length === 1 ? 'Pending' : 'Pending'}
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {doubts.filter(d => d.reopened).map(doubt => (
+                    <div key={doubt.doubtId} style={{
+                      background: 'var(--bg-card)',
+                      borderRadius: '10px',
+                      padding: '14px',
+                      border: '1px solid #ea580c',
+                      borderLeft: '4px solid #ea580c',
+                      boxSizing: 'border-box'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>🙋 {doubt.userName}</span>
+                          <span style={{ background: '#ffedd5', color: '#c2410c', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold' }}>
+                            {doubt.topic || '#General'} Nuance
+                          </span>
+                        </div>
+                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          {new Date(doubt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        ⚠️ Student Reason: {doubt.reopenReason || 'Specific nuance not covered'}
+                      </div>
+                      <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', fontWeight: '500' }}>
+                        "{doubt.message}"
+                      </p>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <input
+                          type="text"
+                          placeholder="Answer this exact nuance individually..."
+                          value={replyTexts[doubt.doubtId] || ''}
+                          onChange={(e) => setReplyTexts({ ...replyTexts, [doubt.doubtId]: e.target.value })}
+                          style={{
+                            flex: '1 1 200px',
+                            padding: '8px 12px',
+                            borderRadius: '6px',
+                            border: '1px solid #fdba74',
+                            background: 'var(--bg-main)',
+                            color: 'var(--text-primary)',
+                            fontSize: '13px',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                        <button
+                          onClick={() => {
+                            const reply = replyTexts[doubt.doubtId] || 'Answered during live explanation'
+                            socket.emit('resolve_doubt', { roomCode: room.code, doubtId: doubt.doubtId, reply })
+                          }}
+                          style={{
+                            padding: '8px 16px',
+                            background: '#ea580c',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                            fontSize: '13px',
+                            flexShrink: 0
+                          }}
+                        >
+                          💬 Resolve
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {doubts.filter(d => !d.reopened).length === 0 && doubts.filter(d => d.reopened).length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-secondary)', marginTop: '40px' }}>
+                <div style={{ fontSize: '40px', opacity: 0.5, marginBottom: '10px' }}>🙌</div>
+                <p>No active doubts right now.<br/>Everyone is following along!</p>
+              </div>
+            ) : doubtViewMode === 'topic' ? (
+              /* Group by Topic Mode (Only Normal Doubts) */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {Object.entries(doubts.filter(d => !d.reopened).reduce((acc, d) => {
+                  const topic = d.topic || '#General'
+                  if (!acc[topic]) acc[topic] = []
+                  acc[topic].push(d)
+                  return acc
+                }, {})).map(([topic, list]) => {
+                  const totalUpvotes = list.reduce((sum, item) => sum + (item.upvotes?.length || 0), 0)
+                  const allSelected = list.length > 0 && list.every(item => selectedDoubts[item.doubtId])
+                  return (
+                    <div key={topic} style={{ background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border-color)', overflow: 'hidden', boxSizing: 'border-box' }}>
+                      <div style={{ background: 'var(--bg-main)', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', gap: '8px' }}>
+                        <div>
+                          <span style={{ fontWeight: 'bold', color: 'var(--text-primary)', fontSize: '15px' }}>{topic}</span>
+                          <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            ({list.length} {list.length === 1 ? 'doubt' : 'doubts'}{totalUpvotes > 0 ? `, 👍 ${totalUpvotes} upvotes` : ''})
+                          </span>
+                        </div>
+                        {(list.length > 1 || totalUpvotes > 0) && (
+                          <button
+                            onClick={() => {
+                              const next = { ...selectedDoubts }
+                              list.forEach(item => { next[item.doubtId] = !allSelected })
+                              setSelectedDoubts(next)
+                            }}
+                            style={{
+                              padding: '6px 12px',
+                              borderRadius: '6px',
+                              border: `1px solid ${allSelected ? '#6366f1' : 'var(--border-color)'}`,
+                              background: allSelected ? '#eef2ff' : 'var(--bg-card)',
+                              color: allSelected ? '#6366f1' : 'var(--text-secondary)',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {allSelected ? '✔ All Selected' : 'Select All in Topic'}
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {list.map(doubt => {
+                          const isSingleIndividual = list.length === 1 && (doubt.upvotes?.length || 0) === 0
+                          return (
+                            <div key={doubt.doubtId} style={{
+                              background: 'var(--bg-main)',
+                              borderRadius: '10px',
+                              padding: '12px',
+                              border: '1px solid var(--border-color)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '8px'
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                  {!isSingleIndividual && (
+                                    <input
+                                      type="checkbox"
+                                      checked={!!selectedDoubts[doubt.doubtId]}
+                                      onChange={(e) => setSelectedDoubts({ ...selectedDoubts, [doubt.doubtId]: e.target.checked })}
+                                      style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                                    />
+                                  )}
+                                  <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{doubt.userName}</span>
+                                  {(doubt.upvotes?.length || 0) > 0 ? (
+                                    <span style={{ background: '#fef3c7', color: '#d97706', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold', border: '1px solid #f59e0b' }}>
+                                      👥 {doubt.upvotes.length + 1} students (👍 {doubt.upvotes.length} upvotes)
+                                    </span>
+                                  ) : (
+                                    <span style={{ background: '#f3f4f6', color: '#4b5563', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold', border: '1px solid #d1d5db' }}>
+                                      👤 1 student (individual doubt)
+                                    </span>
+                                  )}
+                                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)', marginLeft: '4px' }}>
+                                    "{doubt.message}"
+                                  </span>
+                                </div>
+                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                  {new Date(doubt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              {isSingleIndividual && (
+                                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
+                                  <input
+                                    type="text"
+                                    placeholder="Write an individual reply to this student..."
+                                    value={replyTexts[doubt.doubtId] || ''}
+                                    onChange={(e) => setReplyTexts({ ...replyTexts, [doubt.doubtId]: e.target.value })}
+                                    style={{
+                                      flex: '1 1 200px',
+                                      padding: '8px 12px',
+                                      borderRadius: '6px',
+                                      border: '1px solid var(--border-color)',
+                                      background: 'var(--bg-card)',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '13px',
+                                      boxSizing: 'border-box'
+                                    }}
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const reply = replyTexts[doubt.doubtId] || null
+                                      socket.emit('resolve_doubt', { roomCode: room.code, doubtId: doubt.doubtId, reply })
+                                    }}
+                                    style={{
+                                      padding: '8px 16px',
+                                      background: '#10b981',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      fontWeight: '600',
+                                      fontSize: '13px',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    💬 Reply & Resolve
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              /* List View Mode (Only Normal Doubts - No Checkboxes, Direct Individual Reply) */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {doubts.filter(d => !d.reopened).map(doubt => (
+                  <div key={doubt.doubtId} style={{
+                    background: 'var(--bg-main)',
+                    borderRadius: '12px',
+                    padding: '16px',
+                    border: '1px solid var(--border-color)',
+                    borderLeft: '4px solid #ef4444',
+                    boxSizing: 'border-box'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{doubt.userName}</span>
+                        <span style={{ background: '#e0e7ff', color: '#4338ca', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold' }}>
+                          {doubt.topic || '#General'}
+                        </span>
+                        {(doubt.upvotes?.length || 0) > 0 ? (
+                          <span style={{ background: '#fef3c7', color: '#d97706', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold', border: '1px solid #f59e0b' }}>
+                            👥 {doubt.upvotes.length + 1} students (👍 {doubt.upvotes.length} upvotes)
+                          </span>
+                        ) : (
+                          <span style={{ background: '#f3f4f6', color: '#4b5563', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 'bold', border: '1px solid #d1d5db' }}>
+                            👤 1 student (individual doubt)
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        {new Date(doubt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                      "{doubt.message}"
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <input
+                        type="text"
+                        placeholder={(doubt.upvotes?.length || 0) > 0 ? `Reply to all ${doubt.upvotes.length + 1} students asking this question...` : "Write an individual reply to this student..."}
+                        value={replyTexts[doubt.doubtId] || ''}
+                        onChange={(e) => setReplyTexts({ ...replyTexts, [doubt.doubtId]: e.target.value })}
+                        style={{
+                          flex: '1 1 200px',
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border-color)',
+                          background: 'var(--bg-card)',
+                          color: 'var(--text-primary)',
+                          fontSize: '13px',
+                          boxSizing: 'border-box'
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          const reply = replyTexts[doubt.doubtId] || null
+                          socket.emit('resolve_doubt', { roomCode: room.code, doubtId: doubt.doubtId, reply })
+                        }}
+                        style={{
+                          padding: '8px 16px',
+                          background: '#10b981',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontWeight: '600',
+                          fontSize: '13px',
+                          flexShrink: 0
+                        }}
+                      >
+                        💬 Reply & Resolve{(doubt.upvotes?.length || 0) > 0 ? ` (${doubt.upvotes.length + 1})` : ''}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {resolvedDoubts.length > 0 && (
+              <div style={{ marginTop: '28px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                <h4 style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                  ✅ Resolved History ({resolvedDoubts.length})
+                </h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {Array.from(new Map(resolvedDoubts.map(item => [item.doubtId, item])).values()).map((d, idx) => (
+                    <div key={d.doubtId || idx} style={{
+                      background: 'var(--bg-main)',
+                      borderRadius: '8px',
+                      padding: '12px',
+                      opacity: 0.75,
+                      borderLeft: '4px solid #10b981'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px', flexWrap: 'wrap', gap: '8px' }}>
+                        <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{d.userName}</span>
+                        {(() => {
+                          const ackUsers = Array.isArray(d.acknowledgedUsers) ? d.acknowledgedUsers : []
+                          const ackCount = ackUsers.length > 0 ? ackUsers.length : (d.acknowledged ? 1 : 0)
+                          const totalCount = 1 + (d.upvotes?.length || 0)
+                          if (totalCount === 1) {
+                            return (
+                              <span style={{ color: '#10b981', fontWeight: '600' }}>
+                                {ackCount >= 1 || d.acknowledged ? '✅ Student Acknowledged' : '✔ Resolved'}
+                              </span>
+                            )
+                          }
+                          if (ackCount === 0) {
+                            return (
+                              <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>
+                                ✔ Resolved (0/{totalCount} acknowledged)
+                              </span>
+                            )
+                          } else if (ackCount < totalCount) {
+                            return (
+                              <span style={{ color: '#d97706', fontWeight: '600', background: '#fef3c7', padding: '2px 8px', borderRadius: '12px' }}>
+                                ⏳ {ackCount}/{totalCount} Students Acknowledged ({Math.round((ackCount / totalCount) * 100)}%)
+                              </span>
+                            )
+                          } else {
+                            return (
+                              <span style={{ color: '#10b981', fontWeight: '600' }}>
+                                ✅ All {totalCount} Students Acknowledged (100%)
+                              </span>
+                            )
+                          }
+                        })()}
+                      </div>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>"{d.message}"</p>
+                      {d.reply && <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#059669' }}>💬 Reply: {d.reply}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
@@ -2155,6 +2982,39 @@ function RoomDetailPage() {
           50% { transform: scale(1.1); }
         }
       `}</style>
+
+      {/* Poll Incoming Countdown Overlay (Teacher Side) */}
+      {pollCountdown !== null && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.8)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          color: 'white',
+          backdropFilter: 'blur(4px)'
+        }}>
+          <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '20px', color: '#10b981' }}>
+            Sending Poll to Students...
+          </div>
+          <div style={{ 
+            fontSize: '96px', 
+            fontWeight: 'bold', 
+            background: 'linear-gradient(135deg, #34d399, #10b981)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            animation: 'pulse 1s infinite'
+          }}>
+            {pollCountdown}
+          </div>
+          <div style={{ marginTop: '20px', fontSize: '18px', color: '#9ca3af' }}>
+            Students are seeing a "Get Ready" screen
+          </div>
+        </div>
+      )}
     </div>
   )
 }

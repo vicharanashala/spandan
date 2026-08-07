@@ -21,6 +21,9 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import doubtRoutes from './routes/doubts.js'
+import topicRoutes from './routes/topics.js'
+import confusionRoutes from './routes/confusion.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
 
@@ -358,6 +361,9 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/doubts', doubtRoutes)
+app.use('/api/topics', topicRoutes)
+app.use('/api/confusion', confusionRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
 
@@ -373,6 +379,7 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const roomDoubtsStore = new Map() // roomCode -> Array of doubt objects
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -570,6 +577,9 @@ io.on('connection', (socket) => {
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
 
+      const existingDoubts = roomDoubtsStore.get(roomCode) || []
+      socket.emit('doubts_history', existingDoubts)
+
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
@@ -615,12 +625,37 @@ io.on('connection', (socket) => {
   // from the authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js),
   // and the ranked leaderboard is folded per-segment via POST /responses/leaderboard/:id/segment-done.
 
+// Helper: on every new-poll boundary (whether from MCQ question:start or
+  // manual new_question), close any active ConfusionEvent + clear its
+  // feedback tally for this room, and update the anti-spam marker so prior
+  // signals no longer block clicks on this new poll. Best-effort — we
+  // still emit the original poll event even if the reset fails so the UX
+  // is never blocked. Runs AFTER the owner check so unauthorized callers
+  // never trigger a reset.
+  const resetPollState = async (roomCode) => {
+    if (!roomCode) return
+    try {
+      const { resetPollStateForRoom } = await import('./services/confusionEventService.js')
+      const { markPollStarted } = await import('./services/doubtService.js')
+      const { Room } = await import('./models/index.js')
+      const room = await Room.findOne({ code: roomCode }).select('_id').lean()
+      if (room) {
+        await resetPollStateForRoom(room._id)
+        markPollStarted(room._id)
+        io.to(roomCode).emit('poll:reset', { roomId: String(room._id) })
+      }
+    } catch (e) {
+      console.warn('[socket] poll reset failed:', e.message)
+    }
+  }
+
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
+    await resetPollState(data.roomCode)
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
@@ -637,6 +672,15 @@ io.on('connection', (socket) => {
     })
   })
 
+  // Prepare poll (countdown before question)
+  socket.on('prepare_poll', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    console.log('Prepare poll signal received for room:', data.roomCode)
+    if (data.roomCode) {
+      io.to(data.roomCode).emit('prepare_poll', data)
+    }
+  })
+
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
@@ -644,10 +688,245 @@ io.on('connection', (socket) => {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
+    console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
+      await resetPollState(data.roomCode)
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+    } else {
+      console.error('new_question event missing roomCode or question:', data)
+    }
+  })
+
+  // Contextual Doubt-Anchored Polling: real-time student signal
+  socket.on('doubt:signal', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { recordDoubt, broadcastRecordedDoubt } = await import('./services/doubtService.js')
+      const { Room } = await import('./models/index.js')
+      const result = await recordDoubt({
+        roomId: data.roomId,
+        userId,
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: typeof data.recordingOffsetMs === 'number' ? data.recordingOffsetMs : null,
+        utteranceSnapshot: data.utteranceSnapshot || '',
+        clientSentAt: data.clientSentAt || null,
+        client: 'socket'
+      })
+      if (!result.ok) {
+        socket.emit('doubt:ignored', { reason: result.reason, retryAfterMs: result.retryAfterMs })
+        return
+      }
+      // Load the minimal Room fields needed for room-based broadcasting so
+      // broadcastRecordedDoubt() can emit to the right socket.io room.
+      // (HTTP route already has this loaded from its authorization check.)
+      const room = await Room.findById(data.roomId).select('_id code')
+      if (!room) return
+      // Shared broadcast step — identical to HTTP POST /api/doubts:
+      // emits doubt:new, then confusion:update / confusion:closed.
+      await broadcastRecordedDoubt({
+        io,
+        room,
+        userId,
+        payload: data,
+        signal: result.signal
+      })
+      socket.emit('doubt:confirmed', {
+        segmentIndex: data.segmentIndex || 0,
+        recordingOffsetLabel: result.signal.recordingOffsetLabel
+      })
+    } catch (err) {
+      console.error('[socket] doubt:signal error:', err.message)
+    }
+  })
+
+  // ============================================================================
+  // NEW: Live position broadcast (so students know what the teacher is on)
+  // ============================================================================
+  socket.on('teacher:position', async (data) => {
+    try {
+      if (!data || !data.roomCode) return
+      // Forward to everyone in the room EXCEPT the teacher themselves
+      // (they don't need to see their own position broadcast)
+      socket.to(data.roomCode).emit('teacher:position', {
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: data.recordingOffsetMs || 0,
+        recordingOffsetLabel: data.recordingOffsetLabel || '00:00',
+        utterance: data.utterance || '',
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:position error:', err.message)
+    }
+  })
+
+  // NEW: Teacher announces the start of the recording session
+  socket.on('teacher:session-start', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { startRoomSession } = await import('./services/doubtService.js')
+      const result = await startRoomSession(data.roomId, userId)
+      if (!result.ok) return
+      // Broadcast to everyone in the room
+      io.to(data.roomCode).emit('teacher:session-start', {
+        roomId: String(data.roomId),
+        roomStartedAt: result.roomStartedAt,
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:session-start error:', err.message)
+    }
+  })
+
+  // NEW: Teacher sets a topic marker -- broadcast to room so students + UI sync
+  socket.on('teacher:topic-set', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { setTopic } = await import('./services/topicService.js')
+      const result = await setTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        startMs: data.startMs,
+        endMs: data.endMs,
+        label: data.label,
+        note: data.note
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-set', {
+        marker: result.marker
+      })
+    } catch (err) {
+      console.error('[socket] teacher:topic-set error:', err.message)
+    }
+  })
+
+  // NEW: Teacher removes a topic marker
+  socket.on('teacher:topic-delete', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { deleteTopic } = await import('./services/topicService.js')
+      const result = await deleteTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        markerId: data.markerId
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-delete', { markerId: data.markerId })
+    } catch (err) {
+      console.error('[socket] teacher:topic-delete error:', err.message)
+    }
+  })
+
+  // Doubt Raising System
+  socket.on('raise_doubt', (data) => {
+    console.log(`Doubt raised by ${data.userName} in room ${data.roomCode}: [${data.topic || '#General'}] ${data.message}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const doubtObj = {
+      ...data,
+      topic: data.topic || '#General',
+      upvotes: Array.isArray(data.upvotes) ? data.upvotes : [],
+      resolved: false,
+      reply: null,
+      reopened: false,
+      reopenCount: 0
+    }
+    list.unshift(doubtObj)
+    roomDoubtsStore.set(data.roomCode, list)
+    io.to(data.roomCode).emit('doubt_raised', doubtObj)
+  })
+
+  socket.on('upvote_doubt', (data) => {
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d && data.userId) {
+      d.upvotes = Array.isArray(d.upvotes) ? d.upvotes : []
+      if (d.upvotes.includes(data.userId)) {
+        d.upvotes = d.upvotes.filter(id => id !== data.userId)
+      } else {
+        d.upvotes.push(data.userId)
+      }
+      io.to(data.roomCode).emit('doubt_upvoted', d)
+    }
+  })
+
+  socket.on('resolve_doubt', (data) => {
+    console.log(`Doubt resolved in room ${data.roomCode}: ${data.doubtId}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      d.resolved = true
+      d.reopened = false
+      d.reply = data.reply || null
+      d.resolvedAt = new Date().toISOString()
+      d.resolvedType = 'single'
+    }
+    io.to(data.roomCode).emit('doubt_resolved', data)
+  })
+
+  socket.on('bulk_resolve_doubts', (data) => {
+    console.log(`Bulk resolving ${data?.doubtIds?.length || 0} doubts in room ${data.roomCode}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const doubtIds = Array.isArray(data.doubtIds) ? data.doubtIds : []
+    const reply = data.reply || 'Resolved during live class explanation'
+    const resolvedAt = new Date().toISOString()
+
+    doubtIds.forEach(id => {
+      const d = list.find(item => item.doubtId === id)
+      if (d) {
+        d.resolved = true
+        d.reopened = false
+        d.reply = reply
+        d.resolvedAt = resolvedAt
+        d.resolvedType = 'bulk'
+      }
+    })
+    io.to(data.roomCode).emit('doubts_bulk_resolved', { doubtIds, reply, resolvedAt })
+  })
+
+  socket.on('reopen_doubt', (data) => {
+    console.log(`Doubt reopened in room ${data.roomCode}: ${data.doubtId} (${data.reason})`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      d.resolved = false
+      d.reopened = true
+      d.reopenCount = (d.reopenCount || 0) + 1
+      d.reopenReason = data.reason || 'Specific nuance not covered'
+      d.timestamp = new Date().toISOString()
+      
+      // Move to top of the list so teacher sees it immediately
+      const filtered = list.filter(item => item.doubtId !== data.doubtId)
+      filtered.unshift(d)
+      roomDoubtsStore.set(data.roomCode, filtered)
+      io.to(data.roomCode).emit('doubt_reopened', d)
+    }
+  })
+
+  socket.on('acknowledge_doubt', (data) => {
+    console.log(`Doubt acknowledged in room ${data.roomCode}: ${data.doubtId} by user ${data.userId}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      if (!Array.isArray(d.acknowledgedUsers)) d.acknowledgedUsers = []
+      if (data.userId && !d.acknowledgedUsers.includes(data.userId)) {
+        d.acknowledgedUsers.push(data.userId)
+      }
+      const totalStudents = 1 + (Array.isArray(d.upvotes) ? d.upvotes.length : 0)
+      if (d.acknowledgedUsers.length >= totalStudents || (totalStudents === 1 && (!data.userId || data.userId === d.userId))) {
+        d.acknowledged = true
+      }
+      io.to(data.roomCode).emit('doubt_acknowledged', { doubtId: d.doubtId, userId: data.userId, acknowledgedUsers: d.acknowledgedUsers, acknowledged: d.acknowledged })
     }
   })
 
@@ -704,7 +983,7 @@ const connectDB = async () => {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
     
     await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 2000,
       socketTimeoutMS: 45000,
       // Ceiling on concurrent in-flight queries. Default is 100; a live event with
       // hundreds of students bursting responses/leaderboard reads can exhaust it and
@@ -715,8 +994,17 @@ const connectDB = async () => {
     
     console.log('MongoDB connected successfully')
   } catch (error) {
-    console.error('MongoDB connection error:', error.message)
-    console.log('Server will continue without database connection')
+    console.warn('Local/Cloud MongoDB not reachable, starting automatic in-memory MongoDB...')
+    try {
+      const { MongoMemoryServer } = await import('mongodb-memory-server')
+      const mongoServer = await MongoMemoryServer.create()
+      const memoryUri = mongoServer.getUri()
+      await mongoose.connect(memoryUri)
+      console.log('In-memory MongoDB started and connected successfully!')
+    } catch (memError) {
+      console.error('In-memory MongoDB fallback failed:', memError.message)
+      console.log('Server will continue without database connection')
+    }
   }
 }
 
