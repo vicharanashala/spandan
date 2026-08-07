@@ -6,6 +6,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
   // each open, picking up whatever text the parent preserved.
   const [text, setText] = useState(initialText)
   const [mode, setMode] = useState('MIXED') // 'TF' or 'MIXED'
+  const [tone, setTone] = useState('professional') // 'professional', 'fun', 'technical', 'simple'
 
   if (!isOpen) return null
 
@@ -15,8 +16,8 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
       return
     }
 
-    // Just call onGenerate - parent handles loading state via isGenerating prop
-    await onGenerate(text.trim(), mode)
+    // Pass tone along with text and mode to the parent
+    await onGenerate(text.trim(), mode, tone)
   }
 
   const getTypeMixDisplay = () => {
@@ -180,6 +181,63 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
             >
               📋 Mixed (MCQ + TF + MSQ)
             </button>
+          </div>
+        </div>
+
+        {/* Question Tone Selector */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            fontSize: '13px',
+            fontWeight: '500',
+            color: 'var(--text-primary)',
+            display: 'block',
+            marginBottom: '8px'
+          }}>
+            Question Tone:
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '400', marginLeft: '6px' }}>
+              (sets the mood of generated questions)
+            </span>
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+            {[
+              { id: 'professional', label: 'Professional', emoji: '🎓', color: '#3b82f6', desc: 'Formal, textbook-style' },
+              { id: 'fun', label: 'Fun & Engaging', emoji: '😄', color: '#f59e0b', desc: 'Casual, witty, relatable' },
+              { id: 'technical', label: 'Technical', emoji: '🔧', color: '#8b5cf6', desc: 'Precise, jargon-heavy' },
+              { id: 'simple', label: 'Simple', emoji: '🌱', color: '#10b981', desc: 'Beginner-friendly' }
+            ].map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTone(t.id)}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  border: tone === t.id ? `2px solid ${t.color}` : '2px solid var(--border-color)',
+                  background: tone === t.id ? `${t.color}15` : 'transparent',
+                  color: tone === t.id ? t.color : 'var(--text-secondary)',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  textAlign: 'left'
+                }}
+              >
+                <span style={{ fontSize: '18px' }}>{t.emoji}</span>
+                <div>
+                  <div>{t.label}</div>
+                  <div style={{ 
+                    fontSize: '10px', 
+                    fontWeight: '400', 
+                    color: tone === t.id ? t.color : 'var(--text-secondary)',
+                    opacity: 0.8 
+                  }}>
+                    {t.desc}
+                  </div>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
 

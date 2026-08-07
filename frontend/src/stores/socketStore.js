@@ -22,7 +22,7 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: import.meta.env.VITE_SOCKET_PATH || (import.meta.env.VITE_BASE_PATH ? `${import.meta.env.VITE_BASE_PATH}/socket.io` : '/socket.io'),
       transports: ['websocket', 'polling']
     })
 

@@ -34,7 +34,8 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       numQuestions = 2, 
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      tone = 'professional'
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -44,7 +45,7 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       })
     }
 
-    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
+    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix, tone }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
     // The client polls GET /questions/jobs/:jobId for the result.
@@ -64,7 +65,7 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
-    console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
+    console.log(`Generating ${numQuestions} questions with ${provider} (tone: ${tone}, sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
     res.json({ success: true, questions })

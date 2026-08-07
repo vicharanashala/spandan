@@ -18,6 +18,8 @@ html {
 
 /* Theme Variables - Light (default) */
 :root {
+  --primary: #10b981;
+  --primary-hover: #059669;
   --bg-primary: #f8f9fb;
   --bg-secondary: #ffffff;
   --bg-card: #ffffff;
@@ -47,6 +49,8 @@ html {
 
 /* Dark Theme */
 [data-theme="dark"] {
+  --primary: #10b981;
+  --primary-hover: #059669;
   --bg-primary: #111827;
   --bg-secondary: #1f2937;
   --bg-card: #1f2937;

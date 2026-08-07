@@ -373,6 +373,7 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const roomDoubtsStore = new Map() // roomCode -> Array of doubt objects
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
@@ -570,6 +571,9 @@ io.on('connection', (socket) => {
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
 
+      const existingDoubts = roomDoubtsStore.get(roomCode) || []
+      socket.emit('doubts_history', existingDoubts)
+
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
@@ -637,6 +641,15 @@ io.on('connection', (socket) => {
     })
   })
 
+  // Prepare poll (countdown before question)
+  socket.on('prepare_poll', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    console.log('Prepare poll signal received for room:', data.roomCode)
+    if (data.roomCode) {
+      io.to(data.roomCode).emit('prepare_poll', data)
+    }
+  })
+
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
@@ -648,6 +661,108 @@ io.on('connection', (socket) => {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+    }
+  })
+
+  // Doubt Raising System
+  socket.on('raise_doubt', (data) => {
+    console.log(`Doubt raised by ${data.userName} in room ${data.roomCode}: [${data.topic || '#General'}] ${data.message}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const doubtObj = {
+      ...data,
+      topic: data.topic || '#General',
+      upvotes: Array.isArray(data.upvotes) ? data.upvotes : [],
+      resolved: false,
+      reply: null,
+      reopened: false,
+      reopenCount: 0
+    }
+    list.unshift(doubtObj)
+    roomDoubtsStore.set(data.roomCode, list)
+    io.to(data.roomCode).emit('doubt_raised', doubtObj)
+  })
+
+  socket.on('upvote_doubt', (data) => {
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d && data.userId) {
+      d.upvotes = Array.isArray(d.upvotes) ? d.upvotes : []
+      if (d.upvotes.includes(data.userId)) {
+        d.upvotes = d.upvotes.filter(id => id !== data.userId)
+      } else {
+        d.upvotes.push(data.userId)
+      }
+      io.to(data.roomCode).emit('doubt_upvoted', d)
+    }
+  })
+
+  socket.on('resolve_doubt', (data) => {
+    console.log(`Doubt resolved in room ${data.roomCode}: ${data.doubtId}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      d.resolved = true
+      d.reopened = false
+      d.reply = data.reply || null
+      d.resolvedAt = new Date().toISOString()
+      d.resolvedType = 'single'
+    }
+    io.to(data.roomCode).emit('doubt_resolved', data)
+  })
+
+  socket.on('bulk_resolve_doubts', (data) => {
+    console.log(`Bulk resolving ${data?.doubtIds?.length || 0} doubts in room ${data.roomCode}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const doubtIds = Array.isArray(data.doubtIds) ? data.doubtIds : []
+    const reply = data.reply || 'Resolved during live class explanation'
+    const resolvedAt = new Date().toISOString()
+
+    doubtIds.forEach(id => {
+      const d = list.find(item => item.doubtId === id)
+      if (d) {
+        d.resolved = true
+        d.reopened = false
+        d.reply = reply
+        d.resolvedAt = resolvedAt
+        d.resolvedType = 'bulk'
+      }
+    })
+    io.to(data.roomCode).emit('doubts_bulk_resolved', { doubtIds, reply, resolvedAt })
+  })
+
+  socket.on('reopen_doubt', (data) => {
+    console.log(`Doubt reopened in room ${data.roomCode}: ${data.doubtId} (${data.reason})`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      d.resolved = false
+      d.reopened = true
+      d.reopenCount = (d.reopenCount || 0) + 1
+      d.reopenReason = data.reason || 'Specific nuance not covered'
+      d.timestamp = new Date().toISOString()
+      
+      // Move to top of the list so teacher sees it immediately
+      const filtered = list.filter(item => item.doubtId !== data.doubtId)
+      filtered.unshift(d)
+      roomDoubtsStore.set(data.roomCode, filtered)
+      io.to(data.roomCode).emit('doubt_reopened', d)
+    }
+  })
+
+  socket.on('acknowledge_doubt', (data) => {
+    console.log(`Doubt acknowledged in room ${data.roomCode}: ${data.doubtId} by user ${data.userId}`)
+    const list = roomDoubtsStore.get(data.roomCode) || []
+    const d = list.find(item => item.doubtId === data.doubtId)
+    if (d) {
+      if (!Array.isArray(d.acknowledgedUsers)) d.acknowledgedUsers = []
+      if (data.userId && !d.acknowledgedUsers.includes(data.userId)) {
+        d.acknowledgedUsers.push(data.userId)
+      }
+      const totalStudents = 1 + (Array.isArray(d.upvotes) ? d.upvotes.length : 0)
+      if (d.acknowledgedUsers.length >= totalStudents || (totalStudents === 1 && (!data.userId || data.userId === d.userId))) {
+        d.acknowledged = true
+      }
+      io.to(data.roomCode).emit('doubt_acknowledged', { doubtId: d.doubtId, userId: data.userId, acknowledgedUsers: d.acknowledgedUsers, acknowledged: d.acknowledged })
     }
   })
 
@@ -704,7 +819,7 @@ const connectDB = async () => {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
     
     await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 2000,
       socketTimeoutMS: 45000,
       // Ceiling on concurrent in-flight queries. Default is 100; a live event with
       // hundreds of students bursting responses/leaderboard reads can exhaust it and
@@ -715,8 +830,17 @@ const connectDB = async () => {
     
     console.log('MongoDB connected successfully')
   } catch (error) {
-    console.error('MongoDB connection error:', error.message)
-    console.log('Server will continue without database connection')
+    console.warn('Local/Cloud MongoDB not reachable, starting automatic in-memory MongoDB...')
+    try {
+      const { MongoMemoryServer } = await import('mongodb-memory-server')
+      const mongoServer = await MongoMemoryServer.create()
+      const memoryUri = mongoServer.getUri()
+      await mongoose.connect(memoryUri)
+      console.log('In-memory MongoDB started and connected successfully!')
+    } catch (memError) {
+      console.error('In-memory MongoDB fallback failed:', memError.message)
+      console.log('Server will continue without database connection')
+    }
   }
 }
 
