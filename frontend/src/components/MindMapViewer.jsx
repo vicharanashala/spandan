@@ -1,12 +1,6 @@
 import React, { useEffect, useRef } from 'react'
-import mermaid from 'mermaid'
+import mermaid from '../lib/mermaid'   // [C1] shared singleton — never double-initialize
 import { toPng } from 'html-to-image'
-
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'default',
-  securityLevel: 'loose',
-})
 
 const MindMapViewer = ({ maps = [] }) => {
   const containerRef = useRef(null)

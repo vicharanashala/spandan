@@ -1,11 +1,26 @@
 import { config } from '../config.js'
 import { generateWithGroq, generateWithMiniMax } from './questionService.js'
 import Term from '../models/Term.js'
+import { isRedisEnabled, getRedisClient } from '../config/redis.js'
+
+// Fallback for when Redis ISN'T configured (matches the codebase's existing
+// philosophy: single-instance dev/local setups still work without Redis,
+// just without the multi-server guarantee).
+const pendingMindmapRequests = new Map()
 
 // Prefer Groq (free tier) if configured, fall back to MiniMax — same pattern as mindmap.js.
 async function callLLM(prompt) {
   const useGroq = !!config.groqApiKey
-  return useGroq ? await generateWithGroq(prompt) : await generateWithMiniMax(prompt)
+  // [M5] 25s timeout — without this, a hanging LLM call keeps the student's
+  //      request stuck indefinitely. 25s is comfortably under the 30s HTTP timeout
+  //      so we always return a clean error instead of a gateway timeout.
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('LLM request timed out after 25s')), 25000)
+  )
+  return Promise.race([
+    useGroq ? generateWithGroq(prompt) : generateWithMiniMax(prompt),
+    timeoutPromise
+  ])
 }
 
 function extractJson(text) {
@@ -67,37 +82,71 @@ Keep the list short — at most 4 terms per snippet, and only the ones you are g
 // 2. getTermDetails — lazy, cached globally. Only called when a student clicks
 //    a term. First lookup checks the Term cache before ever calling the LLM.
 // ---------------------------------------------------------------------------
-export async function getTermDetails(term) {
-  const termLower = term.trim().toLowerCase()
-  const existing = await Term.findOne({ termLower })
+// Heuristic: short, all-caps terms (NSS, RAM, CPU, TCP...) are the highest-risk
+// case for ambiguity — the same acronym can mean completely different things
+// in different subjects/contexts. Longer, specific terms ("Deadlock", "Race
+// Condition") are essentially unambiguous and safe to cache globally.
+function looksLikeAmbiguousAcronym(term) {
+  const trimmed = term.trim()
+  return trimmed.length <= 5 && /^[A-Z0-9]+$/.test(trimmed)
+}
 
-  if (existing?.definition) {
-    // Cache hit — zero AI cost.
-    return { definition: existing.definition, studyMaterial: existing.studyMaterial || [], category: existing.category }
+export async function getTermDetails(term, context = '') {
+  const termLower = term.trim().toLowerCase()
+  const isAmbiguous = looksLikeAmbiguousAcronym(term)
+
+  // Ambiguous acronyms SKIP the global cache entirely — a cached definition
+  // from one lecture's context could be flatly wrong in another lecture's
+  // context (e.g. "NSS" = National Service Scheme here, but Name Service
+  // Switch in a different, Unix-systems lecture). Correctness matters more
+  // than cost savings for this small subset of terms.
+  if (!isAmbiguous) {
+    const existing = await Term.findOne({ termLower })
+    if (existing?.definition) {
+      return { definition: existing.definition, studyMaterial: existing.studyMaterial || [], category: existing.category }
+    }
   }
 
-  const prompt = `Provide a concise explanation for a student-facing glossary, for the technical term: "${term}"
+  const contextBlock = context
+    ? `\n\nCONTEXT — here is the actual transcript excerpt this term was mentioned in. Use this to determine the CORRECT, INTENDED meaning (this matters a lot for acronyms/short terms that could mean different things in different fields):\n"""${context}"""\n`
+    : ''
+
+  // NOTE: we deliberately do NOT ask the LLM for URLs. LLMs don't have real
+  // internet access — any URL they produce is a guess from training memory,
+  // which is frequently wrong/dead. Instead we build guaranteed-working
+  // search links ourselves, directly from the term name.
+  const prompt = `Provide a concise explanation for a student-facing glossary, for the term: "${term}"${contextBlock}
 
 OUTPUT: Respond with ONLY valid JSON in this exact shape:
 {
-  "definition": "A clear 2-3 sentence definition/explanation.",
-  "category": "A short subject category, e.g. Operating Systems, Networking, Data Structures",
-  "studyMaterial": [
-    { "title": "Short resource title", "url": "https://..." }
-  ]
-}
-Keep studyMaterial to at most 2 well-known, real, reputable resources (e.g. official docs, GeeksforGeeks, MDN). If you are not confident a URL is real, omit that entry rather than inventing one.`
+  "definition": "A clear 2-3 sentence definition/explanation, matching the meaning actually used in the context above (if provided).",
+  "category": "A short subject category, e.g. Operating Systems, Networking, Government Scheme, Data Structures"
+}`
 
   const raw = await callLLM(prompt)
   const parsed = extractJson(raw)
 
+  // Deterministic, always-valid links — built from the term itself, not
+  // trusted to the LLM's memory of what a "real" URL looks like.
+  const encodedTerm = encodeURIComponent(term)
+  const studyMaterial = [
+    { title: `${term} — Wikipedia`, url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodedTerm}` },
+    { title: `Search: ${term}`, url: `https://www.google.com/search?q=${encodedTerm}` }
+  ]
+
   const result = {
     definition: parsed.definition || 'Definition not available.',
-    studyMaterial: Array.isArray(parsed.studyMaterial) ? parsed.studyMaterial : [],
+    studyMaterial,
     category: parsed.category || null
   }
 
-  // Cache globally for every future lecture, any room, any teacher.
+  if (isAmbiguous) {
+    // Don't pollute the global cache with a context-specific meaning —
+    // this result is only reliable for THIS specific mention.
+    return result
+  }
+
+  // Safe to cache globally for every future lecture, any room, any teacher.
   await Term.findOneAndUpdate(
     { termLower },
     { termLower, term, ...result },
@@ -108,18 +157,16 @@ Keep studyMaterial to at most 2 well-known, real, reputable resources (e.g. offi
 }
 
 // ---------------------------------------------------------------------------
-// 3. getTermMindmap — lazy, cached globally. Only called when a student clicks
-//    "Generate Mindmap" for a specific term.
+// The actual "do the work" function — builds the prompt, calls the LLM,
+// cleans up the response, and saves it. This is the ONE thing we want to
+// happen at most once per term, no matter how many students click at once.
 // ---------------------------------------------------------------------------
-export async function getTermMindmap(term) {
-  const termLower = term.trim().toLowerCase()
-  const existing = await Term.findOne({ termLower })
+async function generateAndSaveMindmap(term, termLower, context = '') {
+  const contextBlock = context
+    ? `\n\nCONTEXT — here is the actual transcript excerpt this term was mentioned in. Make sure the mindmap reflects the meaning actually used here (this matters for acronyms/short terms that could mean different things in different fields):\n"""${context}"""\n`
+    : ''
 
-  if (existing?.mindmapCode) {
-    return existing.mindmapCode // cache hit — zero AI cost
-  }
-
-  const prompt = `Generate a small Mermaid.js mindmap explaining the concept "${term}" — its definition, sub-concepts, and related ideas.
+  const prompt = `Generate a small Mermaid.js mindmap explaining the concept "${term}" — its definition, sub-concepts, and related ideas.${contextBlock}
 
 RULES:
 1. Output ONLY valid mermaid.js mindmap syntax.
@@ -133,26 +180,23 @@ RULES:
    give it its own line as a parent and list each item as a separate nested child
    node underneath, one per line.
 
-Correct:
+Correct syntax pattern (this is just an EXAMPLE of the FORMAT — your actual node labels
+must be about "${term}" specifically, never copy this example's content):
 mindmap
-  root((${term}))
-    Factors
-      Mass of object
-      Radius of planet
-    Related concepts
-      Orbital velocity
+  root((Topic Name))
+    Category A
+      Detail A1
+      Detail A2
+    Category B
+      Detail B1
 
 WRONG — do NOT do this (multiple values in one node's parentheses is invalid):
 mindmap
   root((${term}))
     factors("mass of object", "radius of planet")
 
-Example format:
-mindmap
-  root((${term}))
-    Sub-concept 1
-    Sub-concept 2
-      Detail`
+Now generate the mindmap for "${term}" — using content that is actually, specifically
+about "${term}", not the placeholder example above.`
 
   let markdown = await callLLM(prompt)
   markdown = markdown.replace(/```mermaid/g, '').replace(/```/g, '').trim()
@@ -168,6 +212,77 @@ mindmap
   )
 
   return markdown
+}
+
+// ---------------------------------------------------------------------------
+// A "waiter" helper — used when someone ELSE already holds the lock for this
+// term. Instead of doing our own work, we just keep checking the database
+// every 300ms until the leader finishes and saves the result.
+// ---------------------------------------------------------------------------
+async function pollUntilSaved(termLower, maxWaitMs = 12000, intervalMs = 300) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < maxWaitMs) {
+    const doc = await Term.findOne({ termLower })
+    if (doc?.mindmapCode) return doc.mindmapCode
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  throw new Error('Timed out waiting for another request to finish generating this mindmap')
+}
+
+// ---------------------------------------------------------------------------
+// 3. getTermMindmap — lazy, cached globally, and now SAFE against many
+//    students clicking the same term at the same instant (the "thundering
+//    herd" problem). Only ONE actual LLM call happens per term, cluster-wide,
+//    no matter how many requests arrive simultaneously.
+// ---------------------------------------------------------------------------
+export async function getTermMindmap(term, context = '') {
+  const termLower = term.trim().toLowerCase()
+  const isAmbiguous = looksLikeAmbiguousAcronym(term)
+
+  if (!isAmbiguous) {
+    const existing = await Term.findOne({ termLower })
+    if (existing?.mindmapCode) {
+      return existing.mindmapCode // cache hit — zero AI cost, zero lock needed
+    }
+  }
+
+  if (isRedisEnabled()) {
+    const redis = getRedisClient()
+    const lockKey = `lock:mindmap:${termLower}`
+
+    // Atomic "claim this term" — Redis guarantees only ONE caller across
+    // ALL server instances gets `acquired === true`, even under a simultaneous
+    // flood of requests. EX: 15 is a safety net in case this server crashes
+    // mid-generation, so the lock can't get stuck forever.
+    const acquired = await redis.set(lockKey, '1', { NX: true, EX: 15 })
+
+    if (acquired) {
+      // We won the race — we're responsible for doing the real work.
+      try {
+        return await generateAndSaveMindmap(term, termLower, context)
+      } finally {
+        await redis.del(lockKey) // release immediately so we don't block for the full 15s
+      }
+    } else {
+      // Someone else (maybe on a different server) is already generating
+      // this. Don't duplicate the work — just wait for their result.
+      return await pollUntilSaved(termLower)
+    }
+  }
+
+  // No Redis configured (local single-instance dev) — fall back to an
+  // in-memory Map. This only protects a single process, but that's exactly
+  // matching how the rest of this codebase already treats Redis as optional.
+  if (pendingMindmapRequests.has(termLower)) {
+    return pendingMindmapRequests.get(termLower)
+  }
+  const generationPromise = generateAndSaveMindmap(term, termLower, context)
+  pendingMindmapRequests.set(termLower, generationPromise)
+  try {
+    return await generationPromise
+  } finally {
+    pendingMindmapRequests.delete(termLower)
+  }
 }
 
 // ---------------------------------------------------------------------------

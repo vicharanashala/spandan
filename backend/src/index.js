@@ -334,6 +334,17 @@ const otpLimiter = rateLimit({
   message: { error: 'Too many verification requests, please try again later' }
 })
 
+// [H5] Tighter limiter for LLM-hitting routes (terminology details/mindmap + mindmap generate).
+// The global apiLimiter (50k req/15min) is intentionally loose to handle NATed classrooms,
+// but LLM calls cost real money. 20 calls/min is generous for genuine student interaction
+// (a student would need to click a new term every 3 seconds to hit this).
+const llmLimiter = rateLimit({
+  store: rlStore('rl:llm:'),
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 LLM-hitting requests per minute per IP
+  message: { error: 'Too many AI requests, please wait a moment before trying again' }
+})
+
 // Middleware
 app.use(helmet())
 app.use(cors({
@@ -346,6 +357,8 @@ app.use('/api/auth/', authLimiter)     // auth routes
 app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
 app.use('/api/responses/', responseLimiter)  // response submission routes
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
+app.use('/api/terminology/', llmLimiter)  // [H5] LLM-hitting routes get a tighter per-minute cap
+app.use('/api/mindmap/', llmLimiter)      // [H5] same — prevents student spam of the mindmap generator
 
 // Apply timeout middleware before routes
 app.use(requestTimeout)

@@ -1,10 +1,16 @@
 import express from 'express'
+import mongoose from 'mongoose'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { detectTerms, getTermDetails, getTermMindmap } from '../services/termService.js'
 import RoomTerm from '../models/RoomTerm.js'
 import Room from '../models/Room.js'
 
 const router = express.Router()
+
+// [C3] Shared ObjectId validator — avoids 500 CastError crashes on malformed IDs
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id)
+}
 
 router.use(authenticate)
 
@@ -19,7 +25,8 @@ router.post('/detect', authorize('teacher'), async (req, res) => {
   const { roomId, roomCode, transcript, segmentIndex = -1 } = req.body
   const io = req.app.get('io') // captured now, while we still have req
 
-  if (!roomId || !roomCode || !transcript) {
+  // [M2] Trim check: reject whitespace-only transcripts that slip past the falsy guard
+  if (!roomId || !roomCode || !transcript?.trim()) {
     return res.status(400).json({ success: false, error: 'roomId, roomCode, and transcript are required' })
   }
 
@@ -36,7 +43,9 @@ router.post('/detect', authorize('teacher'), async (req, res) => {
           // The unique index on {roomId, termLower} is the real dedupe guarantee —
           // this insert simply fails silently (caught below) if the term already
           // exists for this room, which is exactly the behavior we want.
-          const doc = await RoomTerm.create({ roomId, term, termLower, segmentIndex })
+          // Default expiry: 24h. When the room ends, rooms.js will shorten this to 5h.
+          const defaultExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+          const doc = await RoomTerm.create({ roomId, term, termLower, segmentIndex, sourceText: transcript.slice(0, 1000), expiresAt: defaultExpiresAt })
           io.to(roomCode).emit('terminology_update', { _id: doc._id, term: doc.term })
           console.log(`[terminology] New term "${term}" broadcast to room ${roomCode}`)
         } catch (err) {
@@ -59,6 +68,10 @@ router.post('/detect', authorize('teacher'), async (req, res) => {
 router.get('/room/:roomId', async (req, res) => {
   try {
     const { roomId } = req.params
+    // [C3] Validate ObjectId before querying to prevent 500 CastError
+    if (!isValidObjectId(roomId)) {
+      return res.status(400).json({ success: false, error: 'Invalid room ID format' })
+    }
     const terms = await RoomTerm.find({ roomId }).sort({ createdAt: 1 }).select('term')
     res.json({ success: true, terms })
   } catch (error) {
@@ -74,11 +87,15 @@ router.get('/room/:roomId', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/:termId/details', async (req, res) => {
   try {
+    // [C3] Validate ObjectId before querying to prevent 500 CastError on bad input
+    if (!isValidObjectId(req.params.termId)) {
+      return res.status(400).json({ success: false, error: 'Invalid term ID format' })
+    }
     const roomTerm = await RoomTerm.findById(req.params.termId)
     if (!roomTerm) {
       return res.status(404).json({ success: false, error: 'Term not found' })
     }
-    const details = await getTermDetails(roomTerm.term)
+    const details = await getTermDetails(roomTerm.term, roomTerm.sourceText || '')
     res.json({ success: true, ...details })
   } catch (error) {
     console.error('[terminology] Failed to get term details:', error)
@@ -92,11 +109,15 @@ router.get('/:termId/details', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/:termId/mindmap', async (req, res) => {
   try {
+    // [C3] Validate ObjectId before querying to prevent 500 CastError on bad input
+    if (!isValidObjectId(req.params.termId)) {
+      return res.status(400).json({ success: false, error: 'Invalid term ID format' })
+    }
     const roomTerm = await RoomTerm.findById(req.params.termId)
     if (!roomTerm) {
       return res.status(404).json({ success: false, error: 'Term not found' })
     }
-    const mermaidCode = await getTermMindmap(roomTerm.term)
+    const mermaidCode = await getTermMindmap(roomTerm.term, roomTerm.sourceText || '')
     res.json({ success: true, mermaidCode })
   } catch (error) {
     console.error('[terminology] Failed to get term mindmap:', error)
@@ -115,6 +136,20 @@ router.delete('/room/:roomId', authorize('teacher'), async (req, res) => {
   try {
     const { roomId } = req.params
     const { roomCode } = req.query
+
+    // [C3] Validate ObjectId
+    if (!isValidObjectId(roomId)) {
+      return res.status(400).json({ success: false, error: 'Invalid room ID format' })
+    }
+
+    // [H4] Authorization: verify the requesting teacher actually owns this room.
+    //      Any authenticated teacher could previously delete any room's terms — now
+    //      we require the room to belong to the caller.
+    const room = await Room.findById(roomId)
+    if (!room || room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, error: 'Not authorized to modify this room' })
+    }
+
     await RoomTerm.deleteMany({ roomId })
 
     if (roomCode) {

@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
-import mermaid from 'mermaid'
+import mermaid from '../lib/mermaid'   // [C1] shared singleton — never double-initialize
 import { API_URL } from '../config.js'
 import useAuthStore from '../stores/authStore'
-
-mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' })
 
 /**
  * TerminologySidebar — shows a live-growing list of detected lecture terms.
@@ -30,17 +28,20 @@ mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose
  */
 const TerminologySidebar = ({ roomId, socket }) => {
   const [terms, setTerms] = useState([])
+  const [isLoadingTerms, setIsLoadingTerms] = useState(true)  // [L3] initial fetch loading state
   const [expandedId, setExpandedId] = useState(null)
   const [detailsCache, setDetailsCache] = useState({})   // termId -> { definition, studyMaterial }
   const [mindmapCache, setMindmapCache] = useState({})   // termId -> mermaidCode (or 'loading')
-  const [loadingDetailsId, setLoadingDetailsId] = useState(null)
-  const [loadingMindmapId, setLoadingMindmapId] = useState(null)
+  // [M4] Use Set instead of single ID — multiple terms can be loading concurrently
+  const [loadingDetailsIds, setLoadingDetailsIds] = useState(new Set())
+  const [loadingMindmapIds, setLoadingMindmapIds] = useState(new Set())
   const [mindmapSvg, setMindmapSvg] = useState({})       // termId -> rendered svg string
   const [mindmapError, setMindmapError] = useState({})   // termId -> error message string
 
   // Load any terms already detected so far in this room (e.g. on page refresh)
   useEffect(() => {
     if (!roomId) return
+    setIsLoadingTerms(true)   // [L3] show loading indicator while fetching
     const token = useAuthStore.getState().token
     fetch(`${API_URL}/terminology/room/${roomId}`, {
       headers: { 'Authorization': `Bearer ${token}` }
@@ -50,6 +51,7 @@ const TerminologySidebar = ({ roomId, socket }) => {
         if (data.success) setTerms(data.terms || [])
       })
       .catch(err => console.error('Failed to fetch room terms:', err))
+      .finally(() => setIsLoadingTerms(false))  // [L3] always stop loading
   }, [roomId])
 
   // Listen for new terms detected live during the lecture
@@ -64,12 +66,16 @@ const TerminologySidebar = ({ roomId, socket }) => {
         return [...prev, data]
       })
     }
+    // [H3] Clear ALL state on terminology_cleared — prevents stale loading spinners
     const handleCleared = () => {
       setTerms([])
       setExpandedId(null)
       setDetailsCache({})
       setMindmapCache({})
       setMindmapSvg({})
+      setMindmapError({})           // [H3] was missing — stale error messages would linger
+      setLoadingDetailsIds(new Set())  // [H3] was missing — stuck spinner if clearing mid-load
+      setLoadingMindmapIds(new Set())  // [H3] was missing — stuck "Generating..." if clearing mid-load
     }
     socket.on('terminology_update', handleNewTerm)
     socket.on('terminology_cleared', handleCleared)
@@ -89,7 +95,8 @@ const TerminologySidebar = ({ roomId, socket }) => {
 
     // Lazy fetch #1: definition + study material (only if not already cached)
     if (!detailsCache[id]) {
-      setLoadingDetailsId(id)
+      // [M4] Add to Set, not replace
+      setLoadingDetailsIds(prev => new Set([...prev, id]))
       try {
         const token = useAuthStore.getState().token
         const res = await fetch(`${API_URL}/terminology/${id}/details`, {
@@ -102,7 +109,8 @@ const TerminologySidebar = ({ roomId, socket }) => {
       } catch (err) {
         console.error('Failed to fetch term details:', err)
       } finally {
-        setLoadingDetailsId(null)
+        // [M4] Remove from Set, not null-out a single ID
+        setLoadingDetailsIds(prev => { const s = new Set(prev); s.delete(id); return s })
       }
     }
   }
@@ -110,7 +118,8 @@ const TerminologySidebar = ({ roomId, socket }) => {
   const handleGenerateMindmap = async (termObj) => {
     const id = termObj._id || termObj.term
     if (mindmapCache[id]) return // already generated, don't re-fetch
-    setLoadingMindmapId(id)
+    // [M4] Add to Set
+    setLoadingMindmapIds(prev => new Set([...prev, id]))
     setMindmapError(prev => ({ ...prev, [id]: null }))
     try {
       const token = useAuthStore.getState().token
@@ -121,7 +130,10 @@ const TerminologySidebar = ({ roomId, socket }) => {
       if (data.success && data.mermaidCode) {
         setMindmapCache(prev => ({ ...prev, [id]: data.mermaidCode }))
         try {
-          const { svg } = await mermaid.render(`term-mindmap-${id}-${Date.now()}`, data.mermaidCode)
+          // [M1] Use crypto.randomUUID() instead of Date.now() to prevent ID collisions
+          //      when two mindmaps render within the same millisecond.
+          const uniqueId = `term-mindmap-${id}-${crypto.randomUUID()}`
+          const { svg } = await mermaid.render(uniqueId, data.mermaidCode)
           setMindmapSvg(prev => ({ ...prev, [id]: svg }))
         } catch (renderErr) {
           console.error('Mermaid failed to render term mindmap:', renderErr, '\nRaw code was:', data.mermaidCode)
@@ -136,7 +148,8 @@ const TerminologySidebar = ({ roomId, socket }) => {
       console.error('Failed to generate term mindmap:', err)
       setMindmapError(prev => ({ ...prev, [id]: 'Something went wrong while generating the mindmap.' }))
     } finally {
-      setLoadingMindmapId(null)
+      // [M4] Remove from Set
+      setLoadingMindmapIds(prev => { const s = new Set(prev); s.delete(id); return s })
     }
   }
 
@@ -154,7 +167,14 @@ const TerminologySidebar = ({ roomId, socket }) => {
         📘 Lecture Terminology
       </h3>
 
-      {terms.length === 0 && (
+      {/* [L3] Show loading state while initial fetch is happening */}
+      {isLoadingTerms && (
+        <div style={{ padding: '16px 0', textAlign: 'center', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>
+          Loading terms...
+        </div>
+      )}
+
+      {!isLoadingTerms && terms.length === 0 && (
         <div style={{ padding: '16px 0', textAlign: 'center', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>
           Terms will appear here as the lecture progresses.
         </div>
@@ -164,8 +184,9 @@ const TerminologySidebar = ({ roomId, socket }) => {
         const id = termObj._id || termObj.term
         const isExpanded = expandedId === id
         const details = detailsCache[id]
-        const isLoadingDetails = loadingDetailsId === id
-        const isLoadingMindmap = loadingMindmapId === id
+        // [M4] Check Set membership instead of equality with a single ID
+        const isLoadingDetails = loadingDetailsIds.has(id)
+        const isLoadingMindmap = loadingMindmapIds.has(id)
         const svg = mindmapSvg[id]
         const mmError = mindmapError[id]
 

@@ -1,9 +1,15 @@
 import express from 'express'
+import mongoose from 'mongoose'  // [C3] for ObjectId validation
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateWithMiniMax, generateWithGroq } from '../services/questionService.js'
 import { fixMultiArgNodes } from '../services/termService.js'
 import { config } from '../config.js'
 import Mindmap from '../models/Mindmap.js'
+
+// [C3] Shared ObjectId validator
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id)
+}
 
 const router = express.Router()
 
@@ -29,6 +35,16 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     return res.status(400).json({
       success: false,
       error: 'roomCode is required'
+    })
+  }
+
+  // [M3] roomId is now required — without it, mindmaps are not persisted and
+  //      late-joining students will never see them. Previously roomId was silently
+  //      optional which caused an undocumented inconsistency.
+  if (!roomId) {
+    return res.status(400).json({
+      success: false,
+      error: 'roomId is required'
     })
   }
 
@@ -114,6 +130,10 @@ ${transcript}`
 router.get('/room/:roomId', async (req, res) => {
   try {
     const { roomId } = req.params
+    // [C3] Validate ObjectId to prevent 500 CastError on malformed IDs
+    if (!isValidObjectId(roomId)) {
+      return res.status(400).json({ success: false, error: 'Invalid room ID format' })
+    }
     const mindmaps = await Mindmap.find({ roomId }).sort({ segmentIndex: 1, createdAt: 1 })
     res.json({ success: true, mindmaps: mindmaps.map(m => m.markdown) })
   } catch (error) {

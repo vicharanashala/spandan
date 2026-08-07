@@ -5,6 +5,7 @@ import { authorize } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 import Mindmap from '../models/Mindmap.js'
+import RoomTerm from '../models/RoomTerm.js'
 
 const router = express.Router()
 
@@ -150,6 +151,13 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
       
       // Update mindmaps TTL to 5 hours from now
       await Mindmap.updateMany(
+        { roomId: room._id },
+        { $set: { expiresAt: new Date(Date.now() + 5 * 60 * 60 * 1000) } }
+      )
+
+      // Mirror the same TTL update for room-specific detected terms — class is done,
+      // these are no longer useful after a short grace period.
+      await RoomTerm.updateMany(
         { roomId: room._id },
         { $set: { expiresAt: new Date(Date.now() + 5 * 60 * 60 * 1000) } }
       )

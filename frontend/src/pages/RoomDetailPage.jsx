@@ -23,6 +23,28 @@ import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../se
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
 
+// [H6] Non-blocking toast notification — replaces all window.alert() calls.
+// Injects a dismissible banner at the top of the page that auto-dismisses after 5s,
+// so the teacher's recording / browser tab never freezes mid-lecture.
+let _toastTimeout = null
+function showToast(message, type = 'error') {
+  const existing = document.getElementById('spandan-toast')
+  if (existing) existing.remove()
+  if (_toastTimeout) clearTimeout(_toastTimeout)
+  const toast = document.createElement('div')
+  toast.id = 'spandan-toast'
+  const bg = type === 'error' ? '#b91c1c' : type === 'warn' ? '#b45309' : '#1d4ed8'
+  toast.style.cssText = `position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;background:${bg};color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:90vw;text-align:center;`
+  toast.innerText = message
+  const close = document.createElement('span')
+  close.style.cssText = 'margin-left:12px;cursor:pointer;opacity:0.8;font-weight:400;'
+  close.innerText = '✕'
+  close.onclick = () => toast.remove()
+  toast.appendChild(close)
+  document.body.appendChild(toast)
+  _toastTimeout = setTimeout(() => toast.remove(), 5000)
+}
+
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
@@ -223,22 +245,26 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      if (process.env.NODE_ENV !== 'production') console.log('[QUESTION LAUNCHED]', data)  // [L2] dev-only log
+    }
+
+    // [C4] Named handler — socket.off() requires the exact same function reference
+    //      to remove only THIS listener (not every listener for the event).
+    const handleMindmapShared = (data) => {
+      if (data?.markdown) {
+        setMindmaps(prev => prev.includes(data.markdown) ? prev : [...prev, data.markdown])
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
-    socket.on('mindmap_shared', (data) => {
-      if (data && data.markdown) {
-        setMindmaps(prev => prev.includes(data.markdown) ? prev : [...prev, data.markdown])
-      }
-    })
+    socket.on('mindmap_shared', handleMindmapShared)
 
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
-      socket.off('mindmap_shared')
+      socket.off('mindmap_shared', handleMindmapShared)  // [C4] passes handler ref — only removes THIS listener
     }
   }, [socket, roomSettings.timeToAnswer])
 
@@ -251,7 +277,9 @@ function RoomDetailPage() {
 
   // Start segment timer when recording
   useEffect(() => {
-    console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
+    if (process.env.NODE_ENV !== 'production') {  // [L2] wrap timer debug logs in dev-only guard
+      console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
+    }
     // Only start timer if recording AND not pending review (popup shown)
     if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
       startSegmentTimer()
@@ -377,9 +405,9 @@ function RoomDetailPage() {
     const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
     if (!textToUse || textToUse.length < 50) {
-      console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
-      window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
+      if (process.env.NODE_ENV !== 'production') console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
+      // [H6] Non-blocking toast instead of window.alert() — won't freeze the recording tab
+      showToast('Transcription too short. Please speak more or trigger manually after starting next segment.', 'warn')
 
       // Resume for next segment
       setIsPendingReview(false)
@@ -419,7 +447,8 @@ function RoomDetailPage() {
         generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        // [H6] Non-blocking toast — alert() would freeze the browser tab mid-recording
+        showToast('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
         setGenerateQEnabled(true) // Enable fail-safe manual button
         return
       }
@@ -452,16 +481,18 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
-      
-      // Auto-trigger mind map generation for this chunk
-      console.log('[MINDMAP] Auto-triggering mind map generation for segment', segmentIndex)
-      fetch(`${API_URL}/mindmap/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ transcript: text, roomCode: room.code, roomId: room._id, segmentIndex })
-      }).catch(err => console.error('[MINDMAP] Auto-generation failed:', err))
 
       if (data.success && data.questions && data.questions.length > 0) {
+        // [H2] Mindmap only triggered when questions actually succeeded — not before checking.
+        //      Moving it inside the success block prevents broadcasting a mindmap for a
+        //      segment that produced no questions (bad audio/empty transcript).
+        if (process.env.NODE_ENV !== 'production') console.log('[MINDMAP] Auto-triggering mind map generation for segment', segmentIndex)  // [L2]
+        fetch(`${API_URL}/mindmap/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ transcript: text, roomCode: room.code, roomId: room._id, segmentIndex })
+        }).catch(err => console.error('[MINDMAP] Auto-generation failed:', err))
+
         return data.questions.map(q => ({
           ...q,
           timeToAnswer: roomSettings.timeToAnswer,
@@ -481,6 +512,15 @@ function RoomDetailPage() {
     setShowTextToQuestions(false) // Close the text popup
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
+
+    // Also run terminology detection on this pasted text — fire-and-forget,
+    // same as the live-recording segment flow, so testing doesn't require
+    // actually speaking a full segment out loud every time.
+    fetch(`${API_URL}/terminology/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ roomId: room._id, roomCode: room.code, transcript: text, segmentIndex: -1 })
+    }).catch(err => console.error('[PASTE] Terminology detection request failed:', err))
 
     try {
       const typeMix = mode === 'TF'
@@ -518,7 +558,8 @@ function RoomDetailPage() {
         // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        // [H6] Non-blocking toast
+        showToast(data.error || 'Failed to generate questions. Please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
@@ -528,7 +569,8 @@ function RoomDetailPage() {
         // Same as above — preserve the pasted text and reopen the popup for a retry.
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert('Failed to generate questions. Please try again.')
+        // [H6] Non-blocking toast
+        showToast('Failed to generate questions. Please try again.')
       }
     }
   }
