@@ -1313,10 +1313,8 @@ function RoomDetailPage() {
                 <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
                   {totalParticipants === 0 ? (
                     <>Students entering room code <strong style={{ color: 'var(--text-primary)' }}>{room.code}</strong> will be held in the Waiting Room until you start the session.</>
-                  ) : totalParticipants === 1 ? (
-                    <><strong style={{ color: '#b45309' }}>1 student</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
                   ) : (
-                    <><strong style={{ color: '#b45309' }}>{totalParticipants} students</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
+                    <><strong style={{ color: '#b45309' }}>{totalParticipants} {totalParticipants === 1 ? 'student' : 'students'}</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
                   )}
                 </div>
               </div>
