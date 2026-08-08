@@ -113,7 +113,9 @@ const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
 // Rank cache ("rank on submit") must outlive a whole segment window (answering + review + delay).
 const RANK_CACHE_TTL_S = Number(process.env.LEADERBOARD_RANK_TTL_S) || 1800
 const roomLive = new Map() // roomId(str) -> { countsTimer, segmentFoldTimer, roomCode, rankByStudent, total }
-
+// Active poll state used to restore the current question for
+// students who join/reconnect after the initial broadcast.
+const activePolls = new Map()
 function getRoomState(id) {
   let s = roomLive.get(id)
   if (!s) { s = { countsTimer: null, segmentFoldTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
@@ -573,10 +575,33 @@ io.on('connection', (socket) => {
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
-      if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
-      // If the teacher's question popup is currently open, a late-joining student must start paused.
-      if (videoPaused.get(roomCode)) socket.emit('video:pause')
-    } catch (error) {
+if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
+
+if (videoPaused.get(roomCode)) socket.emit('video:pause')
+
+// Restore an active poll for students who join/reconnect after
+// the original question:started broadcast.
+const activePoll = activePolls.get(roomCode)
+
+if (activePoll) {
+  const elapsedSeconds = Math.floor((Date.now() - activePoll.startTime) / 1000)
+  const remainingSeconds = activePoll.timer - elapsedSeconds
+
+  if (remainingSeconds > 0) {
+    socket.emit('question:started', {
+      questionId: activePoll.questionId,
+      question: {
+        ...activePoll.question,
+        timeToAnswer: remainingSeconds
+      },
+      timer: remainingSeconds,
+      startTime: activePoll.startTime
+    })
+  } else {
+    activePolls.delete(roomCode)
+  }
+}
+} catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
     }
@@ -618,24 +643,41 @@ io.on('connection', (socket) => {
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
-    const room = await verifyRoomOwner(socket, data?.roomCode)
-    if (!room) return
-    if (data.questionId) setLiveQuestion(room._id, data.questionId)
-    io.to(data.roomCode).emit('question:started', {
-      questionId: data.questionId,
-      question: sanitizeQuestionForStudents(data.question),
-      timer: data.timer,
-      startTime: Date.now()
-    })
+  const room = await verifyRoomOwner(socket, data?.roomCode)
+  if (!room) return
+
+  if (data.questionId) {
+    setLiveQuestion(room._id, data.questionId)
+  }
+
+  const question = sanitizeQuestionForStudents(data.question)
+  const startTime = Date.now()
+
+  activePolls.set(data.roomCode, {
+    question,
+    questionId: data.questionId,
+    timer: Number(data.timer) || 0,
+    startTime
   })
 
-  socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    io.to(data.roomCode).emit('question:ended', {
-      questionId: data.questionId,
-      results: data.results
-    })
+  io.to(data.roomCode).emit('question:started', {
+    questionId: data.questionId,
+    question,
+    timer: data.timer,
+    startTime
   })
+})
+
+  socket.on('question:end', async (data) => {
+  if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+
+  activePolls.delete(data.roomCode)
+
+  io.to(data.roomCode).emit('question:ended', {
+    questionId: data.questionId,
+    results: data.results
+  })
+})
 
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
@@ -645,11 +687,21 @@ io.on('connection', (socket) => {
       return
     }
     if (data.question) {
-      const qId = data.question._id || data.question.id
-      if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
-    }
+  const qId = data.question._id || data.question.id
+  if (qId) setLiveQuestion(room._id, qId)
+
+  const question = sanitizeQuestionForStudents(data.question)
+
+  activePolls.set(data.roomCode, {
+    question,
+    questionId: qId,
+    timer: Number(question.timeToAnswer) || 30,
+    startTime: Date.now()
   })
+
+    io.to(data.roomCode).emit('new_question', question)
+  }
+})
 
   // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
   // Teacher-only; students receive it and cannot forge it.
