@@ -1,0 +1,67 @@
+server:
+  port: 8093
+
+spring:
+  application:
+    name: reporting-service
+
+  datasource:
+    url: ${REPORTING_DB_URL:jdbc:postgresql://localhost:5432/reporting_db}
+    username: ${REPORTING_DB_USER:postgres}
+    password: ${REPORTING_DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: reporting-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring:
+          json:
+            trusted:
+              packages: com.spandan.*
+            value:
+              default:
+                type: java.lang.Object
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+    listener:
+      ack-mode: manual
+      concurrency: 2
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 1000ms
+      lettuce:
+        pool:
+          max-active: 8
+
+reporting:
+  retention-days: ${REPORTING_RETENTION_DAYS:90}
+  export:
+    storage-path: ${REPORTING_EXPORT_STORAGE_PATH:exports}
+
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}

@@ -1,0 +1,24 @@
+server:
+  port: 0
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+auth:
+  jwt:
+    secret: test-secret-key-for-integration-tests-minimum-256-bits
+
+recording:
+  chunk:
+    max-buffer-chunks: 10
+  provider:
+    send-timeout-ms: 1000
+    connection-timeout-ms: 1000
+
+grpc:
+  client:
+    transcription-service:
+      host: localhost
+      port: 0

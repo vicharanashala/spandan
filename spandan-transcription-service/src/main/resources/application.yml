@@ -1,0 +1,44 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: transcription-service
+  datasource:
+    url: ${TRANSCRIPTION_DB_URL:jdbc:postgresql://localhost:5432/transcription_db}
+    username: ${TRANSCRIPTION_DB_USER:postgres}
+    password: ${TRANSCRIPTION_DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
+
+grpc:
+  server:
+    port: ${TS_GRPC_PORT:50052}
+
+transcription:
+  max-gap-tolerance: ${MAX_GAP_TOLERANCE:5}
+  gap-timeout-ms: ${GAP_TIMEOUT_MS:30000}
+  expiry-sweep-interval-ms: 900000
+  expiry-hours: 18

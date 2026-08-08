@@ -1,0 +1,88 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: spandan-polling-service
+
+  datasource:
+    url: ${POLLING_DB_URL:jdbc:postgresql://localhost:5432/polling_db}
+    username: ${POLLING_DB_USER:polling_user}
+    password: ${POLLING_DB_PASSWORD:polling_pass}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 5000
+      data-source-properties:
+        tcpKeepAlive: true
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 20
+          order_inserts: true
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    out-of-order: false
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: polling-service
+      auto-offset-reset: earliest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        acks: 1
+        retries: 3
+
+polling:
+  kafka:
+    topic: polling-events
+    question-review-topic: question-review-events
+    auth-events-topic: auth-events
+  sweep:
+    interval-ms: 1000
+
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+    instances:
+      kafkaPublisher:
+        base-config: default
+
+logging:
+  level:
+    com.spandan: INFO
+    org.springframework.security: WARN
+    org.springframework.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+
+  flyway:
+    enabled: true

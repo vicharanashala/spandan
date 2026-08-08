@@ -1,0 +1,56 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: realtime-communication-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: realtime-communication-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.spandan.*
+        spring.json.value.default.type: java.lang.Object
+      enable-auto-commit: false
+      auto-offset-reset: latest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    listener:
+      ack-mode: manual
+      concurrency: 3
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 4
+
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
+
+response:
+  service:
+    url: ${RESPONSE_SERVICE_URL:http://localhost:8084}
+
+websocket:
+  heartbeat-time: 10000
+  max-frame-size: 65536
+  max-session-idle-time: 300000
+  connection-ttl-seconds: 3600
+
+interaction-events:
+  topic: ${INTERACTION_EVENTS_TOPIC:interaction-events}
+
+rtc:
+  timeout-sweep-interval-ms: ${RTC_TIMEOUT_SWEEP_INTERVAL_MS:5000}
+  poll-grace-period-seconds: ${RTC_POLL_GRACE_PERIOD_SECONDS:30}
