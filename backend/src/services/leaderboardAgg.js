@@ -31,13 +31,13 @@ export async function computeRanked(roomId) {
       correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
       totalAnswered: { $sum: 1 }
     } },
-    { $sort: { totalPoints: -1 } }
+    { $sort: { totalPoints: -1, _id: 1 } } // tie-break by studentId for a stable board across recomputes
   ])
 
   const users = await User.find({ _id: { $in: ranked.map(e => e._id) } })
-    .select('name email')
+    .select('name')
     .lean()
-  const nameById = new Map(users.map(u => [u._id.toString(), u.name || u.email || 'Unknown Student']))
+  const nameById = new Map(users.map(u => [u._id.toString(), u.name || 'Unknown Student']))
 
   const rankByStudent = new Map()
   const full = ranked.map((e, i) => {

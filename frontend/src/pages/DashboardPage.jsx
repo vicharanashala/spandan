@@ -17,8 +17,15 @@ function DashboardPage() {
   const isMobile = useIsMobile()
 
   const [roomName, setRoomName] = useState('')
+  const [mode, setMode] = useState('normal')
+  const [videoUrl, setVideoUrl] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
+
+  // Video Mode needs a Chromium browser (getDisplayMedia tab-audio capture on the teacher side).
+  const isChromium = /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent)
+  const isValidYouTube = (url) =>
+    /(?:youtube\.com\/(?:watch\?v=|live\/|embed\/)|youtu\.be\/)[\w-]+/.test(url.trim())
   const [stats, setStats] = useState({
     totalRooms: 0,
     activeRooms: 0,
@@ -85,10 +92,15 @@ function DashboardPage() {
 
   const handleCreateRoom = async () => {
     if (!roomName.trim()) return
+    if (mode === 'video' && !isValidYouTube(videoUrl)) return
     setIsCreating(true)
     try {
-      await createRoom(roomName.trim())
+      const settings = { mode }
+      if (mode === 'video') settings.videoUrl = videoUrl.trim()
+      await createRoom(roomName.trim(), settings)
       setRoomName('')
+      setVideoUrl('')
+      setMode('normal')
     } catch (err) {
       console.error('Failed to create room:', err)
     } finally {
@@ -129,7 +141,7 @@ function DashboardPage() {
     { icon: '💬', value: stats.totalResponses, label: 'Total Responses' }
   ]
 
-  const disabled = isCreating || !roomName.trim()
+  const disabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
 
   return (
     <div style={{
@@ -250,6 +262,7 @@ function DashboardPage() {
               Create New Room
             </h2>
 
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
               <input
                 type="text"
@@ -289,6 +302,83 @@ function DashboardPage() {
               >
                 {isCreating ? 'Creating...' : 'Create Room'}
               </button>
+            </div>
+
+            {/* Room mode */}
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              {[
+                { key: 'normal', title: 'Normal', desc: 'Live mic + transcript' },
+                { key: 'video', title: 'Video', desc: 'YouTube video or live link' }
+              ].map((opt) => {
+                const active = mode === opt.key
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setMode(opt.key)}
+                    style={{
+                      flex: 1,
+                      minWidth: '150px',
+                      textAlign: 'left',
+                      padding: '10px 12px',
+                      cursor: 'pointer',
+                      borderRadius: 'var(--radius)',
+                      border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                      background: active ? 'rgba(59,130,246,.08)' : 'var(--input-bg)',
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 600 }}>{opt.title}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                      {opt.desc}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Video URL (video mode only) */}
+            {mode === 'video' && (
+              <div>
+                <input
+                  type="text"
+                  value={videoUrl}
+                  onChange={(e) => setVideoUrl(e.target.value)}
+                  placeholder="YouTube video or live URL..."
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: 'var(--radius)',
+                    fontSize: '14px',
+                    outline: 'none',
+                    background: 'var(--input-bg)',
+                    color: 'var(--text-primary)',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                {videoUrl.trim() && !isValidYouTube(videoUrl) && (
+                  <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '6px' }}>
+                    Enter a valid YouTube link (youtube.com/watch, /live, or youtu.be).
+                  </div>
+                )}
+                {!isChromium && (
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#b45309',
+                    background: '#fffbeb',
+                    border: '1px solid #fde68a',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '10px 12px',
+                    marginTop: '10px'
+                  }}>
+                    Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio.
+                    Please open Spandan in Chrome or Edge before starting a video room.
+                  </div>
+                )}
+              </div>
+            )}
             </div>
           </div>
 

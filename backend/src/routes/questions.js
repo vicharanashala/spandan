@@ -1,8 +1,9 @@
 import express from 'express'
-import { authenticate, authorize } from '../middleware/auth.js'
+import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
+import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
 const router = express.Router()
 
@@ -26,7 +27,7 @@ router.get('/providers', (req, res) => {
 
 // POST /api/questions/generate - Generate questions from transcript
 // Authorization: teacher only
-router.post('/generate', authorize('teacher'), async (req, res) => {
+router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const { transcript, config } = req.body
     const { 
@@ -78,7 +79,7 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
 
 // GET /api/questions/jobs/:jobId - poll an async generation job (Phase 2D)
 // Authorization: teacher only, and only the teacher who requested it.
-router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
+router.get('/jobs/:jobId', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const queue = getGenerationQueue()
     if (!queue) {
@@ -107,7 +108,7 @@ router.get('/jobs/:jobId', authorize('teacher'), async (req, res) => {
 
 // Create a question (for manual creation)
 // Authorization: teacher only
-router.post('/', authorize('teacher'), async (req, res) => {
+router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const Question = (await import('../models/Question.js')).default
     const { 
@@ -123,6 +124,15 @@ router.post('/', authorize('teacher'), async (req, res) => {
 
     if (!roomId || !type || !question || !options) {
       return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    // Authorization: only the room's OWNING teacher may add questions to it. Without this,
+    // any teacher could inject questions into another teacher's room by supplying its roomId.
+    const Room = (await import('../models/Room.js')).default
+    const room = await Room.findById(roomId)
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ error: ownership.error })
     }
 
     // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).

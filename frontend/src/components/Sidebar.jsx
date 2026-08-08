@@ -8,11 +8,13 @@ const menuItems = {
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
+    { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/teacher/help' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
+    { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },
   ]
 }
 
@@ -26,7 +28,16 @@ export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
   const role = user?.role || 'student'
-  const items = menuItems[role] || menuItems.student
+  const baseItems = menuItems[role] || menuItems.student
+  // Admins get an extra "Approvals" entry, placed just above "Manual".
+  let items = baseItems
+  if (user?.isAdmin) {
+    const adminItem = { id: 'admin', label: 'Approvals', icon: '🛡️', path: '/admin' }
+    const idx = baseItems.findIndex(i => i.id === 'manual')
+    items = idx === -1
+      ? [...baseItems, adminItem]
+      : [...baseItems.slice(0, idx), adminItem, ...baseItems.slice(idx)]
+  }
 
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches)

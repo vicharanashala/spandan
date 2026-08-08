@@ -27,9 +27,11 @@ function AuthPage() {
     isLoading,
     error,
     login,
-    register,
+    sendRegistrationOtp,
+    verifyRegistration,
     logout,
-    clearError
+    clearError,
+    sessionExpired
   } = useAuthStore()
   const { isDark, toggleTheme } = useThemeStore()
   const socket = useSocketStore(state => state.socket)
@@ -39,18 +41,33 @@ function AuthPage() {
   const [isLogin, setIsLogin] = useState(true)
   const [formData, setFormData] = useState({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
   const [validationError, setValidationError] = useState('')
+  const [pendingMsg, setPendingMsg] = useState('')
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('')
   const [forgotPasswordMsg, setForgotPasswordMsg] = useState('')
   const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false)
   const [showPasswordReqs, setShowPasswordReqs] = useState(false)
+  // Email-OTP registration step: after the form is submitted we send a code and switch to OTP entry.
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpValue, setOtpValue] = useState('')
+  const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
 
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
     setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
     setShowPasswordReqs(false)
     setValidationError('')
+    setOtpSent(false)
+    setOtpValue('')
+    setResendIn(0)
   }, [isLogin])
+
+  // Tick down the resend cooldown once per second.
+  useEffect(() => {
+    if (resendIn <= 0) return
+    const t = setTimeout(() => setResendIn(resendIn - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendIn])
 
   const getPasswordReqs = (password) => {
     if (password == null) return PASSWORD_REQUIREMENTS.map(req => ({ ...req, met: false }))
@@ -86,6 +103,7 @@ function AuthPage() {
     e.preventDefault()
     clearError()
     setValidationError('')
+    setPendingMsg('')
 
     if (!validateForm()) return
 
@@ -103,19 +121,60 @@ function AuthPage() {
       }
     } else {
       try {
-        const data = await register(formData.name, formData.email, formData.password, formData.role)
-        // Registration returns a token and signs the user in — go straight into the app,
-        // based on the role from the backend response (matching the login flow) instead of
-        // sending the new user back to the login form.
-        if (data.user?.role === 'teacher') {
-          navigate('/teacher')
-        } else {
-          navigate('/student')
-        }
+        // Step 1: request an email verification code, then switch to the OTP entry screen.
+        await sendRegistrationOtp(formData.name, formData.email)
+        setOtpValue('')
+        setOtpSent(true)
+        setResendIn(60)
       } catch (err) {
-        setValidationError(err.message || 'Registration failed')
+        setValidationError(err.message || 'Failed to send verification code')
       }
     }
+  }
+
+  // Step 2: verify the emailed code and create the account (signs the user in on success).
+  const handleVerifyOtp = async (e) => {
+    e.preventDefault()
+    clearError()
+    setValidationError('')
+    if (!/^\d{6}$/.test(otpValue)) {
+      setValidationError('Enter the 6-digit code from your email')
+      return
+    }
+    try {
+      const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue)
+      // Teacher accounts require admin approval: no session is created. Send the registrant
+      // back to the login screen with an "approval pending" message instead of a dashboard.
+      if (data.pendingApproval) {
+        setOtpSent(false)
+        setOtpValue('')
+        setIsLogin(true)
+        setPendingMsg(data.message || 'Your teacher account is pending admin approval. You can sign in once an administrator approves it.')
+        return
+      }
+      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+    } catch (err) {
+      setValidationError(err.message || 'Registration failed')
+    }
+  }
+
+  const handleResendOtp = async () => {
+    if (resendIn > 0) return
+    clearError()
+    setValidationError('')
+    try {
+      await sendRegistrationOtp(formData.name, formData.email)
+      setResendIn(60)
+    } catch (err) {
+      setValidationError(err.message || 'Failed to resend code')
+    }
+  }
+
+  const handleBackToForm = () => {
+    setOtpSent(false)
+    setOtpValue('')
+    setValidationError('')
+    clearError()
   }
 
   const handleLogout = () => {
@@ -403,7 +462,7 @@ function AuthPage() {
               color: 'var(--text-primary)',
               marginBottom: '6px'
             }}>
-              {showForgotPassword ? 'Reset Password' : isLogin ? 'Welcome Back' : 'Create Account'}
+              {showForgotPassword ? 'Reset Password' : otpSent ? 'Verify your email' : isLogin ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p style={{
               fontSize: '14px',
@@ -411,11 +470,43 @@ function AuthPage() {
             }}>
               {showForgotPassword
                 ? 'Enter your email to receive a reset link'
-                : isLogin
-                  ? 'Sign in to continue to your dashboard'
-                  : 'Join Spandan to start creating polls'}
+                : otpSent
+                  ? `Enter the 6-digit code sent to ${formData.email}`
+                  : isLogin
+                    ? 'Sign in to continue to your dashboard'
+                    : 'Join Spandan to start creating polls'}
             </p>
           </div>
+
+          {/* Session-expiry notice (shown when the app dropped an expired token, not a login error) */}
+          {sessionExpired && !validationError && !error && (
+            <div style={{
+              background: isDark ? 'rgba(245,158,11,0.15)' : '#fffbeb',
+              border: `1px solid ${isDark ? 'rgba(245,158,11,0.3)' : '#fde68a'}`,
+              borderRadius: 'var(--radius-sm)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              color: isDark ? '#fcd34d' : '#b45309',
+              fontSize: '14px'
+            }}>
+              Your session expired. Please sign in again.
+            </div>
+          )}
+
+          {/* Teacher account pending admin approval (shown after a teacher registers) */}
+          {pendingMsg && (
+            <div style={{
+              background: isDark ? 'rgba(34,197,94,0.15)' : '#f0fdf4',
+              border: `1px solid ${isDark ? 'rgba(34,197,94,0.3)' : '#bbf7d0'}`,
+              borderRadius: 'var(--radius-sm)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              color: isDark ? '#86efac' : '#15803d',
+              fontSize: '14px'
+            }}>
+              {pendingMsg}
+            </div>
+          )}
 
           {/* Error / Success messages */}
           {validationError && (
@@ -492,6 +583,52 @@ function AuthPage() {
               >
                 Back to login
               </button>
+            </form>
+          ) : otpSent ? (
+            <form onSubmit={handleVerifyOtp}>
+              <div style={{ marginBottom: '20px' }}>
+                <label style={labelStyle}>Verification code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="6-digit code"
+                  value={otpValue}
+                  onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  autoFocus
+                  style={{ ...inputStyle, letterSpacing: '10px', textAlign: 'center', fontSize: '22px', fontWeight: 700 }}
+                  onFocus={handleInputFocus}
+                  onBlur={handleInputBlur}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={isLoading || otpValue.length !== 6}
+                style={primaryButtonStyle(isLoading || otpValue.length !== 6)}
+              >
+                {isLoading ? 'Verifying...' : 'Verify & Create Account'}
+              </button>
+              <div style={{ textAlign: 'center', marginTop: '16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                Didn't receive it?{' '}
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={resendIn > 0}
+                  style={{ background: 'none', border: 'none', color: resendIn > 0 ? 'var(--text-secondary)' : 'var(--accent)', fontWeight: 600, cursor: resendIn > 0 ? 'default' : 'pointer' }}
+                >
+                  {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
+                </button>
+              </div>
+              <div style={{ textAlign: 'center', marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
+                <button
+                  type="button"
+                  onClick={handleBackToForm}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  ← Change details
+                </button>
+              </div>
             </form>
           ) : (
             <form onSubmit={handleSubmit}>
