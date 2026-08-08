@@ -187,6 +187,10 @@ function StudentRoomPage() {
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
 
+    const handleRoomStarted = (data) => {
+      setRoom(prev => prev ? ({ ...prev, status: 'ACTIVE' }) : prev)
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -194,6 +198,7 @@ function StudentRoomPage() {
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
+    socket.on('room:started', handleRoomStarted)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
@@ -212,6 +217,7 @@ function StudentRoomPage() {
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
+      socket.off('room:started', handleRoomStarted)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
@@ -433,6 +439,150 @@ function StudentRoomPage() {
               margin: '0 auto 16px'
             }} />
             <p style={{ color: 'var(--text-secondary)' }}>Session ended — loading your results...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (room?.status === 'SCHEDULED') {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{
+          flex: 1,
+          marginLeft: isMobile ? 0 : 'var(--sidebar-width, 240px)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: isMobile ? '24px 16px' : '40px 24px'
+        }}>
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '20px',
+            padding: isMobile ? '28px 20px' : '40px 32px',
+            border: '1px solid var(--border-color)',
+            boxShadow: 'var(--shadow-lg)',
+            maxWidth: '520px',
+            width: '100%',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              background: 'rgba(59, 130, 246, 0.12)',
+              color: '#3b82f6',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '32px',
+              margin: '0 auto 20px'
+            }}>
+              ⏰
+            </div>
+            
+            <span style={{
+              fontSize: '12px',
+              fontWeight: 700,
+              padding: '4px 12px',
+              borderRadius: '20px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              background: 'rgba(234, 179, 8, 0.15)',
+              color: '#ca8a04',
+              border: '1px solid rgba(234, 179, 8, 0.3)',
+              display: 'inline-block',
+              marginBottom: '16px'
+            }}>
+              Scheduled Room
+            </span>
+
+            <h2 style={{
+              margin: '0 0 8px',
+              fontSize: '22px',
+              fontWeight: 700,
+              color: 'var(--text-primary)',
+              letterSpacing: '-0.02em'
+            }}>
+              {room.name}
+            </h2>
+
+            <p style={{ margin: '0 0 16px', color: 'var(--text-secondary)', fontSize: '14px' }}>
+              Host: <strong style={{ color: 'var(--text-primary)' }}>{room.teacher?.name || 'Teacher'}</strong>
+            </p>
+
+            {room.scheduledStartTime && (
+              <div style={{
+                background: 'var(--input-bg)',
+                borderRadius: '12px',
+                padding: '14px 16px',
+                marginBottom: '24px',
+                border: '1px solid var(--border-color)'
+              }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  Scheduled Start Time
+                </div>
+                <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--accent)' }}>
+                  {new Date(room.scheduledStartTime).toLocaleString(undefined, {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              color: 'var(--text-secondary)',
+              fontSize: '13px',
+              padding: '14px 16px',
+              borderRadius: '12px',
+              background: 'rgba(59, 130, 246, 0.06)'
+            }}>
+              <div style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: '#22c55e',
+                boxShadow: '0 0 0 4px rgba(34, 197, 94, 0.2)',
+                flexShrink: 0
+              }} />
+              <span>
+                {room.scheduledStartTime && new Date() > new Date(room.scheduledStartTime)
+                  ? 'Scheduled start time has arrived! Don\'t worry, your teacher will open the session shortly.'
+                  : 'You are in the waiting room. The session will open automatically when the teacher starts.'}
+              </span>
+            </div>
+
+            <button
+              onClick={() => navigate('/student')}
+              style={{
+                marginTop: '28px',
+                padding: '11px 20px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '10px',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Leave Waiting Room
+            </button>
           </div>
         </div>
       </div>

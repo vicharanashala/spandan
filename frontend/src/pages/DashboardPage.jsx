@@ -7,18 +7,23 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import useThemeStore from '../stores/themeStore'
+import RoomCard from '../components/RoomCard'
 import useIsMobile from '../hooks/useIsMobile'
 
 function DashboardPage() {
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
-  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
+  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, startRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
+  const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
 
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  const [isScheduled, setIsScheduled] = useState(false)
+  const [scheduledStartTime, setScheduledStartTime] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
 
@@ -93,14 +98,26 @@ function DashboardPage() {
   const handleCreateRoom = async () => {
     if (!roomName.trim()) return
     if (mode === 'video' && !isValidYouTube(videoUrl)) return
+    if (isScheduled && !scheduledStartTime) return
+
     setIsCreating(true)
     try {
       const settings = { mode }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
-      await createRoom(roomName.trim(), settings)
+      const startTime = isScheduled && scheduledStartTime ? new Date(scheduledStartTime).toISOString() : null
+
+      const newRoom = await createRoom(roomName.trim(), settings, startTime)
       setRoomName('')
       setVideoUrl('')
       setMode('normal')
+      setIsScheduled(false)
+      setScheduledStartTime('')
+      await fetchRooms()
+      fetchTeacherStats()
+
+      if (newRoom.status !== 'SCHEDULED') {
+        navigate(`/teacher/room/${newRoom._id}`)
+      }
     } catch (err) {
       console.error('Failed to create room:', err)
     } finally {
@@ -374,11 +391,65 @@ function DashboardPage() {
                     marginTop: '10px'
                   }}>
                     Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio.
-                    Please open Spandan in Chrome or Edge before starting a video room.
                   </div>
                 )}
               </div>
             )}
+
+            {/* Room Scheduling */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={isScheduled}
+                  onChange={(e) => setIsScheduled(e.target.checked)}
+                  style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }}
+                />
+                ⏰ Schedule room for later
+              </label>
+
+              {isScheduled && (
+                <div style={{ marginTop: '12px' }}>
+                  <label style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    marginBottom: '6px'
+                  }}>
+                    Scheduled Start Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledStartTime}
+                    onChange={(e) => setScheduledStartTime(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius)',
+                      fontSize: '13px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                      background: 'var(--input-bg)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                    Students joining early will be held in the Waiting Room until you click Start Now.
+                  </div>
+                </div>
+              )}
+            </div>
             </div>
           </div>
 
@@ -398,61 +469,7 @@ function DashboardPage() {
                 gap: '16px'
               }}>
                 {rooms.filter(r => !r.endedAt).map((room) => (
-                  <div
-                    key={room._id}
-                    onClick={() => navigate(`/teacher/room/${room._id}`)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'translateY(-2px)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'translateY(0)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                    }}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-color)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      minWidth: 0,
-                      cursor: 'pointer',
-                      transition: 'transform 0.18s ease, box-shadow 0.18s ease',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px', letterSpacing: '-0.01em' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/teacher/room/${room._id}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        boxShadow: '0 2px 10px rgba(30,64,175,.25)'
-                      }}
-                    >
-                      Manage →
-                    </button>
-                  </div>
+                  <RoomCard key={room._id} room={room} />
                 ))}
               </div>
             ) : (
