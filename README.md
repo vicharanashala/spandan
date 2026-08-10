@@ -84,7 +84,7 @@ TRANSCRIPTION_SERVICE_URL=http://127.0.0.1:3003
 |------|-------------|
 | **Teacher** | Create rooms, control live sessions, approve questions, view full results and leaderboards. |
 | **Student** | Join active rooms, answer questions, view relative rank (top 10), access mind maps. |
-| **Admin** | Approve teacher accounts. |
+
 
 ## 🤝 Contributors
 
