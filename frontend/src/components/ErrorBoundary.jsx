@@ -23,7 +23,7 @@ class ErrorBoundary extends Component {
     if (this.state.hasError) {
       return (
         <div style={{ padding: '16px', border: '1px solid #f5c2c2', borderRadius: '8px', background: '#fff5f5', color: '#b91c1c', fontSize: '13px' }}>
-          ⚠️ {this.props.label || 'This section'} failed to load. Check the browser console for the error.
+          {this.props.message || 'Something went wrong.'}
         </div>
       )
     }
