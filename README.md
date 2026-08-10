@@ -88,8 +88,8 @@ TRANSCRIPTION_SERVICE_URL=http://127.0.0.1:3003
 
 ## 🤝 Contributors
 
-- **Suhani** (@Suhani-prog-alt) - Core Development, Mind Mapping & Terminology UI integration.
-- **Samridhhi** - Core Development & Features.
+- **Suhani** (@Suhani-prog-alt) - Core Development, Real-time Mind Map Feature, Background Generation, Socket integration, and Deployment fixes.
+- **Samridhhi** - Core Development, Terminology Sidebar, and LLM Accuracy/Optimization.
 
 ## 📄 License
 
