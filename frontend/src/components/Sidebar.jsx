@@ -28,7 +28,16 @@ export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
   const role = user?.role || 'student'
-  const items = menuItems[role] || menuItems.student
+  const baseItems = menuItems[role] || menuItems.student
+  // Admins get an extra "Approvals" entry, placed just above "Manual".
+  let items = baseItems
+  if (user?.isAdmin) {
+    const adminItem = { id: 'admin', label: 'Approvals', icon: '🛡️', path: '/admin' }
+    const idx = baseItems.findIndex(i => i.id === 'manual')
+    items = idx === -1
+      ? [...baseItems, adminItem]
+      : [...baseItems.slice(0, idx), adminItem, ...baseItems.slice(idx)]
+  }
 
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches)

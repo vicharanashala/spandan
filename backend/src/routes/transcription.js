@@ -1,4 +1,5 @@
 import express from 'express'
+import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
 
 const router = express.Router()
 
@@ -22,7 +23,7 @@ router.get('/status', async (req, res) => {
 })
 
 // Transcribe an audio chunk — forwarded to the faster-whisper service
-router.post('/transcribe', async (req, res) => {
+router.post('/transcribe', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   if (!req.body || !req.body.audio) {
     return res.status(400).json({ error: 'No audio provided' })
   }

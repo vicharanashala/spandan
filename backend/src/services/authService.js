@@ -8,12 +8,14 @@ export const register = async (name, email, password, role) => {
     throw new Error('Email already registered')
   }
 
-  // Create new user
+  // Create new user. Teachers start 'pending' (admin must approve before they can sign in
+  // or use teacher features); students are 'approved' (the field is inert for them).
   const user = new User({
     name,
     email: email.toLowerCase(),
     password,
-    role
+    role,
+    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved'
   })
 
   await user.save()
@@ -89,7 +91,18 @@ export const updateUserRole = async (userId, role) => {
   if (!user) {
     throw new Error('User not found')
   }
-  
+
+  // Self-promoting to teacher requires admin approval; it does not grant teacher access
+  // immediately. Switching to (or staying) student is always approved. Preserve an
+  // already-approved teacher's status so an approved teacher isn't reset by a no-op call.
+  if (role === 'teacher') {
+    if (user.role !== 'teacher' || user.teacherApprovalStatus !== 'approved') {
+      user.teacherApprovalStatus = 'pending'
+    }
+  } else {
+    user.teacherApprovalStatus = 'approved'
+  }
+
   user.role = role
   await user.save()
   return user
