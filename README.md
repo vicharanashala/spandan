@@ -1,80 +1,91 @@
-# Spandan - Poll Question Generator
+# Spandan - Interactive Live Polling & Learning Platform
 
-> A real-time polling and question generation platform for classrooms and presentations.
+> A real-time polling, question generation, and interactive learning platform for classrooms and presentations.
 
 **Version:** 0.8.0
 
-## Features
+## 🌟 Key Features
 
-- 🔐 **Authentication** — JWT-based login with role-based access (Teacher/Student)
-- 🎯 **Room Management** — Create, join, and manage live polling sessions
-- ❓ **Question Types** — Multiple choice and open-ended questions with approval workflow
-- 📊 **Real-time Results** — Live response tracking with Socket.IO
-- 🎤 **Transcription** — Whisper-powered audio transcription for question generation
-- 🌙 **Theme Toggle** — Dark and light mode support
-- 📱 **Responsive** — Works across devices with teacher and student dashboards
+- 🔐 **Authentication** — JWT-based secure login with role-based access (Teacher/Student/Admin).
+- 🎯 **Room Management** — Create, join, and manage live interactive sessions.
+- ❓ **AI Question Generation** — Automated multiple-choice and open-ended question generation.
+- 📊 **Real-time Leaderboard** — Live response tracking with robust caching and socket self-healing.
+- 🎤 **Advanced Transcription** — Dedicated Python-based `faster-whisper` service for non-blocking, high-performance speech-to-text.
+- 🧠 **Mind Mapping & Terminology** — Auto-generated concept mind maps and a terminology sidebar for enhanced learning context.
+- 🌙 **Dynamic Theming** — Built-in support for dark and light modes.
+- 📱 **Responsive Design** — Fully optimized for desktop, tablet, and mobile viewing.
 
-## Tech Stack
+## 🛠️ Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
 | **Frontend** | React, Vite, TailwindCSS, Zustand, Socket.IO Client, React Router |
-| **Backend** | Node.js, Express, Socket.IO, MongoDB (Mongoose), Whisper (Transformers) |
+| **Backend** | Node.js, Express, Socket.IO, MongoDB (Mongoose) |
+| **AI Services** | Python, FastAPI, `faster-whisper` |
 | **Auth** | JWT, bcryptjs |
-| **AI** | Xenova Transformers (Whisper for transcription) |
 
-## Quick Start
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js (v18+)
+- MongoDB (Running locally or via Atlas)
+- Python 3.9+ (For the Transcription Service)
+
+### Installation & Execution
 
 ```bash
-# Install all dependencies
+# Install all root, frontend, and Node backend dependencies
 npm run install:all
 
-# Run development (both frontend and backend)
+# Run development servers (Frontend & Node Backend)
 npm run dev
 
-# Build frontend
+# Build frontend for production
 npm run build
 ```
 
-## Project Structure
+## 📂 Project Structure
 
 ```
 spandan/
-├── frontend/              # React app (Vite)
+├── frontend/              # React App (Vite)
 │   ├── src/
-│   │   ├── components/    # UI components
-│   │   ├── pages/         # Page components
-│   │   ├── stores/        # Zustand stores
-│   │   └── themes.css     # Theme styles
+│   │   ├── components/    # UI components (e.g. MindMapViewer, TerminologySidebar)
+│   │   ├── pages/         # Page components (Teacher & Student dashboards)
+│   │   ├── stores/        # Zustand state management
+│   │   └── index.css      # Theme & Tailwind styles
 │   └── package.json
-├── backend/               # Express API
+├── backend/               # Express API Node Server
 │   ├── src/
-│   │   ├── models/        # Mongoose schemas
-│   │   ├── routes/        # API routes
-│   │   ├── services/      # Business logic
+│   │   ├── models/        # Mongoose data schemas
+│   │   ├── routes/        # Express API endpoints
+│   │   ├── services/      # Business logic (e.g. leaderboardCache)
 │   │   └── index.js       # Entry point
 │   └── package.json
-├── package.json           # Monorepo root
+├── transcription_service/ # (If applicable) Python faster-whisper service
+├── package.json           # Monorepo root workspace
 └── README.md
 ```
 
-## Environment
+## ⚙️ Environment Configuration
 
-Copy `.env.example` to `.env` in the backend folder and configure as needed.
+Copy `.env.example` to `.env` in the backend folder and configure your variables:
 
 ```env
 PORT=3001
 MONGODB_URI=mongodb://localhost:27017/spandan
 JWT_SECRET=your-secret-key
+TRANSCRIPTION_SERVICE_URL=http://127.0.0.1:3003
 ```
 
-## Roles
+## 👥 User Roles
 
 | Role | Capabilities |
 |------|-------------|
-| **Teacher** | Create rooms, manage questions, approve responses, view results |
-| **Student** | Join rooms, answer questions, view own history |
+| **Teacher** | Create rooms, control live sessions, approve questions, view full results and leaderboards. |
+| **Student** | Join active rooms, answer questions, view relative rank (top 10), access mind maps. |
+| **Admin** | Approve teacher accounts. |
 
-## License
+## 📄 License
 
 Private — All rights reserved
