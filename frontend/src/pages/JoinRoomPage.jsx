@@ -215,7 +215,14 @@ function JoinRoomPage() {
                   boxShadow: isFocused ? '0 0 0 4px rgba(59,130,246,0.15)' : 'none',
                   transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
                 }}
-              />
+                />
+                <div style={{
+                 marginTop: '8px',
+                 fontSize: '13px',
+                 color: 'var(--text-secondary)'
+                }}>
+                 Enter the 6-character code provided by your teacher.
+               </div>
               <button
                type="button"
                onClick={() => setShowCode(!showCode)}

@@ -78,3 +78,6 @@ JWT_SECRET=your-secret-key
 ## License
 
 Private — All rights reserved
+
+
+- Join Room page supports Enter-key submission and improved accessibility guidance for room-code entry.
