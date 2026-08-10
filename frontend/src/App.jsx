@@ -96,7 +96,7 @@ function App() {
 
         // Open dashboard in new tab
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
-        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
+        const redirectUrl = `${window.location.origin}${BASE_PATH}${dashboard}`
         console.log('[Spandan] Opening dashboard:', redirectUrl)
         window.open(redirectUrl, '_blank')
       } catch (error) {
