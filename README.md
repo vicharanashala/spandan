@@ -11,7 +11,7 @@
 - ❓ **AI Question Generation** — Automated multiple-choice and open-ended question generation.
 - 📊 **Real-time Leaderboard** — Live response tracking with robust caching and socket self-healing.
 - 🎤 **Advanced Transcription** — Dedicated Python-based `faster-whisper` service for non-blocking, high-performance speech-to-text.
-- 🧠 **Mind Mapping & Terminology** — Auto-generated concept mind maps and a terminology sidebar for enhanced learning context.
+- 🧠 **Mind Mapping & Terminology** — Auto-generated concept mind maps providing visual learning aids and a terminology sidebar for enhanced learning context.
 - 🌙 **Dynamic Theming** — Built-in support for dark and light modes.
 - 📱 **Responsive Design** — Fully optimized for desktop, tablet, and mobile viewing.
 
@@ -85,6 +85,11 @@ TRANSCRIPTION_SERVICE_URL=http://127.0.0.1:3003
 | **Teacher** | Create rooms, control live sessions, approve questions, view full results and leaderboards. |
 | **Student** | Join active rooms, answer questions, view relative rank (top 10), access mind maps. |
 | **Admin** | Approve teacher accounts. |
+
+## 🤝 Contributors
+
+- **Suhani** (@Suhani-prog-alt) - Core Development, Mind Mapping & Terminology UI integration.
+- **Samridhhi** - Core Development & Features.
 
 ## 📄 License
 
