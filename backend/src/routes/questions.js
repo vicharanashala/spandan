@@ -3,7 +3,6 @@ import { authenticate, authorize, requireApprovedTeacher } from '../middleware/a
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
-import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
 const router = express.Router()
 
@@ -124,15 +123,6 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
 
     if (!roomId || !type || !question || !options) {
       return res.status(400).json({ error: 'Missing required fields' })
-    }
-
-    // Authorization: only the room's OWNING teacher may add questions to it. Without this,
-    // any teacher could inject questions into another teacher's room by supplying its roomId.
-    const Room = (await import('../models/Room.js')).default
-    const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
     }
 
     // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).

@@ -645,16 +645,7 @@ router.get('/counts/:roomId', async (req, res) => {
   try {
     const mongoose = (await import('mongoose')).default
     const Response = (await import('../models/Response.js')).default
-    const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
-
-    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
-    // used only by the teacher's room view; students receive live counts over the socket instead.
-    const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
-    }
 
     const toObjectId = (id) => {
       if (!id) return null

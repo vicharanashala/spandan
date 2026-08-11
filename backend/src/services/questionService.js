@@ -396,7 +396,7 @@ export function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+export async function generateWithMiniMax(prompt) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
@@ -435,11 +435,38 @@ async function generateWithMiniMax(prompt) {
   const text = content || reasoning
   if (!text) {
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw response: ' + JSON.stringify(data).slice(0, 1500))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
   return text
+}
+
+// Groq API call — OpenAI-compatible endpoint, genuinely free tier (no billing card needed).
+// Used as a fallback/alternative to MiniMax for routes like mindmap.js that don't otherwise
+// have provider choice.
+export async function generateWithGroq(prompt, model = 'llama-3.3-70b-versatile') {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.groqApiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.5,
+      max_tokens: 4000
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    throw new Error(`Groq API error: ${response.status} - ${errorData}`)
+  }
+
+  const data = await response.json()
+  return data.choices?.[0]?.message?.content || ''
 }
 
 // OpenAI API call

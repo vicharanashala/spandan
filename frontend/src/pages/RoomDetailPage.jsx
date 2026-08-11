@@ -13,6 +13,8 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import MindMapViewer from '../components/MindMapViewer'
+import TerminologySidebar from '../components/TerminologySidebar'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
@@ -20,6 +22,28 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+
+// [H6] Non-blocking toast notification — replaces all window.alert() calls.
+// Injects a dismissible banner at the top of the page that auto-dismisses after 5s,
+// so the teacher's recording / browser tab never freezes mid-lecture.
+let _toastTimeout = null
+function showToast(message, type = 'error') {
+  const existing = document.getElementById('spandan-toast')
+  if (existing) existing.remove()
+  if (_toastTimeout) clearTimeout(_toastTimeout)
+  const toast = document.createElement('div')
+  toast.id = 'spandan-toast'
+  const bg = type === 'error' ? '#b91c1c' : type === 'warn' ? '#b45309' : '#1d4ed8'
+  toast.style.cssText = `position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;background:${bg};color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:90vw;text-align:center;`
+  toast.innerText = message
+  const close = document.createElement('span')
+  close.style.cssText = 'margin-left:12px;cursor:pointer;opacity:0.8;font-weight:400;'
+  close.innerText = '✕'
+  close.onclick = () => toast.remove()
+  toast.appendChild(close)
+  document.body.appendChild(toast)
+  _toastTimeout = setTimeout(() => toast.remove(), 5000)
+}
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -82,7 +106,11 @@ function RoomDetailPage() {
 
   // Question generation
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
+  const [isGeneratingMindMap, setIsGeneratingMindMap] = useState(false)
   const [pendingQuestions, setPendingQuestions] = useState([])
+  const [mindmaps, setMindmaps] = useState([])
+  const [showMindMapsModal, setShowMindMapsModal] = useState(false)
+  const [showTerminologyPanel, setShowTerminologyPanel] = useState(true)
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
@@ -135,6 +163,23 @@ function RoomDetailPage() {
       joinRoom(room.code, user._id)
     }
   }, [room?.code, user?._id])
+
+  // Fetch mindmaps generated before this page loaded — so a teacher reloading
+  // mid-lecture (or opening the page after generating one earlier) still sees them,
+  // not just ones broadcast live after this point.
+  useEffect(() => {
+    if (!room?._id) return
+    fetch(`${API_URL}/mindmap/room/${room._id}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.mindmaps?.length > 0) {
+          setMindmaps(data.mindmaps)
+        }
+      })
+      .catch(err => console.error('Failed to fetch existing mindmaps:', err))
+  }, [room?._id])
 
   // Listen for room:joined event
   useEffect(() => {
@@ -200,16 +245,26 @@ function RoomDetailPage() {
     }, 1000)
   }
 
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      if (process.env.NODE_ENV !== 'production') console.log('[QUESTION LAUNCHED]', data)  // [L2] dev-only log
+    }
+
+    // [C4] Named handler — socket.off() requires the exact same function reference
+    //      to remove only THIS listener (not every listener for the event).
+    const handleMindmapShared = (data) => {
+      if (data?.markdown) {
+        setMindmaps(prev => prev.includes(data.markdown) ? prev : [...prev, data.markdown])
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
+    socket.on('mindmap_shared', handleMindmapShared)
 
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      socket.off('mindmap_shared', handleMindmapShared)  // [C4] passes handler ref — only removes THIS listener
     }
   }, [socket, roomSettings.timeToAnswer])
 
@@ -222,7 +277,9 @@ function RoomDetailPage() {
 
   // Start segment timer when recording
   useEffect(() => {
-    console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
+    if (process.env.NODE_ENV !== 'production') {  // [L2] wrap timer debug logs in dev-only guard
+      console.log('[EFFECT] Timer effect running, isRecording:', isRecording, 'segmentTime:', roomSettings.segmentTime)
+    }
     // Only start timer if recording AND not pending review (popup shown)
     if (isRecording && roomSettings.segmentTime > 0 && !isPendingReview) {
       startSegmentTimer()
@@ -348,9 +405,9 @@ function RoomDetailPage() {
     const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
     if (!textToUse || textToUse.length < 50) {
-      console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
-      window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
+      if (process.env.NODE_ENV !== 'production') console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
+      // [H6] Non-blocking toast instead of window.alert() — won't freeze the recording tab
+      showToast('Transcription too short. Please speak more or trigger manually after starting next segment.', 'warn')
 
       // Resume for next segment
       setIsPendingReview(false)
@@ -365,6 +422,15 @@ function RoomDetailPage() {
       if (isVideoMode) resumeTeacherVideo()
       return
     }
+
+    // Auto-detect terminology in parallel — fire-and-forget, never blocks or fails the
+    // question-generation flow above. Runs on the same transcript segment, no extra
+    // teacher action needed.
+    fetch(`${API_URL}/terminology/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ roomId: room._id, roomCode: room.code, transcript: textToUse, segmentIndex: currentSegment })
+    }).catch(err => console.error('[SEGMENT] Terminology detection request failed:', err))
 
     // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
     // never gates generation — a failed/hung transcript POST used to abort the whole segment with no
@@ -381,7 +447,8 @@ function RoomDetailPage() {
         generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        // [H6] Non-blocking toast — alert() would freeze the browser tab mid-recording
+        showToast('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
         setGenerateQEnabled(true) // Enable fail-safe manual button
         return
       }
@@ -414,7 +481,18 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+
       if (data.success && data.questions && data.questions.length > 0) {
+        // [H2] Mindmap only triggered when questions actually succeeded — not before checking.
+        //      Moving it inside the success block prevents broadcasting a mindmap for a
+        //      segment that produced no questions (bad audio/empty transcript).
+        if (process.env.NODE_ENV !== 'production') console.log('[MINDMAP] Auto-triggering mind map generation for segment', segmentIndex)  // [L2]
+        fetch(`${API_URL}/mindmap/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ transcript: text, roomCode: room.code, roomId: room._id, segmentIndex })
+        }).catch(err => console.error('[MINDMAP] Auto-generation failed:', err))
+
         return data.questions.map(q => ({
           ...q,
           timeToAnswer: roomSettings.timeToAnswer,
@@ -434,6 +512,15 @@ function RoomDetailPage() {
     setShowTextToQuestions(false) // Close the text popup
     setShowGeneratingPopup(true)  // Show generating popup
     setIsGeneratingFromText(true)
+
+    // Also run terminology detection on this pasted text — fire-and-forget,
+    // same as the live-recording segment flow, so testing doesn't require
+    // actually speaking a full segment out loud every time.
+    fetch(`${API_URL}/terminology/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ roomId: room._id, roomCode: room.code, transcript: text, segmentIndex: -1 })
+    }).catch(err => console.error('[PASTE] Terminology detection request failed:', err))
 
     try {
       const typeMix = mode === 'TF'
@@ -471,7 +558,8 @@ function RoomDetailPage() {
         // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        // [H6] Non-blocking toast
+        showToast(data.error || 'Failed to generate questions. Please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
@@ -481,7 +569,8 @@ function RoomDetailPage() {
         // Same as above — preserve the pasted text and reopen the popup for a retry.
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert('Failed to generate questions. Please try again.')
+        // [H6] Non-blocking toast
+        showToast('Failed to generate questions. Please try again.')
       }
     }
   }
@@ -646,13 +735,7 @@ function RoomDetailPage() {
       }
 
       mediaRecorder.onstop = async () => {
-        // This recorder may have been SUPERSEDED by a newer window (a fast pause->play, or a
-        // pause->play that lands during the transcription round-trip below, starts a fresh
-        // recorder and repoints mediaRecorderRef). A superseded recorder must not touch the shared
-        // stop-timer or re-arm the loop, or it would clear the new window's timer and spawn a
-        // duplicate recorder — which is what silently stalls transcription on production. It still
-        // ships its own captured audio.
-        if (mediaRecorderRef.current === mediaRecorder && transcriptionIntervalRef.current) {
+        if (transcriptionIntervalRef.current) {
           clearTimeout(transcriptionIntervalRef.current)
           transcriptionIntervalRef.current = null
         }
@@ -662,8 +745,7 @@ function RoomDetailPage() {
         await sendForTranscription(audioBlob, sequence)
         resolve()
 
-        // Re-check identity AFTER the async send: only the current window may re-arm the loop.
-        if (mediaRecorderRef.current === mediaRecorder && recordingActiveRef.current) {
+        if (recordingActiveRef.current) {
           startTranscriptionWindow()
         }
       }
@@ -679,6 +761,15 @@ function RoomDetailPage() {
   
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
+
+    // Fresh session (not resuming mid-lecture) — clear terms from any previous
+    // session in this room so old test/lecture terms don't linger.
+    if (resetSegment && room?._id) {
+      fetch(`${API_URL}/terminology/room/${room._id}?roomCode=${room.code}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).catch(err => console.error('[SEGMENT] Failed to clear old terms:', err))
+    }
 
     // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
     // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
@@ -836,40 +927,6 @@ function RoomDetailPage() {
   // the current broadcast instead of falling behind by the poll + answer time. We query the player
   // DIRECTLY (not the React isLiveStream state) so this fires reliably even if live-detection state
   // hasn't settled or was captured stale by an older closure.
-  // Tell the server a question pop-up just closed (a segment's questions are answered) so it folds
-  // that segment into the ranked leaderboard (per-segment). A REST call (owner-authed), fired in ALL
-  // modes — unlike video:resume, which is video-mode only — so the board updates for normal sessions.
-  const emitSegmentDone = () => {
-    if (!room?._id || !token) return
-    fetch(`${API_URL}/responses/leaderboard/${room._id}/segment-done`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` }
-    }).catch(() => {})
-  }
-
-  // Single source of truth for the per-segment leaderboard fold: fire it whenever ANY question
-  // pop-up (approval / Paste&Generate / Create-Q) goes from open -> closed, by ANY path — the last
-  // question's timer auto-closing it, rejecting the last question, or the teacher closing it
-  // manually. Guarantees the update fires exactly once per close and can't be bypassed by a
-  // particular close path.
-  const approvalPopupWasOpenRef = useRef(false)
-  const textPopupWasOpenRef = useRef(false)
-  const createPopupWasOpenRef = useRef(false)
-  useEffect(() => {
-    const open = showQuestionPopup && pendingQuestions.length > 0
-    if (approvalPopupWasOpenRef.current && !open) emitSegmentDone()
-    approvalPopupWasOpenRef.current = open
-  }, [showQuestionPopup, pendingQuestions])
-  useEffect(() => {
-    const open = showTextQuestionPopup && pendingTextQuestions.length > 0
-    if (textPopupWasOpenRef.current && !open) emitSegmentDone()
-    textPopupWasOpenRef.current = open
-  }, [showTextQuestionPopup, pendingTextQuestions])
-  useEffect(() => {
-    if (createPopupWasOpenRef.current && !showCreateQuestion) emitSegmentDone()
-    createPopupWasOpenRef.current = showCreateQuestion
-  }, [showCreateQuestion])
-
   const resumeTeacherVideo = () => {
     // Tell students the popup window is over so they resume + jump to the live edge (fire even if the
     // teacher's own player ref isn't ready).
@@ -1137,7 +1194,6 @@ function RoomDetailPage() {
   const handleTextQuestionClose = () => {
     setShowTextQuestionPopup(false)
     setPendingTextQuestions([])
-    // leaderboard fold fires via the pop-up-close watcher (textPopupWasOpenRef) on close
   }
 
   const handleCreateQuestion = async (questionData) => {
@@ -1827,6 +1883,47 @@ function RoomDetailPage() {
                   >
                     {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
                   </button>
+                  <button
+                    onClick={async () => {
+                      const textToUse = segmentTranscript.trim() || transcript
+                      if (!textToUse) return alert('No transcript available.')
+                      setIsGeneratingMindMap(true)
+                      try {
+                        const response = await fetch(`${API_URL}/mindmap/generate`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                          body: JSON.stringify({ transcript: textToUse, roomCode: room.code, roomId: room._id })
+                        })
+                        const data = await response.json()
+                        if (response.status === 202 || data.success) {
+                          alert('Mind map generation started in the background! It will appear for students shortly.')
+                        } else {
+                          throw new Error(data.error || 'Failed to start generation')
+                        }
+                      } catch (err) {
+                        alert('Error generating mind map: ' + err.message)
+                      } finally {
+                        setTimeout(() => setIsGeneratingMindMap(false), 5000) // disable button for 5s to prevent spam
+                      }
+                    }}
+                    disabled={isGeneratingMindMap || !transcript}
+                    style={{
+                      padding: '4px 12px',
+                      background: '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: '500',
+                      cursor: isGeneratingMindMap || !transcript ? 'not-allowed' : 'pointer',
+                      opacity: isGeneratingMindMap || !transcript ? 0.6 : 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    {isGeneratingMindMap ? '⏳ Generating...' : '🧠 Mind Map'}
+                  </button>
                 </div>
               </div>
 
@@ -2008,9 +2105,7 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <ErrorBoundary message="Leaderboard unavailable">
-                <Leaderboard roomId={room?._id} token={token} socket={socket} />
-              </ErrorBoundary>
+              <Leaderboard roomId={room?._id} token={token} socket={socket} />
             </div>
           </div>
         </div>
@@ -2043,7 +2138,6 @@ function RoomDetailPage() {
             // Resume recording for next segment
             startRecording({ resetSegment: false })
             if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
-            // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
 
             // Timer will auto-start via the useEffect since isPendingReview is now false
           }}
@@ -2060,7 +2154,6 @@ function RoomDetailPage() {
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
             startRecording({ resetSegment: false })
             if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
-            // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
           }}
         />
       )}
@@ -2140,6 +2233,110 @@ function RoomDetailPage() {
           isLast={true}
         />
       )}
+
+      {/* Floating Mind Map Button — teacher now sees their own generated mindmaps too (Phase 0 fix) */}
+      {mindmaps.length > 0 && !showMindMapsModal && (
+        <button
+          onClick={() => setShowMindMapsModal(true)}
+          style={{
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            background: '#10b981',
+            color: 'white',
+            padding: '12px 20px',
+            borderRadius: '24px',
+            fontWeight: 'bold',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            border: 'none',
+            cursor: 'pointer'
+          }}
+        >
+          🧠 View Mind Maps ({mindmaps.length})
+        </button>
+      )}
+
+      {/* Mind Map Modal */}
+      {showMindMapsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.6)',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '20px'
+        }}>
+          <div style={{
+            background: 'var(--bg-primary)',
+            width: '100%',
+            maxWidth: '900px',
+            maxHeight: '90vh',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', color: 'var(--text-primary)' }}>🧠 Lecture Mind Maps</h2>
+              <button onClick={() => setShowMindMapsModal(false)} style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: 'var(--text-secondary)' }}>&times;</button>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', background: 'var(--bg-secondary)' }}>
+              <MindMapViewer maps={mindmaps} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Terminology Sidebar - fixed vertical panel on the right, independent of main layout */}
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        right: showTerminologyPanel ? 0 : '-320px',
+        width: '320px',
+        height: '100vh',
+        background: 'var(--bg-primary, #fff)',
+        borderLeft: '1px solid var(--border-color, #e5e7eb)',
+        boxShadow: '-4px 0 12px rgba(0,0,0,0.08)',
+        zIndex: 900,
+        overflowY: 'auto',
+        padding: '16px',
+        transition: 'right 0.25s ease',
+        boxSizing: 'border-box'
+      }}>
+        <ErrorBoundary label="Terminology Sidebar">
+          <TerminologySidebar roomId={room?._id} socket={socket} />
+        </ErrorBoundary>
+      </div>
+
+      {/* Tab handle to toggle the terminology panel open/closed */}
+      <button
+        onClick={() => setShowTerminologyPanel(prev => !prev)}
+        style={{
+          position: 'fixed',
+          top: '50%',
+          right: showTerminologyPanel ? '320px' : 0,
+          transform: 'translateY(-50%)',
+          background: '#2563eb',
+          color: '#fff',
+          border: 'none',
+          borderRadius: '6px 0 0 6px',
+          padding: '14px 8px',
+          fontSize: '12px',
+          fontWeight: 600,
+          cursor: 'pointer',
+          zIndex: 901,
+          writingMode: 'vertical-rl',
+          transition: 'right 0.25s ease'
+        }}
+      >
+        📘 Terms
+      </button>
 
       <style>{`
         @keyframes blink {

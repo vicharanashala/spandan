@@ -1,31 +1,28 @@
 import { Component } from 'react'
 
-// Generic React error boundary. If any component in its subtree throws during render or a lifecycle,
-// this catches it and shows a small fallback instead of letting the error unmount the whole page.
-// Used to isolate the leaderboard panel so a leaderboard crash can never take down a live session.
+// Wraps a section of the UI so that if it crashes during render, ONLY that
+// section shows an error message instead of taking down the entire page.
+// This is a class component because React error boundaries currently require
+// the class-based lifecycle methods (no hook equivalent exists yet).
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { hasError: false }
+    this.state = { hasError: false, error: null }
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
   }
 
   componentDidCatch(error, info) {
-    console.error('ErrorBoundary caught:', error, info)
+    // This is the exact error we need to see in the console to fix the real bug.
+    console.error(`[ErrorBoundary: ${this.props.label || 'section'}] crashed:`, error, info)
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{
-          padding: '20px',
-          textAlign: 'center',
-          color: 'var(--text-secondary)',
-          fontSize: '13px'
-        }}>
+        <div style={{ padding: '16px', border: '1px solid #f5c2c2', borderRadius: '8px', background: '#fff5f5', color: '#b91c1c', fontSize: '13px' }}>
           {this.props.message || 'Something went wrong.'}
         </div>
       )

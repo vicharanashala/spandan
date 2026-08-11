@@ -18,7 +18,7 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
-import { API_URL } from './config.js'
+import { API_URL, BASE_PATH } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -74,13 +74,16 @@ function App() {
           return
         }
 
-        // Send the Samagama token to the Spandan backend, which re-verifies it
-        // server-side and provisions the account from the identity Samagama returns.
-        // We deliberately do not send email/name/admin flags — the server does not trust them.
+        // Send to Spandan backend for auto-provisioning
         const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ samagamaToken })
+          body: JSON.stringify({
+            email: samagamaUser.email,
+            name: samagamaUser.name,
+            isAdmin: samagamaUser.isAdmin || false,
+            isSuperAdmin: samagamaUser.isSuperAdmin || false
+          })
         })
 
         if (!spandanResponse.ok) {
@@ -93,7 +96,7 @@ function App() {
 
         // Open dashboard in new tab
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
-        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
+        const redirectUrl = `${window.location.origin}${BASE_PATH}${dashboard}`
         console.log('[Spandan] Opening dashboard:', redirectUrl)
         window.open(redirectUrl, '_blank')
       } catch (error) {
@@ -133,7 +136,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={BASE_PATH}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />

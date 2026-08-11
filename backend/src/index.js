@@ -10,7 +10,6 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
-import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
 
@@ -22,6 +21,8 @@ import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
+import mindmapRoutes from './routes/mindmap.js'
+import terminologyRoutes from './routes/terminology.js'
 import adminRoutes from './routes/admin.js'
 
 // Import models for reference
@@ -335,6 +336,17 @@ const otpLimiter = rateLimit({
   message: { error: 'Too many verification requests, please try again later' }
 })
 
+// [H5] Tighter limiter for LLM-hitting routes (terminology details/mindmap + mindmap generate).
+// The global apiLimiter (50k req/15min) is intentionally loose to handle NATed classrooms,
+// but LLM calls cost real money. 20 calls/min is generous for genuine student interaction
+// (a student would need to click a new term every 3 seconds to hit this).
+const llmLimiter = rateLimit({
+  store: rlStore('rl:llm:'),
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 LLM-hitting requests per minute per IP
+  message: { error: 'Too many AI requests, please wait a moment before trying again' }
+})
+
 // Middleware
 app.use(helmet())
 app.use(cors({
@@ -347,6 +359,8 @@ app.use('/api/auth/', authLimiter)     // auth routes
 app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
 app.use('/api/responses/', responseLimiter)  // response submission routes
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
+app.use('/api/terminology/', llmLimiter)  // [H5] LLM-hitting routes get a tighter per-minute cap
+app.use('/api/mindmap/', llmLimiter)      // [H5] same — prevents student spam of the mindmap generator
 
 // Apply timeout middleware before routes
 app.use(requestTimeout)
@@ -359,6 +373,8 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
+app.use('/api/mindmap', mindmapRoutes)
+app.use('/api/terminology', terminologyRoutes)
 app.use('/api/admin', adminRoutes)
 
 // Health check
@@ -541,34 +557,27 @@ io.on('connection', (socket) => {
     try {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
-
-      // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
-      // caller is allowed in (teacher must own it; student may join an active room by code).
       const room = await Room.findByCode(roomCode)
-      const decision = canJoinRoom({ role, userId, room })
-      if (!decision.ok) {
-        socket.emit('room:error', { error: decision.error })
-        return
-      }
 
-      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
-      if (role === 'student') {
-        await RoomMember.findOneAndUpdate(
-          { roomId: room._id, studentId: userId },
-          { roomId: room._id, studentId: userId, joinedAt: new Date() },
-          { upsert: true, new: true }
-        )
-      }
-
-      // Authorized → now join the socket room and announce. The room-wide event carries only the
-      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
-      socket.join(roomCode)
       // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
       // (privacy — a student never receives the full board, just the public top 10 + their own rank).
       socket.join('user:' + userId)
-      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      socket.join(roomCode)
 
-      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      let participantCount = 0
+      if (room) {
+        // Only students are added to RoomMember (not teachers)
+        if (role === 'student') {
+          await RoomMember.findOneAndUpdate(
+            { roomId: room._id, studentId: userId },
+            { roomId: room._id, studentId: userId, joinedAt: new Date() },
+            { upsert: true, new: true }
+          )
+        }
+        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      }
+
+      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
@@ -578,7 +587,7 @@ io.on('connection', (socket) => {
       if (videoPaused.get(roomCode)) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
-      socket.emit('room:error', { error: 'Failed to join room' })
+      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
     }
   })
 

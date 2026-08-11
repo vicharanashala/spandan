@@ -4,6 +4,8 @@ import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
+import Mindmap from '../models/Mindmap.js'
+import RoomTerm from '../models/RoomTerm.js'
 
 const router = express.Router()
 
@@ -146,6 +148,20 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      
+      // Update mindmaps TTL to 5 hours from now
+      await Mindmap.updateMany(
+        { roomId: room._id },
+        { $set: { expiresAt: new Date(Date.now() + 5 * 60 * 60 * 1000) } }
+      )
+
+      // Mirror the same TTL update for room-specific detected terms — class is done,
+      // these are no longer useful after a short grace period.
+      await RoomTerm.updateMany(
+        { roomId: room._id },
+        { $set: { expiresAt: new Date(Date.now() + 5 * 60 * 60 * 1000) } }
+      )
+
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)
@@ -172,6 +188,10 @@ router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher
     }
 
     await deleteRoom(req.params.id)
+    
+    // Also delete any associated mindmaps
+    await Mindmap.deleteMany({ roomId: req.params.id })
+    
     res.json({ message: 'Room deleted successfully' })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
