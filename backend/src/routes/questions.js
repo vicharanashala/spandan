@@ -139,7 +139,15 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
     // The frontend renders these as React text nodes, which auto-escape at
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
+    const Room = (await import('../models/Room.js')).default
+    const roomObj = await Room.findById(roomId)
+    if (!roomObj) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Strip any HTML tags but keep text as-is
     const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    sanitizedData.sessionIndex = roomObj.sessionIndex || 1
 
     const newQuestion = new Question(sanitizedData)
 
@@ -216,6 +224,47 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch questions'
+    })
+  }
+})
+
+// POST /api/questions/:questionId/calibrate - Save teacher prediction and calculate actual accuracy
+// Authorization: teacher only
+router.post('/:questionId/calibrate', authorize('teacher'), async (req, res) => {
+  try {
+    const { questionId } = req.params
+    const { predictedAccuracy } = req.body
+
+    if (predictedAccuracy === undefined || predictedAccuracy === null) {
+      return res.status(400).json({ error: 'predictedAccuracy is required' })
+    }
+
+    const Question = (await import('../models/Question.js')).default
+    const Response = (await import('../models/Response.js')).default
+
+    const question = await Question.findById(questionId)
+    if (!question) {
+      return res.status(404).json({ error: 'Question not found' })
+    }
+
+    // Calculate actual accuracy from responses
+    const totalResponses = await Response.countDocuments({ questionId })
+    const correctResponses = await Response.countDocuments({ questionId, isCorrect: true })
+    const actualAccuracy = totalResponses > 0 ? Math.round((correctResponses / totalResponses) * 100) : 0
+
+    question.predictedAccuracy = Number(predictedAccuracy)
+    question.actualAccuracy = actualAccuracy
+    await question.save()
+
+    res.json({
+      success: true,
+      question
+    })
+  } catch (error) {
+    console.error('Error calibrating question:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Failed to save calibration data'
     })
   }
 })

@@ -203,6 +203,9 @@ function StudentRoomPage() {
         navigate(`/student/room/${room?._id}/results`)
       }, delay)
     })
+    socket.on('room:session-ended', (data) => {
+      navigate(`/student/room/${room?._id}/results?sessionIndex=${data.sessionIndex}`)
+    })
 
     return () => {
       socket.off('question:started', handleQuestionStarted)
@@ -213,6 +216,7 @@ function StudentRoomPage() {
       socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
+      socket.off('room:session-ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
