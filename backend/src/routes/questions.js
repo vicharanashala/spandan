@@ -30,12 +30,13 @@ router.get('/providers', (req, res) => {
 // Authorization: teacher only
 router.post('/generate', authorize('teacher'), async (req, res) => {
   try {
-    const { transcript, config, roomId } = req.body
+    const { transcript, config } = req.body
     const {
       numQuestions = 2,
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      roomId = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
