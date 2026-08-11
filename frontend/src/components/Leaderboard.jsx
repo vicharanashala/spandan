@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
 
-const Leaderboard = ({ roomId, token, socket }) => {
+const Leaderboard = ({ roomId, token, socket, userId, myRank }) => {
   const [leaderboard, setLeaderboard] = useState([])
   const [userRank, setUserRank] = useState(null)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // Keep the latest isTeacher available inside the socket listener without rebinding it.
+  const isTeacherRef = useRef(false)
+  useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
 
   const fetchLeaderboard = async () => {
     try {
@@ -37,15 +40,36 @@ const Leaderboard = ({ roomId, token, socket }) => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Listen for points:updated events
+    // Phase 1: consume the server's throttled, pushed leaderboard payload instead of
+    // re-fetching on every points event (which caused the ~N^2 storm). Students apply the
+    // top-N payload directly; the teacher is a single client, so it just re-fetches the
+    // full board on each tick.
     if (socket) {
-      socket.on('points:updated', () => {
-        console.log('[Leaderboard] Points updated, refreshing...')
-        fetchLeaderboard()
-      })
-      return () => socket.off('points:updated')
+      const handleLiveUpdate = (payload) => {
+        if (isTeacherRef.current) {
+          fetchLeaderboard()
+          return
+        }
+        if (payload?.leaderboard) {
+          setLeaderboard(payload.leaderboard)
+          if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
+          // If this student is within the broadcast top-N, refresh their rank from it.
+          // Outside top-N, their rank refreshes on their own next submit (myRank prop).
+          if (userId) {
+            const me = payload.leaderboard.find(e => e.studentId === userId)
+            if (me) setUserRank(me.rank)
+          }
+        }
+      }
+      socket.on('leaderboard:updated', handleLiveUpdate)
+      return () => socket.off('leaderboard:updated', handleLiveUpdate)
     }
-  }, [roomId, socket])
+  }, [roomId, socket, userId])
+
+  // "Rank on submit": when the student answers, the POST returns their current rank; apply it.
+  useEffect(() => {
+    if (myRank != null) setUserRank(myRank)
+  }, [myRank])
 
   if (loading) {
     return (

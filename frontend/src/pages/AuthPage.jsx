@@ -101,13 +101,15 @@ function AuthPage() {
       }
     } else {
       try {
-        await register(formData.name, formData.email, formData.password, formData.role)
-        // Registration successful - go to login
-        logout() // Clear auth state so useEffect doesn't redirect prematurely
-        setStep('auth')
-        setIsLogin(true)
-        setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'student' })
-        setValidationError('')
+        const data = await register(formData.name, formData.email, formData.password, formData.role)
+        // Registration returns a token and signs the user in — go straight into the app,
+        // based on the role from the backend response (matching the login flow) instead of
+        // sending the new user back to the login form.
+        if (data.user?.role === 'teacher') {
+          navigate('/teacher')
+        } else {
+          navigate('/student')
+        }
       } catch (err) {
         setValidationError(err.message || 'Registration failed')
       }

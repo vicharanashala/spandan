@@ -80,4 +80,35 @@ export const stripHtml = (input) => {
   return String(input).replace(/<[^>]*>/g, '')
 }
 
-export default { sanitize, sanitizeObject, stripHtml }
+/**
+ * Recursively strip HTML tags from an object's string values.
+ * Unlike sanitizeObject (which HTML-escapes to entities), this keeps the
+ * text as-is — quotes, apostrophes, etc. are preserved — and only removes
+ * actual <...> tags. Safe because the frontend renders all text as React
+ * text nodes (auto-escaped at render time), so no entity-encoding is needed.
+ * @param {object} obj - The object to strip
+ * @returns {object} - Object with tag-free string values
+ */
+export const stripObject = (obj) => {
+  if (obj == null) return obj
+
+  if (typeof obj === 'string') {
+    return stripHtml(obj)
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(item => stripObject(item))
+  }
+
+  if (typeof obj === 'object') {
+    const result = {}
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = stripObject(value)
+    }
+    return result
+  }
+
+  return obj
+}
+
+export default { sanitize, sanitizeObject, stripHtml, stripObject }

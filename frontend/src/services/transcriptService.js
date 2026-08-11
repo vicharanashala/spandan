@@ -3,7 +3,7 @@ import useAuthStore from '../stores/authStore'
 import { API_URL } from '../config.js'
 
 // Save transcript to backend
-export const saveTranscript = async (roomId, segmentIndex, text, duration = 0) => {
+export const saveTranscript = async (roomId, segmentIndex, text, duration = 0, source = 'audio') => {
   const token = useAuthStore.getState().token
   const response = await fetch(`${API_URL}/transcripts`, {
     method: 'POST',
@@ -16,7 +16,8 @@ export const saveTranscript = async (roomId, segmentIndex, text, duration = 0) =
       segmentIndex,
       text,
       duration,
-      wordCount: text.split(/\s+/).length
+      wordCount: text.split(/\s+/).length,
+      source
     })
   })
   return response.json()

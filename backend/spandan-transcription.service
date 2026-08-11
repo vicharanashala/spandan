@@ -1,0 +1,32 @@
+# systemd unit for the faster-whisper transcription service.
+# ONE-TIME SERVER SETUP (as root), so `deploy.yml` can restart it on each deploy:
+#
+#   1) install python deps:
+#        pip3 install -r /var/samagama/spandan-workspace/spandan/backend/requirements.txt
+#   2) install this unit (adjust User= to the account that runs spandan-backend):
+#        sudo cp /var/samagama/spandan-workspace/spandan/backend/spandan-transcription.service \
+#                /etc/systemd/system/spandan-transcription.service
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now spandan-transcription.service
+#   3) verify:  curl -s http://127.0.0.1:3003/health
+#
+[Unit]
+Description=Spandan Faster-Whisper Transcription Service
+After=network.target
+
+[Service]
+Type=simple
+# Match the user/group that runs spandan-backend.service:
+User=spandan-deploy
+WorkingDirectory=/var/samagama/spandan-workspace/spandan/backend
+ExecStart=/usr/bin/python3 /var/samagama/spandan-workspace/spandan/backend/transcription_server.py
+Restart=always
+RestartSec=3
+# Optional overrides (defaults shown):
+# Environment=TRANSCRIPTION_PORT=3003
+# Environment=TRANSCRIPTION_MODEL=base
+# Environment=TRANSCRIPTION_DEVICE=cpu
+# Environment=TRANSCRIPTION_COMPUTE=int8
+
+[Install]
+WantedBy=multi-user.target

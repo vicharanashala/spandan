@@ -96,22 +96,19 @@ function App() {
   }, [isAuthenticated, samagamaChecked, setAuth])
 
   // Connect socket when user is authenticated with valid token
+  // Connect socket when authenticated; always disconnect via THIS effect's own cleanup (not a
+  // separate effect) so mount/cleanup/remount (React 18 StrictMode in dev) can't leave two live
+  // connections both joined to the same rooms — which was doubling peer-chat message delivery.
   useEffect(() => {
     if (token && isAuthenticated) {
       console.log('App: connecting socket with token')
       connect(token)
-    } else {
+    }
+    return () => {
       console.log('App: disconnecting socket')
       disconnect()
     }
   }, [token, isAuthenticated, connect, disconnect])
-
-  // Cleanup socket on unmount
-  useEffect(() => {
-    return () => {
-      disconnect()
-    }
-  }, [disconnect])
 
   useEffect(() => {
     if (isDark) {

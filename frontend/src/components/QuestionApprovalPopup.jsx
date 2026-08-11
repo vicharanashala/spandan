@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import QuestionEditor from './QuestionEditor'
 
 function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -7,6 +8,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const [timeLeft, setTimeLeft] = useState(30)
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1) // which question is currently launched
+  const [isEditing, setIsEditing] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
@@ -14,6 +16,13 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
   }, [questions])
+
+  // Leave edit mode whenever we move to a different question.
+  useEffect(() => { setIsEditing(false) }, [currentIndex])
+
+  // Persist an edited question back into local state so Approve & Launch sends the edited version.
+  const updateCurrent = (updated) =>
+    setPendingQuestions(prev => prev.map((q, i) => (i === currentIndex ? updated : q)))
 
   // Start the countdown timer for a launched question
   const startTimer = (questionIndex) => {
@@ -182,18 +191,37 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
               </div>
             )}
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              fontSize: '20px',
-              cursor: 'pointer',
-              color: 'var(--text-secondary)'
-            }}
-          >
-            ✕
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {!(isTimerActive && launchedQuestionIndex === currentIndex) && (
+              <button
+                onClick={() => setIsEditing(e => !e)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '20px',
+                  border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
+                  background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                  color: isEditing ? '#10b981' : 'var(--text-secondary)',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                {isEditing ? '✓ Done' : '✏️ Edit'}
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: '20px',
+                cursor: 'pointer',
+                color: 'var(--text-secondary)'
+              }}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Question Navigation Pills */}
@@ -219,7 +247,10 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
           ))}
         </div>
 
-        {/* Current Question Card */}
+        {/* Current Question Card — editable when the teacher taps Edit, read-only otherwise */}
+        {isEditing ? (
+          <QuestionEditor question={currentQuestion} onChange={updateCurrent} />
+        ) : (
         <div style={{
           background: 'var(--bg-primary)',
           borderRadius: '16px',
@@ -314,6 +345,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
             </div>
           )}
         </div>
+        )}
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '12px' }}>

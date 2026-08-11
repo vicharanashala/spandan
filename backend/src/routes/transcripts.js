@@ -9,7 +9,7 @@ const router = express.Router()
 // Create a new transcript entry
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { roomId, segmentIndex, text, duration, wordCount } = req.body
+    const { roomId, segmentIndex, text, duration, wordCount, source } = req.body
 
     if (!roomId || segmentIndex === undefined || !text) {
       return res.status(400).json({ error: 'roomId, segmentIndex, and text are required' })
@@ -18,6 +18,7 @@ router.post('/', authenticate, async (req, res) => {
     const transcript = new Transcript({
       roomId,
       segmentIndex,
+      source: source === 'paste' ? 'paste' : 'audio',
       teacherId: req.user._id,
       text,
       duration: duration || 0,
