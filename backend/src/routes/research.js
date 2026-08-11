@@ -185,4 +185,151 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
   }
 })
 
+// GET /api/research/segment-difficulty
+//
+// Joins Transcript + Question + Response on (roomId, segmentIndex) to answer:
+//   "Which part of the lecture did students understand the least?"
+//
+// Auth: same X-Research-Key lane as /sessions.
+//
+// Two modes:
+//   Single-room:  ?roomId=<id>          → segment breakdown for one session
+//   Bulk export:  ?since=<ISO>&limit=n  → all ended sessions past the cursor,
+//                                         same pagination pattern as /sessions
+//
+// Each segment record:
+//   segmentIndex      — 0-based chunk number (matches Transcript.segmentIndex)
+//   transcriptSnippet — first 300 chars of the transcript text for that segment
+//   transcriptText    — full transcript text (for keyword extraction in the script)
+//   wordCount         — word count of the transcript for that segment
+//   questionCount     — number of approved questions generated from this segment
+//   responseCount     — total student responses across those questions
+//   correctCount      — total correct responses
+//   avgAccuracy       — correctCount / responseCount (null if no responses)
+//   avgAccuracy_pct   — rounded percentage (null if no responses)
+//
+// Segments with a transcript but zero questions (teacher skipped generation)
+// are included with questionCount=0, responseCount=0, avgAccuracy=null — so
+// the caller can see the full lecture timeline, not just the tested parts.
+router.get('/segment-difficulty', requireResearchKey, async (req, res) => {
+  try {
+    const Room       = (await import('../models/Room.js')).default
+    const Transcript = (await import('../models/Transcript.js')).default
+    const Question   = (await import('../models/Question.js')).default
+    const Response   = (await import('../models/Response.js')).default
+
+    // ── resolve the set of rooms to analyse ──────────────────────────────────
+    let rooms = []
+    if (req.query.roomId) {
+      // Single-room mode
+      const room = await Room.findById(req.query.roomId).lean()
+      if (!room) return res.status(404).json({ error: 'Room not found' })
+      rooms = [room]
+    } else {
+      // Bulk mode: ended sessions past the cursor, oldest-first
+      const since = req.query.since ? new Date(req.query.since) : new Date(0)
+      if (isNaN(since.getTime())) return res.status(400).json({ error: 'Invalid since (expect ISO date)' })
+      const limit = Math.min(Number(req.query.limit) || 50, 200)
+      rooms = await Room.find({ endedAt: { $ne: null, $gt: since } })
+        .sort({ endedAt: 1 })
+        .limit(limit)
+        .lean()
+    }
+
+    const sessions = []
+
+    for (const room of rooms) {
+      const roomId = room._id
+
+      // 1. All transcript segments for this room, sorted by segmentIndex
+      const transcripts = await Transcript.find({ roomId })
+        .sort({ segmentIndex: 1 })
+        .lean()
+
+      // 2. All approved questions for this room, indexed by segmentIndex
+      const questions = await Question.find({ roomId, status: 'approved' })
+        .select('_id segmentIndex')
+        .lean()
+
+      // Build a map: segmentIndex → [questionId, ...]
+      const qBySegment = new Map()
+      for (const q of questions) {
+        const si = q.segmentIndex ?? -1
+        if (!qBySegment.has(si)) qBySegment.set(si, [])
+        qBySegment.get(si).push(String(q._id))
+      }
+
+      // 3. All responses for those questions — one batch query
+      const allQIds = questions.map(q => q._id)
+      const responses = allQIds.length > 0
+        ? await Response.find({ questionId: { $in: allQIds } })
+            .select('questionId isCorrect')
+            .lean()
+        : []
+
+      // Index responses by questionId for O(1) lookup
+      const responsesByQId = new Map()
+      for (const r of responses) {
+        const key = String(r.questionId)
+        if (!responsesByQId.has(key)) responsesByQId.set(key, [])
+        responsesByQId.get(key).push(r)
+      }
+
+      // 4. Build per-segment records
+      const segments = transcripts.map(t => {
+        const si        = t.segmentIndex
+        const qIds      = qBySegment.get(si) || []
+        const segResps  = qIds.flatMap(qid => responsesByQId.get(qid) || [])
+        const total     = segResps.length
+        const correct   = segResps.filter(r => r.isCorrect).length
+        const accuracy  = total > 0 ? correct / total : null
+
+        return {
+          segmentIndex:      si,
+          transcriptSnippet: t.text ? t.text.slice(0, 300) : '',
+          transcriptText:    t.text || '',
+          wordCount:         t.wordCount || (t.text ? t.text.trim().split(/\s+/).length : 0),
+          duration:          t.duration || 0,
+          questionCount:     qIds.length,
+          responseCount:     total,
+          correctCount:      correct,
+          avgAccuracy:       accuracy !== null ? Number(accuracy.toFixed(4)) : null,
+          avgAccuracy_pct:   accuracy !== null ? Number((accuracy * 100).toFixed(1)) : null
+        }
+      })
+
+      sessions.push({
+        roomId:      String(roomId),
+        roomName:    room.name,
+        date:        room.endedAt ? new Date(room.endedAt).toISOString().slice(0, 10) : null,
+        endedAt:     room.endedAt,
+        totalSegments:    segments.length,
+        testedSegments:   segments.filter(s => s.questionCount > 0).length,
+        hardestSegment:   segments.reduce((worst, s) => {
+          if (s.avgAccuracy === null) return worst
+          if (worst === null || s.avgAccuracy < worst.avgAccuracy) return s
+          return worst
+        }, null),
+        segments
+      })
+    }
+
+    // Cursor for bulk mode
+    const nextCursor = !req.query.roomId && sessions.length
+      ? sessions[sessions.length - 1].endedAt
+      : null
+
+    // Single-room returns the session object directly; bulk wraps in array
+    if (req.query.roomId) {
+      return res.json(sessions[0] || {})
+    }
+    res.json({ count: sessions.length, nextCursor, sessions })
+
+  } catch (error) {
+    console.error('[research] segment-difficulty failed:', error)
+    res.status(500).json({ error: 'Failed to compute segment difficulty' })
+  }
+})
+
 export default router
+

@@ -1,0 +1,131 @@
+# Lecture Segment Difficulty Heatmap — Run Commands
+# ====================================================
+# All commands to set up and run this feature from scratch.
+# Run each block in order the first time. After that, only
+# the "DAILY USE" section is needed.
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 1 — CONFIGURE backend/.env  (one-time)
+# ──────────────────────────────────────────────────────────
+# Open:  f:\Desktop\Spandan\spandan\backend\.env
+# Make sure these lines are present:
+
+    PORT=3001
+    MONGODB_URI=mongodb://localhost:27017/
+    JWT_SECRET=our-secret-key
+    RESEARCH_API_KEY=spandan-research-2026
+    SMTP_EMAIL=your_gmail@gmail.com
+    SMTP_PASSWORD=your_app_password_here
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 2 — INSTALL Python dependencies  (one-time)
+# ──────────────────────────────────────────────────────────
+
+cd f:\Desktop\Spandan\spandan\analysis
+pip install -r requirements.txt
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 3 — START the application
+# ──────────────────────────────────────────────────────────
+
+cd f:\Desktop\Spandan\spandan
+npm run dev
+
+# Wait until you see:
+#   [0]   ->  Local:   http://localhost:5173/    <- frontend running
+#   [1]   MongoDB connected successfully          <- backend running
+#   [1]   Spandan backend v0.5 running on port 3001
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 4A — TEST with DEMO DATA (no real session needed)
+# ──────────────────────────────────────────────────────────
+
+cd f:\Desktop\Spandan\spandan\analysis
+python segment_heatmap.py --json demo_session.json
+
+# Output saved to:  analysis\output\
+#   heatmap_Day_1_-_Linear_Regression_Fundamentals.png
+#   heatmap_Day_2_-_Logistic_Regression_and_Classification.png
+#   heatmap_Day_3_-_Decision_Trees_and_Random_Forests.png
+#   cross_session_heatmap.png
+#   segment_difficulty.csv
+#   session_summary.csv
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 4B — TEST with REAL DATA (after running a real session)
+# ──────────────────────────────────────────────────────────
+
+# 1. Open http://localhost:5173 -> log in as Teacher
+# 2. Create a room -> start a session -> students join and answer questions
+# 3. End the room
+# 4. Copy the Room ID from the URL bar (the long hex string)
+
+# Test the API endpoint directly:
+curl -s -H "X-Research-Key: spandan-research-2026" "http://localhost:3001/api/research/segment-difficulty?roomId=PASTE_ROOM_ID_HERE"
+
+# Save the API response to a file:
+curl -s -H "X-Research-Key: spandan-research-2026" "http://localhost:3001/api/research/segment-difficulty?roomId=PASTE_ROOM_ID_HERE" -o real_session.json
+
+# Run the script with real data:
+cd f:\Desktop\Spandan\spandan\analysis
+python segment_heatmap.py --json real_session.json
+
+# OR run directly against the live API (no file saving needed):
+python segment_heatmap.py --key spandan-research-2026 --room-id PASTE_ROOM_ID_HERE --api-url http://localhost:3001/api
+
+
+# ──────────────────────────────────────────────────────────
+# STEP 4C — BULK MODE (analyse ALL ended sessions at once)
+# ──────────────────────────────────────────────────────────
+
+cd f:\Desktop\Spandan\spandan\analysis
+python segment_heatmap.py --key spandan-research-2026 --api-url http://localhost:3001/api
+
+# This fetches all ended sessions and also generates:
+#   cross_session_heatmap.png  <- averaged accuracy per segment position
+
+
+# ──────────────────────────────────────────────────────────
+# USEFUL OPTIONS
+# ──────────────────────────────────────────────────────────
+
+# Skip keyword extraction (faster):
+python segment_heatmap.py --json demo_session.json --no-keywords
+
+# Limit bulk fetch to 10 sessions:
+python segment_heatmap.py --key spandan-research-2026 --api-url http://localhost:3001/api --limit 10
+
+# See all available options:
+python segment_heatmap.py --help
+
+
+# ──────────────────────────────────────────────────────────
+# IF PORT 3001 IS ALREADY IN USE (EADDRINUSE error)
+# ──────────────────────────────────────────────────────────
+
+# Find the process using port 3001:
+netstat -ano | findstr :3001
+
+# Kill it (replace XXXX with the PID from the output above):
+taskkill /PID XXXX /F
+
+# Then restart:
+cd f:\Desktop\Spandan\spandan
+npm run dev
+
+
+# ──────────────────────────────────────────────────────────
+# DATA SOURCES (what the backend reads from MongoDB)
+# ──────────────────────────────────────────────────────────
+#
+#   Transcript.js  -> lecture text per segment
+#   Question.js    -> AI-generated questions, tagged with segmentIndex
+#   Response.js    -> student answers (isCorrect field)
+#
+#   The key join:  Transcript.segmentIndex == Question.segmentIndex
+#   This link maps student accuracy back to the exact lecture moment.
