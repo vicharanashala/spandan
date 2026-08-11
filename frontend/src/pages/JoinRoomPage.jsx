@@ -54,8 +54,9 @@ function JoinRoomPage() {
       setJoinedRoom(null)
     }
   }
-
-  const isDisabled = isJoining || roomCode.length < 6
+  
+  const sanitizedCode = roomCode.replace(/[^A-Z0-9]/g, '')
+  const isDisabled = isJoining || sanitizedCode.length !== 6
 
   return (
     <div style={{
