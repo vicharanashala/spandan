@@ -1,7 +1,17 @@
-import nodemailer from 'nodemailer'
 import { config } from '../config.js'
+import nodemailer from 'nodemailer'
 
-// Create reusable transporter - configured via environment variables
+// Email provider is chosen at runtime via EMAIL_PROVIDER (config.emailProvider); the API key for any
+// HTTP provider comes from the generic EMAIL_API_KEY (config.emailApiKey), so switching providers is
+// just an env change — no code edit:
+//   • 'brevo' (default), 'resend', 'sendgrid' — transactional HTTP APIs over port 443. Required on
+//     the DigitalOcean droplet, which blocks outbound SMTP (25/465/587).
+//   • 'smtp' — Gmail SMTP via nodemailer (needs SMTP_EMAIL / SMTP_PASSWORD; only where SMTP is open).
+// To add another HTTP provider, add one entry to HTTP_PROVIDERS below — nothing else changes. The
+// HTML content is identical for every provider, and a 10s abort keeps a hiccup from hanging a request.
+const FROM_NAME = 'Spandan VLED'
+
+// Gmail SMTP transport (used only when EMAIL_PROVIDER=smtp).
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -9,6 +19,62 @@ const transporter = nodemailer.createTransport({
     pass: config.smtpPassword
   }
 })
+
+// Generic HTTP POST-JSON send with a 10s abort. Shared by every HTTP provider below.
+async function httpSend(url, authHeaders, body, label) {
+  if (!config.emailApiKey) throw new Error('EMAIL_API_KEY not configured')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authHeaders },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`${label} API ${res.status}: ${text.slice(0, 300)}`)
+    }
+    return true
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// HTTP email providers — each maps {to, subject, html} to that provider's API shape, using the
+// generic EMAIL_API_KEY and the configured sender. Add a provider by adding one entry here.
+const HTTP_PROVIDERS = {
+  brevo: ({ to, subject, html }) => httpSend(
+    'https://api.brevo.com/v3/smtp/email',
+    { 'api-key': config.emailApiKey },
+    { sender: { name: FROM_NAME, email: config.mailFrom }, to: [{ email: to }], subject, htmlContent: html },
+    'Brevo'
+  ),
+  resend: ({ to, subject, html }) => httpSend(
+    'https://api.resend.com/emails',
+    { Authorization: `Bearer ${config.emailApiKey}` },
+    { from: `${FROM_NAME} <${config.mailFrom}>`, to: [to], subject, html },
+    'Resend'
+  ),
+  sendgrid: ({ to, subject, html }) => httpSend(
+    'https://api.sendgrid.com/v3/mail/send',
+    { Authorization: `Bearer ${config.emailApiKey}` },
+    { personalizations: [{ to: [{ email: to }] }], from: { email: config.mailFrom, name: FROM_NAME }, subject, content: [{ type: 'text/html', value: html }] },
+    'SendGrid'
+  )
+}
+
+// Unified sender — dispatches to the provider selected by EMAIL_PROVIDER.
+async function sendEmail(mailOptions) {
+  const provider = config.emailProvider
+  if (provider === 'smtp') return transporter.sendMail(mailOptions)
+  const send = HTTP_PROVIDERS[provider]
+  if (!send) {
+    throw new Error(`Unknown EMAIL_PROVIDER '${provider}' (valid: ${Object.keys(HTTP_PROVIDERS).join(', ')}, smtp)`)
+  }
+  return send({ to: mailOptions.to, subject: mailOptions.subject, html: mailOptions.html })
+}
 
 // Send reset password email
 export const sendResetPasswordEmail = async (email, token) => {
@@ -49,7 +115,7 @@ export const sendResetPasswordEmail = async (email, token) => {
   }
 
   try {
-    await transporter.sendMail(mailOptions)
+    await sendEmail(mailOptions)
     console.log(`Reset email sent to ${email}`)
     return true
   } catch (error) {
@@ -95,7 +161,7 @@ export const sendRegistrationOtp = async (email, name, otp) => {
   }
 
   try {
-    await transporter.sendMail(mailOptions)
+    await sendEmail(mailOptions)
     console.log(`OTP email sent to ${email}`)
     return true
   } catch (error) {
@@ -150,7 +216,7 @@ export const sendWelcomeEmail = async (email, name, role) => {
   }
 
   try {
-    await transporter.sendMail(mailOptions)
+    await sendEmail(mailOptions)
     console.log(`Welcome email sent to ${email}`)
     return true
   } catch (error) {
