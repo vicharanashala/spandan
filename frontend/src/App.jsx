@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import React, { useEffect } from 'react'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import useThemeStore from './stores/themeStore'
 import useAuthStore from './stores/authStore'
 import useSocketStore from './stores/socketStore'
@@ -16,21 +16,34 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import StudentRiskHistory from './pages/StudentRiskHistory'
+import StudentRiskTrend from './pages/StudentRiskTrend'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
 import { API_URL } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
+// Samagama auto-login has known side effects when a user is ALREADY
+// authenticated into Spandan as a different role (it would clobber
+// the in-memory auth state with the Samagama-cached user). We guard
+// against that by:
+//   1. Skipping if zustand says we're authenticated (covers the
+//      rehydrated-on-first-render case)
+//   2. Skipping if a `spandan-auth` entry already exists in localStorage
+//      (covers the race where persist hasn't rehydrated yet)
+//   3. Persisting the resolved flag in localStorage so additional tabs
+//      opened later in this browser don't re-run the check and
+//      re-issue a `window.open(_blank)` on top of existing tabs.
+const SAMAGAMA_RESOLVED_KEY = 'spandan_samagama_resolved'
+const SPANDAN_AUTH_KEY = 'spandan-auth'
+
 function App() {
   const { isDark } = useThemeStore()
   const { token, isAuthenticated, setAuth } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
-  const [samagamaChecked, setSamagamaChecked] = useState(false)
+  const navigate = useNavigate()
 
-  // On load, if the persisted token is already expired (e.g. the app was opened from a bookmark with a
-  // cached session), drop it immediately so the user lands on the login screen with a clear message
-  // instead of a logged-in-looking UI that only fails when they try to answer. This backs up the
-  // onRehydrateStorage check in authStore for any timing edge.
+  // On load, drop any expired persisted token immediately.
   useEffect(() => {
     const { token: t } = useAuthStore.getState()
     if (t && isTokenExpired(t)) {
@@ -38,20 +51,44 @@ function App() {
     }
   }, [])
 
-  // Check for Samagama session on app load
+  // Check for Samagama session on app load — but only when there is no
+  // existing Spandan session in this browser.
   useEffect(() => {
-    if (isAuthenticated || samagamaChecked) return
+    // Already authenticated via Spandan — nothing to do.
+    if (isAuthenticated) return
+
+    // Race-safe: peek at the persist key directly.
+    let hasSpandanAuth = false
+    try {
+      hasSpandanAuth = !!localStorage.getItem(SPANDAN_AUTH_KEY)
+    } catch (_) {
+      // localStorage unavailable (private mode) — fall through
+    }
+    if (hasSpandanAuth) return
+
+    // Already resolved in a previous tab on this browser — skip.
+    try {
+      if (localStorage.getItem(SAMAGAMA_RESOLVED_KEY) === '1') return
+    } catch (_) {}
+
+    let cancelled = false
+    const markResolved = () => {
+      try { localStorage.setItem(SAMAGAMA_RESOLVED_KEY, '1') } catch (_) {}
+    }
 
     const checkSamagamaSession = async () => {
+      const samagamaToken = (() => {
+        try { return localStorage.getItem('samagama_auth_token') }
+        catch (_) { return null }
+      })()
+      console.log('[Spandan] Samagama token found:', !!samagamaToken)
+
+      if (!samagamaToken) {
+        markResolved()
+        return
+      }
+
       try {
-        const samagamaToken = localStorage.getItem('samagama_auth_token')
-        console.log('[Spandan] Samagama token found:', !!samagamaToken)
-
-        if (!samagamaToken) {
-          setSamagamaChecked(true)
-          return
-        }
-
         const response = await fetch('https://samagama.in/api/auth/me', {
           method: 'GET',
           headers: {
@@ -60,17 +97,15 @@ function App() {
           }
         })
 
-        if (!response.ok) {
-          setSamagamaChecked(true)
-          return
-        }
+        if (!response.ok) { markResolved(); return }
+        if (cancelled) return
 
         const data = await response.json()
         const samagamaUser = data.user
         console.log('[Spandan] Samagama user:', samagamaUser?.email)
 
         if (!samagamaUser || !samagamaUser.email) {
-          setSamagamaChecked(true)
+          markResolved()
           return
         }
 
@@ -83,28 +118,36 @@ function App() {
           body: JSON.stringify({ samagamaToken })
         })
 
-        if (!spandanResponse.ok) {
-          setSamagamaChecked(true)
+        if (!spandanResponse.ok) { markResolved(); return }
+        if (cancelled) return
+
+        const spandanData = await spandanResponse.json()
+
+        // Last-second guard: if persist rehydrated while we were fetching
+        // and the user is now authenticated as someone else, don't clobber.
+        const currentAuth = (() => {
+          try { return !!localStorage.getItem(SPANDAN_AUTH_KEY) } catch (_) { return false }
+        })()
+        if (currentAuth) {
+          console.log('[Spandan] Skipping Samagama setAuth: existing Spandan session detected')
+          markResolved()
           return
         }
 
-        const spandanData = await spandanResponse.json()
         setAuth(spandanData.user, spandanData.token)
-
-        // Open dashboard in new tab
+        // Navigate in this tab instead of opening another one.
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
-        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
-        console.log('[Spandan] Opening dashboard:', redirectUrl)
-        window.open(redirectUrl, '_blank')
+        navigate(dashboard)
       } catch (error) {
         console.error('[Spandan] Samagama session check failed:', error)
       } finally {
-        setSamagamaChecked(true)
+        markResolved()
       }
     }
 
     checkSamagamaSession()
-  }, [isAuthenticated, samagamaChecked, setAuth])
+    return () => { cancelled = true }
+  }, [isAuthenticated, setAuth])
 
   // Connect socket when user is authenticated with valid token
   useEffect(() => {
@@ -133,8 +176,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
-      <Routes>
+    <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/teacher" element={
@@ -218,8 +260,17 @@ function App() {
             <StudentRoomPage />
           </ProtectedRoute>
         } />
-      </Routes>
-    </BrowserRouter>
+        <Route path="/student/risk-history" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <StudentRiskHistory />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/risk-trend" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <StudentRiskTrend />
+          </ProtectedRoute>
+        } />
+    </Routes>
   )
 }
 

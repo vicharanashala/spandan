@@ -12,6 +12,14 @@ const roomSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // Per-room co-hosts. NOT a global user role — these teachers can see the
+  // host-only views in this specific room, but get no other permissions
+  // elsewhere. Invitation/management UI is not wired in v1; values can be
+  // set directly in MongoDB or via future admin endpoints.
+  coHosts: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
   code: {
     type: String,
     unique: true
@@ -27,6 +35,13 @@ const roomSchema = new mongoose.Schema({
   currentQuestion: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
+  },
+  // When the currently-active question was launched (UTC). Lets late
+  // joiners compute remaining time via (startedAt + timeToAnswer*1000 - now).
+  // Cleared on `question:end` so /active-question returns null.
+  currentQuestionStartedAt: {
+    type: Date,
+    default: null
   },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
