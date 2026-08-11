@@ -17,13 +17,8 @@ import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
-<<<<<<< HEAD
-import { API_URL,BASE_PATH  } from './config.js'
-
-=======
 import AdminPage from './pages/AdminPage'
-import { API_URL } from './config.js'
->>>>>>> upstream/main
+import { API_URL, BASE_PATH } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {

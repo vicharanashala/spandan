@@ -11,7 +11,6 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import MindMapViewer from '../components/MindMapViewer'
 import TerminologySidebar from '../components/TerminologySidebar'
-import ErrorBoundary from '../components/ErrorBoundary'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
