@@ -1,4 +1,0 @@
-roomId,roomName,date,totalSegments,testedSegments,hardestSegment,hardestAccuracy,overallAccuracy
-demo000000000000000000001,Day 1 - Linear Regression Fundamentals,2026-05-12,8,7,5,33.3,68.8
-demo000000000000000000002,Day 2 - Logistic Regression and Classification,2026-05-14,9,8,4,35.0,70.8
-demo000000000000000000003,Day 3 - Decision Trees and Random Forests,2026-05-17,10,9,6,33.3,67.9
