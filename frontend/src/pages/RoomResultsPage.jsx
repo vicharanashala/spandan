@@ -7,6 +7,8 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
+import { fetchItemHealth } from '../services/itemHealthService'
+import ItemHealthBadge, { ITEM_HEALTH_STATUS_ORDER, formatCorrectRate, formatDiscrimination, formatDeadDistractors } from '../components/ItemHealthBadge'
 import useIsMobile from '../hooks/useIsMobile'
 
 function RoomResultsPage() {
@@ -19,6 +21,9 @@ function RoomResultsPage() {
   const [room, setRoom] = useState(null)
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
+  // Item Health report, keyed by questionId for an O(1) join against `questions` below.
+  // Teacher-only (the endpoint 403s students); stays {} for the student view.
+  const [itemHealth, setItemHealth] = useState({})
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState({
     totalResponses: 0,
@@ -36,6 +41,7 @@ function RoomResultsPage() {
 
   const fetchRoomData = async () => {
     setIsLoading(true)
+    setItemHealth({}) // reset so a stale prior room's health never bleeds into this render
     try {
       // Fetch room details
       const roomRes = await fetch(`${API_URL}/rooms/${roomId}`, {
@@ -120,6 +126,16 @@ function RoomResultsPage() {
         })
 
         setResponses(responsesData)
+
+        // Item Health (teacher-only per-question quality signals). Isolated from the rest of this
+        // load: fetchItemHealth never throws (see itemHealthService.js), and a failed/403 fetch
+        // just leaves itemHealth as {} — badges simply don't render, nothing else on the page breaks.
+        const healthData = await fetchItemHealth(roomId)
+        if (healthData.success) {
+          const byQid = {}
+          ;(healthData.itemHealth || []).forEach(h => { byQid[h.questionId] = h })
+          setItemHealth(byQid)
+        }
 
         // Calculate overall stats from aggregated data
         const totalResponses = rData.stats?.totalResponses || 0
@@ -339,6 +355,16 @@ function RoomResultsPage() {
               Question-wise Analysis
             </h2>
 
+            {/* Item Health room-level summary (teacher-only; empty until the fetch above resolves) */}
+            {user?.role === 'teacher' && Object.keys(itemHealth).length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '18px' }}>
+                {ITEM_HEALTH_STATUS_ORDER.map((status) => {
+                  const count = Object.values(itemHealth).filter((h) => h.status === status).length
+                  return count > 0 ? <ItemHealthBadge key={status} status={status} count={count} /> : null
+                })}
+              </div>
+            )}
+
             {questions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-secondary)' }}>
                 <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
@@ -412,6 +438,9 @@ function RoomResultsPage() {
                             }}>
                               {q.maxPoints || q.points} pts
                             </span>
+                            {isTeacher && itemHealth[q._id] && (
+                              <ItemHealthBadge status={itemHealth[q._id].status} />
+                            )}
                             {q.answered && (
                               <span style={{
                                 padding: '3px 8px',
@@ -520,6 +549,24 @@ function RoomResultsPage() {
                                   transition: 'width 0.3s ease'
                                 }} />
                               </div>
+                            </div>
+                          )}
+
+                          {/* Item Health metrics — correct rate, discrimination, dead distractors.
+                              Formatters handle TF/MSQ (distractor efficiency N/A) and insufficient
+                              data ("—" / "Not enough data") without any special-casing here. */}
+                          {isTeacher && itemHealth[q._id] && (
+                            <div style={{
+                              marginTop: '10px',
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: '14px',
+                              fontSize: '11.5px',
+                              color: 'var(--text-secondary)'
+                            }}>
+                              <span><strong style={{ color: 'var(--text-primary)' }}>Correct rate:</strong> {formatCorrectRate(itemHealth[q._id])}</span>
+                              <span><strong style={{ color: 'var(--text-primary)' }}>Discrimination:</strong> {formatDiscrimination(itemHealth[q._id])}</span>
+                              <span><strong style={{ color: 'var(--text-primary)' }}>Dead distractors:</strong> {formatDeadDistractors(itemHealth[q._id])}</span>
                             </div>
                           )}
                         </div>
