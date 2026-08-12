@@ -495,6 +495,42 @@ router.get('/stats/room/:roomId', async (req, res) => {
   }
 })
 
+// GET /api/responses/room/:roomId/item-health - Get per-question Item Health report for a room
+// (correct rate, distractor efficiency, corrected item-total discrimination, status).
+// Authorization: only the room's owning teacher — same sensitivity as room stats.
+router.get('/room/:roomId/item-health', async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    const room = await Room.findById(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Only the room owner (teacher) can view item health
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to view this room\'s item health' })
+    }
+
+    // Ended rooms serve item health from the shared results snapshot (the same cache family as
+    // stats/leaderboard, built once at room end). A miss (live room, Redis off, cache error) falls
+    // through to buildSnapshot() directly — still ONE room-wide pass, not a second aggregation.
+    const ended = !!room?.endedAt
+    const cachedItemHealth = await resultsSnapshot.getItemHealth(roomId, { ended })
+    if (cachedItemHealth) {
+      return res.json({ success: true, itemHealth: cachedItemHealth })
+    }
+
+    const { itemHealth } = await resultsSnapshot.buildSnapshot(roomId)
+    res.json({ success: true, itemHealth })
+  } catch (error) {
+    console.error('Error fetching item health:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch item health' })
+  }
+})
+
 // GET /api/responses/room/:roomId/student/:studentId - Get all questions with student's responses
 router.get('/room/:roomId/student/:studentId', async (req, res) => {
   try {

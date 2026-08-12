@@ -19,6 +19,8 @@ import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
+import { fetchItemHealth } from '../services/itemHealthService'
+import ItemHealthBadge, { ITEM_HEALTH_STATUS_ORDER, formatCorrectRate, formatDiscrimination, formatDeadDistractors } from '../components/ItemHealthBadge'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -110,6 +112,40 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  // Item Health report, keyed by questionId for an O(1) join against generatedQuestions.
+  // Reuses the same {success, itemHealth} shape as RoomResultsPage; left {} until the first
+  // fetch resolves (badges simply don't render — same isolation as the ended-room page).
+  const [itemHealth, setItemHealth] = useState({})
+  // Debounce per-response bursts into a single /item-health refetch. Server emits `counts:updated`
+  // on every answer, so without this the API would be hit N times per second during a live burst.
+  const healthRefreshTimerRef = useRef(null)
+
+  // Single-shot Item Health fetch. fetchItemHealth never throws (returns {success:false} on any
+  // non-2xx or network error), so this is safe to call from any path with no try/catch wrapper.
+  // Declared up here (rather than near loadQuestions/loadRoom below) because the `counts:updated`
+  // socket effect further down references it in its dependency array, and a `useCallback` const is
+  // only initialized when its declaration executes — referencing it earlier throws a
+  // "Cannot access before initialization" error on every render.
+  const loadItemHealth = useCallback(async (rid) => {
+    if (!rid) return
+    const data = await fetchItemHealth(rid)
+    if (data?.success) {
+      const byQid = {}
+      ;(data.itemHealth || []).forEach(h => { byQid[h.questionId] = h })
+      setItemHealth(byQid)
+    }
+  }, [])
+
+  // Debounced Item Health refetch. `counts:updated` fires on every answered response, so without a
+  // debounce the API would be hit N times per second during a live burst. 600ms collapses a burst
+  // into one fetch and still feels live for the teacher.
+  const scheduleHealthRefresh = useCallback(() => {
+    if (healthRefreshTimerRef.current) clearTimeout(healthRefreshTimerRef.current)
+    healthRefreshTimerRef.current = setTimeout(() => {
+      healthRefreshTimerRef.current = null
+      loadItemHealth(roomId)
+    }, 600)
+  }, [loadItemHealth, roomId])
 
   useEffect(() => {
     if (token) {
@@ -161,15 +197,17 @@ function RoomDetailPage() {
 
   // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
   // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
-  // debounce so its heavy recompute stays out of the answer burst.
+  // debounce so its heavy recompute stays out of the answer burst. We piggy-back a debounced
+  // Item Health refetch on the same event so health updates live as new responses arrive.
   useEffect(() => {
     if (!socket) return
     const handleCounts = (payload) => {
       if (payload?.counts) setAnswerCounts(payload.counts)
+      scheduleHealthRefresh()
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)
-  }, [socket])
+  }, [socket, scheduleHealthRefresh])
 
   // Listen for question launch events to show timer to teacher
   useEffect(() => {
@@ -525,10 +563,24 @@ function RoomDetailPage() {
           setAnswerCounts(countsData.counts)
         }
       }
+      // Side-fetch the Item Health snapshot alongside the initial question list so the active room
+      // shows health immediately (same isolation as RoomResultsPage: failures just leave {} and the
+      // badges simply don't render — nothing else on the page breaks).
+      loadItemHealth(rid)
     } catch (err) {
       console.error('Failed to load questions:', err)
     }
   }
+
+  // Cancel any pending health refetch on unmount so we don't set state on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (healthRefreshTimerRef.current) {
+        clearTimeout(healthRefreshTimerRef.current)
+        healthRefreshTimerRef.current = null
+      }
+    }
+  }, [])
 
   const handleEndRoom = async () => {
     if (room.endedAt) return
@@ -1874,6 +1926,18 @@ function RoomDetailPage() {
               )}
             </div>
 
+            {/* Item Health room-level summary chip row (teacher-only, optional — only renders when
+                at least one health entry has arrived). Mirrors RoomResultsPage so the active page
+                reads as the same system rather than a different visual. */}
+            {user?.role === 'teacher' && Object.keys(itemHealth).length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+                {ITEM_HEALTH_STATUS_ORDER.map((status) => {
+                  const count = Object.values(itemHealth).filter((h) => h.status === status).length
+                  return count > 0 ? <ItemHealthBadge key={status} status={status} count={count} /> : null
+                })}
+              </div>
+            )}
+
             {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
@@ -1924,6 +1988,12 @@ function RoomDetailPage() {
                         }}>
                           {q.points || 100} pts
                         </span>
+                        {/* Per-question Item Health pill (teacher-only). Uses the same badge component
+                            as the ended-room Results page so the active session reads as the same
+                            system. Optional: only renders when a health entry exists for this qid. */}
+                        {itemHealth[q._id] && (
+                          <ItemHealthBadge status={itemHealth[q._id].status} />
+                        )}
                       </div>
                       <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-primary)', lineHeight: '1.5', fontWeight: '500' }}>
                         {q.question}
@@ -1968,6 +2038,23 @@ function RoomDetailPage() {
                           )
                         })}
                       </div>
+                      {/* Item Health metrics — correct rate, discrimination, dead distractors.
+                          Reuses the same formatters as RoomResultsPage so TF/MSQ/null-discrimination
+                          / "Not enough data" all render consistently across both pages. */}
+                      {itemHealth[q._id] && (
+                        <div style={{
+                          marginTop: '10px',
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '14px',
+                          fontSize: '11px',
+                          color: 'var(--text-secondary)'
+                        }}>
+                          <span><strong style={{ color: 'var(--text-primary)' }}>Correct rate:</strong> {formatCorrectRate(itemHealth[q._id])}</span>
+                          <span><strong style={{ color: 'var(--text-primary)' }}>Discrimination:</strong> {formatDiscrimination(itemHealth[q._id])}</span>
+                          <span><strong style={{ color: 'var(--text-primary)' }}>Dead distractors:</strong> {formatDeadDistractors(itemHealth[q._id])}</span>
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', marginLeft: '8px' }}>
                       <span style={{

@@ -22,10 +22,12 @@
 //   results:lb:<roomId>       STRING  JSON ranked leaderboard[]          -> GET /leaderboard
 //   results:students:<roomId> HASH    field=studentId -> JSON questions  -> GET /room/:id/student/:sid
 //   results:stats:<roomId>    STRING  JSON { ...room stats, questionStats } -> GET /stats/room
+//   results:health:<roomId>   STRING  JSON item-health report[] (per question) -> GET /item-health (not yet routed)
 
 import mongoose from 'mongoose'
 import { isRedisEnabled, getRedisClient } from '../config/redis.js'
 import { computeRanked } from './leaderboardAgg.js'
+import { computeItemHealth } from './itemHealthService.js'
 
 const SNAPSHOT_TTL_MS = 600000 // 10 min — an ended room's results never change; rebuilt on miss.
 const LOCK_MS = 10000          // single-flight build lock
@@ -49,6 +51,7 @@ function keys(roomId) {
     lb: `results:lb:${id}`,
     students: `results:students:${id}`,
     stats: `results:stats:${id}`,
+    health: `results:health:${id}`,
     lock: `results:lock:${id}`
   }
 }
@@ -58,7 +61,7 @@ const toIdStr = (id) => (id && id.toString ? id.toString() : String(id))
 
 // Build the entire room's results in one pass. ~5 DB ops total for the whole room (vs ~3N per
 // request today): computeRanked (1 agg + 1 name lookup), one Question.find, one Response.find,
-// one RoomMember count. Returns the three artifacts ready to cache.
+// one RoomMember count. Returns the four artifacts ready to cache.
 export async function buildSnapshot(roomId) {
   const { Response, Question, RoomMember } = await models()
   const roomObjId = new mongoose.Types.ObjectId(roomId)
@@ -149,10 +152,26 @@ export async function buildSnapshot(roomId) {
     questionStats
   }
 
-  return { leaderboard, byStudent, stats }
+  // Item Health Engine (per-question correct rate / distractor efficiency / corrected item-total
+  // discrimination / status) — reuses respByStudentQ and respByQuestion from the SAME scan above,
+  // no extra DB read. studentAnswers is the per-student qid->isCorrect map the discrimination calc
+  // needs (a same-session "rest score" against the other questions each student answered); built
+  // once here and reused across every question rather than rebuilt per-question.
+  const studentAnswers = [...respByStudentQ.entries()].map(([sid, byQ]) => ({
+    studentId: sid,
+    answers: new Map([...byQ.entries()].map(([qid, r]) => [qid, r.isCorrect]))
+  }))
+
+  const itemHealth = allQuestions.map((q) => {
+    const qid = toIdStr(q._id)
+    const qResponses = respByQuestion.get(qid) || []
+    return computeItemHealth({ _id: qid, type: q.type, options: q.options }, qResponses, studentAnswers)
+  })
+
+  return { leaderboard, byStudent, stats, itemHealth }
 }
 
-// Write the three artifacts to Redis with the snapshot TTL. Best-effort; throws are caught by
+// Write the four artifacts to Redis with the snapshot TTL. Best-effort; throws are caught by
 // callers so a cache-write failure never breaks a request.
 async function writeSnapshot(roomId, snap) {
   const client = getRedisClient()
@@ -161,6 +180,7 @@ async function writeSnapshot(roomId, snap) {
 
   await client.set(k.lb, JSON.stringify(snap.leaderboard), { EX: ttlSec })
   await client.set(k.stats, JSON.stringify(snap.stats), { EX: ttlSec })
+  await client.set(k.health, JSON.stringify(snap.itemHealth), { EX: ttlSec })
 
   await client.del(k.students)
   const sids = Object.keys(snap.byStudent)
@@ -252,6 +272,20 @@ export async function getStats(roomId, { ended } = {}) {
   }
 }
 
+// Per-question Item Health report (correct rate, distractor efficiency, corrected item-total
+// discrimination, status) — same cache-with-fallback gating as getStats: ended rooms only, a miss
+// (live room, Redis off, cache error) returns null so the caller can compute directly.
+export async function getItemHealth(roomId, { ended } = {}) {
+  if (!ended || !isRedisEnabled()) return null
+  try {
+    if (!(await ensureBuilt(roomId))) return null
+    const raw = await getRedisClient().get(keys(roomId).health)
+    return raw ? JSON.parse(raw) : null
+  } catch (e) {
+    return null
+  }
+}
+
 // Returns { hit: boolean, questions }. hit=false means "not in snapshot" — either the cache is
 // unavailable OR this student is a non-responder (not stored); the caller computes just that one
 // student directly. This keeps a non-responder's correct (all-unanswered) payload without bloating
@@ -273,7 +307,7 @@ export async function invalidate(roomId) {
   if (!isRedisEnabled()) return
   const k = keys(roomId)
   try {
-    await getRedisClient().del([k.lb, k.students, k.stats])
+    await getRedisClient().del([k.lb, k.students, k.stats, k.health])
   } catch (e) {
     /* non-fatal */
   }
