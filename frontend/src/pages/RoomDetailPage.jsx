@@ -460,13 +460,13 @@ function RoomDetailPage() {
         setShowTextQuestionPopup(true)
         setCurrentSegment(prev => prev + 1)
       } else {
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        window.alert(data.error || 'The AI did not return any usable questions that time (this can happen occasionally) — please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      window.alert('Failed to generate questions: ' + error.message)
     }
   }
 
@@ -1122,21 +1122,22 @@ function RoomDetailPage() {
             {!isEnded && (
               <button
                 onClick={() => setShowTextToQuestions(true)}
+                disabled={isGeneratingFromText || isGeneratingQuestions}
                 style={{
                   padding: '8px 16px',
-                  background: '#10b981',
+                  background: (isGeneratingFromText || isGeneratingQuestions) ? '#9ca3af' : '#10b981',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '500',
-                  cursor: 'pointer',
+                  cursor: (isGeneratingFromText || isGeneratingQuestions) ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                {(isGeneratingFromText || isGeneratingQuestions) ? '⏳ Generating...' : '📝 Paste & Generate'}
               </button>
             )}
 
