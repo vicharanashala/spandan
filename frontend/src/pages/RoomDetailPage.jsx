@@ -479,6 +479,7 @@ function RoomDetailPage() {
         }))
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
+        setCurrentSegment(prev => prev + 1)
         // Questions generated and the review popup is up — NOW persist the pasted source text,
         // fire-and-forget so a slow/failed/hung save can never block or delay generation. A paste
         // has no segment → source='paste' + sentinel segmentIndex -1 (never collides with audio).
