@@ -1,13 +1,14 @@
 import express from 'express'
 import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
-import { authorize } from '../middleware/auth.js'
+import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
+import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 
 const router = express.Router()
 
 // Create new room
-router.post('/', authenticate, authorize('teacher'), validate(createRoomSchema), async (req, res) => {
+router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, validate(createRoomSchema), async (req, res) => {
   try {
     const { name, settings } = req.validatedBody
     const room = await createRoom(name, req.user._id, settings)
@@ -68,8 +69,12 @@ router.get('/:id', authenticate, async (req, res) => {
     if (!isOwner && !isStudentMember) {
       return res.status(403).json({ error: 'Access denied' })
     }
-    
-    res.json({ room })
+
+    // Seed the live participant count so a teacher opening/refreshing the room sees the current
+    // number immediately (the room:joined/room:left socket events keep it updated after load).
+    const participants = await RoomMember.countDocuments({ roomId: req.params.id })
+
+    res.json({ room, participants })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -122,7 +127,7 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 })
 
 // Update room
-router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     
@@ -141,6 +146,13 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
+      // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
+      req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)
+      // Pre-warm the results snapshot so the ~N students about to open the results page all read a
+      // shared cache instead of each triggering full-room aggregations (the end-session stampede).
+      // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
+      rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })
@@ -151,7 +163,7 @@ router.put('/:id', authenticate, authorize('teacher'), async (req, res) => {
 })
 
 // Delete room
-router.delete('/:id', authenticate, authorize('teacher'), async (req, res) => {
+router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     

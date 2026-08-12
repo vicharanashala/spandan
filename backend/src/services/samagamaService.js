@@ -1,5 +1,62 @@
 import User from '../models/User.js'
 
+const SAMAGAMA_ME_URL = 'https://samagama.in/api/auth/me'
+
+/**
+ * Verify a Samagama session token SERVER-SIDE and return the authoritative
+ * user identity that Samagama reports for it. This is the trust boundary:
+ * callers must never be believed about who they are — only Samagama is.
+ *
+ * @param {string} token - the Samagama session token supplied by the client
+ * @param {typeof fetch} [fetchImpl] - injectable for testing
+ * @returns {Promise<{email:string,name:string,isAdmin:boolean,isSuperAdmin:boolean}>}
+ * @throws {Error} with a `.status` (401 bad/absent token, 502 Samagama unreachable)
+ */
+export async function verifySamagamaToken(token, fetchImpl = fetch) {
+  if (!token || typeof token !== 'string') {
+    const e = new Error('Missing Samagama token')
+    e.status = 401
+    throw e
+  }
+
+  let resp
+  try {
+    resp = await fetchImpl(SAMAGAMA_ME_URL, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    })
+  } catch (err) {
+    const e = new Error('Could not reach Samagama to verify token')
+    e.status = 502
+    throw e
+  }
+
+  if (!resp.ok) {
+    const e = new Error('Invalid or expired Samagama token')
+    e.status = 401
+    throw e
+  }
+
+  const data = await resp.json()
+  const user = data && data.user
+  if (!user || !user.email) {
+    const e = new Error('Samagama token did not resolve to a user')
+    e.status = 401
+    throw e
+  }
+
+  // Only these server-verified fields are trusted; anything the client sent is ignored.
+  return {
+    email: user.email,
+    name: user.name,
+    isAdmin: user.isAdmin || false,
+    isSuperAdmin: user.isSuperAdmin || false
+  }
+}
+
 /**
  * Determine Spandan role from Samagama admin flags
  * @param {boolean} isAdmin

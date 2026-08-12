@@ -1,7 +1,10 @@
 import React, { useState } from 'react'
 
-function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false }) {
-  const [text, setText] = useState('')
+function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false, initialText = '' }) {
+  // Seed from initialText so a retry after a failed generation reopens with the text intact. The
+  // popup unmounts when closed (parent renders it conditionally), so this initializer runs fresh on
+  // each open, picking up whatever text the parent preserved.
+  const [text, setText] = useState(initialText)
   const [mode, setMode] = useState('MIXED') // 'TF' or 'MIXED'
 
   if (!isOpen) return null

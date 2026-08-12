@@ -40,7 +40,10 @@ export const blobToBase64 = (blob) => {
 
 // Check transcription service status
 export const getTranscriptionStatus = async () => {
-  const response = await fetch(`${API_URL}/transcription/status`)
+  const token = useAuthStore.getState().token
+  const response = await fetch(`${API_URL}/transcription/status`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  })
   return response.json()
 }
 

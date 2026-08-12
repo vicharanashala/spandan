@@ -10,6 +10,9 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
+import { canJoinRoom } from './services/roomJoinAuthz.js'
+import { computeRanked } from './services/leaderboardAgg.js'
+import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -18,6 +21,8 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import researchRoutes from './routes/research.js'
+import adminRoutes from './routes/admin.js'
 
 // Import models for reference
 import './models/index.js'
@@ -84,59 +89,104 @@ if (redis.enabled) {
 // Make io accessible to routes
 app.set('io', io)
 
-// --- Throttled, server-authoritative live room updates (Phase 1 + 2A multi-instance) ---
-// A live question can draw ~1000 answers in seconds. Instead of every client re-fetching the
-// leaderboard (~N^2 DB hits), the REST submit handler calls schedule(roomId); a burst coalesces
-// into ONE recompute + broadcast per room per interval, pushing a top-N payload.
-//  - Single instance: an in-memory timer + rank Map.
-//  - Multi-instance (Redis): a SET-NX lock so only ONE instance computes+broadcasts per window
-//    (the adapter fans the broadcast out to all instances), and the rank cache lives in a Redis
-//    hash so any instance can answer "rank on submit".
+// --- Live answer-counts + DEFERRED (quiet-debounce) leaderboard broadcasts (Phase 1 + 2A) ---
+// A live question can draw ~1000 answers in seconds. We split the room's live signal in two so
+// the expensive part stays OUT of the answer burst (which otherwise saturates the event loop and
+// starves the next question's broadcast — the root cause of the missed-poll incident):
+//  (1) Answer COUNTS — the teacher needs the live "X answered / total" badge to decide when to
+//      close a poll. Cheap (one count-only aggregation), so it stays LIVE on a short throttle,
+//      coalesced across a burst (multi-instance: SET-NX so only one instance emits per window).
+//  (2) Ranked LEADERBOARD — expensive (per-student aggregation + name resolution) and nobody
+//      studies it mid-burst, so it is recomputed once per SEGMENT: the teacher's frontend calls
+//      POST /responses/leaderboard/:roomId/segment-done when a question pop-up closes (that segment's
+//      questions are all answered), and after a short coalesced delay (LEADERBOARD_SEGMENT_DELAY_MS,
+//      to absorb late stragglers) we fold ONLY that segment's answers into a shared running total
+//      (computeRankedIncremental) and broadcast once — never re-summing the whole room. The REST GET
+//      /leaderboard read serves that same cached board (fold:false), so the board is stable within a
+//      segment. A forced FULL recompute at room end produces the authoritative final board.
+//      Scoring is UNAFFECTED — points are computed + saved per-response; Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
-const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
-const RANK_CACHE_TTL_S = Math.max(10, Math.ceil((LIVE_THROTTLE_MS * 5) / 1000))
-const roomLive = new Map() // roomId(str) -> { timer, roomCode, rankByStudent: Map, total } (single-instance)
+const LEADERBOARD_SEGMENT_DELAY_MS = Number(process.env.LEADERBOARD_SEGMENT_DELAY_MS) || 15000
+// How many ranks are broadcast PUBLICLY to every student. Students below this cutoff receive only
+// their own row privately (see broadcastLeaderboard). Configurable; defaults to the classic top 10.
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
+// Rank cache ("rank on submit") must outlive a whole segment window (answering + review + delay).
+const RANK_CACHE_TTL_S = Number(process.env.LEADERBOARD_RANK_TTL_S) || 1800
+const roomLive = new Map() // roomId(str) -> { countsTimer, segmentFoldTimer, roomCode, rankByStudent, total }
 
-async function computeAndBroadcast(roomId) {
+function getRoomState(id) {
+  let s = roomLive.get(id)
+  if (!s) { s = { countsTimer: null, segmentFoldTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  return s
+}
+
+async function resolveRoomCode(roomId) {
+  const s = getRoomState(String(roomId))
+  if (s.roomCode) return s.roomCode
+  const Room = (await import('./models/Room.js')).default
+  const room = await Room.findById(roomId).select('code').lean()
+  s.roomCode = room?.code || null
+  return s.roomCode
+}
+
+// (1) Live answer counts — cheap count-only aggregation, throttled/coalesced per window.
+async function broadcastCounts(roomId) {
   try {
     const Response = (await import('./models/Response.js')).default
-    const User = (await import('./models/User.js')).default
-    const Room = (await import('./models/Room.js')).default
+    const roomObjId = new mongoose.Types.ObjectId(roomId)
+    const countAgg = await Response.aggregate([
+      { $match: { roomId: roomObjId } },
+      { $group: { _id: '$questionId', count: { $sum: 1 } } }
+    ])
+    const counts = {}
+    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    const roomCode = await resolveRoomCode(roomId)
+    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+  } catch (err) {
+    console.error('broadcastCounts error:', err.message)
+  }
+}
+
+async function scheduleCountsBroadcast(roomId) {
+  const id = String(roomId)
+  if (redis.enabled) {
+    try {
+      const won = await redis.client.set(`live:cnt:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
+      if (won === 'OK') setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+    } catch (e) {
+      setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
+    }
+    return
+  }
+  const s = getRoomState(id)
+  if (s.countsTimer) return // already scheduled; the trailing run picks up the latest DB state
+  s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
+}
+
+// (2) Ranked leaderboard — name resolution + rank cache + emit. `incremental` selects the shared
+// running-total fold (per-segment, cheap); the default full recompute is used at room end.
+async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
+  try {
+    const Response = (await import('./models/Response.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
-    // Points per student (ranked) + per-question answer counts, in two aggregations.
-    const [ranked, countAgg] = await Promise.all([
-      Response.aggregate([
-        { $match: { roomId: roomObjId } },
-        { $group: { _id: '$studentId', totalPoints: { $sum: '$points' }, correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } }, totalAnswered: { $sum: 1 } } },
-        { $sort: { totalPoints: -1 } }
-      ]),
+    // Ranked board comes from the shared helper (single source of truth); the per-question answer
+    // counts stay here (live-only concern). Both run in one round-trip via Promise.all.
+    const compute = incremental ? computeRankedIncremental : computeRanked
+    const [{ full, rankByStudent }, countAgg] = await Promise.all([
+      compute(roomId),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
         { $group: { _id: '$questionId', count: { $sum: 1 } } }
       ])
     ])
 
-    const users = await User.find({ _id: { $in: ranked.map(e => e._id) } }).select('name email').lean()
-    const nameById = new Map(users.map(u => [u._id.toString(), u.name || u.email || 'Unknown Student']))
-
-    const rankByStudent = new Map()
-    const full = ranked.map((e, i) => {
-      const sid = e._id.toString()
-      rankByStudent.set(sid, i + 1)
-      return { rank: i + 1, studentId: sid, studentName: nameById.get(sid) || 'Unknown Student', totalPoints: e.totalPoints, correctCount: e.correctCount, totalAnswered: e.totalAnswered }
-    })
     const counts = {}
     countAgg.forEach(c => { counts[c._id.toString()] = c.count })
 
-    // Resolve roomCode (needed to target the socket room).
-    let roomCode = roomLive.get(roomId)?.roomCode
-    if (!roomCode) {
-      const room = await Room.findById(roomId).select('code').lean()
-      roomCode = room?.code || null
-    }
+    const roomCode = await resolveRoomCode(roomId)
 
-    // Cache ranks for "rank on submit".
+    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A).
     if (redis.enabled) {
       try {
         const flat = { _total: String(full.length) }
@@ -147,49 +197,69 @@ async function computeAndBroadcast(roomId) {
         await redis.client.expire(key, RANK_CACHE_TTL_S)
       } catch (e) { /* non-fatal: rank-on-submit just returns null */ }
     } else {
-      const state = roomLive.get(roomId) || {}
-      state.rankByStudent = rankByStudent
-      state.total = full.length
-      state.roomCode = roomCode
-      roomLive.set(roomId, state)
+      const s = getRoomState(String(roomId))
+      s.rankByStudent = rankByStudent
+      s.total = full.length
     }
 
     if (roomCode) {
+      // Public room push: the top N only (safe for every student to see) + the aggregate count.
       io.to(roomCode).emit('leaderboard:updated', {
         leaderboard: full.slice(0, LEADERBOARD_TOP_N),
         totalParticipants: full.length,
+        topN: LEADERBOARD_TOP_N,
         counts
       })
+      // Private push: each student ranked BELOW the public cutoff gets ONLY their own row, on their
+      // personal channel — so no student's browser ever receives the full ranking. Students inside
+      // the top N are already in the public payload, so they need no personal push. Runs once per
+      // segment; an emit to an offline user-room is a cheap no-op.
+      for (const e of full) {
+        if (e.rank > LEADERBOARD_TOP_N) {
+          io.to('user:' + e.studentId).emit('leaderboard:you', {
+            rank: e.rank,
+            studentId: e.studentId,
+            studentName: e.studentName,
+            totalPoints: e.totalPoints,
+            correctCount: e.correctCount,
+            totalAnswered: e.totalAnswered,
+            totalParticipants: full.length
+          })
+        }
+      }
     }
   } catch (err) {
-    console.error('computeAndBroadcast error:', err.message)
+    console.error('broadcastLeaderboard error:', err.message)
   }
 }
 
-async function scheduleRoomLiveUpdate(roomId) {
+// Segment-triggered leaderboard. The teacher's frontend calls POST /responses/leaderboard/:roomId/
+// segment-done when a question pop-up closes (that segment's questions are all answered); that route
+// calls this. We coalesce a short delay so a second segment closing quickly folds together and to
+// absorb late stragglers, then fold ONLY that segment's answers into the shared running total and
+// broadcast once (the per-segment socket push students consume). The 15s timer is per-instance.
+function scheduleSegmentFold(roomId) {
   const id = String(roomId)
-  if (redis.enabled) {
-    // Only one instance schedules a broadcast per throttle window (global coalescing via SET NX).
-    try {
-      const won = await redis.client.set(`live:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
-      if (won === 'OK') setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
-    } catch (e) {
-      // Redis hiccup — fall back to a local timer so updates still flow on this instance.
-      setTimeout(() => computeAndBroadcast(id), LIVE_THROTTLE_MS)
-    }
-    return
-  }
-  let state = roomLive.get(id)
-  if (!state) { state = { timer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, state) }
-  if (state.timer) return // already scheduled; the trailing run picks up the latest state
-  state.timer = setTimeout(() => {
-    const s = roomLive.get(id)
-    if (s) s.timer = null
-    computeAndBroadcast(id)
-  }, LIVE_THROTTLE_MS)
+  const s = getRoomState(id)
+  if (s.segmentFoldTimer) clearTimeout(s.segmentFoldTimer) // coalesce — a new segment resets the window
+  s.segmentFoldTimer = setTimeout(() => {
+    const st = roomLive.get(id); if (st) st.segmentFoldTimer = null
+    broadcastLeaderboard(id, { incremental: true })
+  }, LEADERBOARD_SEGMENT_DELAY_MS)
 }
 
-// Last-computed rank for a student ("rank on submit"); may be up to one interval stale.
+// Force a FULL (non-incremental) recompute + broadcast and drop the incremental cache, so the board
+// at room end is authoritative and reconciles any straggler that landed after a segment fold.
+async function refreshLeaderboardNow(roomId) {
+  const id = String(roomId)
+  const s = roomLive.get(id)
+  if (s?.segmentFoldTimer) { clearTimeout(s.segmentFoldTimer); s.segmentFoldTimer = null }
+  try { await invalidateLeaderboardCache(id) } catch (e) { /* non-fatal */ }
+  await broadcastLeaderboard(id) // full recompute
+}
+
+// Last-computed rank for a student ("rank on submit"); refreshed when the board settles, so it
+// may lag during an active burst (Option A — the student still gets their points immediately).
 async function getCachedStudentRank(roomId, studentId) {
   const id = String(roomId)
   if (redis.enabled) {
@@ -205,7 +275,12 @@ async function getCachedStudentRank(roomId, studentId) {
   return { rank: state.rankByStudent?.get(String(studentId)) ?? null, totalParticipants: state.total ?? null }
 }
 
-app.set('liveUpdates', { schedule: scheduleRoomLiveUpdate, getRank: getCachedStudentRank })
+app.set('liveUpdates', {
+  scheduleCounts: scheduleCountsBroadcast,
+  scheduleSegmentFold, // triggered by the REST POST /responses/leaderboard/:roomId/segment-done
+  refreshLeaderboardNow,
+  getRank: getCachedStudentRank
+})
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
@@ -249,6 +324,17 @@ const leaderboardLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later' }
 })
 
+const otpLimiter = rateLimit({
+  store: rlStore('rl:otp:'),
+  windowMs: 60 * 60 * 1000, // 1 hour
+  // Registration-code sends trigger real emails, so this endpoint gets a tighter per-IP cap than the
+  // general auth limiter to prevent email-bombing. Legit sign-ups are rare per IP; the finer control
+  // (60s resend cooldown + 5-send cap) is per-email in otpService. Sized to still tolerate a shared NAT
+  // (a campus behind one IP), so the default is well above 100. Override via OTP_LIMIT_PER_HOUR in .env.
+  max: Number(process.env.OTP_LIMIT_PER_HOUR) || 500, // sends per IP per hour
+  message: { error: 'Too many verification requests, please try again later' }
+})
+
 // Middleware
 app.use(helmet())
 app.use(cors({
@@ -258,6 +344,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }))
 app.use('/api/', apiLimiter)           // general /api/ routes
 app.use('/api/auth/', authLimiter)     // auth routes
+app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
 app.use('/api/responses/', responseLimiter)  // response submission routes
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
 
@@ -271,6 +358,8 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/research', researchRoutes)
+app.use('/api/admin', adminRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -296,20 +385,108 @@ async function authenticateSocket(socket, token) {
   const u = await User.findById(decoded.userId).select('role').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
+  socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
 }
 
+// jwt.verify only runs at (re)connect, so a long-lived socket can outlive its token: its cached
+// socket.data.userId then becomes stale. These helpers enforce token freshness on the socket anyway.
+// room:join refuses an expired socket, and a timer proactively de-authenticates it AT expiry so a
+// student who is only PASSIVELY receiving polls is still told to re-login (the client turns the
+// `expired` signal into a graceful sign-out) instead of lingering "in the room but unable to answer".
+function socketTokenExpired(socket) {
+  const exp = socket.data?.tokenExp
+  return typeof exp === 'number' && exp * 1000 <= Date.now()
+}
+
+function deauthenticateSocket(socket) {
+  socket.data.userId = null
+  socket.data.role = null
+  connectedUsers.delete(socket.id)
+  socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
+}
+
+function scheduleSocketExpiry(socket) {
+  if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
+  const exp = socket.data?.tokenExp
+  if (typeof exp !== 'number') return
+  const ms = exp * 1000 - Date.now()
+  if (ms <= 0) { deauthenticateSocket(socket); return }
+  // setTimeout overflows past ~24.8 days; clamp and, if we hit the clamp before the real expiry,
+  // reschedule for the remainder (harmless — real sockets never live that long anyway).
+  socket.data._expiryTimer = setTimeout(() => {
+    if (socketTokenExpired(socket)) deauthenticateSocket(socket)
+    else scheduleSocketExpiry(socket)
+  }, Math.min(ms, 2_147_000_000))
+}
+
 // Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
+// Returns the room doc when the socket is the room's teacher-owner, else null. Returning the room
+// (not just a bool) lets callers use room._id (e.g. to mark the current question) without re-looking
+// it up; truthiness of the result is still a valid owner check.
 async function verifyRoomOwner(socket, roomCode) {
-  if (socket.data?.role !== 'teacher' || !roomCode) return false
+  if (socket.data?.role !== 'teacher' || !roomCode) return null
   try {
     const Room = (await import('./models/Room.js')).default
     const room = await Room.findByCode(roomCode)
-    return !!room && room.teacher.toString() === String(socket.data.userId)
+    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
   } catch {
-    return false
+    return null
   }
+}
+
+// Video mode: the teacher periodically broadcasts their current playback position. Students use it as
+// the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
+// of being stuck at 0), while still never seeking past the teacher. Cached so a fresh join gets it
+// immediately without waiting for the next broadcast tick.
+const videoProgress = new Map() // roomCode -> { time }
+const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
+
+// Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
+// endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
+// stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
+// desync-safe "poll is live" signal — a per-student/teacher timer can't be, since each student runs
+// their own answering window. Fire-and-forget.
+async function setLiveQuestion(roomId, questionId) {
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const Question = (await import('./models/Question.js')).default
+    const GRACE = Number(process.env.POLL_RESPONSE_GRACE_MS) || 10000
+    // Close the OUTGOING poll (the one leaving the live slot) to new responses, GRACE ms from now.
+    // The grace covers in-flight/late submits; once it passes, POST /responses refuses that poll, so
+    // a bot can no longer back-fill answers to polls that have already moved on. (The last poll of a
+    // session is never superseded, so it stays open until the room ends — see the POST guard.)
+    const room = await Room.findById(roomId).select('currentQuestion')
+    const outgoing = room?.currentQuestion
+    if (outgoing && String(outgoing) !== String(questionId)) {
+      await Question.updateOne({ _id: outgoing }, { $set: { closeAt: new Date(Date.now() + GRACE) } })
+    }
+    // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
+    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
+    await Room.updateOne({ _id: roomId }, { currentQuestion: questionId })
+    // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
+    // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.
+    const { setRoomLive } = await import('./services/roomLiveCache.js')
+    await setRoomLive(roomId, questionId)
+  } catch { /* non-fatal */ }
+}
+
+// Remove answer-revealing fields (which option is correct, and the explanation) from a question
+// before it is broadcast to STUDENTS on launch. Students receive this over the socket, so leaving
+// the answer in it lets them read `isCorrect` straight from the browser's WS frames. Removing it
+// breaks nothing: the teacher renders from its own local copy, scoring is computed server-side from
+// the submitted option index, and the answer is revealed afterwards through the results path. Option
+// order/count are preserved (students submit answers by index).
+function sanitizeQuestionForStudents(q) {
+  if (!q || typeof q !== 'object') return q
+  const { explanation, ...rest } = q
+  if (Array.isArray(rest.options)) {
+    rest.options = rest.options.map(o =>
+      (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o
+    )
+  }
+  return rest
 }
 
 // Authenticate at connection time from the handshake token (client already sends auth:{token}),
@@ -325,6 +502,8 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
+  // Arm the proactive de-auth for a handshake-authenticated socket (io.use already ran authenticateSocket).
+  scheduleSocketExpiry(socket)
 
   // Re-authenticate on demand (also covers clients that auth via this event, not the handshake).
   socket.on('authenticate', async (data) => {
@@ -334,6 +513,7 @@ io.on('connection', (socket) => {
         return
       }
       await authenticateSocket(socket, data.token)
+      scheduleSocketExpiry(socket) // re-arm for the new token's expiry
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -350,31 +530,55 @@ io.on('connection', (socket) => {
     const userId = socket.data?.userId
     const role = socket.data?.role
     if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
+    // Token this socket authenticated with has since lapsed — refuse the join and tell the client to
+    // re-login rather than trusting the userId cached at connect time.
+    if (socketTokenExpired(socket)) {
+      deauthenticateSocket(socket)
+      socket.emit('room:error', { error: 'Session expired' })
+      return
+    }
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.join(roomCode)
+      // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
+      // caller is allowed in (teacher must own it; student may join an active room by code).
       const room = await Room.findByCode(roomCode)
-
-      let participantCount = 0
-      if (room) {
-        // Only students are added to RoomMember (not teachers)
-        if (role === 'student') {
-          await RoomMember.findOneAndUpdate(
-            { roomId: room._id, studentId: userId },
-            { roomId: room._id, studentId: userId, joinedAt: new Date() },
-            { upsert: true, new: true }
-          )
-        }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      const decision = canJoinRoom({ role, userId, room })
+      if (!decision.ok) {
+        socket.emit('room:error', { error: decision.error })
+        return
       }
 
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: participantCount })
+      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
+      if (role === 'student') {
+        await RoomMember.findOneAndUpdate(
+          { roomId: room._id, studentId: userId },
+          { roomId: room._id, studentId: userId, joinedAt: new Date() },
+          { upsert: true, new: true }
+        )
+      }
+
+      // Authorized → now join the socket room and announce. The room-wide event carries only the
+      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
+      socket.join(roomCode)
+      // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
+      // (privacy — a student never receives the full board, just the public top 10 + their own rank).
+      socket.join('user:' + userId)
+      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+
+      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+
+      // Seed the joining socket with the teacher's last known video position (video mode) so a
+      // reload/late-join can immediately seek forward up to where the class is.
+      const vp = videoProgress.get(roomCode)
+      if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
+      // If the teacher's question popup is currently open, a late-joining student must start paused.
+      if (videoPaused.get(roomCode)) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
-      io.to(roomCode).emit('room:joined', { roomCode, userId, participants: 0 })
+      socket.emit('room:error', { error: 'Failed to join room' })
     }
   })
 
@@ -407,17 +611,19 @@ io.on('connection', (socket) => {
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
   // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live leaderboard/answer-count updates are now emitted
-  // server-side (throttled) from the authenticated REST submit handler — see the
-  // scheduleRoomLiveUpdate() broadcaster above and routes/responses.js.
+  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) are emitted server-side
+  // from the authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js),
+  // and the ranked leaderboard is folded per-segment via POST /responses/leaderboard/:id/segment-done.
 
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    if (data.questionId) setLiveQuestion(room._id, data.questionId)
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
-      question: data.question,
+      question: sanitizeQuestionForStudents(data.question),
       timer: data.timer,
       startTime: Date.now()
     })
@@ -433,16 +639,45 @@ io.on('connection', (socket) => {
 
   // New question pushed by the teacher (manually created)
   socket.on('new_question', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
     if (data.question) {
-      io.to(data.roomCode).emit('new_question', data.question)
+      const qId = data.question._id || data.question.id
+      if (qId) setLiveQuestion(room._id, qId)
+      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
   })
 
+  // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
+  // Teacher-only; students receive it and cannot forge it.
+  socket.on('video:progress', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const time = Number(data?.time)
+    if (!Number.isFinite(time)) return
+    const playing = !!data?.playing
+    videoProgress.set(data.roomCode, { time, playing })
+    socket.to(data.roomCode).emit('video:progress', { time, playing })
+  })
+
+  // Teacher's question popup opened → students hold their video paused for the whole popup window.
+  socket.on('video:pause', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, true)
+    socket.to(data.roomCode).emit('video:pause')
+  })
+
+  // Teacher's popup closed → students resume and jump to the live edge (handled client-side).
+  socket.on('video:resume', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    videoPaused.set(data.roomCode, false)
+    socket.to(data.roomCode).emit('video:resume')
+  })
+
   socket.on('disconnect', () => {
+    if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
@@ -454,7 +689,7 @@ app.use((err, req, res, next) => {
   console.error('Error:', err)
   res.status(500).json({ 
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
 })
 

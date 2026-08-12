@@ -4,6 +4,7 @@ import SpandanIcon from '../components/SpandanIcon'
 import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
+import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
 function ResetPasswordPage() {
@@ -11,20 +12,12 @@ function ResetPasswordPage() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token')
   const { isDark, toggleTheme } = useThemeStore()
+  const isMobile = useIsMobile()
 
   const [formData, setFormData] = useState({ password: '', confirmPassword: '' })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-
-  const bgGradient = isDark
-    ? 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%)'
-    : 'linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%)'
-
-  const textColor = isDark ? '#f1f5f9' : '#1e293b'
-  const subTextColor = isDark ? '#94a3b8' : '#64748b'
-  const cardBg = isDark ? 'rgba(30,41,59,0.85)' : 'rgba(255,255,255,0.95)'
-  const cardBorder = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.3)'
 
   useEffect(() => {
     if (!token) {
@@ -65,298 +58,207 @@ function ResetPasswordPage() {
     }
   }
 
+  const labelStyle = {
+    display: 'block',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: 'var(--text-secondary)',
+    marginBottom: '8px'
+  }
+
+  const cardStyle = {
+    background: 'var(--bg-card)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius-lg)',
+    boxShadow: 'var(--shadow-lg)',
+    padding: isMobile ? '24px 20px' : '32px',
+    width: '100%',
+    maxWidth: '420px',
+    boxSizing: 'border-box'
+  }
+
   return (
     <div style={{
       minHeight: '100vh',
-      background: bgGradient,
+      width: '100%',
+      background: 'var(--bg-primary)',
       fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
       display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: isMobile ? '24px 16px' : '40px',
+      boxSizing: 'border-box',
       position: 'relative',
-      overflow: 'hidden',
-      transition: 'background 0.5s ease'
+      overflowX: 'hidden'
     }}>
-      {/* Left side - Branding */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: '60px',
-        position: 'relative'
-      }}>
-        {/* Big watermark text */}
-        <div style={{
+      {/* Theme toggle - top right */}
+      <button
+        onClick={toggleTheme}
+        aria-label="Toggle theme"
+        style={{
           position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%) rotate(-15deg)',
-          fontSize: 'clamp(80px, 12vw, 160px)',
-          fontWeight: '800',
-          color: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.15)',
-          whiteSpace: 'nowrap',
-          pointerEvents: 'none',
-          userSelect: 'none',
-          letterSpacing: '-4px'
-        }}>
-          SPANDAN
-        </div>
-        <div style={{
-          position: 'absolute',
-          top: '58%',
-          left: '50%',
-          transform: 'translate(-50%, -50%) rotate(-12deg)',
-          fontSize: 'clamp(60px, 10vw, 120px)',
-          fontWeight: '700',
-          color: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.12)',
-          whiteSpace: 'nowrap',
-          pointerEvents: 'none',
-          userSelect: 'none'
-        }}>
-          स्पंदन
-        </div>
-
-        {/* Theme toggle - top left */}
-        <button
-          onClick={toggleTheme}
-          style={{
-            position: 'absolute',
-            top: '32px',
-            left: '32px',
-            background: 'rgba(255,255,255,0.15)',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(255,255,255,0.2)',
-            borderRadius: '12px',
-            padding: '10px 16px',
-            fontSize: '20px',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color: 'white',
-            transition: 'all 0.3s'
-          }}
-        >
-          {isDark ? '☀️' : '🌙'}
-          <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
-        </button>
-
-        {/* Icon and brand */}
-        <div style={{
-          width: '100px',
-          height: '100px',
-          background: 'linear-gradient(135deg, #667eea, #764ba2)',
-          borderRadius: '24px',
+          top: isMobile ? '16px' : '24px',
+          right: isMobile ? '16px' : '24px',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-color)',
+          borderRadius: 'var(--radius)',
+          padding: '9px 14px',
+          fontSize: '16px',
+          cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '24px',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          <SpandanIcon size={50} />
-        </div>
-        <h1 style={{
-          fontSize: '48px',
-          fontWeight: '800',
-          color: 'white',
-          marginBottom: '16px',
-          textShadow: '0 4px 30px rgba(0,0,0,0.3)',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          Spandan
-        </h1>
-        <p style={{
-          fontSize: '18px',
-          color: 'rgba(255,255,255,0.8)',
-          textAlign: 'center',
-          maxWidth: '400px',
-          lineHeight: '1.6',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          Your intelligent polling platform. Reset your password to continue.
-        </p>
-      </div>
+          gap: '8px',
+          color: 'var(--text-primary)',
+          boxShadow: 'var(--shadow-sm)',
+          transition: 'all 0.2s'
+        }}
+      >
+        {isDark ? '☀️' : '🌙'}
+        <span style={{ fontSize: '13px', fontWeight: 600 }}>{isDark ? 'Light' : 'Dark'}</span>
+      </button>
 
-      {/* Right side - Reset Form */}
-      <div style={{
-        width: '520px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '40px',
-        position: 'relative'
-      }}>
-        {success ? (
+      {success ? (
+        <div style={{ ...cardStyle, textAlign: 'center', animation: 'fadeInUp 0.5s ease-out' }}>
           <div style={{
-            background: cardBg,
-            backdropFilter: 'blur(20px)',
-            borderRadius: '24px',
-            padding: '48px',
+            width: '64px',
+            height: '64px',
+            background: 'linear-gradient(135deg, #059669, #10b981)',
+            borderRadius: 'var(--radius)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 20px',
+            boxShadow: 'var(--shadow-md)'
+          }}>
+            <span style={{ fontSize: '32px', color: '#fff' }}>✓</span>
+          </div>
+          <h2 style={{
+            color: 'var(--text-primary)',
+            fontSize: isMobile ? '20px' : '24px',
+            fontWeight: 700,
+            marginBottom: '10px'
+          }}>
+            Password Reset!
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
+            Your password has been successfully reset. Redirecting you to login...
+          </p>
+          <div style={{
             width: '100%',
-            maxWidth: '440px',
-            boxShadow: '0 25px 80px rgba(0,0,0,0.25)',
-            border: `1px solid ${cardBorder}`,
-            textAlign: 'center',
-            animation: 'fadeInUp 0.5s ease-out'
+            height: '4px',
+            background: 'var(--border-color)',
+            borderRadius: '999px',
+            overflow: 'hidden'
           }}>
             <div style={{
-              width: '70px',
-              height: '70px',
-              background: 'linear-gradient(135deg, #059669, #10b981)',
-              borderRadius: '18px',
+              width: '100%',
+              height: '100%',
+              background: 'var(--accent-gradient)',
+              animation: 'shrink 3s linear forwards'
+            }} />
+          </div>
+        </div>
+      ) : (
+        <div style={{ ...cardStyle, animation: 'fadeInUp 0.5s ease-out' }}>
+          {/* Logo and Title */}
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              background: 'var(--accent-gradient)',
+              borderRadius: 'var(--radius)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              margin: '0 auto 20px'
+              margin: '0 auto 16px',
+              boxShadow: 'var(--shadow-md)'
             }}>
-              <span style={{ fontSize: '35px' }}>✓</span>
+              <SpandanIcon size={34} />
             </div>
-            <h2 style={{ color: textColor, marginBottom: '10px' }}>Password Reset!</h2>
-            <p style={{ color: subTextColor, marginBottom: '20px' }}>
-              Your password has been successfully reset. Redirecting you to login...
+            <h1 style={{
+              fontSize: isMobile ? '22px' : '26px',
+              fontWeight: 700,
+              color: 'var(--text-primary)',
+              marginBottom: '8px'
+            }}>
+              Set New Password
+            </h1>
+            <p style={{
+              fontSize: '14px',
+              color: 'var(--text-secondary)',
+              lineHeight: 1.5
+            }}>
+              Enter your new password below.
             </p>
-            <div style={{
-              width: '100%',
-              height: '4px',
-              background: isDark ? '#334155' : '#e5e7eb',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: '100%',
-                height: '100%',
-                background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                animation: 'shrink 3s linear forwards'
-              }} />
-            </div>
           </div>
-        ) : (
-          <div style={{
-            background: cardBg,
-            backdropFilter: 'blur(20px)',
-            borderRadius: '24px',
-            padding: '48px',
-            width: '100%',
-            maxWidth: '440px',
-            boxShadow: '0 25px 80px rgba(0,0,0,0.25)',
-            border: `1px solid ${cardBorder}`,
-            animation: 'fadeInUp 0.5s ease-out'
-          }}>
-            {/* Logo and Title */}
-            <div style={{ textAlign: 'center', marginBottom: '30px', position: 'relative' }}>
-              <div style={{
-                width: '70px',
-                height: '70px',
-                background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                borderRadius: '18px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: '0 auto 16px',
-                boxShadow: '0 15px 35px rgba(102, 126, 234, 0.35)'
-              }}>
-                <SpandanIcon size={35} />
-              </div>
-              <h1 style={{
-                fontSize: '28px',
-                fontWeight: '700',
-                color: textColor,
-                marginBottom: '8px'
-              }}>
-                Set New Password
-              </h1>
+
+          {error && (
+            <div style={{
+              background: isDark ? 'rgba(239,68,68,0.15)' : '#fef2f2',
+              border: `1px solid ${isDark ? 'rgba(239,68,68,0.3)' : '#fecaca'}`,
+              borderRadius: 'var(--radius-sm)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              color: isDark ? '#fca5a5' : '#dc2626',
+              fontSize: '14px'
+            }}>
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '20px' }}>
+            <div>
+              <label style={labelStyle}>
+                New Password
+              </label>
+              <PasswordInput
+                value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                placeholder="Enter new password"
+                style={{ background: 'var(--input-bg)' }}
+              />
               <p style={{
-                fontSize: '14px',
-                color: subTextColor
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                marginTop: '6px'
               }}>
-                Enter your new password below.
+                Min 8 chars: 1 uppercase, 1 lowercase, 1 digit, 1 special char
               </p>
             </div>
-
-            {error && (
-              <div style={{
-                background: isDark ? 'rgba(239,68,68,0.15)' : '#fef2f2',
-                border: `1px solid ${isDark ? 'rgba(239,68,68,0.3)' : '#fecaca'}`,
-                borderRadius: '10px',
-                padding: '12px 16px',
-                marginBottom: '20px',
-                color: isDark ? '#fca5a5' : '#dc2626',
-                fontSize: '14px'
-              }}>
-                {error}
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '20px' }}>
-              <div>
-                <label style={{
-                  display: 'block',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: subTextColor,
-                  marginBottom: '8px'
-                }}>
-                  New Password
-                </label>
-                <PasswordInput
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder="Enter new password"
-                  style={{ background: isDark ? '#1e293b' : 'white' }}
-                />
-                <p style={{
-                  fontSize: '11px',
-                  color: subTextColor,
-                  marginTop: '6px'
-                }}>
-                  Min 8 chars: 1 uppercase, 1 lowercase, 1 digit, 1 special char
-                </p>
-              </div>
-              <div>
-                <label style={{
-                  display: 'block',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: subTextColor,
-                  marginBottom: '8px'
-                }}>
-                  Confirm New Password
-                </label>
-                <PasswordInput
-                  value={formData.confirmPassword}
-                  onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                  placeholder="Confirm new password"
-                  style={{ background: isDark ? '#1e293b' : 'white' }}
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={isLoading}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  fontSize: '17px',
-                  fontWeight: '700',
-                  background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  cursor: isLoading ? 'not-allowed' : 'pointer',
-                  opacity: isLoading ? 0.7 : 1,
-                  boxShadow: '0 8px 25px rgba(102, 126, 234, 0.4)',
-                  transition: 'all 0.3s'
-                }}
-              >
-                {isLoading ? 'Resetting...' : 'Reset Password'}
-              </button>
-            </form>
-          </div>
-        )}
-      </div>
+            <div>
+              <label style={labelStyle}>
+                Confirm New Password
+              </label>
+              <PasswordInput
+                value={formData.confirmPassword}
+                onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                placeholder="Confirm new password"
+                style={{ background: 'var(--input-bg)' }}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              style={{
+                width: '100%',
+                padding: '12px 18px',
+                fontSize: '15px',
+                fontWeight: 600,
+                background: 'var(--accent-gradient)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 'var(--radius)',
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                opacity: isLoading ? 0.7 : 1,
+                boxShadow: 'var(--shadow-md)',
+                transition: 'all 0.2s'
+              }}
+            >
+              {isLoading ? 'Resetting...' : 'Reset Password'}
+            </button>
+          </form>
+        </div>
+      )}
 
       <style>{`
         @keyframes fadeInUp {

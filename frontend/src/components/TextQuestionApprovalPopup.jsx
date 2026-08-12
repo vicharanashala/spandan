@@ -1,18 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react'
+import QuestionEditor from './QuestionEditor'
 
-function TextQuestionApprovalPopup({ 
-  questions, 
-  onApprove, 
-  onReject, 
-  onClose, 
+function TextQuestionApprovalPopup({
+  questions,
+  onApprove,
+  onReject,
+  onClose,
   onNext,
-  isLast 
+  isLast
 }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
   const [timeLeft, setTimeLeft] = useState(30)
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1)
+  const [isEditing, setIsEditing] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
@@ -20,6 +22,13 @@ function TextQuestionApprovalPopup({
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
   }, [questions])
+
+  // Leave edit mode whenever we move to a different question.
+  useEffect(() => { setIsEditing(false) }, [currentIndex])
+
+  // Persist an edited question back into local state so Approve/Launch sends the edited version.
+  const updateCurrent = (updated) =>
+    setPendingQuestions(prev => prev.map((q, i) => (i === currentIndex ? updated : q)))
 
   const currentQuestion = pendingQuestions[currentIndex]
 
@@ -235,6 +244,23 @@ function TextQuestionApprovalPopup({
                 )}
               </div>
             )}
+            {!isQuestionLaunched && (
+              <button
+                onClick={() => setIsEditing(e => !e)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '20px',
+                  border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
+                  background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                  color: isEditing ? '#10b981' : 'var(--text-secondary)',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                {isEditing ? '✓ Done' : '✏️ Edit'}
+              </button>
+            )}
             <span style={{
               padding: '6px 12px',
               background: 'rgba(59, 130, 246, 0.1)',
@@ -248,7 +274,10 @@ function TextQuestionApprovalPopup({
           </div>
         </div>
 
-        {/* Question Card */}
+        {/* Question Card — editable when the teacher taps Edit, read-only otherwise */}
+        {isEditing ? (
+          <QuestionEditor question={currentQuestion} onChange={updateCurrent} />
+        ) : (
         <div style={{
           background: 'var(--bg-primary)',
           borderRadius: '16px',
@@ -366,6 +395,7 @@ function TextQuestionApprovalPopup({
             })}
           </div>
         </div>
+        )}
 
         {/* Action Buttons */}
         {isQuestionLaunched ? (

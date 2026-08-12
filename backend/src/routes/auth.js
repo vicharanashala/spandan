@@ -1,32 +1,68 @@
 import express from 'express'
-import { register, login, getUserById, checkEmailExists, updateUserRole, updateProfile, resetOwnPassword } from '../services/authService.js'
+import { register, login, getUserById, checkEmailExists, updateProfile, resetOwnPassword } from '../services/authService.js'
 import { generateResetToken, verifyResetToken, resetPassword } from '../services/passwordService.js'
 import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
-import { validate, registerSchema, loginSchema } from '../middleware/validation.js'
+import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
+import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
-import { findOrCreateSamagamaUser } from '../services/samagamaService.js'
+import { findOrCreateSamagamaUser, verifySamagamaToken } from '../services/samagamaService.js'
 
 const router = express.Router()
 
 // Strong password: min 8 chars, 1 uppercase, 1 lowercase, 1 digit, 1 special char
 const passwordRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/
 
-// Register new user
-router.post('/register', validate(registerSchema), async (req, res) => {
-  try {
-    const { name, email, password, role } = req.validatedBody
-    const user = await register(name, email, password, role)
-    const token = generateToken(user._id)
+// Registration is email-OTP verified (two steps). There is intentionally NO single-step /register:
+// an account is created only after the emailed 6-digit code is verified, so the email is proven to
+// belong to the registrant (blocks fake/typo/bot signups).
 
+// Step 1 — request a verification code for a not-yet-registered email.
+router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
+  try {
+    const { email, name } = req.validatedBody
+    if (await checkEmailExists(email)) {
+      return res.status(400).json({ error: 'Email already registered' })
+    }
+    const { expiresInSec } = await requestRegistrationOtp(email, name)
+    res.json({ message: 'Verification code sent to your email', expiresInSec })
+  } catch (error) {
+    // COOLDOWN / SEND_CAP are client-actionable (429 with the real message); anything else is a
+    // server/email failure (500, generic message — don't leak internals).
+    const status = (error.code === 'COOLDOWN' || error.code === 'SEND_CAP') ? 429 : 500
+    res.status(status).json({ error: status === 500 ? 'Failed to send verification code' : error.message })
+  }
+})
+
+// Step 2 — verify the code and create the account.
+router.post('/register/verify', validate(verifyRegistrationSchema), async (req, res) => {
+  try {
+    const { name, email, password, role, otp } = req.validatedBody
+    await verifyRegistrationOtp(email, otp) // throws on invalid/expired/too-many-attempts
+    const user = await register(name, email, password, role) // creates the (now email-verified) account
+
+    // Teacher accounts are NOT auto-logged-in: they require admin approval first. We issue
+    // no token and return a pendingApproval flag so the client sends the registrant back to
+    // the login screen with an "admin approval pending" message. Students log in immediately.
+    if (user.role === 'teacher') {
+      return res.status(202).json({
+        pendingApproval: true,
+        message: 'Registration successful. Your teacher account is pending admin approval. You will be able to sign in once an administrator approves it.'
+      })
+    }
+
+    const token = generateToken(user._id)
     res.status(201).json({
       message: 'Registration successful',
       user: user.toJSON(),
       token
     })
   } catch (error) {
-    const status = error.message === 'Email already registered' ? 400 : 500
-    res.status(status).json({ error: error.message })
+    let status
+    if (error.code === 'ATTEMPTS') status = 429
+    else if (error.code === 'INVALID' || error.code === 'MISMATCH') status = 400
+    else status = error.message === 'Email already registered' ? 400 : 500
+    res.status(status).json({ error: status === 500 ? 'Registration failed' : error.message })
   }
 })
 
@@ -35,6 +71,16 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.validatedBody
     const user = await login(email, password)
+
+    // A teacher who is not yet approved (or was rejected) is refused a token and bounced back
+    // to the login screen with a clear message, rather than landing in the teacher dashboard.
+    if (user.role === 'teacher' && user.teacherApprovalStatus !== 'approved') {
+      const message = user.teacherApprovalStatus === 'rejected'
+        ? 'Your teacher account request was not approved. Please contact the administrator.'
+        : 'Your teacher account is awaiting admin approval. Please try signing in again once it is approved.'
+      return res.status(403).json({ error: message, code: 'TEACHER_NOT_APPROVED', status: user.teacherApprovalStatus })
+    }
+
     const token = generateToken(user._id)
 
     res.json({
@@ -47,22 +93,13 @@ router.post('/login', validate(loginSchema), async (req, res) => {
   }
 })
 
-// Update user role (called after registration role selection)
-router.put('/role', authenticate, async (req, res) => {
-  try {
-    const { role } = req.body
-    if (!['teacher', 'student'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' })
-    }
-    
-    const user = await updateUserRole(req.user._id, role)
-    res.json({ 
-      message: 'Role updated successfully',
-      user 
-    })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+// SECURITY FIX: Disabled endpoint to prevent role escalation.
+// Role is set once at registration (services/authService.js register()) or derived from
+// Samagama SSO (services/samagamaService.js), and must never be updated via self-service afterward.
+// Verified that there is no legitimate frontend caller (frontend authStore.js updateRole() only
+// mutates local Zustand state and never calls /api/auth/role).
+router.put('/role', authenticate, (req, res) => {
+  return res.status(403).json({ error: 'Role modification is disabled' })
 })
 
 // Get current user
@@ -74,15 +111,9 @@ router.get('/me', authenticate, async (req, res) => {
   }
 })
 
-// Check email availability
-router.get('/check-email/:email', async (req, res) => {
-  try {
-    const exists = await checkEmailExists(req.params.email)
-    res.json({ available: !exists })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
-})
+// GET /check-email/:email removed: it was an unauthenticated account-enumeration oracle (returned
+// whether an email is registered) with no callers. Email availability is covered by POST /register
+// (returns "email already registered") and the OTP signup flow.
 
 // Forgot password - send reset email
 router.post('/forgot-password', async (req, res) => {
@@ -180,32 +211,29 @@ router.put('/password', authenticate, async (req, res) => {
 // ==========================================
 // SAMAGAMA SEAMLESS SSO
 // User visits https://samagama.in/spandan/ while logged into Samagama.
-// Frontend calls Samagama API, then sends user data here for auto-provisioning.
+// The client sends its Samagama session token; the server verifies that token
+// with Samagama and provisions the Spandan account from the identity Samagama
+// returns. The client's own claims about email/name/admin are never trusted.
 // ==========================================
 
 router.post('/samagama-auto-login', async (req, res) => {
   try {
-    const { email, name, isAdmin, isSuperAdmin } = req.body
+    // Accept the Samagama token from the Authorization header or the body.
+    const authHeader = req.headers.authorization || ''
+    const samagamaToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : (req.body && req.body.samagamaToken)
 
-    if (!email || !name) {
-      return res.status(400).json({ error: 'Missing required user data from Samagama' })
-    }
+    // Verify the token with Samagama and use ONLY the identity it returns.
+    const verifiedUser = await verifySamagamaToken(samagamaToken)
 
-    // Build Samagama user object from the data frontend sent
-    const samagamaUser = {
-      email,
-      name,
-      isAdmin: isAdmin || false,
-      isSuperAdmin: isSuperAdmin || false
-    }
-
-    // Find or create user in Spandan
-    const user = await findOrCreateSamagamaUser(samagamaUser)
+    // Find or create the Spandan user from the verified identity.
+    const user = await findOrCreateSamagamaUser(verifiedUser)
 
     // Generate Spandan JWT
     const token = generateToken(user._id)
 
-    console.log(`Samagama auto-login: ${email} (${user.role})`)
+    console.log(`Samagama auto-login: ${verifiedUser.email} (${user.role})`)
 
     res.json({
       message: 'Auto-login successful',
@@ -213,8 +241,11 @@ router.post('/samagama-auto-login', async (req, res) => {
       token
     })
   } catch (error) {
-    console.error('Samagama auto-login error:', error.message)
-    res.status(500).json({ error: error.message || 'Auto-login failed' })
+    const status = error.status || 500
+    if (status >= 500) console.error('Samagama auto-login error:', error.message)
+    res.status(status).json({
+      error: status >= 500 ? 'Auto-login failed' : error.message
+    })
   }
 })
 

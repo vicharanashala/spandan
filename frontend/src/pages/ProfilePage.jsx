@@ -5,10 +5,12 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import PasswordInput from '../components/PasswordInput'
+import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 
 function ProfilePage() {
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const { user, token, updateUser, logout } = useAuthStore()
 
   const [isEditing, setIsEditing] = useState(false)
@@ -214,12 +216,80 @@ function ProfilePage() {
     }
   }
 
+  // ---- Presentation helpers (styling only) ----
+  const contentPad = isMobile ? '16px' : '32px'
+  const cardStyle = {
+    background: 'var(--bg-card)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius-lg)',
+    boxShadow: 'var(--shadow-md)',
+    overflow: 'hidden'
+  }
+  const inputStyle = {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '11px 14px',
+    fontSize: '14px',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius)',
+    background: 'var(--input-bg)',
+    color: 'var(--text-primary)',
+    outline: 'none'
+  }
+  const labelStyle = {
+    fontSize: '12px',
+    fontWeight: '600',
+    color: 'var(--text-secondary)',
+    display: 'block',
+    marginBottom: '6px',
+    letterSpacing: '.01em'
+  }
+  const sectionHeadingStyle = {
+    fontSize: '13px',
+    fontWeight: '700',
+    color: 'var(--text-secondary)',
+    textTransform: 'uppercase',
+    letterSpacing: '.06em',
+    margin: '8px 0 4px',
+    paddingBottom: '10px',
+    borderBottom: '1px solid var(--border-color)'
+  }
+  const primaryBtnStyle = (disabled) => ({
+    padding: '11px 18px',
+    fontSize: '14px',
+    fontWeight: '600',
+    background: disabled ? '#9ca3af' : 'var(--accent-gradient)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 'var(--radius)',
+    boxShadow: disabled ? 'none' : '0 2px 10px rgba(30,64,175,.25)',
+    cursor: disabled ? 'not-allowed' : 'pointer'
+  })
+  const secondaryBtnStyle = {
+    padding: '11px 18px',
+    fontSize: '14px',
+    fontWeight: '600',
+    background: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius)',
+    cursor: 'pointer'
+  }
+  const twoCol = { display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '16px' }
+  const threeCol = { display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '16px' }
+  const twoColView = { display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '20px', marginBottom: '24px' }
+  const threeColView = { display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '20px', marginBottom: '24px' }
+  const fieldLabelView = { fontSize: '11px', fontWeight: '700', letterSpacing: '.06em', color: 'var(--text-secondary)', margin: '0 0 4px' }
+  const fieldValueView = { fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, wordBreak: 'break-word' }
+  const errorBanner = { background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: '20px', color: '#dc2626', fontSize: '14px' }
+  const successBanner = { background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: '20px', color: '#059669', fontSize: '14px' }
+
   if (!user) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
         <Sidebar user={null} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <p>Loading...</p>
+        <div style={{ flex: 1, minWidth: 0, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ color: 'var(--text-secondary)' }}>Loading...</p>
         </div>
       </div>
     )
@@ -228,11 +298,12 @@ function ProfilePage() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
       <Sidebar user={user} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px' }}>
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>Profile</h1>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)' }}>
+        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px 16px 64px' : '20px 32px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{ margin: 0, fontSize: isMobile ? '22px' : '26px', fontWeight: '700', letterSpacing: '-0.02em' }}>Profile</h1>
+              <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.85 }}>Manage your account details</p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -241,20 +312,20 @@ function ProfilePage() {
           </div>
         </header>
 
-        <div style={{ flex: 1, padding: '32px' }}>
+        <div style={{ flex: 1, padding: contentPad, maxWidth: '100%', boxSizing: 'border-box' }}>
           {/* Tabs */}
-          <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '2px solid var(--border-color)', paddingBottom: '0' }}>
+          <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '2px solid var(--border-color)', paddingBottom: '0', flexWrap: 'wrap' }}>
             <button
               onClick={() => { setActiveTab('profile'); setIsEditing(false) }}
               style={{
                 padding: '12px 24px',
                 fontSize: '14px',
                 fontWeight: '600',
-                background: activeTab === 'profile' ? 'linear-gradient(135deg, #1e40af, #3b82f6)' : 'transparent',
+                background: activeTab === 'profile' ? 'var(--accent-gradient)' : 'transparent',
                 color: activeTab === 'profile' ? 'white' : 'var(--text-secondary)',
                 border: 'none',
-                borderBottom: activeTab === 'profile' ? '3px solid #3b82f6' : '3px solid transparent',
-                borderRadius: '8px 8px 0 0',
+                borderBottom: activeTab === 'profile' ? '3px solid var(--accent)' : '3px solid transparent',
+                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
                 cursor: 'pointer'
               }}
             >
@@ -266,11 +337,11 @@ function ProfilePage() {
                 padding: '12px 24px',
                 fontSize: '14px',
                 fontWeight: '600',
-                background: activeTab === 'password' ? 'linear-gradient(135deg, #1e40af, #3b82f6)' : 'transparent',
+                background: activeTab === 'password' ? 'var(--accent-gradient)' : 'transparent',
                 color: activeTab === 'password' ? 'white' : 'var(--text-secondary)',
                 border: 'none',
-                borderBottom: activeTab === 'password' ? '3px solid #3b82f6' : '3px solid transparent',
-                borderRadius: '8px 8px 0 0',
+                borderBottom: activeTab === 'password' ? '3px solid var(--accent)' : '3px solid transparent',
+                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
                 cursor: 'pointer'
               }}
             >
@@ -285,30 +356,28 @@ function ProfilePage() {
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              padding: '10px 20px',
+              padding: '11px 18px',
               background: 'var(--bg-card)',
               color: 'var(--text-primary)',
               border: '1px solid var(--border-color)',
-              borderRadius: '10px',
+              borderRadius: 'var(--radius)',
+              boxShadow: 'var(--shadow-sm)',
               fontSize: '14px',
               fontWeight: '600',
               cursor: 'pointer',
               marginBottom: '24px'
             }}
           >
-            Back to Dashboard
+            ← Back to Dashboard
           </button>
 
           {activeTab === 'password' ? (
             <div style={{
-              background: 'var(--bg-card)',
-              borderRadius: '16px',
-              boxShadow: 'var(--card-shadow)',
-              border: '1px solid var(--border-color)',
-              padding: '32px',
+              ...cardStyle,
+              padding: isMobile ? '20px' : '24px',
               maxWidth: '500px'
             }}>
-              <h2 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
                 Change Password
               </h2>
               <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '24px' }}>
@@ -316,19 +385,19 @@ function ProfilePage() {
               </p>
 
               {passwordError && (
-                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px 16px', marginBottom: '20px', color: '#dc2626', fontSize: '14px' }}>
+                <div style={errorBanner}>
                   {passwordError}
                 </div>
               )}
               {passwordSuccess && (
-                <div style={{ background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: '8px', padding: '12px 16px', marginBottom: '20px', color: '#059669', fontSize: '14px' }}>
+                <div style={successBanner}>
                   {passwordSuccess}
                 </div>
               )}
 
               <form onSubmit={handlePasswordSubmit} style={{ display: 'grid', gap: '20px' }}>
                 <div>
-                  <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+                  <label style={labelStyle}>
                     Current Password
                   </label>
                   <PasswordInput
@@ -338,7 +407,7 @@ function ProfilePage() {
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+                  <label style={labelStyle}>
                     New Password
                   </label>
                   <PasswordInput
@@ -346,12 +415,12 @@ function ProfilePage() {
                     onChange={(e) => setPasswordData(p => ({ ...p, newPassword: e.target.value }))}
                     placeholder="Enter new password"
                   />
-                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px' }}>
                     Min 8 chars with 1 uppercase, 1 lowercase, 1 digit, 1 special character
                   </p>
                 </div>
                 <div>
-                  <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+                  <label style={labelStyle}>
                     Confirm New Password
                   </label>
                   <PasswordInput
@@ -363,17 +432,7 @@ function ProfilePage() {
                 <button
                   type="submit"
                   disabled={isPasswordLoading}
-                  style={{
-                    width: '100%',
-                    padding: '14px',
-                    fontSize: '16px',
-                    fontWeight: '600',
-                    background: isPasswordLoading ? '#9ca3af' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '10px',
-                    cursor: isPasswordLoading ? 'not-allowed' : 'pointer'
-                  }}
+                  style={{ ...primaryBtnStyle(isPasswordLoading), width: '100%', padding: '13px', fontSize: '15px' }}
                 >
                   {isPasswordLoading ? 'Updating...' : 'Update Password'}
                 </button>
@@ -382,31 +441,26 @@ function ProfilePage() {
           ) : (
             <>
               {success && (
-                <div style={{ background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: '8px', padding: '12px 16px', marginBottom: '20px', color: '#059669', fontSize: '14px' }}>
+                <div style={successBanner}>
                   {success}
                 </div>
               )}
               {error && (
-                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px 16px', marginBottom: '20px', color: '#dc2626', fontSize: '14px' }}>
+                <div style={errorBanner}>
                   {error}
                 </div>
               )}
 
               {isEditing ? (
                 <form onSubmit={handleSubmit}>
-                  <div style={{
-                    background: 'var(--bg-card)',
-                    borderRadius: '16px',
-                    boxShadow: 'var(--card-shadow)',
-                    border: '1px solid var(--border-color)',
-                    overflow: 'hidden'
-                  }}>
+                  <div style={cardStyle}>
                     <div style={{
-                      background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
-                      padding: '30px',
+                      background: 'var(--accent-gradient)',
+                      padding: isMobile ? '24px 20px' : '30px',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '24px'
+                      gap: isMobile ? '16px' : '24px',
+                      flexWrap: 'wrap'
                     }}>
                       <div style={{ position: 'relative' }}>
                         <div
@@ -462,26 +516,26 @@ function ProfilePage() {
                       </div>
                     </div>
 
-                    <div style={{ padding: '32px', display: 'grid', gap: '20px' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div style={{ padding: isMobile ? '20px' : '32px', display: 'grid', gap: '20px' }}>
+                      <div style={twoCol}>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Full Name</label>
-                          <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>Full Name</label>
+                          <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Phone</label>
-                          <input type="text" value={formData.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="+91 98765 43210" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>Phone</label>
+                          <input type="text" value={formData.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="+91 98765 43210" style={inputStyle} />
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                      <div style={twoCol}>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Date of Birth</label>
-                          <input type="date" value={formData.dateOfBirth} onChange={(e) => handleChange('dateOfBirth', e.target.value)} style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>Date of Birth</label>
+                          <input type="date" value={formData.dateOfBirth} onChange={(e) => handleChange('dateOfBirth', e.target.value)} style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Gender</label>
-                          <select value={formData.gender} onChange={(e) => handleChange('gender', e.target.value)} style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }}>
+                          <label style={labelStyle}>Gender</label>
+                          <select value={formData.gender} onChange={(e) => handleChange('gender', e.target.value)} style={inputStyle}>
                             <option value="">Select</option>
                             <option value="male">Male</option>
                             <option value="female">Female</option>
@@ -491,67 +545,67 @@ function ProfilePage() {
                       </div>
 
                       <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Bio</label>
-                        <textarea value={formData.bio} onChange={(e) => handleChange('bio', e.target.value)} placeholder="Tell us about yourself..." rows={3} style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', resize: 'vertical' }} />
+                        <label style={labelStyle}>Bio</label>
+                        <textarea value={formData.bio} onChange={(e) => handleChange('bio', e.target.value)} placeholder="Tell us about yourself..." rows={3} style={{ ...inputStyle, resize: 'vertical' }} />
                       </div>
 
-                      <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '8px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                      <p style={sectionHeadingStyle}>
                         Address
                       </p>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                      <div style={twoCol}>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Street</label>
-                          <input type="text" value={formData.address.street} onChange={(e) => handleChange('address.street', e.target.value)} placeholder="123 Main Street" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>Street</label>
+                          <input type="text" value={formData.address.street} onChange={(e) => handleChange('address.street', e.target.value)} placeholder="123 Main Street" style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>City</label>
-                          <input type="text" value={formData.address.city} onChange={(e) => handleChange('address.city', e.target.value)} placeholder="Mumbai" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>City</label>
+                          <input type="text" value={formData.address.city} onChange={(e) => handleChange('address.city', e.target.value)} placeholder="Mumbai" style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>State</label>
-                          <input type="text" value={formData.address.state} onChange={(e) => handleChange('address.state', e.target.value)} placeholder="Maharashtra" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>State</label>
+                          <input type="text" value={formData.address.state} onChange={(e) => handleChange('address.state', e.target.value)} placeholder="Maharashtra" style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>ZIP Code</label>
-                          <input type="text" value={formData.address.zipCode} onChange={(e) => handleChange('address.zipCode', e.target.value)} placeholder="400001" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>ZIP Code</label>
+                          <input type="text" value={formData.address.zipCode} onChange={(e) => handleChange('address.zipCode', e.target.value)} placeholder="400001" style={inputStyle} />
                         </div>
                       </div>
                       <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Country</label>
-                        <input type="text" value={formData.address.country} onChange={(e) => handleChange('address.country', e.target.value)} placeholder="India" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                        <label style={labelStyle}>Country</label>
+                        <input type="text" value={formData.address.country} onChange={(e) => handleChange('address.country', e.target.value)} placeholder="India" style={inputStyle} />
                       </div>
 
-                      <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '8px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                      <p style={sectionHeadingStyle}>
                         Social Links
                       </p>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+                      <div style={threeCol}>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Twitter / X</label>
-                          <input type="text" value={formData.socialLinks.twitter} onChange={(e) => handleChange('socialLinks.twitter', e.target.value)} placeholder="@username" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>Twitter / X</label>
+                          <input type="text" value={formData.socialLinks.twitter} onChange={(e) => handleChange('socialLinks.twitter', e.target.value)} placeholder="@username" style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>LinkedIn</label>
-                          <input type="text" value={formData.socialLinks.linkedin} onChange={(e) => handleChange('socialLinks.linkedin', e.target.value)} placeholder="linkedin.com/in/username" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>LinkedIn</label>
+                          <input type="text" value={formData.socialLinks.linkedin} onChange={(e) => handleChange('socialLinks.linkedin', e.target.value)} placeholder="linkedin.com/in/username" style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>GitHub</label>
-                          <input type="text" value={formData.socialLinks.github} onChange={(e) => handleChange('socialLinks.github', e.target.value)} placeholder="github.com/username" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                          <label style={labelStyle}>GitHub</label>
+                          <input type="text" value={formData.socialLinks.github} onChange={(e) => handleChange('socialLinks.github', e.target.value)} placeholder="github.com/username" style={inputStyle} />
                         </div>
                       </div>
 
                       {user?.role === 'student' && (
                         <>
-                          <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '8px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                          <p style={sectionHeadingStyle}>
                             Student Details
                           </p>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                          <div style={twoCol}>
                             <div>
-                              <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Enrollment Number</label>
-                              <input type="text" value={formData.enrollmentNumber} onChange={(e) => handleChange('enrollmentNumber', e.target.value)} placeholder="2021BCS001" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                              <label style={labelStyle}>Enrollment Number</label>
+                              <input type="text" value={formData.enrollmentNumber} onChange={(e) => handleChange('enrollmentNumber', e.target.value)} placeholder="2021BCS001" style={inputStyle} />
                             </div>
                             <div>
-                              <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Class / Section</label>
-                              <input type="text" value={formData.class} onChange={(e) => handleChange('class', e.target.value)} placeholder="BCS - A" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                              <label style={labelStyle}>Class / Section</label>
+                              <input type="text" value={formData.class} onChange={(e) => handleChange('class', e.target.value)} placeholder="BCS - A" style={inputStyle} />
                             </div>
                           </div>
                         </>
@@ -559,55 +613,51 @@ function ProfilePage() {
 
                       {user?.role === 'teacher' && (
                         <>
-                          <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '8px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                          <p style={sectionHeadingStyle}>
                             Teacher Details
                           </p>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                          <div style={twoCol}>
                             <div>
-                              <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Employee ID</label>
-                              <input type="text" value={formData.employeeId} onChange={(e) => handleChange('employeeId', e.target.value)} placeholder="EMP001" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                              <label style={labelStyle}>Employee ID</label>
+                              <input type="text" value={formData.employeeId} onChange={(e) => handleChange('employeeId', e.target.value)} placeholder="EMP001" style={inputStyle} />
                             </div>
                             <div>
-                              <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Department</label>
-                              <input type="text" value={formData.department} onChange={(e) => handleChange('department', e.target.value)} placeholder="Computer Science" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                              <label style={labelStyle}>Department</label>
+                              <input type="text" value={formData.department} onChange={(e) => handleChange('department', e.target.value)} placeholder="Computer Science" style={inputStyle} />
                             </div>
                           </div>
                           <div>
-                            <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Qualifications</label>
-                            <input type="text" value={formData.qualifications} onChange={(e) => handleChange('qualifications', e.target.value)} placeholder="Ph.D., M.Tech" style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' }} />
+                            <label style={labelStyle}>Qualifications</label>
+                            <input type="text" value={formData.qualifications} onChange={(e) => handleChange('qualifications', e.target.value)} placeholder="Ph.D., M.Tech" style={inputStyle} />
                           </div>
                         </>
                       )}
                     </div>
 
-                    <div style={{ padding: '20px 32px', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                      <button type="button" onClick={handleCancel} style={{ padding: '10px 20px', fontSize: '14px', fontWeight: '600', background: 'var(--bg-primary)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', cursor: 'pointer' }}>
+                    <div style={{ padding: isMobile ? '16px 20px' : '20px 32px', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      <button type="button" onClick={handleCancel} style={secondaryBtnStyle}>
                         Cancel
                       </button>
-                      <button type="submit" disabled={isSaving} style={{ padding: '10px 20px', fontSize: '14px', fontWeight: '600', background: isSaving ? '#9ca3af' : 'linear-gradient(135deg, #1e40af, #3b82f6)', color: 'white', border: 'none', borderRadius: '8px', cursor: isSaving ? 'not-allowed' : 'pointer' }}>
+                      <button type="submit" disabled={isSaving} style={primaryBtnStyle(isSaving)}>
                         {isSaving ? 'Saving...' : 'Save Changes'}
                       </button>
                     </div>
                   </div>
                 </form>
               ) : (
-                <div style={{
-                  background: 'var(--bg-card)',
-                  borderRadius: '16px',
-                  boxShadow: 'var(--card-shadow)',
-                  border: '1px solid var(--border-color)',
-                  overflow: 'hidden'
-                }}>
+                <div style={cardStyle}>
                   <div style={{
-                    background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
-                    padding: '30px',
+                    background: 'var(--accent-gradient)',
+                    padding: isMobile ? '24px 20px' : '30px',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '24px'
+                    gap: isMobile ? '16px' : '24px',
+                    flexWrap: 'wrap'
                   }}>
                     <div style={{
-                      width: '100px',
-                      height: '100px',
+                      width: isMobile ? '76px' : '100px',
+                      height: isMobile ? '76px' : '100px',
+                      flexShrink: 0,
                       borderRadius: '50%',
                       background: formData.profileImage ? 'transparent' : 'rgba(255,255,255,0.2)',
                       display: 'flex',
@@ -619,25 +669,26 @@ function ProfilePage() {
                       {formData.profileImage ? (
                         <img src={formData.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                       ) : (
-                        <span style={{ fontSize: '40px', color: 'white', fontWeight: '700' }}>
+                        <span style={{ fontSize: isMobile ? '32px' : '40px', color: 'white', fontWeight: '700' }}>
                           {formData.name?.charAt(0)?.toUpperCase() || 'U'}
                         </span>
                       )}
                     </div>
-                    <div style={{ color: 'white' }}>
-                      <h2 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>{user?.name}</h2>
+                    <div style={{ color: 'white', minWidth: 0 }}>
+                      <h2 style={{ margin: 0, fontSize: isMobile ? '20px' : '24px', fontWeight: '700', letterSpacing: '-0.01em', wordBreak: 'break-word' }}>{user?.name}</h2>
                       <p style={{ margin: '4px 0 0', fontSize: '14px', opacity: 0.85, textTransform: 'capitalize' }}>{user?.role}</p>
-                      <p style={{ margin: '2px 0 0', fontSize: '12px', opacity: 0.7 }}>{user?.email}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: '12px', opacity: 0.7, wordBreak: 'break-word' }}>{user?.email}</p>
                     </div>
                     <button
                       onClick={() => setIsEditing(true)}
                       style={{
-                        marginLeft: 'auto',
+                        marginLeft: isMobile ? 0 : 'auto',
                         padding: '10px 20px',
                         background: 'white',
-                        color: '#1e40af',
+                        color: 'var(--accent-strong)',
                         border: 'none',
-                        borderRadius: '8px',
+                        borderRadius: 'var(--radius)',
+                        boxShadow: '0 2px 8px rgba(0,0,0,.15)',
                         fontSize: '14px',
                         fontWeight: '600',
                         cursor: 'pointer'
@@ -647,51 +698,51 @@ function ProfilePage() {
                     </button>
                   </div>
 
-                  <div style={{ padding: '32px' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                  <div style={{ padding: isMobile ? '20px' : '32px' }}>
+                    <div style={twoColView}>
                       <div>
-                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>PHONE</p>
-                        <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.phone || '—'}</p>
+                        <p style={fieldLabelView}>PHONE</p>
+                        <p style={fieldValueView}>{formData.phone || '—'}</p>
                       </div>
                       <div>
-                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>GENDER</p>
-                        <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, textTransform: 'capitalize' }}>{formData.gender || '—'}</p>
+                        <p style={fieldLabelView}>GENDER</p>
+                        <p style={{ ...fieldValueView, textTransform: 'capitalize' }}>{formData.gender || '—'}</p>
                       </div>
                       <div>
-                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>DATE OF BIRTH</p>
-                        <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.dateOfBirth ? new Date(formData.dateOfBirth).toLocaleDateString('en-IN') : '—'}</p>
+                        <p style={fieldLabelView}>DATE OF BIRTH</p>
+                        <p style={fieldValueView}>{formData.dateOfBirth ? new Date(formData.dateOfBirth).toLocaleDateString('en-IN') : '—'}</p>
                       </div>
                       <div>
-                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>BIO</p>
-                        <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.bio || '—'}</p>
+                        <p style={fieldLabelView}>BIO</p>
+                        <p style={fieldValueView}>{formData.bio || '—'}</p>
                       </div>
                     </div>
 
                     {formData.address?.street && (
                       <>
-                        <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '16px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                        <p style={sectionHeadingStyle}>
                           Address
                         </p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                        <div style={{ ...twoColView, marginTop: '12px' }}>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>STREET</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.address.street || '—'}</p>
+                            <p style={fieldLabelView}>STREET</p>
+                            <p style={fieldValueView}>{formData.address.street || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>CITY</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.address.city || '—'}</p>
+                            <p style={fieldLabelView}>CITY</p>
+                            <p style={fieldValueView}>{formData.address.city || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>STATE</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.address.state || '—'}</p>
+                            <p style={fieldLabelView}>STATE</p>
+                            <p style={fieldValueView}>{formData.address.state || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>ZIP CODE</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.address.zipCode || '—'}</p>
+                            <p style={fieldLabelView}>ZIP CODE</p>
+                            <p style={fieldValueView}>{formData.address.zipCode || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>COUNTRY</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.address.country || '—'}</p>
+                            <p style={fieldLabelView}>COUNTRY</p>
+                            <p style={fieldValueView}>{formData.address.country || '—'}</p>
                           </div>
                         </div>
                       </>
@@ -699,26 +750,26 @@ function ProfilePage() {
 
                     {(formData.socialLinks?.twitter || formData.socialLinks?.linkedin || formData.socialLinks?.github) && (
                       <>
-                        <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '16px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                        <p style={sectionHeadingStyle}>
                           Social Links
                         </p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                        <div style={{ ...threeColView, marginTop: '12px' }}>
                           {formData.socialLinks?.twitter && (
                             <div>
-                              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>TWITTER</p>
-                              <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>𝕏 {formData.socialLinks.twitter}</p>
+                              <p style={fieldLabelView}>TWITTER</p>
+                              <p style={fieldValueView}>𝕏 {formData.socialLinks.twitter}</p>
                             </div>
                           )}
                           {formData.socialLinks?.linkedin && (
                             <div>
-                              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>LINKEDIN</p>
-                              <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.socialLinks.linkedin}</p>
+                              <p style={fieldLabelView}>LINKEDIN</p>
+                              <p style={fieldValueView}>{formData.socialLinks.linkedin}</p>
                             </div>
                           )}
                           {formData.socialLinks?.github && (
                             <div>
-                              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>GITHUB</p>
-                              <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.socialLinks.github}</p>
+                              <p style={fieldLabelView}>GITHUB</p>
+                              <p style={fieldValueView}>{formData.socialLinks.github}</p>
                             </div>
                           )}
                         </div>
@@ -727,17 +778,17 @@ function ProfilePage() {
 
                     {user?.role === 'student' && (
                       <>
-                        <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '16px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                        <p style={sectionHeadingStyle}>
                           Student Details
                         </p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                        <div style={{ ...twoColView, marginTop: '12px', marginBottom: 0 }}>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>ENROLLMENT NUMBER</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.enrollmentNumber || '—'}</p>
+                            <p style={fieldLabelView}>ENROLLMENT NUMBER</p>
+                            <p style={fieldValueView}>{formData.enrollmentNumber || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>CLASS / SECTION</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.class || '—'}</p>
+                            <p style={fieldLabelView}>CLASS / SECTION</p>
+                            <p style={fieldValueView}>{formData.class || '—'}</p>
                           </div>
                         </div>
                       </>
@@ -745,21 +796,21 @@ function ProfilePage() {
 
                     {user?.role === 'teacher' && (
                       <>
-                        <p style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', margin: '16px 0 12px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                        <p style={sectionHeadingStyle}>
                           Teacher Details
                         </p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                        <div style={{ ...twoColView, marginTop: '12px', marginBottom: 0 }}>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>EMPLOYEE ID</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.employeeId || '—'}</p>
+                            <p style={fieldLabelView}>EMPLOYEE ID</p>
+                            <p style={fieldValueView}>{formData.employeeId || '—'}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>DEPARTMENT</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.department || '—'}</p>
+                            <p style={fieldLabelView}>DEPARTMENT</p>
+                            <p style={fieldValueView}>{formData.department || '—'}</p>
                           </div>
-                          <div style={{ gridColumn: 'span 2' }}>
-                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px' }}>QUALIFICATIONS</p>
-                            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>{formData.qualifications || '—'}</p>
+                          <div style={{ gridColumn: isMobile ? 'auto' : 'span 2' }}>
+                            <p style={fieldLabelView}>QUALIFICATIONS</p>
+                            <p style={fieldValueView}>{formData.qualifications || '—'}</p>
                           </div>
                         </div>
                       </>
