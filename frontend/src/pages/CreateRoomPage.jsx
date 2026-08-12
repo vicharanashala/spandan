@@ -33,14 +33,21 @@ function CreateRoomPage() {
     }
   }, [token])
 
+  const isVideoValid = mode !== 'video' || (isScheduled ? (!videoUrl.trim() || isValidYouTube(videoUrl)) : isValidYouTube(videoUrl))
+
   const handleCreateRoom = async () => {
     if (!roomName.trim()) {
       setError('Please enter a room name')
       return
     }
 
-    if (mode === 'video' && !isValidYouTube(videoUrl)) {
+    if (mode === 'video' && videoUrl.trim() && !isValidYouTube(videoUrl)) {
       setError('Please enter a valid YouTube link for Video Mode')
+      return
+    }
+
+    if (mode === 'video' && !isScheduled && !videoUrl.trim()) {
+      setError('Please enter a YouTube link for immediate Video Mode')
       return
     }
 
@@ -71,7 +78,7 @@ function CreateRoomPage() {
     }
   }
 
-  const isDisabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl)) || (isScheduled && !scheduledStartTime)
+  const isDisabled = isCreating || !roomName.trim() || !isVideoValid || (isScheduled && !scheduledStartTime)
 
   return (
     <div style={{

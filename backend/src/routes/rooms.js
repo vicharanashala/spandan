@@ -165,11 +165,21 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
     }
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
+    const io = req.app.get('io')
+
+    // If videoUrl was updated, broadcast to room channel so active/waiting students update their player
+    if (req.body?.settings?.videoUrl !== undefined || req.body?.videoUrl !== undefined) {
+      const newUrl = updatedRoom.settings?.videoUrl || ''
+      if (io && room.code) {
+        io.to(room.code).emit('room:video_updated', { videoUrl: newUrl, roomId: room._id })
+      }
+    }
     
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
-      const io = req.app.get('io')
-      io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      if (io && room.code) {
+        io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      }
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)

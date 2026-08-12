@@ -239,11 +239,11 @@ function StudentDashboard() {
             </div>
           </div>
 
-          {/* Active Joined Rooms Section */}
+          {/* Active Joined & Scheduled Rooms Section */}
           {activeRooms.length > 0 && (
             <>
               <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-                🟢 Previously Joined Active Rooms
+                📚 Enrolled & Scheduled Rooms
               </h2>
               <div style={{
                 display: 'grid',
@@ -251,61 +251,103 @@ function StudentDashboard() {
                 gap: '16px',
                 marginBottom: isMobile ? '24px' : '32px'
               }}>
-                {activeRooms.map((room) => (
-                  <div
-                    key={room._id}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'translateY(-2px)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'translateY(0)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                    }}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-color)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      minWidth: 0,
-                      boxSizing: 'border-box',
-                      transition: 'transform 0.15s ease, box-shadow 0.15s ease'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/student/session/${room.code}`)}
+                {activeRooms.map((room) => {
+                  const isScheduled = room.status === 'SCHEDULED'
+                  return (
+                    <div
+                      key={room._id}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-2px)'
+                        e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)'
+                        e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                      }}
                       style={{
-                        marginTop: '16px',
-                        padding: '11px 18px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '14px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'transform 0.15s ease'
+                        display: 'flex',
+                        flexDirection: 'column',
+                        padding: '20px',
+                        background: 'var(--bg-card)',
+                        borderRadius: 'var(--radius-lg)',
+                        border: isScheduled ? '1px solid rgba(234, 179, 8, 0.4)' : '1px solid var(--border-color)',
+                        boxShadow: 'var(--shadow-md)',
+                        minHeight: '150px',
+                        minWidth: 0,
+                        boxSizing: 'border-box',
+                        transition: 'transform 0.15s ease, box-shadow 0.15s ease'
                       }}
                     >
-                      🔄 Rejoin Room →
-                    </button>
-                  </div>
-                ))}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+                          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                            {room.name}
+                          </h3>
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: '12px',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em',
+                            background: isScheduled ? 'rgba(234, 179, 8, 0.2)' : 'rgba(34, 197, 94, 0.15)',
+                            color: isScheduled ? '#b45309' : '#16a34a',
+                            border: isScheduled ? '1px solid rgba(234, 179, 8, 0.4)' : '1px solid rgba(34, 197, 94, 0.3)'
+                          }}>
+                            {isScheduled ? 'Scheduled' : 'Live'}
+                          </span>
+                        </div>
+
+                        <p style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                          Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
+                        </p>
+
+                        {isScheduled && room.scheduledStartTime && (
+                          <div style={{
+                            margin: '6px 0',
+                            padding: '6px 10px',
+                            background: 'rgba(234, 179, 8, 0.08)',
+                            borderRadius: '6px',
+                            border: '1px dashed rgba(234, 179, 8, 0.4)',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: '#b45309'
+                          }}>
+                            ⏰ Starts: {new Date(room.scheduledStartTime).toLocaleString(undefined, {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </div>
+                        )}
+
+                        <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          {room.questionCount || 0} questions • Mode: {room.settings?.mode === 'video' ? 'Video Mode' : 'Normal'}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => navigate(`/student/session/${room.code}`)}
+                        style={{
+                          marginTop: '16px',
+                          padding: '11px 18px',
+                          background: isScheduled ? 'var(--accent-gradient)' : 'var(--accent-gradient)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 'var(--radius)',
+                          fontSize: '14px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          transition: 'transform 0.15s ease'
+                        }}
+                      >
+                        {isScheduled ? '🚀 Open Scheduled Room →' : '🔄 Join Room →'}
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             </>
           )}

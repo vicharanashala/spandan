@@ -1312,14 +1312,15 @@ function RoomDetailPage() {
                 </div>
                 <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
                   {totalParticipants === 0 ? (
-                    <>Students entering room code <strong style={{ color: 'var(--text-primary)' }}>{room.code}</strong> will be held in the Waiting Room until you start the session.</>
+                    <>Class will auto-start at the scheduled time. Click <strong>Start Early</strong> to launch ahead of schedule.</>
                   ) : (
-                    <><strong style={{ color: '#b45309' }}>{totalParticipants} {totalParticipants === 1 ? 'student' : 'students'}</strong> currently waiting in the Waiting Room. Click <strong>Start Session Now</strong> to admit them into the live session.</>
+                    <><strong style={{ color: '#b45309' }}>{totalParticipants} {totalParticipants === 1 ? 'student' : 'students'}</strong> in waiting room. Class auto-starts at scheduled time, or click <strong>Start Early</strong> to launch now.</>
                   )}
                 </div>
               </div>
               <button
                 onClick={handleStartRoomNow}
+                title="Class auto-starts at scheduled time. Click to start ahead of schedule."
                 style={{
                   padding: '10px 20px',
                   background: '#16a34a',
@@ -1333,7 +1334,7 @@ function RoomDetailPage() {
                   whiteSpace: 'nowrap'
                 }}
               >
-                ▶ Start Session Now
+                ▶ Start Early
               </button>
             </div>
           )}
@@ -1689,9 +1690,42 @@ function RoomDetailPage() {
                       onEnd={handleVideoPause}
                       onLiveStatus={handleLiveStatus}
                     />
+                  ) : (!roomSettings.videoUrl || !roomSettings.videoUrl.trim()) ? (
+                    <div style={{
+                      padding: '32px 20px',
+                      textAlign: 'center',
+                      background: 'var(--input-bg)',
+                      borderRadius: 'var(--radius)',
+                      border: '1px dashed var(--border-color)',
+                      color: 'var(--text-secondary)'
+                    }}>
+                      <div style={{ fontSize: '32px', marginBottom: '8px' }}>📺</div>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                        No YouTube Link Set
+                      </div>
+                      <div style={{ fontSize: '12px', marginBottom: '16px' }}>
+                        Add a YouTube video or Live stream link for this session.
+                      </div>
+                      <button
+                        onClick={() => { setLinkDraft(''); setLinkError(''); setEditingLink(true) }}
+                        disabled={isEnded}
+                        style={{
+                          padding: '8px 18px',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          background: 'var(--accent-gradient)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 'var(--radius)',
+                          cursor: isEnded ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        + Set YouTube Link
+                      </button>
+                    </div>
                   ) : (
                     <div style={{ padding: '20px', textAlign: 'center', color: '#dc2626', fontSize: '13px' }}>
-                      Invalid YouTube link for this room.
+                      Invalid YouTube link format. Click "Edit link" above to enter a valid URL.
                     </div>
                   )}
                   {videoId && !videoSessionActive && (

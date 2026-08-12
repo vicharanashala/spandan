@@ -95,9 +95,11 @@ function DashboardPage() {
     }
   }, [checked, token, navigate])
 
+  const isVideoValid = mode !== 'video' || (videoUrl.trim() ? isValidYouTube(videoUrl) : isScheduled)
+
   const handleCreateRoom = async () => {
     if (!roomName.trim()) return
-    if (mode === 'video' && !isValidYouTube(videoUrl)) return
+    if (!isVideoValid) return
     if (isScheduled && !scheduledStartTime) return
 
     setIsCreating(true)
@@ -139,13 +141,13 @@ function DashboardPage() {
           <div style={{
             width: '48px',
             height: '48px',
-            border: '4px solid var(--border-color)',
-            borderTopColor: '#3b82f6',
             borderRadius: '50%',
+            border: '3px solid var(--border-color)',
+            borderTopColor: 'var(--accent)',
             animation: 'spin 1s linear infinite',
             margin: '0 auto 16px'
           }} />
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Loading...</p>
+          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px' }}>Loading dashboard...</p>
         </div>
       </div>
     )
@@ -158,7 +160,7 @@ function DashboardPage() {
     { icon: '💬', value: stats.totalResponses, label: 'Total Responses' }
   ]
 
-  const disabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
+  const disabled = isCreating || !roomName.trim() || !isVideoValid || (isScheduled && !scheduledStartTime)
 
   return (
     <div style={{

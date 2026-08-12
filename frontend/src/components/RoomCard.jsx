@@ -41,6 +41,27 @@ export default function RoomCard({ room, showDelete = false }) {
     }
   }
 
+  const handleEditVideoUrl = async (e) => {
+    e.stopPropagation()
+    const currentUrl = room.settings?.videoUrl || ''
+    const newUrl = window.prompt('Enter or update YouTube Video/Live URL:', currentUrl)
+    if (newUrl !== null && newUrl.trim() !== currentUrl.trim()) {
+      try {
+        const { updateRoom } = useRoomStore.getState()
+        await updateRoom(room._id, {
+          settings: {
+            ...room.settings,
+            mode: 'video',
+            videoUrl: newUrl.trim()
+          }
+        })
+        alert('YouTube URL updated successfully!')
+      } catch (err) {
+        alert(err.message || 'Failed to update YouTube URL')
+      }
+    }
+  }
+
   const handleDelete = async (e) => {
     e.stopPropagation()
     if (window.confirm(`Are you sure you want to delete "${room.name}"?`)) {
@@ -140,16 +161,58 @@ export default function RoomCard({ room, showDelete = false }) {
         <p style={{ margin: 0, fontSize: showDelete ? '13px' : '12px', color: 'var(--text-secondary)' }}>
           {room.questionCount || 0} questions
         </p>
+
+        {room.settings?.mode === 'video' && (
+          <div style={{
+            marginTop: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: room.settings?.videoUrl ? 'rgba(34, 197, 94, 0.08)' : 'rgba(234, 179, 8, 0.1)',
+            padding: '6px 10px',
+            borderRadius: 'var(--radius)',
+            border: room.settings?.videoUrl ? '1px solid rgba(34, 197, 94, 0.25)' : '1px solid rgba(234, 179, 8, 0.3)',
+            fontSize: '12px'
+          }}>
+            <span style={{
+              color: room.settings?.videoUrl ? '#16a34a' : '#b45309',
+              fontWeight: 600,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}>
+              {room.settings?.videoUrl ? '✅ YouTube Link Attached' : '⚠️ No YouTube Link Set'}
+            </span>
+            <button
+              onClick={handleEditVideoUrl}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: room.settings?.videoUrl ? '#16a34a' : '#d97706',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0
+              }}
+            >
+              {room.settings?.videoUrl ? '✏️ Edit' : '+ Add Link'}
+            </button>
+          </div>
+        )}
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', marginTop: showDelete ? '20px' : '16px', flexWrap: showDelete ? 'wrap' : 'nowrap' }}>
+      <div style={{ display: 'flex', gap: '8px', marginTop: showDelete ? '16px' : '12px', flexWrap: 'nowrap', alignItems: 'center' }}>
         {isScheduled && (
           <button
             onClick={handleStart}
+            title="Class auto-starts at scheduled time. Click to start ahead of schedule."
             style={{
               flex: 1,
               minWidth: 0,
-              padding: showDelete ? '11px 14px' : '9px 12px',
+              padding: '9px 12px',
               background: '#16a34a',
               color: '#fff',
               border: 'none',
@@ -160,7 +223,7 @@ export default function RoomCard({ room, showDelete = false }) {
               whiteSpace: 'nowrap'
             }}
           >
-            ▶ Start
+            ▶ Start Early
           </button>
         )}
 
@@ -171,14 +234,15 @@ export default function RoomCard({ room, showDelete = false }) {
               style={{
                 flex: 1,
                 minWidth: 0,
-                padding: '11px 14px',
+                padding: '9px 12px',
                 background: 'var(--accent)',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 'var(--radius)',
                 fontSize: '13px',
                 fontWeight: 600,
-                whiteSpace: 'nowrap'
+                whiteSpace: 'nowrap',
+                textAlign: 'center'
               }}
             >
               Manage →
@@ -186,13 +250,15 @@ export default function RoomCard({ room, showDelete = false }) {
             <button
               onClick={handleDelete}
               style={{
-                padding: '11px 14px',
+                padding: '9px 12px',
                 background: '#ef4444',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 'var(--radius)',
                 fontSize: '13px',
-                fontWeight: 600
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+                flexShrink: 0
               }}
             >
               🗑 Delete
