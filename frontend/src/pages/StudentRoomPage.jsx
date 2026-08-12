@@ -38,8 +38,16 @@ function StudentRoomPage() {
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  const [nowTime, setNowTime] = useState(Date.now())
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+
+  // 1-second clock ticker when room is scheduled
+  useEffect(() => {
+    if (room?.status !== 'SCHEDULED') return
+    const interval = setInterval(() => setNowTime(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [room?.status])
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -187,6 +195,19 @@ function StudentRoomPage() {
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
 
+    const handleRoomStarted = (data) => {
+      setRoom(prev => prev ? ({ ...prev, status: 'ACTIVE' }) : prev)
+    }
+
+    const handleVideoUpdated = (data) => {
+      if (data?.videoUrl !== undefined) {
+        setRoom(prev => prev ? ({
+          ...prev,
+          settings: { ...(prev.settings || {}), mode: 'video', videoUrl: data.videoUrl }
+        }) : prev)
+      }
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -194,6 +215,8 @@ function StudentRoomPage() {
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
+    socket.on('room:started', handleRoomStarted)
+    socket.on('room:video_updated', handleVideoUpdated)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
       // so all students don't hit the results endpoints in the same instant.
@@ -212,6 +235,8 @@ function StudentRoomPage() {
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
       socket.off('connect', handleReconnect)
+      socket.off('room:started', handleRoomStarted)
+      socket.off('room:video_updated', handleVideoUpdated)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
@@ -439,6 +464,182 @@ function StudentRoomPage() {
     )
   }
 
+  if (room?.status === 'SCHEDULED') {
+    const startTimeMs = room.scheduledStartTime ? new Date(room.scheduledStartTime).getTime() : Date.now()
+    const diffMs = Math.max(0, startTimeMs - nowTime)
+    const TEN_MINUTES_MS = 10 * 60 * 1000
+    const isInWaitingWindow = diffMs <= TEN_MINUTES_MS
+
+    // Format remaining time (HH:MM:SS or MM:SS)
+    const totalSec = Math.floor(diffMs / 1000)
+    const hours = Math.floor(totalSec / 3600)
+    const mins = Math.floor((totalSec % 3600) / 60)
+    const secs = totalSec % 60
+    const formattedCountdown = hours > 0
+      ? `${hours}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`
+      : `${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`
+
+    const waitingRoomOpenTime = new Date(startTimeMs - TEN_MINUTES_MS).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '24px',
+          marginLeft: 'var(--sidebar-width, 240px)'
+        }}>
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: 'var(--radius-lg)',
+            padding: isMobile ? '24px 20px' : '40px 32px',
+            maxWidth: '520px',
+            width: '100%',
+            textAlign: 'center',
+            boxShadow: 'var(--shadow-md)',
+            border: isInWaitingWindow
+              ? '2px solid var(--accent)'
+              : '1px solid var(--border-color)',
+            boxSizing: 'border-box'
+          }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              background: isInWaitingWindow ? 'rgba(59, 130, 246, 0.12)' : 'rgba(234, 179, 8, 0.12)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '28px',
+              marginBottom: '20px'
+            }}>
+              {isInWaitingWindow ? '⏳' : '📅'}
+            </div>
+            
+            <span style={{
+              fontSize: '12px',
+              fontWeight: 700,
+              padding: '4px 12px',
+              borderRadius: '20px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              background: isInWaitingWindow ? 'rgba(59, 130, 246, 0.15)' : 'rgba(234, 179, 8, 0.15)',
+              color: isInWaitingWindow ? 'var(--accent)' : '#ca8a04',
+              border: isInWaitingWindow ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid rgba(234, 179, 8, 0.3)',
+              display: 'inline-block',
+              marginBottom: '16px'
+            }}>
+              {isInWaitingWindow ? 'Live Waiting Room' : 'Scheduled Class'}
+            </span>
+
+            <h2 style={{
+              margin: '0 0 8px',
+              fontSize: '22px',
+              fontWeight: 700,
+              color: 'var(--text-primary)',
+              letterSpacing: '-0.02em'
+            }}>
+              {room.name}
+            </h2>
+
+            <p style={{ margin: '0 0 20px', color: 'var(--text-secondary)', fontSize: '14px' }}>
+              Host: <strong style={{ color: 'var(--text-primary)' }}>{room.teacher?.name || 'Teacher'}</strong>
+            </p>
+
+            {/* Countdown Box */}
+            <div style={{
+              background: isInWaitingWindow ? 'rgba(59, 130, 246, 0.08)' : 'var(--input-bg)',
+              borderRadius: '14px',
+              padding: '18px 20px',
+              marginBottom: '24px',
+              border: isInWaitingWindow ? '1px solid rgba(59, 130, 246, 0.25)' : '1px solid var(--border-color)'
+            }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: 500 }}>
+                {isInWaitingWindow ? 'Class Starts In' : 'Scheduled Start Time'}
+              </div>
+
+              {isInWaitingWindow ? (
+                <div style={{ fontSize: '32px', fontWeight: 800, color: 'var(--accent)', letterSpacing: '1px' }}>
+                  {formattedCountdown}
+                </div>
+              ) : (
+                <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {new Date(startTimeMs).toLocaleString(undefined, {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Info Message */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              color: 'var(--text-secondary)',
+              fontSize: '13px',
+              padding: '14px 16px',
+              borderRadius: '12px',
+              background: 'var(--input-bg)',
+              border: '1px solid var(--border-color)',
+              textAlign: 'left'
+            }}>
+              <div style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: isInWaitingWindow ? '#22c55e' : '#f59e0b',
+                boxShadow: isInWaitingWindow ? '0 0 0 4px rgba(34, 197, 94, 0.2)' : '0 0 0 4px rgba(245, 158, 11, 0.2)',
+                flexShrink: 0
+              }} />
+              <span>
+                {isInWaitingWindow
+                  ? 'You are in the waiting room! The session will launch automatically when class begins.'
+                  : `The live waiting room opens 10 minutes before class (at ${waitingRoomOpenTime}). This page will automatically connect when the 10-minute window begins.`
+                }
+              </span>
+            </div>
+
+            <button
+              onClick={() => navigate('/student')}
+              style={{
+                marginTop: '24px',
+                padding: '11px 20px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '10px',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Back to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -515,6 +716,27 @@ function StudentRoomPage() {
               Leave
             </button>
           </div>
+
+          {/* Standby banner if Video Mode is active but YouTube URL hasn't been set yet */}
+          {isVideoMode && !videoId && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '24px 16px' : '32px 24px',
+              boxShadow: 'var(--shadow-md)',
+              border: '1px solid var(--border-color)',
+              marginBottom: '24px',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '36px', marginBottom: '12px' }}>📺</div>
+              <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: 'var(--text-primary)', fontWeight: 700 }}>
+                Class is Live!
+              </h3>
+              <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)' }}>
+                Waiting for host to broadcast the YouTube stream link... The player will load automatically once provided.
+              </p>
+            </div>
+          )}
 
           {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
               Hidden (not unmounted) while a question is live so the poll takes over like normal mode. */}

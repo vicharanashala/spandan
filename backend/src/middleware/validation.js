@@ -34,6 +34,7 @@ export const verifyRegistrationSchema = registerSchema.extend({
 // Room validation schemas
 export const createRoomSchema = z.object({
   name: z.string().min(1, 'Room name is required').max(200),
+  scheduledStartTime: z.string().datetime({ offset: true }).or(z.string()).optional().nullable(),
   settings: z.object({
     allowLateJoin: z.boolean().optional(),
     showResultsImmediately: z.boolean().optional(),

@@ -4,14 +4,37 @@ import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
+import { scheduleRoomAutoStart, cancelScheduledRoom } from './roomScheduler.js'
 
-export const createRoom = async (name, teacherId, settings = {}) => {
+export const createRoom = async (name, teacherId, settings = {}, scheduledStartTime = null) => {
+  const isScheduled = Boolean(scheduledStartTime && !isNaN(new Date(scheduledStartTime).getTime()))
   const room = new Room({
     name,
     teacher: teacherId,
-    settings
+    settings,
+    scheduledStartTime: scheduledStartTime ? new Date(scheduledStartTime) : null,
+    status: isScheduled ? 'SCHEDULED' : 'ACTIVE'
   })
 
+  await room.save()
+  if (isScheduled && room.scheduledStartTime) {
+    scheduleRoomAutoStart(room._id, room.scheduledStartTime).catch(err => {
+      console.error('[roomService] Error scheduling room auto-start:', err.message)
+    })
+  }
+  return room
+}
+
+export const startRoom = async (roomId) => {
+  const room = await Room.findById(roomId)
+  if (!room) {
+    throw new Error('Room not found')
+  }
+  if (room.endedAt || room.status === 'ENDED') {
+    throw new Error('Cannot start an ended room')
+  }
+
+  room.status = 'ACTIVE'
   await room.save()
   return room
 }
@@ -77,6 +100,7 @@ export const updateRoom = async (roomId, updates) => {
 }
 
 export const deleteRoom = async (roomId) => {
+  cancelScheduledRoom(roomId)
   const room = await Room.findByIdAndDelete(roomId)
   if (!room) {
     throw new Error('Room not found')

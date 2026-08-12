@@ -1,5 +1,5 @@
 import express from 'express'
-import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
+import { createRoom, startRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
@@ -10,8 +10,8 @@ const router = express.Router()
 // Create new room
 router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, validate(createRoomSchema), async (req, res) => {
   try {
-    const { name, settings } = req.validatedBody
-    const room = await createRoom(name, req.user._id, settings)
+    const { name, settings, scheduledStartTime } = req.validatedBody
+    const room = await createRoom(name, req.user._id, settings, scheduledStartTime)
 
     res.status(201).json({
       message: 'Room created successfully',
@@ -19,6 +19,30 @@ router.post('/', authenticate, authorize('teacher'), requireApprovedTeacher, val
     })
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// Start a scheduled room
+router.post('/:id/start', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+  try {
+    const roomObj = await getRoomById(req.params.id)
+
+    if (roomObj.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Only the room owner can start the room' })
+    }
+
+    const room = await startRoom(req.params.id)
+
+    // Notify connected sockets in the room channel that room has started
+    const io = req.app.get('io')
+    if (io && room.code) {
+      io.to(room.code).emit('room:started', { roomId: room._id, status: 'ACTIVE' })
+    }
+
+    res.json({ message: 'Room started successfully', room })
+  } catch (error) {
+    const status = error.message === 'Room not found' ? 404 : 500
+    res.status(status).json({ error: error.message })
   }
 })
 
@@ -141,11 +165,21 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
     }
 
     const updatedRoom = await updateRoom(req.params.id, req.body)
+    const io = req.app.get('io')
+
+    // If videoUrl was updated, broadcast to room channel so active/waiting students update their player
+    if (req.body?.settings?.videoUrl !== undefined || req.body?.videoUrl !== undefined) {
+      const newUrl = updatedRoom.settings?.videoUrl || ''
+      if (io && room.code) {
+        io.to(room.code).emit('room:video_updated', { videoUrl: newUrl, roomId: room._id })
+      }
+    }
     
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
-      const io = req.app.get('io')
-      io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      if (io && room.code) {
+        io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      }
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)

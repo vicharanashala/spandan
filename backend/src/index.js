@@ -23,6 +23,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import { initScheduledRooms } from './services/roomScheduler.js'
 
 // Import models for reference
 import './models/index.js'
@@ -725,6 +726,7 @@ const PORT = process.env.PORT || 3001
 // Start server
 const startServer = async () => {
   await connectDB()
+  await initScheduledRooms(io)
   
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
