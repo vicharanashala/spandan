@@ -458,6 +458,7 @@ function RoomDetailPage() {
         }))
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
+        setCurrentSegment(prev => prev + 1)
       } else {
         window.alert(data.error || 'Failed to generate questions. Please try again.')
       }
