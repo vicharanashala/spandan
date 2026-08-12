@@ -8,12 +8,13 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import { API_URL } from '../config.js'
+import { createRecordingPipeline } from '../services/recordingPipelineService'
 
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, token, logout } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, raiseHand } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   
   const [room, setRoom] = useState(null)
@@ -27,6 +28,12 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  const [discussionActive, setDiscussionActive] = useState(false)
+  const [handStatus, setHandStatus] = useState('idle')
+  const [discussionError, setDiscussionError] = useState('')
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [speakingStatus, setSpeakingStatus] = useState('Ready')
+  const recordingPipelineRef = useRef(null)
   const timerIntervalRef = useRef(null)
 
   useEffect(() => {
@@ -36,6 +43,9 @@ function StudentRoomPage() {
     return () => {
       if (room?.code) {
         leaveRoom(room.code, user._id)
+      }
+      if (recordingPipelineRef.current) {
+        recordingPipelineRef.current.stopRecording().catch(console.error)
       }
     }
   }, [token, socket])
@@ -93,6 +103,48 @@ function StudentRoomPage() {
       setCurrentQuestion(null)
     }
 
+    const handleDiscussionUpdate = (state) => {
+      if (!state) return
+      const active = !!state.discussionActive
+      setDiscussionActive(active)
+
+      if (!active) {
+        setHandStatus('idle')
+        if (recordingPipelineRef.current) {
+          recordingPipelineRef.current.stopRecording().catch(console.error)
+        }
+        setIsSpeaking(false)
+        setSpeakingStatus('Ready')
+        return
+      }
+
+      const userId = user?._id
+      const isPending = Array.isArray(state.pendingHands) && state.pendingHands.some(item =>
+        (typeof item === 'object' && item !== null ? item.studentId === userId : item === userId)
+      )
+      const isApproved = Array.isArray(state.approvedSpeakers) && state.approvedSpeakers.some(item =>
+        (typeof item === 'object' && item !== null ? item.studentId === userId : item === userId)
+      )
+
+      if (isApproved) {
+        setHandStatus('approved')
+      } else if (isPending) {
+        setHandStatus('waiting')
+        if (recordingPipelineRef.current) {
+          recordingPipelineRef.current.stopRecording().catch(console.error)
+        }
+        setIsSpeaking(false)
+        setSpeakingStatus('Ready')
+      } else {
+        setHandStatus('idle')
+        if (recordingPipelineRef.current) {
+          recordingPipelineRef.current.stopRecording().catch(console.error)
+        }
+        setIsSpeaking(false)
+        setSpeakingStatus('Ready')
+      }
+    }
+
     const handleNewQuestion = (question) => {
       // Handle manually created questions from teacher
       // Clear any existing timer
@@ -123,9 +175,18 @@ function StudentRoomPage() {
       }, 1000)
     }
 
+    const handleDiscussionError = (err) => {
+      if (err?.message) {
+        setDiscussionError(err.message)
+      }
+      setHandStatus(prev => (prev === 'waiting' ? 'idle' : prev))
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
+    socket.on('discussion:update', handleDiscussionUpdate)
+    socket.on('discussion:error', handleDiscussionError)
     socket.on('room:ended', () => {
       navigate(`/student/room/${room?._id}/results`)
     })
@@ -134,9 +195,11 @@ function StudentRoomPage() {
       socket.off('question:started', handleQuestionStarted)
       socket.off('question:ended', handleQuestionEnded)
       socket.off('new_question', handleNewQuestion)
+      socket.off('discussion:update', handleDiscussionUpdate)
+      socket.off('discussion:error', handleDiscussionError)
       socket.off('room:ended')
     }
-  }, [socket, navigate, room?._id])
+  }, [socket, navigate, room?._id, user?._id])
 
   const joinSession = async () => {
     setIsLoading(true)
@@ -274,6 +337,55 @@ function StudentRoomPage() {
       leaveRoom(room.code, user._id)
     }
     navigate('/student')
+  }
+
+  const handleRaiseHand = () => {
+    if (!raiseHand || !room || !token) return
+    setDiscussionError('')
+    raiseHand({ roomCode: room.code, token })
+    setHandStatus('waiting')
+  }
+
+  const startSpeaking = async () => {
+    if (!discussionActive || handStatus !== 'approved' || !room?._id || !user?._id) return
+
+    if (!recordingPipelineRef.current) {
+      recordingPipelineRef.current = createRecordingPipeline({
+        speakerRole: 'student',
+        speakerId: user._id,
+        roomId: room._id,
+        onTranscription: (sequence, text, metadata) => {
+          console.log('[STUDENT TRANSCRIPTION]', { sequence, text, metadata })
+        },
+        onStatus: setSpeakingStatus,
+        onError: (error) => {
+          console.error('[STUDENT RECORDING ERROR]', error)
+          setSpeakingStatus('Recording error')
+        },
+        onRecordingStateChange: setIsSpeaking
+      })
+    }
+
+    try {
+      setSpeakingStatus('Starting...')
+      await recordingPipelineRef.current.startRecording()
+      setSpeakingStatus('Listening...')
+    } catch (error) {
+      console.error('[STUDENT RECORDING ERROR]', error)
+      setSpeakingStatus('Microphone access denied')
+    }
+  }
+
+  const stopSpeaking = async () => {
+    if (!recordingPipelineRef.current) return
+    try {
+      await recordingPipelineRef.current.stopRecording()
+    } catch (error) {
+      console.error('[STUDENT RECORDING STOP ERROR]', error)
+    } finally {
+      setIsSpeaking(false)
+      setSpeakingStatus('Ready')
+    }
   }
 
   if (isLoading) {
@@ -416,6 +528,107 @@ function StudentRoomPage() {
               Leave
             </button>
           </div>
+
+          {discussionActive && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: '16px',
+              padding: '20px',
+              border: '1px solid var(--border-color)',
+              marginBottom: '24px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>Discussion Mode</h2>
+                  <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)' }}>Raise your hand to ask a question when approved by the teacher.</p>
+                </div>
+                <span style={{ padding: '8px 12px', borderRadius: '12px', background: '#f8fafc', color: '#0f172a', fontWeight: 700, fontSize: '14px' }}>
+                  Active
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {discussionError && (
+                  <div style={{
+                    padding: '12px 16px',
+                    background: '#fef2f2',
+                    borderRadius: '12px',
+                    border: '1px solid #fecaca',
+                    color: '#b91c1c',
+                    fontWeight: 600,
+                    fontSize: '14px'
+                  }}>
+                    {discussionError}
+                  </div>
+                )}
+                {handStatus === 'idle' && (
+                  <button
+                    onClick={handleRaiseHand}
+                    style={{
+                      padding: '14px 18px',
+                      background: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      fontSize: '16px',
+                      fontWeight: 600
+                    }}
+                  >
+                    Raise Hand
+                  </button>
+                )}
+                {handStatus === 'waiting' && (
+                  <div style={{ padding: '14px 18px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #bfdbfe', color: '#1d4ed8', fontWeight: 600 }}>
+                    Waiting for approval...
+                  </div>
+                )}
+                {handStatus === 'approved' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '14px 18px', background: '#ecfdf5', borderRadius: '12px', border: '1px solid #10b981', color: '#065f46', fontWeight: 600 }}>
+                    <div>Approved by teacher</div>
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      {!isSpeaking ? (
+                        <button
+                          onClick={startSpeaking}
+                          style={{
+                            padding: '12px 16px',
+                            background: '#2563eb',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '12px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: 700
+                          }}
+                        >
+                          Start Speaking
+                        </button>
+                      ) : (
+                        <button
+                          onClick={stopSpeaking}
+                          style={{
+                            padding: '12px 16px',
+                            background: '#ef4444',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '12px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: 700
+                          }}
+                        >
+                          Stop Speaking
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ padding: '10px 14px', background: '#ffffff', borderRadius: '10px', border: '1px solid #d1fae5', color: '#065f46', fontSize: '14px', fontWeight: 600 }}>
+                      {speakingStatus}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Live Question */}
           {currentQuestion ? (

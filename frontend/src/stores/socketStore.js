@@ -119,6 +119,48 @@ export const useSocketStore = create((set, get) => ({
     if (socket) {
       socket.emit('question:end', data)
     }
+  },
+
+  startDiscussion: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:start', data)
+    }
+  },
+
+  endDiscussion: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:end', data)
+    }
+  },
+
+  raiseHand: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:raise-hand', data)
+    }
+  },
+
+  approveSpeaker: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:approve', data)
+    }
+  },
+
+  rejectSpeaker: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:reject', data)
+    }
+  },
+
+  removeSpeaker: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('discussion:remove-speaker', data)
+    }
   }
 }))
 

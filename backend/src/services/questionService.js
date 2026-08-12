@@ -232,6 +232,7 @@ function buildQuestionPrompt(transcript, questionTypes, difficulty) {
   }).join('\n')
 
   return `You are an expert quiz question generator. Based on the following transcription, generate ${questionTypes.length} quiz questions.
+Note: The transcription may contain multiple speakers (labeled like "Teacher:" and "Student:"). Focus on the factual content and learning points across speakers when creating questions.
 
 TRANSCRIPTION:
 ${transcript}

@@ -13,14 +13,15 @@ import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
-import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
+import { getTranscriptionStatus } from '../services/serverTranscriptionService'
+import { createRecordingPipeline } from '../services/recordingPipelineService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+  const { socket, isConnected, joinRoom, leaveRoom, startDiscussion, endDiscussion, approveSpeaker, rejectSpeaker, removeSpeaker } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
 
   const [room, setRoom] = useState(null)
@@ -39,16 +40,10 @@ function RoomDetailPage() {
   const [modelStatus, setModelStatus] = useState('Ready')
 
   // MediaRecorder refs for server-side Whisper transcription
-  const mediaRecorderRef = useRef(null)
-  const audioChunksRef = useRef([])
-  const streamRef = useRef(null)
-  const transcriptionIntervalRef = useRef(null)
+  const recordingPipelineRef = useRef(null)
   const finalTranscriptRef = useRef('')
   const accumulatedTranscriptRef = useRef('')
   const segmentTranscriptRef = useRef('')
-  const recordingActiveRef = useRef(false)
-  const selectedMimeTypeRef = useRef('audio/webm')
-  const mediaRecorderStopPromiseRef = useRef(null)
 
   // Transcription queue for ordered processing
   const transcriptionQueueRef = useRef([])
@@ -96,6 +91,12 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // Discussion mode state
+  const [isDiscussionActive, setIsDiscussionActive] = useState(false)
+  const [pendingHands, setPendingHands] = useState([])
+  const [approvedSpeakers, setApprovedSpeakers] = useState([])
+  const [discussionError, setDiscussionError] = useState('')
 
   useEffect(() => {
     if (token) {
@@ -194,9 +195,28 @@ function RoomDetailPage() {
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
 
+    const handleDiscussionUpdate = (state) => {
+      console.log('[DISCUSSION UPDATE]', state)
+      setIsDiscussionActive(!!state.discussionActive)
+      setPendingHands(state.pendingHands || [])
+      setApprovedSpeakers(state.approvedSpeakers || [])
+    }
+
+    const handleDiscussionError = (err) => {
+      if (err?.message) {
+        setDiscussionError(err.message)
+        setTimeout(() => setDiscussionError(''), 6000)
+      }
+    }
+
+    socket.on('discussion:update', handleDiscussionUpdate)
+    socket.on('discussion:error', handleDiscussionError)
+
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      socket.off('discussion:update', handleDiscussionUpdate)
+      socket.off('discussion:error', handleDiscussionError)
     }
   }, [socket, roomSettings.timeToAnswer])
 
@@ -386,25 +406,46 @@ function RoomDetailPage() {
   }
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       setIsGeneratingQuestions(true)
-      fetch(`${API_URL}/questions/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          transcript: text,
-          config: {
-            numQuestions: roomSettings.questionsPerSegment,
-            difficulty: roomSettings.difficulty,
-            provider: roomSettings.questionProvider || 'minimax'
+
+      // If a discussion session is active, always use the discussion transcript (formatted)
+      let transcriptToSend = text
+      try {
+        if (room?._id && isDiscussionActive) {
+          const discRes = await fetch(`${API_URL}/discussion/${room._id}/transcript`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+          if (discRes.ok) {
+            const discData = await discRes.json()
+            if (discData.success) {
+              // Use the formatted discussion transcript even if it contains only teacher entries
+              transcriptToSend = discData.transcript || ''
+            }
           }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch discussion transcript, falling back to teacher transcript', e)
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/questions/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            transcript: transcriptToSend,
+            config: {
+              numQuestions: roomSettings.questionsPerSegment,
+              difficulty: roomSettings.difficulty,
+              provider: roomSettings.questionProvider || 'minimax'
+            }
+          })
         })
-      })
-      .then(response => response.json())
-      .then(data => {
+
+        const data = await response.json()
         setIsGeneratingQuestions(false)
 
         if (data.success && data.questions && data.questions.length > 0) {
@@ -414,15 +455,14 @@ function RoomDetailPage() {
             points: roomSettings.points,
             segmentIndex: segmentIndex
           }))
-          resolve(markedQuestions) // Return questions for popup handling
+          resolve(markedQuestions)
         } else {
           reject(new Error(data.error || 'No questions generated'))
         }
-      })
-      .catch(error => {
+      } catch (error) {
         setIsGeneratingQuestions(false)
         reject(error)
-      })
+      }
     })
   }
 
@@ -542,6 +582,32 @@ function RoomDetailPage() {
     }
   }
 
+  const handleStartDiscussion = () => {
+    if (!socket || !room || !token) return
+    startDiscussion({ roomCode: room.code, token })
+  }
+
+  const handleEndDiscussion = () => {
+    if (!socket || !room || !token) return
+    endDiscussion({ roomCode: room.code, token })
+  }
+
+  const handleApproveStudent = (studentId) => {
+    if (!socket || !room || !token) return
+    setDiscussionError('')
+    approveSpeaker({ roomCode: room.code, userId: studentId, token })
+  }
+
+  const handleRejectStudent = (studentId) => {
+    if (!socket || !room || !token) return
+    rejectSpeaker({ roomCode: room.code, userId: studentId, token })
+  }
+
+  const handleRemoveSpeaker = (studentId) => {
+    if (!socket || !room || !token) return
+    removeSpeaker({ roomCode: room.code, userId: studentId, token })
+  }
+
   const copyRoomCode = () => {
     navigator.clipboard.writeText(room.code)
     setCopied(true)
@@ -590,110 +656,36 @@ function RoomDetailPage() {
     processTranscriptionQueue()
   }, [processTranscriptionQueue])
 
-  const sendForTranscription = useCallback(async (audioBlob, sequence) => {
-    if (!audioBlob || audioBlob.size < 5000) {
-      console.log(`[TRANSCRIPTION] Skipping small audio: ${audioBlob?.size || 0} bytes`)
-      addToTranscriptionQueue(sequence, '')
-      return
+  const initializeRecordingPipeline = useCallback(() => {
+    if (!recordingPipelineRef.current) {
+      recordingPipelineRef.current = createRecordingPipeline({
+        speakerRole: 'teacher',
+        speakerId: null,
+        roomId: room?._id,
+        onTranscription: (sequence, text) => {
+          addToTranscriptionQueue(sequence, text)
+        },
+        onStatus: (status) => setModelStatus(status),
+        onError: (error) => {
+          console.error('[TEACHER RECORDING ERROR]', error)
+          setModelStatus('Recording error')
+        },
+        onRecordingStateChange: (active) => {
+          setIsRecording(active)
+          setIsTranscribing(active)
+          if (!active) {
+            setModelStatus('Ready')
+          }
+        }
+      })
     }
-
-    try {
-      const headerBytes = new Uint8Array(await audioBlob.slice(0, 4).arrayBuffer())
-      console.log(`[TRANSCRIPTION] Complete blob, sequence ${sequence}, size: ${audioBlob.size}, type: ${audioBlob.type}, header: ${headerBytes[0]},${headerBytes[1]},${headerBytes[2]},${headerBytes[3]}`)
-    } catch (error) {
-      console.warn('[TRANSCRIPTION] Failed to inspect audio header:', error)
-    }
-
-    try {
-      // Convert to WAV for Whisper
-      const wavBlob = await convertWebMToWav(audioBlob)
-
-      if (!wavBlob) {
-        console.log(`[TRANSCRIPTION] Sequence ${sequence} conversion failed, skipping`)
-        addToTranscriptionQueue(sequence, '')
-        return
-      }
-
-      const result = await transcribeAudio(wavBlob)
-      addToTranscriptionQueue(sequence, result.text || '')
-    } catch (error) {
-      console.error(`[TRANSCRIPTION] Error for sequence ${sequence}:`, error.message)
-      addToTranscriptionQueue(sequence, '')
-    }
+    return recordingPipelineRef.current
   }, [room?._id, addToTranscriptionQueue])
 
-  const startTranscriptionWindow = useCallback(() => {
-    if (!recordingActiveRef.current || !streamRef.current) return
-
-    const sequence = nextSequenceRef.current++
-    const chunks = []
-    const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType: selectedMimeTypeRef.current })
-    mediaRecorderRef.current = mediaRecorder
-
-    mediaRecorderStopPromiseRef.current = new Promise((resolve) => {
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data)
-        }
-      }
-
-      mediaRecorder.onerror = (error) => {
-        console.error('MediaRecorder error:', error)
-        setModelStatus('Recording error')
-      }
-
-      mediaRecorder.onstop = async () => {
-        if (transcriptionIntervalRef.current) {
-          clearTimeout(transcriptionIntervalRef.current)
-          transcriptionIntervalRef.current = null
-        }
-
-        const audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType || selectedMimeTypeRef.current })
-        console.log(`[TRANSCRIPTION] Sending sequence ${sequence}, size: ${audioBlob.size} bytes`)
-        await sendForTranscription(audioBlob, sequence)
-        resolve()
-
-        if (recordingActiveRef.current) {
-          startTranscriptionWindow()
-        }
-      }
-    })
-
-    mediaRecorder.start()
-    transcriptionIntervalRef.current = setTimeout(() => {
-      if (mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop()
-      }
-    }, 10000)
-  }, [sendForTranscription])
-  
   const startRecording = async ({ resetSegment = true } = {}) => {
-    if (recordingActiveRef.current) return
+    if (isRecording) return
 
     try {
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-
-      // Initialize MediaRecorder - try OGG first as it handles chunking better than WebM
-      let selectedMimeType = 'audio/ogg'
-      const possibleTypes = [
-        'audio/ogg;codecs=opus',
-        'audio/ogg',
-        'audio/webm;codecs=opus',
-        'audio/webm'
-      ]
-      for (const mimeType of possibleTypes) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          selectedMimeType = mimeType
-          console.log(`[RECORDING] Using mimeType: ${selectedMimeType}`)
-          break
-        }
-      }
-      audioChunksRef.current = []
-      selectedMimeTypeRef.current = selectedMimeType
-
-      // Initialize segment
       setTranscript('')
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
@@ -701,53 +693,32 @@ function RoomDetailPage() {
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
 
-      // Reset transcription queue
       transcriptionQueueRef.current = []
       nextSequenceRef.current = 0
       pendingSequenceRef.current = 0
       isProcessingQueueRef.current = false
 
-      recordingActiveRef.current = true
+      setModelStatus('Listening...')
       setIsRecording(true)
       setIsTranscribing(true)
-      setModelStatus('Listening...')
 
-      startTranscriptionWindow()
-
+      const pipeline = initializeRecordingPipeline()
+      await pipeline.startRecording()
     } catch (error) {
       console.error('Error starting recording:', error)
       setModelStatus('Microphone access denied')
+      setIsRecording(false)
+      setIsTranscribing(false)
     }
   }
 
   const stopRecording = async () => {
-    recordingActiveRef.current = false
-
-    // Stop the current 10-second recorder window.
-    if (transcriptionIntervalRef.current) {
-      clearTimeout(transcriptionIntervalRef.current)
-      transcriptionIntervalRef.current = null
+    if (recordingPipelineRef.current) {
+      await recordingPipelineRef.current.stopRecording()
     }
 
-    // Stop MediaRecorder
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-
-    if (mediaRecorderStopPromiseRef.current) {
-      await mediaRecorderStopPromiseRef.current
-      mediaRecorderStopPromiseRef.current = null
-    }
-
-    // Wait briefly for transcription queue updates from the final chunk.
     await new Promise(resolve => setTimeout(resolve, 500))
     await processTranscriptionQueue()
-
-    // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -1062,6 +1033,39 @@ function RoomDetailPage() {
 
             <div style={{ flex: 1 }} />
 
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                onClick={handleStartDiscussion}
+                disabled={isDiscussionActive || isEnded}
+                style={{
+                  padding: '10px 16px',
+                  background: isDiscussionActive || isEnded ? '#9ca3af' : '#10b981',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '10px',
+                  cursor: isDiscussionActive || isEnded ? 'not-allowed' : 'pointer',
+                  fontWeight: 600
+                }}
+              >
+                Start Discussion
+              </button>
+              <button
+                onClick={handleEndDiscussion}
+                disabled={!isDiscussionActive || isEnded}
+                style={{
+                  padding: '10px 16px',
+                  background: !isDiscussionActive || isEnded ? '#9ca3af' : '#ef4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '10px',
+                  cursor: !isDiscussionActive || isEnded ? 'not-allowed' : 'pointer',
+                  fontWeight: 600
+                }}
+              >
+                End Discussion
+              </button>
+            </div>
+
             {/* Segment Timer Display */}
             {isRecording && (
               <div style={{
@@ -1231,6 +1235,85 @@ function RoomDetailPage() {
               </button>
             )}
           </div>
+
+          {isDiscussionActive && (
+            <>
+              {discussionError && (
+                <div style={{
+                  padding: '12px 16px',
+                  background: '#fef2f2',
+                  borderRadius: '12px',
+                  border: '1px solid #fecaca',
+                  color: '#b91c1c',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  marginBottom: '16px',
+                  width: '100%',
+                  boxSizing: 'border-box'
+                }}>
+                  {discussionError}
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px', width: '100%' }}>
+              <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', minHeight: '160px', boxSizing: 'border-box' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                  <span style={{ fontSize: '18px' }}>✋</span>
+                  <h2 style={{ margin: 0, fontSize: '16px', fontWeight: '700' }}>Pending Raised Hands</h2>
+                </div>
+                {pendingHands.length === 0 ? (
+                  <p style={{ color: 'var(--text-secondary)', margin: 0 }}>No students have raised their hand yet.</p>
+                ) : (
+                  pendingHands.map((item) => {
+                    const studentId = typeof item === 'object' && item !== null ? item.studentId : item
+                    const studentName = typeof item === 'object' && item !== null && item.studentName ? item.studentName : (typeof item === 'string' ? `Student ${item.slice(0, 8)}...` : 'Student')
+                    return (
+                      <div key={studentId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0', borderBottom: '1px solid var(--border-color)' }}>
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{studentName} wants to speak</div>
+                          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Waiting for approval</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button onClick={() => handleApproveStudent(studentId)} style={{ padding: '8px 12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '12px' }}>
+                            Approve
+                          </button>
+                          <button onClick={() => handleRejectStudent(studentId)} style={{ padding: '8px 12px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '12px' }}>
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', minHeight: '160px', boxSizing: 'border-box' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                  <span style={{ fontSize: '18px' }}>✅</span>
+                  <h2 style={{ margin: 0, fontSize: '16px', fontWeight: '700' }}>Approved Speakers</h2>
+                </div>
+                {approvedSpeakers.length === 0 ? (
+                  <p style={{ color: 'var(--text-secondary)', margin: 0 }}>No approved speakers yet.</p>
+                ) : (
+                  approvedSpeakers.map((item) => {
+                    const studentId = typeof item === 'object' && item !== null ? item.studentId : item
+                    const studentName = typeof item === 'object' && item !== null && item.studentName ? item.studentName : (typeof item === 'string' ? `Student ${item.slice(0, 8)}...` : 'Student')
+                    return (
+                      <div key={studentId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0', borderBottom: '1px solid var(--border-color)' }}>
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{studentName}</div>
+                          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Approved to speak</div>
+                        </div>
+                        <button onClick={() => handleRemoveSpeaker(studentId)} style={{ padding: '8px 12px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '12px' }}>
+                          Remove
+                        </button>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+            </>
+          )}
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>

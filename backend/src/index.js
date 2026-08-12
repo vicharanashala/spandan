@@ -13,7 +13,9 @@ import authRoutes from './routes/auth.js'
 import roomRoutes from './routes/rooms.js'
 import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
+import { initDiscussionForRoom, clearDiscussionForRoom } from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
+import discussionRoutes from './routes/discussion.js'
 import responseRoutes from './routes/responses.js'
 
 // Import models for reference
@@ -115,6 +117,7 @@ app.use('/api/rooms', roomRoutes)
 app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
+app.use('/api/discussion', discussionRoutes)
 app.use('/api/responses', responseRoutes)
 
 // Health check
@@ -129,7 +132,25 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+const discussionState = new Map() // roomCode -> { discussionActive, pendingHands, approvedSpeakers }
+const MAX_PENDING_HANDS = 5
+const MAX_ACTIVE_SPEAKERS = 1
 
+const getDiscussionState = (roomCode) => {
+  if (!discussionState.has(roomCode)) {
+    discussionState.set(roomCode, {
+      discussionActive: false,
+      pendingHands: [],
+      approvedSpeakers: []
+    })
+  }
+  return discussionState.get(roomCode)
+}
+
+const broadcastDiscussionState = (roomCode) => {
+  const state = getDiscussionState(roomCode)
+  io.to(roomCode).emit('discussion:update', state)
+}
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id)
 
@@ -142,6 +163,7 @@ io.on('connection', (socket) => {
       }
       const decoded = jwt.verify(data.token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
       connectedUsers.set(socket.id, decoded.userId)
+      socket.userId = decoded.userId
       socket.emit('authenticated', { success: true })
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -190,6 +212,10 @@ io.on('connection', (socket) => {
         userId,
         participants: participantCount 
       })
+
+      // Send current discussion state when a client joins the room
+      const currentState = getDiscussionState(roomCode)
+      io.to(roomCode).emit('discussion:update', currentState)
     } catch (error) {
       console.error('Error in room:join:', error)
       io.to(roomCode).emit('room:joined', { 
@@ -282,6 +308,206 @@ io.on('connection', (socket) => {
       io.to(roomCode).emit('new_question', question)
     } else {
       console.error('new_question event missing roomCode or question:', data)
+    }
+  })
+
+  // Discussion workflow events
+  socket.on('discussion:start', async (data) => {
+    const { roomCode, token } = data
+    if (!roomCode || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room || room.teacher.toString() !== decoded.userId) return
+
+      const state = getDiscussionState(roomCode)
+      state.discussionActive = true
+      state.pendingHands = []
+      state.approvedSpeakers = []
+      discussionState.set(roomCode, state)
+      // Initialize a fresh in-memory discussion transcript for this room
+      try {
+        if (room && room._id) initDiscussionForRoom(String(room._id))
+      } catch (e) {
+        console.error('Failed to init discussion transcript for room:', e)
+      }
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:start auth failed:', error.message)
+    }
+  })
+
+  socket.on('discussion:end', async (data) => {
+    const { roomCode, token } = data
+    if (!roomCode || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room || room.teacher.toString() !== decoded.userId) return
+
+      const state = getDiscussionState(roomCode)
+      state.discussionActive = false
+      state.pendingHands = []
+      state.approvedSpeakers = []
+      discussionState.set(roomCode, state)
+      // Clear in-memory discussion transcript for this room
+      try {
+        if (room && room._id) clearDiscussionForRoom(String(room._id))
+      } catch (e) {
+        console.error('Failed to clear discussion transcript for room:', e)
+      }
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:end auth failed:', error.message)
+    }
+  })
+
+  socket.on('discussion:raise-hand', async (data) => {
+    const { roomCode, token } = data
+    if (!roomCode || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const User = (await import('./models/User.js')).default
+      const user = await User.findById(decoded.userId)
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      const RoomMember = (await import('./models/RoomMember.js')).default
+      const membership = await RoomMember.findOne({ roomId: room?._id, studentId: decoded.userId })
+
+      if (!room || !user || user.role !== 'student' || !membership) return
+
+      const state = getDiscussionState(roomCode)
+      if (!state.discussionActive) return
+      const alreadyPending = state.pendingHands.some(item =>
+        (typeof item === 'string' ? item : item.studentId) === decoded.userId
+      )
+      const alreadyApproved = state.approvedSpeakers.some(item =>
+        (typeof item === 'string' ? item : item.studentId) === decoded.userId
+      )
+
+      if (alreadyPending || alreadyApproved) return
+
+      if (state.pendingHands.length >= MAX_PENDING_HANDS) {
+        socket.emit('discussion:error', {
+          success: false,
+          reason: 'QUEUE_FULL',
+          message: 'Discussion queue is full. Please wait.'
+        })
+        return
+      }
+
+      state.pendingHands.push({
+        studentId: decoded.userId,
+        studentName: user.name || 'Student'
+      })
+      discussionState.set(roomCode, state)
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:raise-hand auth failed:', error.message)
+    }
+  })
+
+  socket.on('discussion:approve', async (data) => {
+    const { roomCode, token } = data
+    const userId = data.userId || data.studentId
+    if (!roomCode || !userId || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room || room.teacher.toString() !== decoded.userId) return
+
+      const state = getDiscussionState(roomCode)
+      if (!state.discussionActive) return
+
+      if (state.approvedSpeakers.length >= MAX_ACTIVE_SPEAKERS) {
+        socket.emit('discussion:error', {
+          success: false,
+          reason: 'ACTIVE_SPEAKER_LIMIT',
+          message: 'Another student is currently speaking. Finish the current speaker first.'
+        })
+        return
+      }
+
+      const pendingStudent = state.pendingHands.find(item =>
+        (typeof item === 'string' ? item : item.studentId) === userId
+      )
+      if (!pendingStudent) return
+
+      let studentName = 'Student'
+      if (pendingStudent && typeof pendingStudent === 'object' && pendingStudent.studentName) {
+        studentName = pendingStudent.studentName
+      } else {
+        const User = (await import('./models/User.js')).default
+        const studentUser = await User.findById(userId)
+        if (studentUser && studentUser.name) {
+          studentName = studentUser.name
+        }
+      }
+
+      state.pendingHands = state.pendingHands.filter(item =>
+        (typeof item === 'string' ? item : item.studentId) !== userId
+      )
+
+      const alreadyApproved = state.approvedSpeakers.some(item =>
+        (typeof item === 'string' ? item : item.studentId) === userId
+      )
+      if (!alreadyApproved) {
+        state.approvedSpeakers.push({
+          studentId: userId,
+          studentName
+        })
+      }
+      discussionState.set(roomCode, state)
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:approve auth failed:', error.message)
+    }
+  })
+
+  socket.on('discussion:reject', async (data) => {
+    const { roomCode, token } = data
+    const userId = data.userId || data.studentId
+    if (!roomCode || !userId || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room || room.teacher.toString() !== decoded.userId) return
+
+      const state = getDiscussionState(roomCode)
+      if (!state.discussionActive) return
+      state.pendingHands = state.pendingHands.filter(item =>
+        (typeof item === 'string' ? item : item.studentId) !== userId
+      )
+      discussionState.set(roomCode, state)
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:reject auth failed:', error.message)
+    }
+  })
+
+  socket.on('discussion:remove-speaker', async (data) => {
+    const { roomCode, token } = data
+    const userId = data.userId || data.studentId
+    if (!roomCode || !userId || !token) return
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room || room.teacher.toString() !== decoded.userId) return
+
+      const state = getDiscussionState(roomCode)
+      if (!state.discussionActive) return
+      state.approvedSpeakers = state.approvedSpeakers.filter(item =>
+        (typeof item === 'string' ? item : item.studentId) !== userId
+      )
+      discussionState.set(roomCode, state)
+      io.to(roomCode).emit('discussion:update', state)
+    } catch (error) {
+      console.error('discussion:remove-speaker auth failed:', error.message)
     }
   })
 
