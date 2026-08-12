@@ -41,6 +41,7 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
   // the job's own return value (just the questions array) never carries it.
   const jobId = data.jobId
   const resolvedDifficulty = data.resolvedDifficulty
+  const adaptiveMeta = data.adaptiveMeta
   const start = Date.now()
   while (true) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -54,7 +55,7 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
       if (signal?.aborted) throw e
       continue // transient network error — keep polling until the ceiling
     }
-    if (s.status === 'completed') return { success: true, questions: s.questions || [], resolvedDifficulty }
+    if (s.status === 'completed') return { success: true, questions: s.questions || [], resolvedDifficulty, adaptiveMeta }
     if (s.status === 'failed') return { success: false, error: s.error || 'Generation failed' }
     // 'processing' / transient 'not_found' — keep polling
   }

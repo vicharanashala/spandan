@@ -100,6 +100,7 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [adaptiveMeta, setAdaptiveMeta] = useState(null) // { sampleSize, correctnessPct } from the last generate call
 
   useEffect(() => {
     if (token) {
@@ -403,6 +404,7 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+      if (data.adaptiveMeta) setAdaptiveMeta(data.adaptiveMeta)
       if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
         setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
       }
@@ -445,6 +447,7 @@ function RoomDetailPage() {
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
 
+      if (data.adaptiveMeta) setAdaptiveMeta(data.adaptiveMeta)
       if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
         setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
       }
@@ -1342,6 +1345,13 @@ function RoomDetailPage() {
                       {roomSettings.difficulty}{roomSettings.adaptiveDifficulty ? ' (auto)' : ''}
                     </span>
                   </div>
+                  {roomSettings.adaptiveDifficulty && adaptiveMeta && (
+                    <div style={{ textAlign: 'right', fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                      {adaptiveMeta.sampleSize < 3
+                        ? `waiting for more responses (${adaptiveMeta.sampleSize}/3 needed to adapt)`
+                        : `last batch: ${adaptiveMeta.correctnessPct}% correct (${adaptiveMeta.sampleSize} responses)`}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -47,6 +47,7 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     }
 
     let resolvedDifficulty = null
+    let adaptiveMeta = null
     let effectiveDifficulty = difficulty
 
     if (roomId) {
@@ -63,6 +64,7 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
         const result = await resolveAdaptiveDifficulty(roomId, room.settings.difficulty || 'medium')
         effectiveDifficulty = result.difficulty
         resolvedDifficulty = result.difficulty
+        adaptiveMeta = { sampleSize: result.sampleSize, correctnessPct: result.correctnessPct }
         if (result.difficulty !== room.settings.difficulty) {
           await setRoomDifficulty(roomId, result.difficulty)
         }
@@ -85,14 +87,14 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
           removeOnFail: { age: 900 }
         }
       )
-      return res.status(202).json({ success: true, async: true, jobId: job.id, resolvedDifficulty })
+      return res.status(202).json({ success: true, async: true, jobId: job.id, resolvedDifficulty, adaptiveMeta })
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
     console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-    res.json({ success: true, questions, resolvedDifficulty })
+    res.json({ success: true, questions, resolvedDifficulty, adaptiveMeta })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({
