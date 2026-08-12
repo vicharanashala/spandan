@@ -490,7 +490,7 @@ function RoomDetailPage() {
         // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        window.alert(data.error || 'The AI did not return any usable questions that time (this can happen occasionally) — please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
@@ -500,7 +500,7 @@ function RoomDetailPage() {
         // Same as above — preserve the pasted text and reopen the popup for a retry.
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert('Failed to generate questions. Please try again.')
+        window.alert('Failed to generate questions: ' + error.message)
       }
     }
   }
@@ -1431,21 +1431,24 @@ function RoomDetailPage() {
               <button
                 data-tour="paste-generate"
                 onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
+                disabled={isGeneratingFromText || isGeneratingQuestions}
                 style={{
                   padding: '8px 16px',
-                  background: 'var(--success-solid)',
+                  background: (isGeneratingFromText || isGeneratingQuestions) ? '#9ca3af' : 'var(--success-solid)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '500',
-                  cursor: 'pointer',
+                  cursor: (isGeneratingFromText || isGeneratingQuestions) ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px'
                 }}
               >
-                <Ico as={FileText} /> Paste & Generate
+                {(isGeneratingFromText || isGeneratingQuestions)
+                  ? (<><Ico as={LoaderCircle} /> Generating...</>)
+                  : (<><Ico as={FileText} /> Paste & Generate</>)}
               </button>
             )}
 
