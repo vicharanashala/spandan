@@ -39,6 +39,7 @@ router.post('/register/send-otp', validate(sendOtpSchema), async (req, res) => {
     const { expiresInSec } = await requestRegistrationOtp(email, name)
     res.json({ message: 'Verification code sent to your email', expiresInSec })
   } catch (error) {
+    console.error('[send-otp Error]', error)
     // COOLDOWN / SEND_CAP are client-actionable (429 with the real message); anything else is a
     // server/email failure (500, generic message — don't leak internals).
     const status = (error.code === 'COOLDOWN' || error.code === 'SEND_CAP') ? 429 : 500

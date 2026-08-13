@@ -8,8 +8,11 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import useIsMobile from '../hooks/useIsMobile'
+import LpsDonut from '../components/LpsDonut.jsx'
 
 function DashboardPage() {
+  // Import LPS donut component
+  // We'll add import at top separately
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
   const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
@@ -32,6 +35,7 @@ function DashboardPage() {
     totalPolls: 0,
     totalResponses: 0
   })
+  const [classLps, setClassLps] = useState(0) // aggregate class LPS
 
   // Initial setup
   useEffect(() => {
@@ -39,9 +43,31 @@ function DashboardPage() {
       setAuthToken(token)
       fetchRooms()
       fetchTeacherStats()
+      // After rooms are loaded, fetch class LPS for each room and compute average
+      const fetchClassLps = async () => {
+        if (!rooms || rooms.length === 0) return setClassLps(0)
+        try {
+          const lpsValues = []
+          for (const room of rooms) {
+            const res = await fetch(`${API_URL}/analytics/class/${room._id}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            })
+            const data = await res.json()
+            if (data.success && data.stats && typeof data.stats.average === 'number') {
+              lpsValues.push(data.stats.average)
+            }
+          }
+          const avg = lpsValues.length ? Math.round(lpsValues.reduce((a, b) => a + b, 0) / lpsValues.length) : 0
+          setClassLps(avg)
+        } catch (err) {
+          console.error('Failed to fetch class LPS:', err)
+          setClassLps(0)
+        }
+      }
+      fetchClassLps()
     }
     setChecked(true)
-  }, [token])
+  }, [token, rooms])
 
   const fetchTeacherStats = async () => {
     try {
@@ -214,6 +240,10 @@ function DashboardPage() {
             gap: isMobile ? '12px' : '20px',
             marginBottom: isMobile ? '24px' : '32px'
           }}>
+            {/* LPS Donut for class average */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <LpsDonut percentage={classLps} label="Class Avg LPS" />
+            </div>
             {statCards.map((card) => (
               <div key={card.label} style={{
                 background: 'var(--bg-card)',

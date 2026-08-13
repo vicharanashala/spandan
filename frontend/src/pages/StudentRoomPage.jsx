@@ -92,14 +92,15 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+      // Normalize data: backend emits { questionId, question: sanitizedQuestion, timer, startTime } or raw question
+      const q = (data && data.question && typeof data.question === 'object') ? data.question : data
+      if (!q) return
+
+      setCurrentQuestion(q)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
+      const tta = data.timer || q.timeToAnswer || 30
+      setTimeLeft(tta)
       
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -139,18 +140,22 @@ function StudentRoomPage() {
       setCurrentQuestion(null)
     }
 
-    const handleNewQuestion = (question) => {
-      // Handle manually created questions from teacher
+    const handleNewQuestion = (data) => {
+      // Handle manually created or approved questions from teacher
+      const q = (data && data.question && typeof data.question === 'object') ? data.question : data
+      if (!q) return
+
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
       
-      setCurrentQuestion(question)
+      setCurrentQuestion(q)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
+      const tta = data.timer || q.timeToAnswer || 30
+      setTimeLeft(tta)
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {

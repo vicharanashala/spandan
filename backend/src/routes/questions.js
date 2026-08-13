@@ -145,6 +145,25 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
 
     await newQuestion.save()
 
+    // Broadcast new_question via socket immediately from the backend REST handler so students receive it live
+    if (status === 'approved') {
+      try {
+        const io = req.app.get('io')
+        if (io && room?.code) {
+          const { setLiveQuestion, sanitizeQuestionForStudents } = await import('../index.js')
+          if (typeof setLiveQuestion === 'function') {
+            setLiveQuestion(room._id, newQuestion._id)
+          }
+          const sanitized = typeof sanitizeQuestionForStudents === 'function' 
+            ? sanitizeQuestionForStudents(newQuestion)
+            : newQuestion
+          io.to(room.code).emit('new_question', sanitized)
+        }
+      } catch (socketErr) {
+        console.error('Error broadcasting new_question from REST handler:', socketErr)
+      }
+    }
+
     res.status(201).json({
       success: true,
       question: newQuestion

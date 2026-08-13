@@ -9,9 +9,15 @@ import nodemailer from 'nodemailer'
 //   • 'smtp' — Gmail SMTP via nodemailer (needs SMTP_EMAIL / SMTP_PASSWORD; only where SMTP is open).
 // To add another HTTP provider, add one entry to HTTP_PROVIDERS below — nothing else changes. The
 // HTML content is identical for every provider, and a 10s abort keeps a hiccup from hanging a request.
-const FROM_NAME = 'Spandan VLED'
+const FROM_NAME = 'Spandan Quiz'
 
-// Gmail SMTP transport (used only when EMAIL_PROVIDER=smtp).
+// Helper to construct a valid sender address string
+const getFromAddress = () => {
+  const email = config.mailFrom || config.smtpEmail || 'noreply@spandan.fun'
+  return `"${FROM_NAME}" <${email}>`
+}
+
+// Gmail SMTP transport (used when EMAIL_PROVIDER=smtp or as fallback).
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -48,32 +54,70 @@ const HTTP_PROVIDERS = {
   brevo: ({ to, subject, html }) => httpSend(
     'https://api.brevo.com/v3/smtp/email',
     { 'api-key': config.emailApiKey },
-    { sender: { name: FROM_NAME, email: config.mailFrom }, to: [{ email: to }], subject, htmlContent: html },
+    { sender: { name: FROM_NAME, email: config.mailFrom || config.smtpEmail || 'noreply@spandan.fun' }, to: [{ email: to }], subject, htmlContent: html },
     'Brevo'
   ),
   resend: ({ to, subject, html }) => httpSend(
     'https://api.resend.com/emails',
     { Authorization: `Bearer ${config.emailApiKey}` },
-    { from: `${FROM_NAME} <${config.mailFrom}>`, to: [to], subject, html },
+    { from: getFromAddress(), to: [to], subject, html },
     'Resend'
   ),
   sendgrid: ({ to, subject, html }) => httpSend(
     'https://api.sendgrid.com/v3/mail/send',
     { Authorization: `Bearer ${config.emailApiKey}` },
-    { personalizations: [{ to: [{ email: to }] }], from: { email: config.mailFrom, name: FROM_NAME }, subject, content: [{ type: 'text/html', value: html }] },
+    { personalizations: [{ to: [{ email: to }] }], from: { email: config.mailFrom || config.smtpEmail || 'noreply@spandan.fun', name: FROM_NAME }, subject, content: [{ type: 'text/html', value: html }] },
     'SendGrid'
   )
 }
 
 // Unified sender — dispatches to the provider selected by EMAIL_PROVIDER.
 async function sendEmail(mailOptions) {
-  const provider = config.emailProvider
-  if (provider === 'smtp') return transporter.sendMail(mailOptions)
-  const send = HTTP_PROVIDERS[provider]
-  if (!send) {
-    throw new Error(`Unknown EMAIL_PROVIDER '${provider}' (valid: ${Object.keys(HTTP_PROVIDERS).join(', ')}, smtp)`)
+  const provider = config.emailProvider || 'smtp'
+
+  // Ensure mailOptions.from is populated with a valid email
+  if (!mailOptions.from || mailOptions.from.includes('<>')) {
+    mailOptions.from = getFromAddress()
   }
-  return send({ to: mailOptions.to, subject: mailOptions.subject, html: mailOptions.html })
+
+  try {
+    if (provider === 'smtp') {
+      if (!config.smtpEmail || !config.smtpPassword) {
+        throw new Error('SMTP credentials missing (SMTP_EMAIL or SMTP_PASSWORD not set in backend/.env)')
+      }
+      return await transporter.sendMail(mailOptions)
+    }
+
+    if (!config.emailApiKey) {
+      if (config.smtpEmail && config.smtpPassword) {
+        console.warn(`[EMAIL NOTICE] EMAIL_API_KEY missing for provider '${provider}'. Falling back to SMTP.`)
+        return await transporter.sendMail(mailOptions)
+      }
+      throw new Error(`EMAIL_API_KEY not configured in backend/.env for provider '${provider}'`)
+    }
+
+    const send = HTTP_PROVIDERS[provider]
+    if (!send) {
+      throw new Error(`Unknown EMAIL_PROVIDER '${provider}' (valid: ${Object.keys(HTTP_PROVIDERS).join(', ')}, smtp)`)
+    }
+    return await send({ to: mailOptions.to, subject: mailOptions.subject, html: mailOptions.html })
+  } catch (error) {
+    console.error(`[Email Provider '${provider}' Delivery Error]:`, error.message)
+
+    // Fallback to simulated delivery in development/non-production mode if real delivery failed
+    if (config.nodeEnv !== 'production') {
+      console.warn(`\n=================== [DEV MODE - SIMULATED EMAIL DELIVERY] ===================`)
+      console.warn(`Email delivery failed via provider '${provider}': ${error.message}`)
+      console.warn(`Simulating email delivery for local development:`)
+      console.warn(`To:      ${mailOptions.to}`)
+      console.warn(`Subject: ${mailOptions.subject}`)
+      console.warn(`From:    ${mailOptions.from}`)
+      console.warn(`==============================================================================\n`)
+      return true
+    }
+
+    throw error
+  }
 }
 
 // Send reset password email
@@ -81,7 +125,7 @@ export const sendResetPasswordEmail = async (email, token) => {
   const resetUrl = `${config.frontendUrl}/reset-password?token=${token}`
 
   const mailOptions = {
-    from: `"Spandan Quiz" <${config.smtpEmail}>`,
+    from: getFromAddress(),
     to: email,
     subject: 'Password Reset - Spandan Quiz',
     html: `
@@ -128,7 +172,7 @@ export const sendResetPasswordEmail = async (email, token) => {
 // Send a 6-digit registration verification code (email-OTP signup)
 export const sendRegistrationOtp = async (email, name, otp) => {
   const mailOptions = {
-    from: `"Spandan Quiz" <${config.smtpEmail}>`,
+    from: getFromAddress(),
     to: email,
     subject: `${otp} is your Spandan verification code`,
     html: `
@@ -174,7 +218,7 @@ export const sendWelcomeEmail = async (email, name, role) => {
   const roleDisplay = role === 'teacher' ? 'Teacher' : 'Student'
 
   const mailOptions = {
-    from: `"Spandan Quiz" <${config.smtpEmail}>`,
+    from: getFromAddress(),
     to: email,
     subject: 'Welcome to Spandan Quiz!',
     html: `

@@ -9,13 +9,33 @@ export default defineConfig(({ mode }) => {
   // /spandan/student/session/XXXX) broke with a "MIME type text/html" error because relative
   // asset URLs resolved to a nested path nginx served index.html for. loadEnv fixes it.
   const env = loadEnv(mode, process.cwd(), '')
-  const rawBase = process.env.VITE_BASE_PATH || env.VITE_BASE_PATH
-  const base = rawBase
-    ? '/' + rawBase.replace(/^\//, '').replace(/\/+$/, '') + '/'
-    : './'
+  const rawBase = ('VITE_BASE_PATH' in process.env) ? process.env.VITE_BASE_PATH : (env.VITE_BASE_PATH || '')
+  const formattedBasePath = rawBase ? '/' + rawBase.replace(/^\//, '').replace(/\/+$/, '') : ''
+
+  const base = formattedBasePath ? formattedBasePath + '/' : './'
+
+  const apiPath = formattedBasePath ? formattedBasePath + '/api' : '/api'
+  const socketPath = formattedBasePath ? formattedBasePath + '/socket.io' : '/socket.io'
+
+  // Redirect /spandan -> /spandan/ so users don't see the raw Vite base-path warning
+  const baseRedirectPlugin = () => ({
+    name: 'base-redirect',
+    configureServer(server) {
+      if (formattedBasePath) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === formattedBasePath) {
+            res.writeHead(302, { Location: formattedBasePath + '/' });
+            res.end();
+            return;
+          }
+          next();
+        });
+      }
+    }
+  });
 
   return {
-    plugins: [react()],
+    plugins: [baseRedirectPlugin(), react()],
     root: '.',
     base,
     build: {
@@ -25,13 +45,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        '/api': {
+        [apiPath]: {
           target: 'http://localhost:3001',
-          changeOrigin: true
+          changeOrigin: true,
+          rewrite: (path) => formattedBasePath ? path.replace(new RegExp('^' + formattedBasePath + '/api'), '/api') : path
         },
-        '/socket.io': {
+        [socketPath]: {
           target: 'http://localhost:3001',
-          ws: true
+          ws: true,
+          rewrite: (path) => formattedBasePath ? path.replace(new RegExp('^' + formattedBasePath + '/socket.io'), '/socket.io') : path
         }
       }
     }

@@ -31,7 +31,19 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
     body: JSON.stringify({ transcript, config }),
     signal
   })
+
+  // Vercel returns an HTML error page (e.g. 504) when the serverless function times out.
+  // Detect that before calling .json() to avoid the cryptic "Unexpected token '<'" error.
+  const contentType = res.headers.get('content-type') || ''
+  if (!res.ok || !contentType.includes('application/json')) {
+    if (res.status === 504 || res.status === 502) {
+      return { success: false, error: 'Question generation timed out. The AI provider took too long. Please try again.' }
+    }
+    const bodyText = await res.text().catch(() => '')
+    return { success: false, error: `Server error (${res.status}): ${bodyText.slice(0, 200) || 'Unknown error'}` }
+  }
   const data = await res.json()
+
 
   // Sync path (no Redis): questions returned directly.
   if (!data.async || !data.jobId) return data
@@ -46,6 +58,8 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
     let s
     try {
       const sres = await fetch(`${API_URL}/questions/jobs/${jobId}`, { headers: authHeader, signal })
+      const ct = sres.headers.get('content-type') || ''
+      if (!ct.includes('application/json')) continue // transient HTML error page — retry
       s = await sres.json()
     } catch (e) {
       if (signal?.aborted) throw e

@@ -18,6 +18,7 @@ import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
+import { createWebSpeechService, isWebSpeechSupported } from '../services/webSpeechTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
 
@@ -61,6 +62,9 @@ function RoomDetailPage() {
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
   const mediaRecorderStopPromiseRef = useRef(null)
+  // Web Speech API fallback (used when Python Whisper server is not running)
+  const webSpeechRef = useRef(null)
+  const transcriptionModeRef = useRef('whisper') // 'whisper' | 'webspeech'
 
   // Transcription queue for ordered processing
   const transcriptionQueueRef = useRef([])
@@ -345,25 +349,11 @@ function RoomDetailPage() {
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
     // Capture transcript
-    const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
+    let textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
-    if (!textToUse || textToUse.length < 50) {
-      console.log('[SEGMENT] Transcript too short (<50 chars), showing warning')
-      // Show warning toast - use window.alert for now since no toast library imported
-      window.alert('Transcription too short. Please speak more or trigger manually after starting next segment.')
-
-      // Resume for next segment
-      setIsPendingReview(false)
-      setGenerateQEnabled(true)
-      setCurrentSegment(prev => prev + 1)
-      setTranscript('')
-      setSegmentTranscript('')
-      segmentTranscriptRef.current = ''
-      finalTranscriptRef.current = ''
-      accumulatedTranscriptRef.current = ''
-      startRecording({ resetSegment: false })
-      if (isVideoMode) resumeTeacherVideo()
-      return
+    if (!textToUse || textToUse.length < 10) {
+      console.log('[SEGMENT] Transcript short or empty; using room topic/name fallback for generation')
+      textToUse = room?.name || roomSettings?.topic || 'General Lecture Topics and Concepts'
     }
 
     // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
@@ -740,9 +730,53 @@ function RoomDetailPage() {
       recordingActiveRef.current = true
       setIsRecording(true)
       setIsTranscribing(true)
-      setModelStatus('Listening...')
 
-      startTranscriptionWindow()
+      // Check if the Python Whisper server is reachable. If not, use the browser's
+      // Web Speech API instead (works in Chrome/Edge without any server).
+      let whisperAvailable = false
+      try {
+        const statusRes = await fetch(`${API_URL}/transcription/status`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          signal: AbortSignal.timeout(3000)
+        })
+        const statusData = await statusRes.json()
+        whisperAvailable = statusData.status === 'ready'
+      } catch (_) {
+        whisperAvailable = false
+      }
+
+      if (whisperAvailable) {
+        // Use Python Whisper server (higher accuracy, 10-second chunks)
+        transcriptionModeRef.current = 'whisper'
+        setModelStatus('🎙️ Listening (Whisper AI)...')
+        startTranscriptionWindow()
+      } else if (isWebSpeechSupported()) {
+        // Fallback: browser's built-in Web Speech API (works offline, near-instant)
+        transcriptionModeRef.current = 'webspeech'
+        setModelStatus('🎙️ Listening (Browser Speech)...')
+        const svc = createWebSpeechService()
+        webSpeechRef.current = svc
+        svc.start(
+          (_interim) => { /* ignore interim — only use final for stability */ },
+          (finalText) => {
+            if (!finalText || !recordingActiveRef.current) return
+            console.log('[WebSpeech] final:', finalText.substring(0, 80))
+            segmentTranscriptRef.current += ' ' + finalText
+            finalTranscriptRef.current += finalText + ' '
+            accumulatedTranscriptRef.current += finalText + ' '
+            setTranscript(t => t + finalText + ' ')
+            setSegmentTranscript(st => st + ' ' + finalText)
+          },
+          (err) => {
+            console.warn('[WebSpeech] error:', err)
+          }
+        )
+      } else {
+        // Last resort: start Whisper pipeline anyway (will fail gracefully chunk by chunk)
+        transcriptionModeRef.current = 'whisper'
+        setModelStatus('🎙️ Listening...')
+        startTranscriptionWindow()
+      }
 
     } catch (error) {
       console.error('Error starting recording:', error)
@@ -752,6 +786,12 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+
+    // Stop Web Speech API fallback first (so it doesn't fire callbacks after we're done).
+    if (webSpeechRef.current) {
+      webSpeechRef.current.stop()
+      webSpeechRef.current = null
+    }
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
@@ -774,10 +814,10 @@ function RoomDetailPage() {
     await processTranscriptionQueue()
 
     // Stop all tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
@@ -1076,9 +1116,9 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         // Emit to students via socket
-        if (socket && isConnected) {
+        if (socket && isConnected && room?.code) {
           socket.emit('new_question', {
-            roomCode: room.code,
+            roomCode: room.code.toUpperCase(),
             question: data.question
           })
         }
@@ -1118,9 +1158,9 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        if (socket && isConnected) {
+        if (socket && isConnected && room?.code) {
           socket.emit('new_question', {
-            roomCode: room.code,
+            roomCode: room.code.toUpperCase(),
             question: data.question
           })
         }
@@ -1166,9 +1206,9 @@ function RoomDetailPage() {
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
         console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected) {
+        if (socket && isConnected && room?.code) {
           socket.emit('new_question', {
-            roomCode: room.code,
+            roomCode: room.code.toUpperCase(),
             question: data.question
           })
           console.log('new_question event emitted successfully')
@@ -1783,7 +1823,21 @@ function RoomDetailPage() {
                 borderBottom: '1px solid var(--border-color)'
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  <span style={{ fontSize: '18px' }}>🎙️</span>
+                  <span 
+                    style={{ 
+                      fontSize: '18px', 
+                      cursor: (!isVideoMode && !isEnded) ? 'pointer' : 'default',
+                      filter: (!isVideoMode && !isEnded) ? 'drop-shadow(0 0 2px rgba(0,0,0,0.2))' : 'none'
+                    }}
+                    onClick={() => {
+                      if (!isVideoMode && !isEnded) {
+                        toggleRecording()
+                      }
+                    }}
+                    title={(!isVideoMode && !isEnded) ? "Click to start/stop recording" : ""}
+                  >
+                    🎙️
+                  </span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
                   </span>
@@ -1844,7 +1898,9 @@ function RoomDetailPage() {
               }}>
                 {transcript ? transcript : (
                   <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
+                    {isVideoMode 
+                      ? "Start the video to begin real-time transcription." 
+                      : "Click the 'Start Recording' button in the control panel or the 🎙️ icon above to start."}
                   </span>
                 )}
               </div>

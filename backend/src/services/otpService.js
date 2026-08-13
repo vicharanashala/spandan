@@ -40,6 +40,11 @@ export async function requestRegistrationOtp(email, name) {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   )
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`\n==================================================`)
+    console.log(`🔑 [DEV VERIFICATION CODE] Email: ${e} | Code: ${otp}`)
+    console.log(`==================================================\n`)
+  }
   await sendRegistrationOtp(e, name, otp) // throws if the email fails → route returns 500
   return { expiresInSec: Math.round(OTP_TTL_MS / 1000) }
 }

@@ -17,9 +17,10 @@ import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
+import AnalyticsDashboard from './pages/AnalyticsDashboard'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
-import { API_URL } from './config.js'
+import { API_URL, BASE_PATH } from './config.js'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -94,7 +95,7 @@ function App() {
 
         // Open dashboard in new tab
         const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
-        const redirectUrl = `${window.location.origin}/spandan${dashboard}`
+        const redirectUrl = `${window.location.origin}${BASE_PATH}${dashboard}`
         console.log('[Spandan] Opening dashboard:', redirectUrl)
         window.open(redirectUrl, '_blank')
       } catch (error) {
@@ -134,7 +135,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={BASE_PATH}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
@@ -174,6 +175,11 @@ function App() {
             <RoomResultsPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/analytics" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <AnalyticsDashboard />
+          </ProtectedRoute>
+        } />
         <Route path="/teacher/help" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <HelpPage />
@@ -203,6 +209,11 @@ function App() {
         <Route path="/student/room-history" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/analytics" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <AnalyticsDashboard />
           </ProtectedRoute>
         } />
         <Route path="/student/profile" element={

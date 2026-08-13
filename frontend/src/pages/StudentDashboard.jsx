@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import LpsDonut from '../components/LpsDonut.jsx'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
@@ -6,6 +7,7 @@ import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import RandomQuestionModal from '../components/RandomQuestionModal.jsx'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
 
@@ -24,6 +26,7 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+  const [studentLps, setStudentLps] = useState(0) // overall LPS
 
   useEffect(() => {
     if (token) {
@@ -32,6 +35,32 @@ function StudentDashboard() {
       fetchActiveRooms()
     }
   }, [token])
+
+  // Fetch student LPS for each active room and compute average
+  useEffect(() => {
+    if (token && activeRooms && activeRooms.length > 0) {
+      const fetchStudentLps = async () => {
+        try {
+          const lpsVals = []
+          for (const room of activeRooms) {
+            const res = await fetch(`${API_URL}/analytics/student/${user._id}/${room._id}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            })
+            const data = await res.json()
+            if (data.success && data.metrics && typeof data.metrics.lps === 'number') {
+              lpsVals.push(data.metrics.lps)
+            }
+          }
+          const avg = lpsVals.length ? Math.round(lpsVals.reduce((a, b) => a + b, 0) / lpsVals.length) : 0
+          setStudentLps(avg)
+        } catch (err) {
+          console.error('Failed to fetch student LPS:', err)
+          setStudentLps(0)
+        }
+      }
+      fetchStudentLps()
+    }
+  }, [token, activeRooms])
 
   const fetchStudentStats = async () => {
     try {
@@ -86,6 +115,7 @@ function StudentDashboard() {
       boxSizing: 'border-box'
     }}>
       <Sidebar user={user} />
+      <RandomQuestionModal />
 
       {/* Main Content */}
       <div style={{
@@ -145,6 +175,10 @@ function StudentDashboard() {
             gap: isMobile ? '12px' : '20px',
             marginBottom: isMobile ? '24px' : '32px'
           }}>
+            {/* Student LPS Donut */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <LpsDonut percentage={studentLps} label="Your LPS" />
+            </div>
             {statCards.map((card) => (
               <div key={card.label} style={{
                 background: 'var(--bg-card)',

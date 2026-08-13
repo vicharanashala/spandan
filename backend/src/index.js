@@ -6,6 +6,13 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
+dotenv.config()
 import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
@@ -21,6 +28,9 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import analyticsRoutes from './routes/analytics.js'
+import questionRoute from './routes/questionRoute.js'
+import { startQuestionScheduler, stopQuestionScheduler } from './services/questionScheduler.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
 
@@ -356,8 +366,9 @@ app.use('/api/auth', authRoutes)
 app.use('/api/rooms', roomRoutes)
 app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
-app.use('/api/transcripts', transcriptRoutes)
+app.use('/api/question', questionRoute)
 app.use('/api/responses', responseRoutes)
+app.use('/api/analytics', analyticsRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
 
@@ -448,7 +459,7 @@ const videoPaused = new Map() // roomCode -> true while the teacher's question p
 // stays the current one until the NEXT launch overwrites it (or the room ends). This is the only
 // desync-safe "poll is live" signal — a per-student/teacher timer can't be, since each student runs
 // their own answering window. Fire-and-forget.
-async function setLiveQuestion(roomId, questionId) {
+export async function setLiveQuestion(roomId, questionId) {
   try {
     const Room = (await import('./models/Room.js')).default
     const Question = (await import('./models/Question.js')).default
@@ -478,9 +489,10 @@ async function setLiveQuestion(roomId, questionId) {
 // breaks nothing: the teacher renders from its own local copy, scoring is computed server-side from
 // the submitted option index, and the answer is revealed afterwards through the results path. Option
 // order/count are preserved (students submit answers by index).
-function sanitizeQuestionForStudents(q) {
+export function sanitizeQuestionForStudents(q) {
   if (!q || typeof q !== 'object') return q
-  const { explanation, ...rest } = q
+  const obj = typeof q.toObject === 'function' ? q.toObject() : { ...q }
+  const { explanation, ...rest } = obj
   if (Array.isArray(rest.options)) {
     rest.options = rest.options.map(o =>
       (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o
@@ -562,20 +574,30 @@ io.on('connection', (socket) => {
 
       // Authorized → now join the socket room and announce. The room-wide event carries only the
       // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
-      socket.join(roomCode)
+      const canonicalCode = room?.code || roomCode.toUpperCase().trim()
+      socket.join(canonicalCode)
+      if (canonicalCode !== roomCode) {
+        socket.join(roomCode) // Join raw roomCode as well for resilience
+      }
       // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
       // (privacy — a student never receives the full board, just the public top 10 + their own rank).
       socket.join('user:' + userId)
       const participantCount = await RoomMember.countDocuments({ roomId: room._id })
 
-      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      io.to(canonicalCode).emit('room:joined', { roomCode: canonicalCode, participants: participantCount })
+      if (canonicalCode !== roomCode) {
+        io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      }
+
+      // Start question scheduler for this room (LPS feature)
+      startQuestionScheduler(canonicalCode, io)
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
-      const vp = videoProgress.get(roomCode)
+      const vp = videoProgress.get(canonicalCode)
       if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
       // If the teacher's question popup is currently open, a late-joining student must start paused.
-      if (videoPaused.get(roomCode)) socket.emit('video:pause')
+      if (videoPaused.get(canonicalCode)) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
@@ -591,8 +613,11 @@ io.on('connection', (socket) => {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.leave(roomCode)
       const room = await Room.findByCode(roomCode)
+      const canonicalCode = room?.code || roomCode.toUpperCase().trim()
+
+      socket.leave(canonicalCode)
+      socket.leave(roomCode)
 
       let participantCount = 0
       if (room) {
@@ -602,7 +627,7 @@ io.on('connection', (socket) => {
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      io.to(canonicalCode).emit('room:left', { roomCode: canonicalCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
       io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
@@ -621,20 +646,31 @@ io.on('connection', (socket) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
-    io.to(data.roomCode).emit('question:started', {
+    const payload = {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
       timer: data.timer,
       startTime: Date.now()
-    })
+    }
+    const canonicalCode = room.code
+    io.to(canonicalCode).emit('question:started', payload)
+    if (data.roomCode && data.roomCode !== canonicalCode) {
+      io.to(data.roomCode).emit('question:started', payload)
+    }
   })
 
   socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    io.to(data.roomCode).emit('question:ended', {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    const canonicalCode = room.code
+    const payload = {
       questionId: data.questionId,
       results: data.results
-    })
+    }
+    io.to(canonicalCode).emit('question:ended', payload)
+    if (data.roomCode && data.roomCode !== canonicalCode) {
+      io.to(data.roomCode).emit('question:ended', payload)
+    }
   })
 
   // New question pushed by the teacher (manually created)
@@ -647,7 +683,12 @@ io.on('connection', (socket) => {
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+      const sanitized = sanitizeQuestionForStudents(data.question)
+      const canonicalCode = room.code
+      io.to(canonicalCode).emit('new_question', sanitized)
+      if (data.roomCode && data.roomCode !== canonicalCode) {
+        io.to(data.roomCode).emit('new_question', sanitized)
+      }
     }
   })
 
@@ -720,18 +761,26 @@ const connectDB = async () => {
   }
 }
 
-const PORT = process.env.PORT || 3001
-
-// Start server
-const startServer = async () => {
-  await connectDB()
-  
-  httpServer.listen(PORT, () => {
-    console.log(`Spandan backend v0.5 running on port ${PORT}`)
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
-  })
+let dbPromise = null
+export const ensureDbConnected = async () => {
+  if (mongoose.connection.readyState === 1) return
+  if (!dbPromise) {
+    dbPromise = connectDB()
+  }
+  await dbPromise
 }
 
-startServer().catch(console.error)
+// Start server (only in non-serverless environment)
+if (process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 3001
+  const startServer = async () => {
+    await connectDB()
+    httpServer.listen(PORT, () => {
+      console.log(`Spandan backend v0.5 running on port ${PORT}`)
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
+    })
+  }
+  startServer().catch(console.error)
+}
 
 export { app, io }
