@@ -49,11 +49,19 @@ function ProfileCard({ profile, criteriaMeta, onEdit, onDuplicate, onDelete, onP
         {(profile.criteria || []).map((c) => {
           const meta = criteriaMeta.find((m) => m.key === c.key)
           return (
-            <div key={c.key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: 'var(--text-primary)' }}>
-              <span>{meta?.label || c.key}</span>
-              <span style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-                {(Number(c.weight) * 100).toFixed(0)}%
-              </span>
+            <div key={c.key} style={{ display: 'flex', flexDirection: 'column', fontSize: '13px', color: 'var(--text-primary)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{meta?.label || c.key}</span>
+                <span style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                  {(Number(c.weight) * 100).toFixed(0)}%
+                </span>
+              </div>
+              {c.key === 'incorrect_responses' && c.penalty > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#dc2626', fontWeight: '600', paddingLeft: '8px' }}>
+                  <span>↳ Penalty</span>
+                  <span>-{(Number(c.penalty) * 100).toFixed(0)}%</span>
+                </div>
+              )}
             </div>
           )
         })}
@@ -107,16 +115,72 @@ function ProfileCard({ profile, criteriaMeta, onEdit, onDuplicate, onDelete, onP
     </div>
   )
 }
+function RoomRow({ room, onPick, isSelected, selectionMode }) {
+  const borderStyle = isSelected
+    ? '2px solid #7c3aed'
+    : '1px solid #e5e7eb';
+  const backgroundStyle = isSelected
+    ? '#f3e8ff'
+    : '#f9fafb';
+
+  return (
+    <button
+      onClick={() => onPick(room)}
+      style={{
+        textAlign: 'left',
+        padding: '10px 12px',
+        background: backgroundStyle,
+        border: borderStyle,
+        borderRadius: '8px',
+        cursor: 'pointer',
+        color: '#1f2937',
+        fontSize: '14px',
+        width: '100%',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }}
+    >
+      <div>
+        <div style={{ fontWeight: '600' }}>{room.name}</div>
+        <div style={{ fontSize: '12px', color: '#6b7280' }}>Code: {room.code}</div>
+      </div>
+      {selectionMode === 'multiple' && (
+        <input
+          type="checkbox"
+          checked={isSelected}
+          readOnly
+          style={{ cursor: 'pointer' }}
+        />
+      )}
+    </button>
+  )
+}
+
+function Section({ title, children }) {
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <div style={{ fontSize: '11px', fontWeight: '600', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
+        {title}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>{children}</div>
+    </div>
+  )
+}
 
 function RoomPickerModal({ open, onClose, onPick, profile }) {
   const [rooms, setRooms] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [selectionMode, setSelectionMode] = useState('single')
+  const [selectedRoomIds, setSelectedRoomIds] = useState([])
 
   useEffect(() => {
     if (!open) return
     setLoading(true)
     setError('')
+    setSelectionMode('single')
+    setSelectedRoomIds([])
     const token = useAuthStore.getState().token
     fetch(`${API_URL}/rooms`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then((r) => r.json())
@@ -129,6 +193,24 @@ function RoomPickerModal({ open, onClose, onPick, profile }) {
 
   const ended = rooms.filter((r) => r.endedAt)
   const active = rooms.filter((r) => !r.endedAt)
+
+  const handleRowClick = (room) => {
+    if (selectionMode === 'single') {
+      onPick(room)
+    } else {
+      setSelectedRoomIds((prev) =>
+        prev.includes(room._id)
+          ? prev.filter((id) => id !== room._id)
+          : [...prev, room._id]
+      )
+    }
+  }
+
+  const handleApplyMultiple = () => {
+    if (selectedRoomIds.length === 0) return
+    const selectedRooms = rooms.filter((r) => selectedRoomIds.includes(r._id))
+    onPick(selectedRooms)
+  }
 
   return (
     <div
@@ -147,29 +229,67 @@ function RoomPickerModal({ open, onClose, onPick, profile }) {
           overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
         }}
       >
-        <h3 style={{ margin: '0 0 8px', fontSize: '18px', fontWeight: '700', color: '#1f2937' }}>
-          Apply "{profile?.name}" to a room
-        </h3>
-        <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#6b7280' }}>
-          Preview computes the scores live on the server. Ended sessions return more data than live ones.
-        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#1f2937' }}>
+              Apply "{profile?.name}" to a room
+            </h3>
+            <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#6b7280' }}>
+              Preview computes the scores live on the server. Ended sessions return more data than live ones.
+            </p>
+          </div>
+          <div>
+            <select
+              value={selectionMode}
+              onChange={(e) => {
+                setSelectionMode(e.target.value)
+                setSelectedRoomIds([])
+              }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d1d5db',
+                fontSize: '13px',
+                background: 'white',
+                color: '#374151',
+                cursor: 'pointer'
+              }}
+              aria-label="Selection Mode"
+            >
+              <option value="single">Single Room</option>
+              <option value="multiple">Multiple Rooms</option>
+            </select>
+          </div>
+        </div>
 
         {loading && <div style={{ padding: '24px', textAlign: 'center', color: '#6b7280' }}>Loading rooms…</div>}
         {error && <div style={{ padding: '10px', background: '#fef2f2', color: '#dc2626', borderRadius: '8px', fontSize: '13px' }}>{error}</div>}
 
         {!loading && !error && (
-          <>
+          <div style={{ marginTop: '16px' }}>
             {ended.length > 0 && (
               <Section title="Ended sessions">
                 {ended.map((r) => (
-                  <RoomRow key={r._id} room={r} onPick={onPick} />
+                  <RoomRow
+                    key={r._id}
+                    room={r}
+                    onPick={handleRowClick}
+                    isSelected={selectedRoomIds.includes(r._id)}
+                    selectionMode={selectionMode}
+                  />
                 ))}
               </Section>
             )}
             {active.length > 0 && (
               <Section title="Active sessions (preview will reflect responses so far)">
                 {active.map((r) => (
-                  <RoomRow key={r._id} room={r} onPick={onPick} />
+                  <RoomRow
+                    key={r._id}
+                    room={r}
+                    onPick={handleRowClick}
+                    isSelected={selectedRoomIds.includes(r._id)}
+                    selectionMode={selectionMode}
+                  />
                 ))}
               </Section>
             )}
@@ -178,54 +298,39 @@ function RoomPickerModal({ open, onClose, onPick, profile }) {
                 No rooms yet. Create a room from your dashboard.
               </div>
             )}
-          </>
+          </div>
         )}
 
-        <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
           <button
             onClick={onClose}
             style={{ padding: '10px 20px', background: '#e5e7eb', color: '#374151', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}
           >
             Cancel
           </button>
+          {selectionMode === 'multiple' && (
+            <button
+              onClick={handleApplyMultiple}
+              disabled={selectedRoomIds.length === 0}
+              style={{
+                padding: '10px 20px',
+                background: selectedRoomIds.length === 0 ? '#9ca3af' : '#7c3aed',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '600',
+                cursor: selectedRoomIds.length === 0 ? 'not-allowed' : 'pointer'
+              }}
+            >
+              Apply to Selected ({selectedRoomIds.length})
+            </button>
+          )}
         </div>
       </div>
     </div>
   )
 }
-
-function Section({ title, children }) {
-  return (
-    <div style={{ marginBottom: '14px' }}>
-      <div style={{ fontSize: '11px', fontWeight: '600', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
-        {title}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>{children}</div>
-    </div>
-  )
-}
-
-function RoomRow({ room, onPick }) {
-  return (
-    <button
-      onClick={() => onPick(room)}
-      style={{
-        textAlign: 'left',
-        padding: '10px 12px',
-        background: '#f9fafb',
-        border: '1px solid #e5e7eb',
-        borderRadius: '8px',
-        cursor: 'pointer',
-        color: '#1f2937',
-        fontSize: '14px'
-      }}
-    >
-      <div style={{ fontWeight: '600' }}>{room.name}</div>
-      <div style={{ fontSize: '12px', color: '#6b7280' }}>Code: {room.code}</div>
-    </button>
-  )
-}
-
 function EvaluationProfilesPage() {
   const { user } = useAuthStore()
   const navigate = useNavigate()
@@ -287,15 +392,72 @@ function EvaluationProfilesPage() {
 
   const handlePreviewRoom = (p) => setPickerFor(p)
 
-  const handlePickRoom = async (room) => {
+  const handlePickRoom = async (roomOrRooms) => {
     const profile = pickerFor
     setPickerFor(null)
-    setScoresModal({ title: `Preview · ${profile.name}`, subtitle: `${room.name} (code ${room.code})`, result: null, loading: true, error: '' })
-    try {
-      const result = await previewOrApplyProfile(profile._id, room._id, 'preview')
-      setScoresModal({ title: `Preview · ${profile.name}`, subtitle: `${room.name} (code ${room.code})`, result, loading: false, error: '' })
-    } catch (e) {
-      setScoresModal({ title: `Preview · ${profile.name}`, subtitle: `${room.name} (code ${room.code})`, result: null, loading: false, error: e.message })
+    const isMulti = Array.isArray(roomOrRooms)
+    const title = `Preview · ${profile.name}`
+
+    if (isMulti) {
+      const roomNames = roomOrRooms.map((r) => r.name).join(', ')
+      setScoresModal({
+        title,
+        subtitle: `Multiple rooms: ${roomNames}`,
+        result: null,
+        loading: true,
+        error: '',
+        profile
+      })
+      try {
+        const roomIds = roomOrRooms.map((r) => r._id)
+        const result = await previewOrApplyProfile(profile._id, roomIds, 'apply')
+        setScoresModal({
+          title,
+          subtitle: `Multiple rooms`,
+          result,
+          loading: false,
+          error: '',
+          profile
+        })
+      } catch (e) {
+        setScoresModal({
+          title,
+          subtitle: `Multiple rooms`,
+          result: null,
+          loading: false,
+          error: e.message,
+          profile
+        })
+      }
+    } else {
+      setScoresModal({
+        title,
+        subtitle: `${roomOrRooms.name} (code ${roomOrRooms.code})`,
+        result: null,
+        loading: true,
+        error: '',
+        profile
+      })
+      try {
+        const result = await previewOrApplyProfile(profile._id, roomOrRooms._id, 'preview')
+        setScoresModal({
+          title,
+          subtitle: `${roomOrRooms.name} (code ${roomOrRooms.code})`,
+          result,
+          loading: false,
+          error: '',
+          profile
+        })
+      } catch (e) {
+        setScoresModal({
+          title,
+          subtitle: `${roomOrRooms.name} (code ${roomOrRooms.code})`,
+          result: null,
+          loading: false,
+          error: e.message,
+          profile
+        })
+      }
     }
   }
 
@@ -400,6 +562,7 @@ function EvaluationProfilesPage() {
         loading={scoresModal?.loading}
         error={scoresModal?.error}
         criteriaMeta={criteriaMeta}
+        profile={scoresModal?.profile}
       />
     </div>
   )

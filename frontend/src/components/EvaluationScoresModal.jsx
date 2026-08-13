@@ -11,16 +11,164 @@
 //   result         — the API result: { scores: [{studentId, studentName, score, breakdown, responded}], criterionKeys, totalQuestions, totalJoined }
 //   criteriaMeta   — full criteria metadata [{key,label,group,...}] for labels in the breakdown column
 
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 
-function labelFor(key, meta) {
+function labelFor(key, meta, roomIdsCount, activeRoomId) {
+  if (key === 'session_participation' && activeRoomId === 'aggregated' && roomIdsCount > 1) {
+    return `Attendance (${roomIdsCount} Rooms)`
+  }
   return (meta || []).find((c) => c.key === key)?.label || key
 }
 
-export default function EvaluationScoresModal({ open, onClose, title, subtitle, loading, error, result, criteriaMeta }) {
+export default function EvaluationScoresModal({ open, onClose, title, subtitle, loading, error, result, criteriaMeta, profile }) {
+  const [activeRoomId, setActiveRoomId] = useState('')
+
+  useEffect(() => {
+    if (result?.isMulti && result?.results) {
+      if (result.results.aggregated) {
+        setActiveRoomId('aggregated')
+      } else {
+        const keys = Object.keys(result.results)
+        if (keys.length > 0) {
+          setActiveRoomId(keys[0])
+        }
+      }
+    } else {
+      setActiveRoomId('')
+    }
+  }, [result])
+
   if (!open) return null
-  const scores = result?.scores || []
-  const keys = result?.criterionKeys || []
+  
+  const activeResult = result?.isMulti && result?.results && activeRoomId
+    ? result.results[activeRoomId]
+    : result;
+
+  const scores = activeResult?.scores || []
+  const keys = activeResult?.criterionKeys || []
+
+  // CSV Export helper functions
+  const escapeCSV = (val) => {
+    if (val === null || val === undefined) return ''
+    let str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      str = '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'N/A'
+    try {
+      return new Date(dateStr).toLocaleString()
+    } catch (e) {
+      return dateStr
+    }
+  }
+
+  const handleDownloadCSV = () => {
+    if (!result) return
+
+    let csvContent = []
+    
+    // 1. Evaluation Profile Information
+    csvContent.push(`Evaluation Profile,${escapeCSV(profile?.name || title || 'Evaluation Profile')}`)
+    csvContent.push(`Export Generated,${escapeCSV(new Date().toLocaleString())}`)
+    csvContent.push('')
+
+    // 2. Profile Parameters & Weightages
+    csvContent.push('Profile Parameters & Weightages')
+    csvContent.push('Parameter,Weightage,Penalty')
+    if (profile?.criteria) {
+      for (const c of profile.criteria) {
+        const label = labelFor(c.key, criteriaMeta)
+        const weight = `${(c.weight * 100).toFixed(1)}%`
+        const penalty = c.key === 'incorrect_responses' && c.penalty > 0 ? `-${(c.penalty * 100).toFixed(0)}%` : '—'
+        csvContent.push(`${escapeCSV(label)},${escapeCSV(weight)},${escapeCSV(penalty)}`)
+      }
+    }
+    csvContent.push('')
+
+    // 3. Room Information
+    csvContent.push('Room Information')
+    csvContent.push('Room Name,Room Code,Created At / Session Start,Session End')
+    
+    if (result.isMulti && result.results) {
+      // Write info for all rooms except 'aggregated'
+      Object.entries(result.results).forEach(([rid, rdata]) => {
+        if (rid !== 'aggregated') {
+          csvContent.push(`${escapeCSV(rdata.roomName)},${escapeCSV(rdata.roomCode)},${escapeCSV(formatDate(rdata.createdAt))},${escapeCSV(formatDate(rdata.endedAt))}`)
+        }
+      })
+    } else {
+      csvContent.push(`${escapeCSV(result.roomName)},${escapeCSV(result.roomCode)},${escapeCSV(formatDate(result.createdAt))},${escapeCSV(formatDate(result.endedAt))}`)
+    }
+    csvContent.push('')
+
+    // Helper to generate score table rows for a given result payload
+    const appendScoreTable = (sectionTitle, rdata, isAggregated = false) => {
+      csvContent.push(sectionTitle)
+      const headerRow = ['#', 'Student Name', 'Student ID']
+      if (isAggregated) {
+        const totalRooms = rdata.roomIdsCount || 0
+        headerRow.push(`Present / Total Rooms (${totalRooms})`)
+        headerRow.push('Avg Score')
+      } else {
+        headerRow.push('Overall Score')
+      }
+      
+      const cKeys = rdata.criterionKeys || []
+      cKeys.forEach((k) => {
+        const totalRooms = rdata.roomIdsCount || 0
+        headerRow.push(labelFor(k, criteriaMeta, totalRooms, isAggregated ? 'aggregated' : ''))
+      })
+      csvContent.push(headerRow.map(escapeCSV).join(','))
+
+      const sc = rdata.scores || []
+      sc.forEach((s, idx) => {
+        const row = [idx + 1, s.studentName, s.studentId]
+        if (isAggregated) {
+          const totalRooms = rdata.roomIdsCount || 0
+          row.push(`${s.presentCount || 0}/${totalRooms}`)
+        }
+        row.push(`${(s.score * 100).toFixed(1)}%`)
+        cKeys.forEach((k) => {
+          row.push(s.breakdown?.[k] != null ? `${(s.breakdown[k] * 100).toFixed(1)}%` : '—')
+        })
+        csvContent.push(row.map(escapeCSV).join(','))
+      })
+      csvContent.push('')
+    }
+
+    // 4. Student Results
+    if (result.isMulti && result.results) {
+      // Append aggregated results first
+      if (result.results.aggregated) {
+        appendScoreTable('Aggregated Student Results', result.results.aggregated, true)
+      }
+      // Append each individual room
+      Object.entries(result.results).forEach(([rid, rdata]) => {
+        if (rid !== 'aggregated') {
+          appendScoreTable(`Individual Room Results - ${rdata.roomName} (${rdata.roomCode})`, rdata, false)
+        }
+      })
+    } else {
+      appendScoreTable('Student Results', result, false)
+    }
+
+    // Create Blob and download
+    const blob = new Blob([csvContent.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    
+    const filename = `${profile?.name || 'evaluation'}_export.csv`.replace(/\s+/g, '_').toLowerCase()
+    link.setAttribute('download', filename)
+    link.style.visibility = 'hidden'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
 
   return (
     <div
@@ -45,22 +193,64 @@ export default function EvaluationScoresModal({ open, onClose, title, subtitle, 
             <h3 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#1f2937' }}>{title || 'Evaluation Scores'}</h3>
             {subtitle && <p style={{ margin: 0, fontSize: '13px', color: '#6b7280' }}>{subtitle}</p>}
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            style={{
-              padding: '6px 12px', background: 'transparent', color: '#6b7280',
-              border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontSize: '13px'
-            }}
-          >
-            Close
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {result && !loading && !error && (
+              <button
+                onClick={handleDownloadCSV}
+                style={{
+                  padding: '6px 12px', background: '#059669', color: 'white',
+                  border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px',
+                  fontWeight: '600'
+                }}
+              >
+                Download CSV
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              style={{
+                padding: '6px 12px', background: 'transparent', color: '#6b7280',
+                border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontSize: '13px'
+              }}
+            >
+              Close
+            </button>
+          </div>
         </div>
 
-        {result && (
+        {/* Tab selection bar for multi-room results */}
+        {result?.isMulti && result?.results && (
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', overflowX: 'auto', paddingBottom: '6px', borderBottom: '1px solid #e5e7eb' }}>
+            {Object.entries(result.results).map(([rid, rdata]) => {
+              const isActive = rid === activeRoomId
+              return (
+                <button
+                  key={rid}
+                  onClick={() => setActiveRoomId(rid)}
+                  style={{
+                    padding: '6px 14px',
+                    background: isActive ? '#7c3aed' : '#f3f4f6',
+                    color: isActive ? 'white' : '#374151',
+                    border: isActive ? '1px solid #7c3aed' : '1px solid #d1d5db',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {rdata.roomName} {rdata.roomCode !== 'MULTI' ? `(${rdata.roomCode})` : ''}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {activeResult && (
           <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#6b7280' }}>
-            Scored {result.totalScored} joined student{result.totalScored === 1 ? '' : 's'} using{' '}
-            {keys.length} criterion{keys.length === 1 ? '' : 'a'} · {result.totalQuestions} approved question{result.totalQuestions === 1 ? '' : 's'}.
+            Scored {activeResult.totalScored} joined student{activeResult.totalScored === 1 ? '' : 's'} using{' '}
+            {keys.length} criterion{keys.length === 1 ? '' : 'a'} · {activeResult.totalQuestions} approved question{activeResult.totalQuestions === 1 ? '' : 's'}.
           </p>
         )}
 
@@ -85,10 +275,15 @@ export default function EvaluationScoresModal({ open, onClose, title, subtitle, 
                 <tr style={{ background: '#f9fafb' }}>
                   <th style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>#</th>
                   <th style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>Student</th>
-                  <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>Overall</th>
+                  {activeRoomId === 'aggregated' && activeResult?.roomIdsCount > 1 && (
+                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>
+                      Present / Total Rooms ({activeResult.roomIdsCount})
+                    </th>
+                  )}
+                  <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>{activeRoomId === 'aggregated' ? 'Avg Score' : 'Overall'}</th>
                   {keys.map((k) => (
-                    <th key={k} style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', color: '#374151' }} title={labelFor(k, criteriaMeta)}>
-                      {labelFor(k, criteriaMeta)}
+                    <th key={k} style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', color: '#374151' }} title={labelFor(k, criteriaMeta, activeResult?.roomIdsCount, activeRoomId)}>
+                      {labelFor(k, criteriaMeta, activeResult?.roomIdsCount, activeRoomId)}
                     </th>
                   ))}
                 </tr>
@@ -106,6 +301,11 @@ export default function EvaluationScoresModal({ open, onClose, title, subtitle, 
                           <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>(no responses)</span>
                         )}
                       </td>
+                      {activeRoomId === 'aggregated' && activeResult?.roomIdsCount > 1 && (
+                        <td style={{ padding: '8px 12px', textAlign: 'right', color: '#374151', fontVariantNumeric: 'tabular-nums' }}>
+                          {s.presentCount || 0}/{activeResult.roomIdsCount}
+                        </td>
+                      )}
                       <td style={{ padding: '8px 12px', textAlign: 'right', color, fontWeight: '700' }}>{pct}%</td>
                       {keys.map((k) => (
                         <td key={k} style={{ padding: '8px 12px', textAlign: 'right', color: '#374151' }}>
