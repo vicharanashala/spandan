@@ -156,10 +156,9 @@ export const useAuthStore = create(
         }
       },
 
-      updateRole: (newRole) => {
-        set({ 
-          user: { ...get().user, role: newRole }
-        })
+      // SECURITY NOTICE: Self-service role mutation is disabled server-side.
+      updateRole: () => {
+        console.warn('Role mutation disabled: Roles are fixed at registration or updated by administrators.')
       },
 
       updateUser: (updatedUser) => {
