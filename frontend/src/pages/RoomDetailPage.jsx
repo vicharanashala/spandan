@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useTeacherPositionStore from '../stores/teacherPositionStore'
 import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
@@ -13,6 +14,10 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import ConfusionAlertCard from '../components/ConfusionAlertCard'
+import ConfusionTimeline from '../components/ConfusionTimeline'
+import TopicHeatmap from '../components/TopicHeatmap'
+import TopicMarkerBar from '../components/TopicMarkerBar'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
@@ -20,6 +25,7 @@ import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import api from '../lib/api.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -70,12 +76,16 @@ function RoomDetailPage() {
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
+  const currentSegmentRef = useRef(0)
+  useEffect(() => { currentSegmentRef.current = currentSegment }, [currentSegment])
   const [segmentTranscript, setSegmentTranscript] = useState('')
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
   // Question timer for teacher visibility
   const [activeQuestion, setActiveQuestion] = useState(null)
+  const teacherPositionBroadcastRef = useRef(null)
+  const roomStartedAtRef = useRef(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const questionTimerRef = useRef(null)
 
@@ -344,7 +354,7 @@ function RoomDetailPage() {
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
-    // Capture transcript
+    // Capture transcript and save if long enough.
     const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
     if (!textToUse || textToUse.length < 50) {
@@ -366,10 +376,20 @@ function RoomDetailPage() {
       return
     }
 
-    // Auto-generate questions FIRST. The transcript save is intentionally NOT done before this and
-    // never gates generation — a failed/hung transcript POST used to abort the whole segment with no
-    // questions. We save the transcript only after questions are produced (below), fire-and-forget.
+    // Save transcript to database BEFORE generating questions. This guarantees
+    // the backend's auto-topic pipeline (which fires on POST /api/transcripts)
+    // has produced topics by the time question generation runs. A failed save
+    // here aborts generation so we never generate questions from an unsaved
+    // transcript (which would later produce "topic: General Confusion" on
+    // the recovery dashboard). Auto-topic + topic-leak fix depends on this order.
     let generated = null
+    if (!(await saveCurrentSegmentTranscript())) {
+      window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
+      setGenerateQEnabled(true)
+      return
+    }
+
+    // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
       generated = await generateQuestionsFromText(textToUse, currentSegment)
@@ -676,7 +696,57 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
+  // ============================================================
+  // LIVE TEACHER POSITION BROADCAST
+  // While recording, broadcast our wall-clock recording offset every 2s so
+  // students can attach it to their "I'm lost" signals. Without this,
+  // student signals arrive with recordingOffsetMs=0 and the topic resolver
+  // can't tell what we were teaching when the spike happened.
+  // ============================================================
+  const startTeacherBroadcast = useCallback(() => {
+    // Stop any prior broadcast (defensive)
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    const posStore = useTeacherPositionStore.getState()
+    roomStartedAtRef.current = Date.now()
+    posStore.startSession(room._id, room.code, roomStartedAtRef.current).catch(() => {})
+    // Persist the session start on the backend so Room.roomStartedAt is set.
+    // The auto-topic pipeline (POST /api/transcripts) bails out early when
+    // this field is null, which made brand-new rooms fall back to "General
+    // confusion" instead of generating a real topic marker.
+    api.doubts.startSession(room._id).catch(() => {})
+    teacherPositionBroadcastRef.current = setInterval(() => {
+      const offsetMs = Date.now() - (roomStartedAtRef.current || Date.now())
+      const seg = currentSegmentRef.current ?? 0
+      const utterance = accumulatedTranscriptRef.current?.slice(-200) || ''
+      useTeacherPositionStore.getState().broadcastPosition(room.code, {
+        recordingOffsetMs: offsetMs,
+        segmentIndex: seg,
+        utteranceSnapshot: utterance
+      })
+    }, 2000)
+  }, [room])
+
+  const stopTeacherBroadcast = useCallback(() => {
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    useTeacherPositionStore.getState().reset()
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (teacherPositionBroadcastRef.current) {
+        clearInterval(teacherPositionBroadcastRef.current)
+      }
+    }
+  }, [])
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
@@ -744,6 +814,10 @@ function RoomDetailPage() {
 
       startTranscriptionWindow()
 
+      // Live teacher position broadcast so students can attach their "I'm lost"
+      // signals to the current recording offset (otherwise spikes stack at 00:00).
+      startTeacherBroadcast()
+
     } catch (error) {
       console.error('Error starting recording:', error)
       setModelStatus('Microphone access denied')
@@ -752,6 +826,9 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+
+    // Stop live teacher position broadcast
+    stopTeacherBroadcast()
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
@@ -788,9 +865,33 @@ function RoomDetailPage() {
     setModelStatus('Ready')
   }
 
-  const toggleRecording = () => {
+  // Save whatever transcript we have accumulated for the current segment.
+  // Returns true if saved, false if skipped (too short / error).
+  // Used by both the segment-timer path (handleSegmentComplete) and the
+  // manual stop path (toggleRecording) so auto-topic generation can fire
+  // even when the teacher stops recording before the timer expires.
+  const saveCurrentSegmentTranscript = async () => {
+    const textToUse = (segmentTranscriptRef.current || '').trim() || (transcript || '').trim()
+    if (!textToUse || textToUse.length < 50) {
+      console.log('[SEGMENT] Transcript too short (<50 chars), skipping save')
+      return false
+    }
+    try {
+      await saveTranscript(room._id, currentSegment, textToUse, (roomSettings.segmentTime || 0) * 60)
+      console.log('[SEGMENT] Transcript saved to DB')
+      return true
+    } catch (err) {
+      console.error('[SEGMENT] Failed to save transcript:', err)
+      return false
+    }
+  }
+
+  const toggleRecording = async () => {
     if (isRecording) {
-      stopRecording()
+      await stopRecording()
+      // Manual stop: still flush whatever transcript has accumulated so the
+      // auto-topic pipeline can extract a topic before the next doubt lands.
+      await saveCurrentSegmentTranscript()
     } else {
       startRecording()
     }
@@ -1290,7 +1391,7 @@ function RoomDetailPage() {
               cursor: 'pointer',
               fontSize: '18px'
             }}>
-              ←
+              📋
             </button>
 
             <div style={{
@@ -1370,7 +1471,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  ⚠ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1398,7 +1499,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  ⚠ Time's Up!
                 </span>
               </div>
             )}
@@ -1421,7 +1522,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1443,7 +1544,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ⚙ Create Q
               </button>
             )}
 
@@ -1465,7 +1566,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ⚙️ Settings
+                ⚙ Settings
               </button>
 
               <RoomSettingsModal
@@ -1825,7 +1926,7 @@ function RoomDetailPage() {
                       gap: '4px'
                     }}
                   >
-                    {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                    {isGeneratingQuestions ? '⏳ Generating...' : '⚙ Generate Q'}
                   </button>
                 </div>
               </div>
@@ -1856,7 +1957,7 @@ function RoomDetailPage() {
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
+              <span style={{ fontSize: '20px' }}>📋</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
               </span>
@@ -2003,7 +2104,7 @@ function RoomDetailPage() {
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
+                <span style={{ fontSize: '20px' }}>📋</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Leaderboard
                 </span>
@@ -2015,6 +2116,21 @@ function RoomDetailPage() {
           </div>
         </div>
       </div>
+
+
+      {/* Contextual Doubt-Anchored Polling: live confusion signals for the teacher */}
+      {room?._id && (
+        <div className="confusion-stack" style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
+          {/* Milestone 3: ONE live card -- tier-styled, animated count, status pill */}
+          <ConfusionAlertCard roomId={room._id} hasTranscript={!!room?.roomStartedAt} />
+          {/* Milestone 3: ranked topic heat bars */}
+          <TopicHeatmap roomId={room._id} />
+          {/* Milestone 3: history-only timeline (replaces legacy ConfusionSpikePanel live card) */}
+          <ConfusionTimeline roomId={room._id} />
+          {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics */}
+          <TopicMarkerBar roomId={room._id} roomCode={room.code} editable />
+        </div>
+      )}
 
       {/* Question Approval Popup */}
       {showQuestionPopup && pendingQuestions.length > 0 && (

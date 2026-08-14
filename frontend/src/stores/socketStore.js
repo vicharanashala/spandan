@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
 import { SOCKET_URL } from '../config.js'
+import { useTeacherPositionStore } from './teacherPositionStore.js'
 import useAuthStore from './authStore.js'
 
 export const useSocketStore = create((set, get) => ({
@@ -89,6 +90,16 @@ export const useSocketStore = create((set, get) => ({
       console.log('Leaderboard updated:', data)
     })
 
+    // NEW: live teacher position broadcast (for accurate doubt anchoring)
+    socket.on('teacher:position', (data) => {
+      useTeacherPositionStore.getState()._onTeacherPosition(data)
+    })
+
+    // NEW: teacher started the recording session
+    socket.on('teacher:session-start', (data) => {
+      useTeacherPositionStore.getState()._onSessionStart(data)
+    })
+
     socket.on('new_question', (data) => {
       console.log('New question received:', data)
     })
@@ -141,6 +152,20 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('question:end', data)
+    }
+  },
+
+  // NEW: passthroughs for teacher live-position system
+  emitTeacherPosition: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('teacher:position', data)
+    }
+  },
+  emitTeacherSessionStart: (data) => {
+    const { socket } = get()
+    if (socket) {
+      socket.emit('teacher:session-start', data)
     }
   }
 }))
