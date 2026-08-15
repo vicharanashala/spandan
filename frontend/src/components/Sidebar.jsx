@@ -76,8 +76,11 @@ export default function Sidebar({ user }) {
       {/* Floating hamburger — mobile only, when drawer closed */}
       {isMobile && !mobileOpen && (
         <button
+          type="button"
           onClick={() => setMobileOpen(true)}
           aria-label="Open menu"
+          aria-expanded={mobileOpen}
+          aria-controls="spandan-sidebar"
           style={{
             position: 'fixed', top: '14px', left: '14px', zIndex: 60,
             width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -91,13 +94,25 @@ export default function Sidebar({ user }) {
       {/* Backdrop — mobile drawer open */}
       {isMobile && mobileOpen && (
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Close menu"
           onClick={() => setMobileOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+             e.preventDefault()
+             setMobileOpen(false)
+            }
+          }}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 55, backdropFilter: 'blur(1px)' }}
         />
       )}
 
       {/* Sidebar (rail on desktop, drawer on mobile) */}
-      <aside style={{
+      <aside
+         id="spandan-sidebar"
+         aria-label="Main navigation"
+         style={{
         position: 'fixed', left: 0, top: 0, bottom: 0,
         width: `${railWidth}px`,
         background: 'var(--sidebar-bg)',
@@ -152,8 +167,10 @@ export default function Sidebar({ user }) {
               (item.id === 'dashboard' && (location.pathname === '/teacher' || location.pathname === '/student'))
             return (
               <button
+                type="button"
                 key={item.id}
                 onClick={() => navigate(item.path)}
+                aria-current={isActive ? 'page' : undefined}
                 title={item.label}
                 style={{
                   width: showLabels ? '100%' : '48px',
@@ -188,7 +205,9 @@ export default function Sidebar({ user }) {
               color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden'
             }}>
               {user?.profileImage
-                ? <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ? <img src={user.profileImage}
+                alt={`${user?.name || 'User'} profile`}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 : (user?.name?.charAt(0)?.toUpperCase() || 'U')}
             </div>
             {showLabels && (
