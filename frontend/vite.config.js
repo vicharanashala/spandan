@@ -32,6 +32,10 @@ export default defineConfig(({ mode }) => {
         '/socket.io': {
           target: 'http://localhost:3001',
           ws: true
+        },
+        '/spandan/socket.io': {
+          target: 'http://localhost:3001',
+          ws: true
         }
       }
     }

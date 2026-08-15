@@ -31,17 +31,59 @@ export default function EvaluationProfileFormModal({ open, onClose, onSubmit, in
     return () => { cancelled = true }
   }, [open])
 
+  const [distributionMode, setDistributionMode] = useState('even')
+
+  const rebalanceEvenMode = (cur) => {
+    const positiveCriteria = cur.filter((c) => c.key !== 'incorrect_responses')
+    if (positiveCriteria.length === 0) {
+      return cur.map((c) => ({ ...c, weight: 0 }))
+    }
+    const share = Math.floor((100 / positiveCriteria.length) * 10) / 1000 // round to 1 decimal %
+    const rebalanced = cur.map((c) => {
+      if (c.key === 'incorrect_responses') {
+        return { ...c, weight: 0 }
+      }
+      return { ...c, weight: share }
+    })
+    // Adjust last positive entry to make sum exactly 1.0 (avoid drift)
+    const posEntries = rebalanced.filter((c) => c.key !== 'incorrect_responses')
+    if (posEntries.length > 0) {
+      const sum = posEntries.reduce((s, c) => s + c.weight, 0)
+      const diff = 1 - sum
+      const lastPos = posEntries[posEntries.length - 1]
+      const idx = rebalanced.findIndex((c) => c.key === lastPos.key)
+      if (idx !== -1) {
+        rebalanced[idx] = { ...rebalanced[idx], weight: Number((rebalanced[idx].weight + diff).toFixed(4)) }
+      }
+    }
+    return rebalanced
+  }
+
   // Initialize / reset form when opening
   useEffect(() => {
     if (!open) return
     if (initialProfile) {
       setName(initialProfile.name || '')
       setDescription(initialProfile.description || '')
-      setCriteria((initialProfile.criteria || []).map((c) => ({ key: c.key, weight: Number(c.weight) || 0 })))
+      const loadedCriteria = (initialProfile.criteria || []).map((c) => ({
+        key: c.key,
+        weight: c.key === 'incorrect_responses' ? 0 : (Number(c.weight) || 0),
+        penalty: c.key === 'incorrect_responses' && c.penalty != null ? Number(c.penalty) : 0
+      }))
+      setCriteria(loadedCriteria)
+      // Detect if weights are uneven to choose initial distribution mode
+      const positiveCriteria = loadedCriteria.filter((c) => c.key !== 'incorrect_responses')
+      let isEven = true
+      if (positiveCriteria.length > 1) {
+        const firstWeight = positiveCriteria[0].weight
+        isEven = positiveCriteria.every((c) => Math.abs(c.weight - firstWeight) < 0.01)
+      }
+      setDistributionMode(isEven ? 'even' : 'manual')
     } else {
       setName('')
       setDescription('')
       setCriteria([])
+      setDistributionMode('even')
     }
   }, [open, initialProfile])
 
@@ -52,15 +94,16 @@ export default function EvaluationProfileFormModal({ open, onClose, onSubmit, in
 
   const toggleCriterion = (key) => {
     setCriteria((cur) => {
-      if (cur.some((c) => c.key === key)) return cur.filter((c) => c.key !== key)
-      // Default equal split across currently selected + the new one — auto-balance.
-      const next = [...cur, { key, weight: 0 }]
-      const share = Math.floor((100 / (next.length)) * 10) / 1000 // round to 1 decimal %
-      const filled = next.map((c) => ({ key: c.key, weight: share }))
-      // Adjust last entry to make sum exactly 1 (avoid 0.001 drift).
-      const sum = filled.reduce((s, c) => s + c.weight, 0)
-      filled[filled.length - 1] = { ...filled[filled.length - 1], weight: Number((1 - (sum - filled[filled.length - 1].weight)).toFixed(4)) }
-      return filled
+      let next
+      if (cur.some((c) => c.key === key)) {
+        next = cur.filter((c) => c.key !== key)
+      } else {
+        next = [...cur, { key, weight: 0, penalty: 0 }]
+      }
+      if (distributionMode === 'even') {
+        return rebalanceEvenMode(next)
+      }
+      return next
     })
   }
 
@@ -69,15 +112,24 @@ export default function EvaluationProfileFormModal({ open, onClose, onSubmit, in
     setCriteria((cur) => cur.map((c) => c.key === key ? { ...c, weight: Number(frac.toFixed(4)) } : c))
   }
 
-  const distributeEvenly = () => {
-    if (criteria.length === 0) return
-    const each = Number((1 / criteria.length).toFixed(4))
-    const sum = each * criteria.length
-    setCriteria((cur) => cur.map((c, i) => ({
-      ...c,
-      weight: i === cur.length - 1 ? Number((1 - sum + each).toFixed(4)) : each
-    })))
+  const setPenalty = (key, pct) => {
+    const frac = pct === '' ? 0 : Math.max(0, Math.min(100, Number(pct))) / 100
+    setCriteria((cur) => {
+      const next = cur.map((c) => c.key === key ? { ...c, penalty: Number(frac.toFixed(4)) } : c)
+      if (distributionMode === 'even') {
+        return rebalanceEvenMode(next)
+      }
+      return next
+    })
   }
+
+  const handleModeChange = (mode) => {
+    setDistributionMode(mode)
+    if (mode === 'even') {
+      setCriteria((cur) => rebalanceEvenMode(cur))
+    }
+  }
+
 
   const submit = () => {
     if (!valid) return
@@ -148,22 +200,40 @@ export default function EvaluationProfileFormModal({ open, onClose, onSubmit, in
           style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '14px', marginBottom: '16px', resize: 'vertical', fontFamily: 'inherit', color: '#1f2937' }}
         />
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>
+            Weightage Distribution
+          </label>
+          <div style={{ display: 'flex', gap: '16px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#1f2937', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="distributionMode"
+                value="even"
+                checked={distributionMode === 'even'}
+                onChange={() => handleModeChange('even')}
+                style={{ cursor: 'pointer' }}
+              />
+              Distribute Evenly
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#1f2937', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="distributionMode"
+                value="manual"
+                checked={distributionMode === 'manual'}
+                onChange={() => handleModeChange('manual')}
+                style={{ cursor: 'pointer' }}
+              />
+              Manual Distribution
+            </label>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '8px' }}>
           <label style={{ fontSize: '13px', fontWeight: '600', color: '#374151' }}>
             Criteria &amp; weightages
           </label>
-          <button
-            type="button"
-            onClick={distributeEvenly}
-            disabled={criteria.length === 0}
-            style={{
-              padding: '6px 12px', background: 'transparent', color: '#7c3aed',
-              border: '1px solid #7c3aed', borderRadius: '6px', fontSize: '12px',
-              fontWeight: '600', cursor: criteria.length === 0 ? 'not-allowed' : 'pointer'
-            }}
-          >
-            Distribute evenly
-          </button>
         </div>
 
         <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '8px 12px', marginBottom: '12px', background: '#f9fafb' }}>
@@ -195,22 +265,51 @@ export default function EvaluationProfileFormModal({ open, onClose, onSubmit, in
                       <div style={{ fontSize: '11px', color: '#6b7280' }}>{c.description}</div>
                     </div>
                     {isOn && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="1"
-                          value={pct}
-                          onChange={(e) => setWeight(c.key, e.target.value)}
-                          style={{
-                            width: '70px', padding: '6px 8px', borderRadius: '6px',
-                            border: '1px solid #d1d5db', fontSize: '13px',
-                            textAlign: 'right', background: 'white', color: '#1f2937'
-                          }}
-                          aria-label={`Weight percent for ${c.label}`}
-                        />
-                        <span style={{ fontSize: '12px', color: '#6b7280' }}>%</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                        {c.key !== 'incorrect_responses' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="1"
+                              value={pct}
+                              onChange={(e) => setWeight(c.key, e.target.value)}
+                              disabled={distributionMode === 'even'}
+                              style={{
+                                width: '70px', padding: '6px 8px', borderRadius: '6px',
+                                border: '1px solid #d1d5db', fontSize: '13px',
+                                textAlign: 'right',
+                                background: distributionMode === 'even' ? '#f3f4f6' : 'white',
+                                color: distributionMode === 'even' ? '#9ca3af' : '#1f2937',
+                                cursor: distributionMode === 'even' ? 'not-allowed' : 'text'
+                              }}
+                              aria-label={`Weight percent for ${c.label}`}
+                            />
+                            <span style={{ fontSize: '12px', color: '#6b7280' }}>%</span>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '11px', color: '#6b7280', marginRight: '4px' }}>Negative Marking:</span>
+                            <span style={{ fontSize: '12px', fontWeight: '600', color: '#dc2626' }}>-</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="1"
+                              value={sel.penalty != null ? Math.round(sel.penalty * 100) : ''}
+                              onChange={(e) => setPenalty(c.key, e.target.value)}
+                              placeholder="0"
+                              style={{
+                                width: '55px', padding: '4px 6px', borderRadius: '6px',
+                                border: '1px solid #d1d5db', fontSize: '12px',
+                                textAlign: 'right', background: 'white', color: '#dc2626', fontWeight: '600'
+                              }}
+                              aria-label="Negative marking percentage"
+                            />
+                            <span style={{ fontSize: '12px', color: '#dc2626', fontWeight: '600' }}>%</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

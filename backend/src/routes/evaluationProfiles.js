@@ -84,7 +84,11 @@ router.post('/', authorize('teacher'), async (req, res) => {
       teacherId: req.user._id,
       name,
       description,
-      criteria: criteria.map((c) => ({ key: c.key, weight: Number(c.weight) }))
+      criteria: criteria.map((c) => ({
+        key: c.key,
+        weight: Number(c.weight),
+        penalty: c.key === 'incorrect_responses' && c.penalty != null ? Number(c.penalty) : 0
+      }))
     })
     res.status(201).json({ success: true, profile: serializeProfile(created) })
   } catch (e) {
@@ -108,7 +112,11 @@ router.put('/:id', authorize('teacher'), async (req, res) => {
     if (criteria != null) {
       const validation = validateProfileWeights(criteria)
       if (!validation.ok) return res.status(400).json({ error: validation.error })
-      profile.criteria = criteria.map((c) => ({ key: c.key, weight: Number(c.weight) }))
+      profile.criteria = criteria.map((c) => ({
+        key: c.key,
+        weight: Number(c.weight),
+        penalty: c.key === 'incorrect_responses' && c.penalty != null ? Number(c.penalty) : 0
+      }))
     }
     profile.name = name
     profile.description = description
@@ -170,14 +178,141 @@ async function runOnRoom(req, res) {
 
   try {
     const result = await computeScoresForRoom(roomId, profile)
-    res.json({ success: true, result })
+    res.json({
+      success: true,
+      result: {
+        ...result,
+        roomName: room.name,
+        roomCode: room.code,
+        createdAt: room.createdAt,
+        endedAt: room.endedAt
+      }
+    })
   } catch (e) {
     console.error('Error computing evaluation scores:', e)
     res.status(500).json({ error: e.message || 'Failed to compute scores' })
   }
 }
 
+// helper: preview + apply for multiple rooms
+async function runOnRooms(req, res) {
+  const { profile, error } = await loadOwnProfile(req.params.id, req.user._id)
+  if (error) return res.status(error.status).json(error.body)
+
+  const roomIds = req.body?.roomIds
+  if (!roomIds || !Array.isArray(roomIds) || roomIds.length === 0) {
+    return res.status(400).json({ error: 'roomIds array is required' })
+  }
+
+  // Validate that the teacher owns every room
+  const rooms = await Room.find({ _id: { $in: roomIds } })
+  if (rooms.length !== roomIds.length) {
+    return res.status(404).json({ error: 'One or more rooms not found' })
+  }
+
+  for (const room of rooms) {
+    if (room.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: `Not authorized: you do not own room ${room.name}` })
+    }
+  }
+
+  const validation = validateProfileWeights(profile.criteria)
+  if (!validation.ok) return res.status(400).json({ error: validation.error })
+
+  try {
+    const results = {}
+    const roomsData = []
+
+    for (const room of rooms) {
+      const scoreResult = await computeScoresForRoom(room._id, profile)
+      roomsData.push({ room, scoreResult })
+      results[room._id.toString()] = {
+        ...scoreResult,
+        roomName: room.name,
+        roomCode: room.code,
+        createdAt: room.createdAt,
+        endedAt: room.endedAt
+      }
+    }
+
+    // Perform multi-room aggregation
+    // 1. Gather all student IDs and names
+    const studentMap = new Map() // studentId -> { name, rooms: [] }
+    for (const { scoreResult } of roomsData) {
+      for (const s of scoreResult.scores) {
+        if (!studentMap.has(s.studentId)) {
+          studentMap.set(s.studentId, { name: s.studentName, rooms: [] })
+        }
+        studentMap.get(s.studentId).rooms.push(s)
+      }
+    }
+
+    // 2. Compute average for each parameter for each student
+    const aggregatedScores = []
+    const criterionKeys = profile.criteria.map(c => c.key)
+
+    for (const [studentId, info] of studentMap.entries()) {
+      const breakdown = {}
+      let responded = false
+      const presentCount = info.rooms.length
+
+      for (const key of criterionKeys) {
+        let sum = 0
+        for (const s of info.rooms) {
+          if (s.breakdown && s.breakdown[key] !== undefined) {
+            sum += s.breakdown[key]
+          }
+          if (s.responded) responded = true
+        }
+        // Average all parameters across all selected rooms (total count = rooms.length)
+        breakdown[key] = Number((sum / rooms.length).toFixed(4))
+      }
+
+      // Apply the existing profile weightages and penalty to compute final average score
+      let weightedSum = 0
+      let penaltyValue = 0
+      for (const c of profile.criteria) {
+        weightedSum += (breakdown[c.key] || 0) * c.weight
+        if (c.key === 'incorrect_responses' && c.penalty > 0) {
+          penaltyValue = (breakdown[c.key] || 0) * c.penalty
+        }
+      }
+      const finalScore = Math.max(0, Math.min(1, Number((weightedSum - penaltyValue).toFixed(4))))
+
+      aggregatedScores.push({
+        studentId,
+        studentName: info.name,
+        score: finalScore,
+        breakdown,
+        responded,
+        presentCount
+      })
+    }
+
+    // Sort aggregated scores by score desc, then by studentName asc
+    aggregatedScores.sort((a, b) => (b.score - a.score) || a.studentName.localeCompare(b.studentName))
+
+    results['aggregated'] = {
+      roomName: 'Aggregated Results',
+      roomCode: 'MULTI',
+      scores: aggregatedScores,
+      criterionKeys,
+      totalQuestions: roomsData.reduce((sum, r) => sum + r.scoreResult.totalQuestions, 0),
+      totalJoined: studentMap.size,
+      totalScored: aggregatedScores.length,
+      roomIdsCount: rooms.length
+    }
+
+    res.json({ success: true, results, isMulti: true })
+  } catch (e) {
+    console.error('Error running evaluation on multiple rooms:', e)
+    res.status(500).json({ error: e.message || 'Failed to run evaluation' })
+  }
+}
+
 router.post('/:id/preview/:roomId', authorize('teacher'), runOnRoom)
 router.post('/:id/apply/:roomId', authorize('teacher'), runOnRoom)
+router.post('/:id/preview', authorize('teacher'), runOnRooms)
+router.post('/:id/apply', authorize('teacher'), runOnRooms)
 
 export default router

@@ -45,8 +45,12 @@ export async function computeScoresForRoom(roomId, profile) {
   const { Response, RoomMember, Question, User } = await models()
 
   const selectedCriteria = (profile?.criteria || [])
-    .filter((c) => isKnownCriterion(c.key) && Number(c.weight) > 0)
-    .map((c) => ({ key: c.key, weight: Number(c.weight) }))
+    .filter((c) => isKnownCriterion(c.key) && (Number(c.weight) > 0 || (c.key === 'incorrect_responses' && Number(c.penalty) > 0)))
+    .map((c) => ({
+      key: c.key,
+      weight: Number(c.weight) || 0,
+      penalty: c.key === 'incorrect_responses' && c.penalty != null ? Number(c.penalty) : 0
+    }))
   const criterionKeys = selectedCriteria.map((c) => c.key)
   if (criterionKeys.length === 0) {
     throw new Error('Profile has no measurable criteria')
@@ -111,6 +115,7 @@ export async function computeScoresForRoom(roomId, profile) {
     // Per-criterion normalized [0, 1] values
     const breakdown = {}
     let total = 0
+    let penaltyValue = 0
     for (const c of selectedCriteria) {
       // session_participation reads the `joined` flag — see normalizeCriterionValue
       const value = normalizeCriterionValue(
@@ -120,12 +125,16 @@ export async function computeScoresForRoom(roomId, profile) {
       )
       breakdown[c.key] = value
       total += value * c.weight
+      if (c.key === 'incorrect_responses' && c.penalty > 0) {
+        penaltyValue = value * c.penalty
+      }
     }
+    const finalScore = Math.max(0, Math.min(1, total - penaltyValue))
     scores.push({
       studentId: sid,
       studentName: nameByStudent.get(sid) || 'Unknown Student',
       responded,
-      score: Number(total.toFixed(4)), // 0..1
+      score: Number(finalScore.toFixed(4)), // 0..1
       breakdown: Object.fromEntries(
         Object.entries(breakdown).map(([k, v]) => [k, Number(v.toFixed(4))])
       )
@@ -159,6 +168,16 @@ export function validateProfileWeights(criteria) {
     const w = Number(c.weight)
     if (!Number.isFinite(w) || w < 0 || w > 1) {
       return { ok: false, error: `Criterion "${getCriterion(c.key)?.label || c.key}" weight must be between 0 and 1` }
+    }
+    // Validate penalty percentage (only allowed for incorrect_responses, must be between 0 and 1)
+    if (c.penalty != null && c.penalty !== 0) {
+      if (c.key !== 'incorrect_responses') {
+        return { ok: false, error: `Negative marking is only allowed for Incorrect Responses` }
+      }
+      const p = Number(c.penalty)
+      if (!Number.isFinite(p) || p < 0 || p > 1) {
+        return { ok: false, error: `Incorrect Responses penalty must be between 0% and 100%` }
+      }
     }
   }
   const sum = criteria.reduce((s, c) => s + Number(c.weight), 0)

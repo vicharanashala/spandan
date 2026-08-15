@@ -54,11 +54,21 @@ export async function duplicateProfile(id) {
   return data.profile
 }
 
-// One helper for both preview and apply — they're the same backend call.
-export async function previewOrApplyProfile(id, roomId, mode = 'preview') {
+// One helper for both preview and apply — supports both single roomId and array of roomIds.
+export async function previewOrApplyProfile(id, roomIdOrIds, mode = 'preview') {
   const action = mode === 'apply' ? 'apply' : 'preview'
-  const data = await jsonFetch(`${API_URL}/evaluation-profiles/${id}/${action}/${roomId}`, {
-    method: 'POST', headers: headers(true)
-  })
-  return data.result
+  if (Array.isArray(roomIdOrIds)) {
+    const data = await jsonFetch(`${API_URL}/evaluation-profiles/${id}/${action}`, {
+      method: 'POST',
+      headers: headers(true),
+      body: JSON.stringify({ roomIds: roomIdOrIds })
+    })
+    return data
+  } else {
+    const data = await jsonFetch(`${API_URL}/evaluation-profiles/${id}/${action}/${roomIdOrIds}`, {
+      method: 'POST',
+      headers: headers(true)
+    })
+    return data.result
+  }
 }

@@ -102,6 +102,48 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
   }
 })
 
+// Get active question for a room by code (for reconnect recovery)
+// Returns the currently-broadcast question if it's still within its timeToAnswer window.
+// Auth: any authenticated user who can access the room (teacher or student member).
+router.get('/:roomCode/active-question', authenticate, async (req, res) => {
+  try {
+    const Room = (await import('../models/Room.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+
+    const room = await Room.findByCode(req.params.roomCode)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    // Check access: teacher owns room, or student is a member
+    const isOwner = room.teacher.toString() === req.user._id.toString()
+    const isStudentMember = await RoomMember.findOne({ roomId: room._id, studentId: req.user._id })
+    if (!isOwner && !isStudentMember) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
+
+    // Find the most recently launched question for this room
+    const question = await Question.findOne({ roomId: room._id, launchedAt: { $ne: null } })
+      .sort({ launchedAt: -1 })
+      .lean()
+    if (!question) {
+      return res.status(204).send()
+    }
+
+    // Check if the question is still within its timeToAnswer window
+    const expiresAt = question.launchedAt.getTime() + (question.timeToAnswer * 1000)
+    if (Date.now() > expiresAt) {
+      return res.status(204).send()
+    }
+
+    res.json({ question })
+  } catch (error) {
+    console.error('[active-question] Error:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Get rooms student has attended (for room history)
 router.get('/student/room-history', authenticate, authorize('student'), async (req, res) => {
   try {

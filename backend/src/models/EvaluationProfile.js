@@ -21,6 +21,12 @@ const criterionEntrySchema = new mongoose.Schema({
     required: true,
     min: 0,
     max: 1
+  },
+  penalty: {
+    type: Number,
+    min: 0,
+    max: 1,
+    default: 0
   }
 }, { _id: false })
 
