@@ -8,6 +8,8 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 import useIsMobile from '../hooks/useIsMobile'
+import ExportMenu from '../components/ExportMenu'
+import { exportResults } from '../utils/exportResults.js'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -147,6 +149,25 @@ function RoomResultsPage() {
     }
   }
 
+  const handleExport = async (format) => {
+    const isTeacher = user?.role === 'teacher'
+    const payload = { room, questions, responses, stats, isTeacher, userName: user?.name }
+    try {
+      if (format === 'csv-student') {
+        const result = await fetch(`${API_URL}/responses/room/${roomId}/student-detailed`, { headers: { Authorization: `Bearer ${token}` } })
+        const data = await result.json()
+        if (!result.ok) throw new Error(data.error || 'Failed to load student export data')
+        exportResults(format, { ...payload, students: data.students || [], responses: data.responses || [] })
+      } else exportResults(format, payload)
+    } catch (error) { alert(`Export failed: ${error.message}`) }
+  }
+
+  const exportOptions = [
+    { label: 'CSV — Per Question', value: 'csv-question', description: 'Question-level result summary' },
+    ...(user?.role === 'teacher' ? [{ label: 'CSV — Per Student Grid', value: 'csv-student', description: 'Student answers across questions' }] : []),
+    { label: 'PDF Report', value: 'pdf', description: 'Formatted results report' }
+  ]
+
   if (isLoading) {
     return (
       <div style={{
@@ -236,6 +257,7 @@ function RoomResultsPage() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <ExportMenu options={exportOptions} onSelect={handleExport} disabled={!questions.length} />
               <ThemeToggle />
               <ProfileDropdown />
             </div>

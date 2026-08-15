@@ -17,7 +17,8 @@ const questionSchema = new mongoose.Schema({
   },
   options: [{
     text: { type: String, required: true },
-    isCorrect: { type: Boolean, default: false }
+    isCorrect: { type: Boolean, default: false },
+    distractorExplanation: { type: String, default: '' }
   }],
   explanation: {
     type: String,
@@ -40,6 +41,9 @@ const questionSchema = new mongoose.Schema({
     type: Number,
     default: 10
   },
+  silentMode: { type: Boolean, default: false },
+  resultsRevealed: { type: Boolean, default: true },
+  confidenceRequired: { type: Boolean, default: false },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
