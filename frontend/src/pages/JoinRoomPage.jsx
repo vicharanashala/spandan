@@ -54,8 +54,16 @@ function JoinRoomPage() {
       setJoinedRoom(null)
     }
   }
+  const handleRoomCodeKeyDown = (e) => {
+    if (e.key === 'Enter' && !isDisabled) {
+      e.preventDefault()
+      handleJoinRoom()
+    } 
+  }
 
-  const isDisabled = isJoining || roomCode.length < 6
+  const sanitizedCode = roomCode.trim().toUpperCase()
+  const isValidRoomCode = /^[A-Z0-9]{6}$/.test(sanitizedCode)
+  const isDisabled = isJoining || !isValidRoomCode
 
   return (
     <div style={{
@@ -101,11 +109,11 @@ function JoinRoomPage() {
                 Join a Room
               </h1>
               <p style={{
-                margin: '4px 0 0',
-                opacity: 0.9,
-                fontSize: isMobile ? '13px' : '14px'
+                margin: '0 0 24px',
+                color: 'var(--text-secondary)',
+                fontSize: '14px',
+                lineHeight: 1.5
               }}>
-                Enter the code shared by your teacher
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -184,14 +192,37 @@ function JoinRoomPage() {
             )}
 
             <div style={{ marginBottom: '24px' }}>
+               <label
+                htmlFor="room-code"
+                style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)'
+                }}
+               >
+                 Room code
+               </label>
               <input
+                id="room-code"
+                name="roomCode"
                 type="text"
                 value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                aria-label="Room code"
+                aria-describedby="room-code-help room-code-status"
+                aria-invalid={Boolean(error)}
+                onChange={(e) =>
+                  setRoomCode(
+                   e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '')
+                  )
+                }   
+                onKeyDown={handleRoomCodeKeyDown}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
                 placeholder="XXXXXX"
                 maxLength={6}
+                aria-describedby="room-code-help room-code-status"
                 style={{
                   width: '100%',
                   padding: isMobile ? '16px 12px' : '20px 16px',
@@ -209,6 +240,26 @@ function JoinRoomPage() {
                   transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
                 }}
               />
+              <div
+                id="room-code-status"
+                aria-live="polite"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: '8px',
+                  fontSize: '13px',
+                  color: 'var(--text-secondary)'
+                }}
+              >       
+                <span>
+                  {roomCode.length}/6 characters
+               </span>
+
+                <span>
+                  {isValidRoomCode ? '✓ Ready to join' : 'Enter 6 characters'}
+                </span>
+              </div> 
             </div>
 
             <button
