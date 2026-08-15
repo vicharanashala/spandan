@@ -31,7 +31,7 @@ export async function computeRanked(roomId) {
       correctCount: { $sum: { $cond: ['$isCorrect', 1, 0] } },
       totalAnswered: { $sum: 1 }
     } },
-    { $sort: { totalPoints: -1 } }
+    { $sort: { totalPoints: -1, _id: 1 } } // tie-break by studentId for a stable board across recomputes
   ])
 
   const users = await User.find({ _id: { $in: ranked.map(e => e._id) } })

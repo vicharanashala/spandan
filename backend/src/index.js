@@ -12,6 +12,7 @@ import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
+import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
 
 // =====================================================
 // Global crash guards
@@ -47,6 +48,7 @@ import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
+import adminRoutes from './routes/admin.js'
 
 // Import models for reference
 import './models/index.js'
@@ -121,21 +123,26 @@ app.set('io', io)
 //      close a poll. Cheap (one count-only aggregation), so it stays LIVE on a short throttle,
 //      coalesced across a burst (multi-instance: SET-NX so only one instance emits per window).
 //  (2) Ranked LEADERBOARD — expensive (per-student aggregation + name resolution) and nobody
-//      studies it mid-burst, so it is DEFERRED: recomputed + broadcast only once the room has
-//      been QUIET for LEADERBOARD_IDLE_MS (i.e. the answer burst has drained), plus a forced
-//      refresh when the room ends. Scoring is UNAFFECTED — points are still computed and saved
-//      per-response in the REST handler; only the read-side leaderboard recompute is deferred,
-//      and Mongo stays authoritative.
+//      studies it mid-burst, so it is recomputed once per SEGMENT: the teacher's frontend calls
+//      POST /responses/leaderboard/:roomId/segment-done when a question pop-up closes (that segment's
+//      questions are all answered), and after a short coalesced delay (LEADERBOARD_SEGMENT_DELAY_MS,
+//      to absorb late stragglers) we fold ONLY that segment's answers into a shared running total
+//      (computeRankedIncremental) and broadcast once — never re-summing the whole room. The REST GET
+//      /leaderboard read serves that same cached board (fold:false), so the board is stable within a
+//      segment. A forced FULL recompute at room end produces the authoritative final board.
+//      Scoring is UNAFFECTED — points are computed + saved per-response; Mongo stays authoritative.
 const LIVE_THROTTLE_MS = Number(process.env.LIVE_UPDATE_THROTTLE_MS) || 1500
-const LEADERBOARD_IDLE_MS = Number(process.env.LEADERBOARD_IDLE_MS) || 12000
-const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 20
-// Rank cache must outlive a couple of debounce windows, or "rank on submit" always reads null.
-const RANK_CACHE_TTL_S = Math.max(30, Math.ceil((LEADERBOARD_IDLE_MS * 3) / 1000))
-const roomLive = new Map() // roomId(str) -> { countsTimer, lbTimer, lbCheckTimer, roomCode, rankByStudent, total }
+const LEADERBOARD_SEGMENT_DELAY_MS = Number(process.env.LEADERBOARD_SEGMENT_DELAY_MS) || 15000
+// How many ranks are broadcast PUBLICLY to every student. Students below this cutoff receive only
+// their own row privately (see broadcastLeaderboard). Configurable; defaults to the classic top 10.
+const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
+// Rank cache ("rank on submit") must outlive a whole segment window (answering + review + delay).
+const RANK_CACHE_TTL_S = Number(process.env.LEADERBOARD_RANK_TTL_S) || 1800
+const roomLive = new Map() // roomId(str) -> { countsTimer, segmentFoldTimer, roomCode, rankByStudent, total }
 
 function getRoomState(id) {
   let s = roomLive.get(id)
-  if (!s) { s = { countsTimer: null, lbTimer: null, lbCheckTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
+  if (!s) { s = { countsTimer: null, segmentFoldTimer: null, roomCode: null, rankByStudent: new Map(), total: 0 }; roomLive.set(id, s) }
   return s
 }
 
@@ -182,16 +189,18 @@ async function scheduleCountsBroadcast(roomId) {
   s.countsTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.countsTimer = null; broadcastCounts(id) }, LIVE_THROTTLE_MS)
 }
 
-// (2) Ranked leaderboard — full aggregation + name resolution + rank cache. Deferred/forced only.
-async function broadcastLeaderboard(roomId) {
+// (2) Ranked leaderboard — name resolution + rank cache + emit. `incremental` selects the shared
+// running-total fold (per-segment, cheap); the default full recompute is used at room end.
+async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
   try {
     const Response = (await import('./models/Response.js')).default
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
     // Ranked board comes from the shared helper (single source of truth); the per-question answer
     // counts stay here (live-only concern). Both run in one round-trip via Promise.all.
+    const compute = incremental ? computeRankedIncremental : computeRanked
     const [{ full, rankByStudent }, countAgg] = await Promise.all([
-      computeRanked(roomId),
+      compute(roomId),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
         { $group: { _id: '$questionId', count: { $sum: 1 } } }
@@ -220,66 +229,59 @@ async function broadcastLeaderboard(roomId) {
     }
 
     if (roomCode) {
+      // Public room push: the top N only (safe for every student to see) + the aggregate count.
       io.to(roomCode).emit('leaderboard:updated', {
         leaderboard: full.slice(0, LEADERBOARD_TOP_N),
         totalParticipants: full.length,
+        topN: LEADERBOARD_TOP_N,
         counts
       })
+      // Private push: each student ranked BELOW the public cutoff gets ONLY their own row, on their
+      // personal channel — so no student's browser ever receives the full ranking. Students inside
+      // the top N are already in the public payload, so they need no personal push. Runs once per
+      // segment; an emit to an offline user-room is a cheap no-op.
+      for (const e of full) {
+        if (e.rank > LEADERBOARD_TOP_N) {
+          io.to('user:' + e.studentId).emit('leaderboard:you', {
+            rank: e.rank,
+            studentId: e.studentId,
+            studentName: e.studentName,
+            totalPoints: e.totalPoints,
+            correctCount: e.correctCount,
+            totalAnswered: e.totalAnswered,
+            totalParticipants: full.length
+          })
+        }
+      }
     }
   } catch (err) {
     console.error('broadcastLeaderboard error:', err.message)
   }
 }
 
-// Debounce: each answer (re)starts the window; the board fires only after LEADERBOARD_IDLE_MS of
-// no new answers (burst drained). Multi-instance: a shared Redis activity key — refreshed per
-// answer on whichever instance handled it — is the global quiet signal, and an NX lock makes
-// exactly one instance emit (the adapter fans it out to all).
-async function scheduleLeaderboardRefresh(roomId) {
+// Segment-triggered leaderboard. The teacher's frontend calls POST /responses/leaderboard/:roomId/
+// segment-done when a question pop-up closes (that segment's questions are all answered); that route
+// calls this. We coalesce a short delay so a second segment closing quickly folds together and to
+// absorb late stragglers, then fold ONLY that segment's answers into the shared running total and
+// broadcast once (the per-segment socket push students consume). The 15s timer is per-instance.
+function scheduleSegmentFold(roomId) {
   const id = String(roomId)
-  if (redis.enabled) {
-    redis.client.set(`live:lb:act:${id}`, '1', { PX: LEADERBOARD_IDLE_MS }).catch(() => {})
-    ensureLbChecker(id)
-    return
-  }
   const s = getRoomState(id)
-  if (s.lbTimer) clearTimeout(s.lbTimer)
-  s.lbTimer = setTimeout(() => { const st = roomLive.get(id); if (st) st.lbTimer = null; broadcastLeaderboard(id) }, LEADERBOARD_IDLE_MS)
+  if (s.segmentFoldTimer) clearTimeout(s.segmentFoldTimer) // coalesce — a new segment resets the window
+  s.segmentFoldTimer = setTimeout(() => {
+    const st = roomLive.get(id); if (st) st.segmentFoldTimer = null
+    broadcastLeaderboard(id, { incremental: true })
+  }, LEADERBOARD_SEGMENT_DELAY_MS)
 }
 
-function ensureLbChecker(id, delayMs = LEADERBOARD_IDLE_MS) {
-  const s = getRoomState(id)
-  if (s.lbCheckTimer) return
-  s.lbCheckTimer = setTimeout(() => runLbCheck(id), delayMs)
-}
-
-async function runLbCheck(id) {
-  const s = getRoomState(id)
-  s.lbCheckTimer = null
-  try {
-    // The activity key's remaining TTL tells us exactly how long since the last answer. If it's
-    // still alive, re-arm for precisely that remainder (so the board fires ~IDLE_MS after the LAST
-    // answer, not up to 2×IDLE later); once it's gone, one instance takes the NX lock and emits.
-    const pttl = await redis.client.pTTL(`live:lb:act:${id}`)
-    if (pttl > 0) { ensureLbChecker(id, pttl + 200); return }
-    const won = await redis.client.set(`live:lb:lock:${id}`, INSTANCE_ID, { NX: true, PX: 3000 })
-    if (won === 'OK') await broadcastLeaderboard(id)
-  } catch (e) {
-    await broadcastLeaderboard(id) // redis hiccup — emit locally rather than stall the board
-  }
-}
-
-// Force an immediate leaderboard recompute + broadcast (e.g. when a room ends) so the final,
-// settled board is complete regardless of where the debounce window happened to be.
+// Force a FULL (non-incremental) recompute + broadcast and drop the incremental cache, so the board
+// at room end is authoritative and reconciles any straggler that landed after a segment fold.
 async function refreshLeaderboardNow(roomId) {
   const id = String(roomId)
-  if (redis.enabled) {
-    try { await redis.client.del(`live:lb:act:${id}`) } catch (e) { /* non-fatal */ }
-  } else {
-    const s = roomLive.get(id)
-    if (s?.lbTimer) { clearTimeout(s.lbTimer); s.lbTimer = null }
-  }
-  await broadcastLeaderboard(id)
+  const s = roomLive.get(id)
+  if (s?.segmentFoldTimer) { clearTimeout(s.segmentFoldTimer); s.segmentFoldTimer = null }
+  try { await invalidateLeaderboardCache(id) } catch (e) { /* non-fatal */ }
+  await broadcastLeaderboard(id) // full recompute
 }
 
 // Last-computed rank for a student ("rank on submit"); refreshed when the board settles, so it
@@ -301,7 +303,7 @@ async function getCachedStudentRank(roomId, studentId) {
 
 app.set('liveUpdates', {
   scheduleCounts: scheduleCountsBroadcast,
-  scheduleLeaderboard: scheduleLeaderboardRefresh,
+  scheduleSegmentFold, // triggered by the REST POST /responses/leaderboard/:roomId/segment-done
   refreshLeaderboardNow,
   getRank: getCachedStudentRank
 })
@@ -392,6 +394,7 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
+app.use('/api/admin', adminRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -595,6 +598,9 @@ io.on('connection', (socket) => {
       // Authorized → now join the socket room and announce. The room-wide event carries only the
       // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
       socket.join(roomCode)
+      // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
+      // (privacy — a student never receives the full board, just the public top 10 + their own rank).
+      socket.join('user:' + userId)
       const participantCount = await RoomMember.countDocuments({ roomId: room._id })
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
@@ -640,9 +646,9 @@ io.on('connection', (socket) => {
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
   // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) and the deferred
-  // leaderboard are now emitted server-side from the authenticated REST submit handler — see the
-  // scheduleCountsBroadcast()/scheduleLeaderboardRefresh() broadcasters above and routes/responses.js.
+  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) are emitted server-side
+  // from the authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js),
+  // and the ranked leaderboard is folded per-segment via POST /responses/leaderboard/:id/segment-done.
 
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.

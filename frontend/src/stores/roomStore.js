@@ -18,20 +18,29 @@ export const useRoomStore = create((set, get) => ({
 
     set({ isLoading: true, error: null })
     try {
-      const response = await fetch(`${API_URL}/rooms`, {
-        headers: { 
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json'
+      // Fetch ALL of the teacher's rooms by paging through the result set. The API caps each
+      // page at 100 and returns pagination.pages; without this loop the UI only ever received
+      // the first 20 rooms, so Room History, the active-room list and the dashboard counts all
+      // silently dropped everything past the 20 most recent.
+      const headers = {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
+      let rooms = []
+      let page = 1
+      while (true) {
+        const response = await fetch(`${API_URL}/rooms?page=${page}&limit=100`, { headers })
+        const data = await response.json()
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to fetch rooms')
         }
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch rooms')
+        rooms = rooms.concat(data.rooms || [])
+        const pages = data.pagination?.pages || 1
+        if (page >= pages) break
+        page++
       }
 
-      set({ rooms: data.rooms || [], isLoading: false })
+      set({ rooms, isLoading: false })
     } catch (error) {
       set({ error: error.message, isLoading: false })
     }
