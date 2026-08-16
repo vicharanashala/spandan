@@ -11,6 +11,7 @@
 - ❓ **Question Types** — Multiple choice and open-ended questions with approval workflow
 - 📊 **Real-time Results** — Live response tracking with Socket.IO
 - 🎤 **Transcription** — Whisper-powered audio transcription for question generation
+- 🙋 **Live Doubts Queue** — Students raise doubts (optionally anonymous) during a session; classmates upvote the ones they share, and the teacher resolves them in real time via Socket.IO
 - 🌙 **Theme Toggle** — Dark and light mode support
 - 📱 **Responsive** — Works across devices with teacher and student dashboards
 

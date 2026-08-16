@@ -7,6 +7,9 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+
+import DoubtsPanel from '../components/DoubtsPanel'
+
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
@@ -956,6 +959,14 @@ function StudentRoomPage() {
                   <ErrorBoundary message="Leaderboard unavailable">
                     <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} />
                   </ErrorBoundary>
+
+                </div>
+                {/* Doubts - flexible width */}
+                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }}>
+                  <ErrorBoundary message="Doubts unavailable">
+                    <DoubtsPanel roomId={room?._id} socket={socket} />
+                  </ErrorBoundary>
+
                 </div>
               </div>
             </div>

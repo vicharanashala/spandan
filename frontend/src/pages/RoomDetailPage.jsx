@@ -13,6 +13,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import DoubtsPanel from '../components/DoubtsPanel'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
@@ -2010,6 +2011,24 @@ function RoomDetailPage() {
               </div>
               <ErrorBoundary message="Leaderboard unavailable">
                 <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              </ErrorBoundary>
+            </div>
+
+            {/* Doubts - flexible width */}
+            <div
+              style={{
+                flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+                minWidth: isMobile ? 0 : '280px',
+                maxWidth: '100%',
+                boxSizing: 'border-box'
+              }}
+            >
+              <ErrorBoundary message="Doubts unavailable">
+                <DoubtsPanel
+                  roomId={room?._id}
+                  socket={socket}
+                  isTeacher
+                />
               </ErrorBoundary>
             </div>
           </div>
