@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import useAuthStore from '../stores/authStore'
 import SpandanIcon from './SpandanIcon'
 
 const menuItems = {
@@ -27,6 +28,7 @@ const COLLAPSED_W = 76
 export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { logout } = useAuthStore()
   const role = user?.role || 'student'
   const baseItems = menuItems[role] || menuItems.student
   // Admins get an extra "Approvals" entry, placed just above "Manual".
@@ -62,6 +64,12 @@ export default function Sidebar({ user }) {
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
 
   const persistCollapsed = (val) => { setCollapsed(val); localStorage.setItem('sidebarCollapsed', val ? '1' : '0') }
+
+  const handleLogout = (e) => {
+    e.stopPropagation()
+    logout()
+    navigate('/')
+  }
 
   const railWidth = isMobile ? 260 : (collapsed ? COLLAPSED_W : EXPANDED_W)
   const showLabels = isMobile || !collapsed
@@ -189,24 +197,76 @@ export default function Sidebar({ user }) {
           })}
         </nav>
 
-        {/* User section */}
-        <div style={{ padding: showLabels ? '14px 16px' : '14px 0', borderTop: '1px solid var(--border-color)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center', gap: '10px' }}>
-            <div style={{
-              width: '38px', height: '38px',
-              background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
-              borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden'
-            }}>
-              {user?.profileImage
-                ? <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                : (user?.name?.charAt(0)?.toUpperCase() || 'U')}
+        {/*
+          User section (bottom of sidebar): clicking the avatar/name navigates
+          to the role-aware dashboard. The separate logout button reuses
+          useAuthStore().logout() — the same call ProfileDropdown.jsx's
+          top-right logout uses — so both entry points behave identically.
+        */}
+        <div style={{ padding: '8px', borderTop: '1px solid var(--border-color)' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: showLabels ? 'space-between' : 'center',
+              gap: '10px',
+              padding: showLabels ? '6px 8px' : '6px 0',
+              borderRadius: '12px',
+              cursor: 'pointer',
+              transition: 'background 0.15s ease'
+            }}
+            onClick={() => navigate(role === 'teacher' ? '/teacher/profile' : '/student/profile')}
+            onMouseOver={(e) => { e.currentTarget.style.background = 'var(--nav-hover)' }}
+            onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+              <div style={{
+                width: '38px', height: '38px',
+                background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
+                borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden'
+              }}>
+                {user?.profileImage
+                  ? <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : (user?.name?.charAt(0)?.toUpperCase() || 'U')}
+              </div>
+              {showLabels && (
+                <div style={{ overflow: 'hidden' }}>
+                  <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</p>
+                  <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role}</p>
+                </div>
+              )}
             </div>
             {showLabels && (
-              <div style={{ overflow: 'hidden' }}>
-                <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</p>
-                <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role}</p>
-              </div>
+              <button
+                onClick={handleLogout}
+                aria-label="Logout"
+                title="Logout"
+                style={{
+                  width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'transparent', border: 'none', borderRadius: '8px',
+                  color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '15px', flexShrink: 0,
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseOver={(e) => { e.currentTarget.style.background = '#fee2e2'; e.currentTarget.style.color = '#dc2626' }}
+                onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="1em"
+                  height="1em"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                  <polyline points="16 17 21 12 16 7"></polyline>
+                  <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+              </button>
             )}
           </div>
         </div>
