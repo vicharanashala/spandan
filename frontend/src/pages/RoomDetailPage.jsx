@@ -19,6 +19,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
+import vadSegmentationService from '../services/vadSegmentationService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -61,6 +62,7 @@ function RoomDetailPage() {
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
   const mediaRecorderStopPromiseRef = useRef(null)
+  const vadActiveRef = useRef(false)
 
   // Transcription queue for ordered processing
   const transcriptionQueueRef = useRef([])
@@ -110,6 +112,14 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // Preload client-side Silero VAD assets on mount
+  useEffect(() => {
+    vadSegmentationService.preload()
+    return () => {
+      vadSegmentationService.stop()
+    }
+  }, [])
 
   useEffect(() => {
     if (token) {
@@ -670,19 +680,22 @@ function RoomDetailPage() {
     })
 
     mediaRecorder.start()
-    transcriptionIntervalRef.current = setTimeout(() => {
-      if (mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop()
-      }
-    }, 10000)
+
+    if (vadActiveRef.current) {
+      vadSegmentationService.notifyChunkStarted()
+    } else {
+      transcriptionIntervalRef.current = setTimeout(() => {
+        if (mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop()
+        }
+      }, 10000)
+    }
   }, [sendForTranscription])
   
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
-    // Video mode: the tab-audio stream was acquired once by beginVideoSession and persists across
-    // segments (getDisplayMedia can't be re-prompted silently). Just (re)start the transcription
-    // loop for the next segment; do NOT call getUserMedia/getDisplayMedia here.
+    // Video mode: uses fixed-timer fallback; VAD applies strictly to live microphone path
     if (isVideoMode) {
       if (!streamRef.current) return
       setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
@@ -693,6 +706,7 @@ function RoomDetailPage() {
       pendingSequenceRef.current = 0
       isProcessingQueueRef.current = false
       recordingActiveRef.current = true
+      vadActiveRef.current = false
       setIsRecording(true)
       setIsTranscribing(true)
       setModelStatus('Listening...')
@@ -742,6 +756,19 @@ function RoomDetailPage() {
       setIsTranscribing(true)
       setModelStatus('Listening...')
 
+      // Start client-side Silero VAD segmentation (falls back to fixed-timer if unavailable)
+      const vadStarted = await vadSegmentationService.start({
+        stream: streamRef.current,
+        onPauseCut: () => {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop()
+          }
+        },
+        minChunkDurationMs: 3000,
+        maxChunkDurationMs: 30000,
+      })
+      vadActiveRef.current = vadStarted
+
       startTranscriptionWindow()
 
     } catch (error) {
@@ -752,6 +779,8 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+    vadActiveRef.current = false
+    await vadSegmentationService.stop()
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
@@ -941,9 +970,10 @@ function RoomDetailPage() {
       setVideoSessionActive(true)
       setModelStatus('Ready - press play to begin')
 
-      // If the video is already playing, begin capturing immediately.
+      // If the video is already playing, begin capturing immediately (uses 10s fixed-timer fallback).
       if (ytPlayerRef.current?.getPlayerState?.() === 1) {
         recordingActiveRef.current = true
+        vadActiveRef.current = false
         setIsTranscribing(true); setModelStatus('Listening...')
         startTranscriptionWindow()
         setIsRecording(true)
@@ -957,6 +987,7 @@ function RoomDetailPage() {
   // Stop the transcription windows but KEEP the shared tab-audio stream (used at segment completion).
   const stopVideoTranscriptionLoop = async () => {
     recordingActiveRef.current = false
+    vadActiveRef.current = false
     if (transcriptionIntervalRef.current) { clearTimeout(transcriptionIntervalRef.current); transcriptionIntervalRef.current = null }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop()
     if (mediaRecorderStopPromiseRef.current) { await mediaRecorderStopPromiseRef.current; mediaRecorderStopPromiseRef.current = null }
@@ -972,6 +1003,7 @@ function RoomDetailPage() {
     if (isEnded || !videoSessionActive) return
     if (recordingActiveRef.current) return
     recordingActiveRef.current = true
+    vadActiveRef.current = false
     setIsTranscribing(true); setModelStatus('Listening...')
     startTranscriptionWindow()
     if (isSegmentPaused) resumeSegmentTimer()
@@ -982,6 +1014,7 @@ function RoomDetailPage() {
   const handleVideoPause = () => {
     if (!videoSessionActive || !recordingActiveRef.current) return
     recordingActiveRef.current = false
+    vadActiveRef.current = false
     if (transcriptionIntervalRef.current) { clearTimeout(transcriptionIntervalRef.current); transcriptionIntervalRef.current = null }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop()
     setIsTranscribing(false)
