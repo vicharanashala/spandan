@@ -25,6 +25,14 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
+        // Production path: /spandan/api/* → localhost:3001/api/*
+        // Matches what server.js does on the production host (samagama.in/spandan/api/...)
+        '/spandan/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/spandan/, '')
+        },
+        // Bare /api/* fallback (kept for direct calls)
         '/api': {
           target: 'http://localhost:3001',
           changeOrigin: true
