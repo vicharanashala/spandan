@@ -146,17 +146,8 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 })
 
-// Hash password and set admin status before saving
+// Hash password before saving
 userSchema.pre('save', async function(next) {
-  const adminEmails = (process.env.SPANDAN_ADMIN_EMAILS || '')
-    .split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
-  if (this.email && adminEmails.includes(this.email.toLowerCase())) {
-    this.isAdmin = true
-    if (this.role === 'teacher') {
-      this.teacherApprovalStatus = 'approved'
-    }
-  }
-
   if (!this.isModified('password')) return next()
   
   try {
@@ -179,11 +170,6 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const obj = this.toObject()
   delete obj.password
-  const adminEmails = (process.env.SPANDAN_ADMIN_EMAILS || '')
-    .split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
-  if (obj.email && adminEmails.includes(obj.email.toLowerCase())) {
-    obj.isAdmin = true
-  }
   return obj
 }
 
