@@ -268,6 +268,92 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </select>
         </div>
 
+        {/* Question generation mode: normal / AI review pass / compare & choose between two AIs */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            Question Generation Mode
+          </label>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {[
+              { id: 'off', label: 'Standard' },
+              { id: 'review', label: '✨ AI Review Pass' },
+              { id: 'compare', label: '🆚 Compare & Choose' }
+            ].map(mode => (
+              <button
+                key={mode.id}
+                type="button"
+                onClick={() => setLocalSettings(prev => ({ ...prev, questionGenMode: mode.id }))}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: '10px',
+                  border: `1.5px solid ${(localSettings.questionGenMode || 'off') === mode.id ? '#3b82f6' : 'var(--border-color)'}`,
+                  background: (localSettings.questionGenMode || 'off') === mode.id ? 'rgba(59,130,246,0.1)' : 'transparent',
+                  color: 'var(--text-primary)',
+                  fontSize: '13px',
+                  fontWeight: (localSettings.questionGenMode || 'off') === mode.id ? '700' : '400',
+                  cursor: 'pointer'
+                }}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
+          {localSettings.questionGenMode === 'review' && (
+            <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              After generating, a second AI model reviews and fixes ambiguous questions or weak answer
+              options before they reach you for approval. Roughly doubles generation time.
+            </p>
+          )}
+
+          {localSettings.questionGenMode === 'compare' && (
+            <div style={{ marginTop: '10px' }}>
+              <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Two AI models each generate a full, independent set of questions. You pick whichever
+                version you prefer for every question, or skip ones neither gets right. Roughly
+                doubles generation time.
+              </p>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {['compareProviderA', 'compareProviderB'].map((key, idx) => (
+                  <select
+                    key={key}
+                    value={localSettings[key] || ''}
+                    onChange={(e) => setLocalSettings(prev => ({ ...prev, [key]: e.target.value }))}
+                    style={{
+                      flex: 1,
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="" disabled>AI {idx + 1}...</option>
+                    {providers.map(p => (
+                      <option key={p.id} value={p.id} disabled={!p.enabled}>
+                        {p.icon} {p.name} {!p.enabled && '(No API Key)'}
+                      </option>
+                    ))}
+                  </select>
+                ))}
+              </div>
+              {localSettings.compareProviderA && localSettings.compareProviderA === localSettings.compareProviderB && (
+                <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#ef4444' }}>
+                  Pick two DIFFERENT models to compare — the same model twice won't give you a real choice.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Question Type Distribution */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{

@@ -8,6 +8,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
+import DualQuestionComparePopup from '../components/DualQuestionComparePopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
@@ -93,6 +94,15 @@ function RoomDetailPage() {
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
   const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
+  // "Compare & choose" mode: holds the raw {pairs, providerA, providerB} from the backend while
+  // the teacher is picking a winner per question; cleared once they finish (or cancel) and the
+  // winners get handed off to the SAME downstream approval flow every other mode uses.
+  const [comparePairs, setComparePairs] = useState(null)
+  // Holds the resolve() of the in-flight "wait for the teacher to finish Compare & Choose" promise
+  // (see buildGenModeConfig usage below) — lets generateQuestionsFromText stay a plain async
+  // function returning a flat questions array to its callers, exactly like every other mode,
+  // instead of forcing the auto-segment/manual-generate code paths to know about compare mode.
+  const compareResolveRef = useRef(null)
   // Segment pause/resume state
   const [isSegmentPaused, setIsSegmentPaused] = useState(false)
   const [segmentTimerValue, setSegmentTimerValue] = useState(0) // frozen value when paused
@@ -106,7 +116,10 @@ function RoomDetailPage() {
     questionProvider: 'minimax',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    questionGenMode: 'off', // 'off' | 'review' (two-pass) | 'compare' (choose between two AIs)
+    compareProviderA: '',
+    compareProviderB: ''
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
@@ -399,23 +412,49 @@ function RoomDetailPage() {
     }
   }
 
+  // Builds the {twoPass} or {compareProviders} half of the generation request from roomSettings,
+  // shared by every generation call site so all three (auto-segment, manual "Generate Q", paste)
+  // stay in sync with whatever mode the teacher picked in Room Settings.
+  const buildGenModeConfig = () => {
+    if (roomSettings.questionGenMode === 'compare' &&
+        roomSettings.compareProviderA && roomSettings.compareProviderB &&
+        roomSettings.compareProviderA !== roomSettings.compareProviderB) {
+      return { compareProviders: [roomSettings.compareProviderA, roomSettings.compareProviderB] }
+    }
+    return { twoPass: roomSettings.questionGenMode === 'review' }
+  }
+
   const generateQuestionsFromText = async (text, segmentIndex) => {
     setIsGeneratingQuestions(true)
     // New controller per generation; aborted on unmount (see the [roomId] effect cleanup).
     genAbortRef.current = new AbortController()
     try {
       // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
-      // job internally and returns the same { success, questions } shape either way.
+      // job internally and returns the same shape either way: { success, questions } normally, or
+      // { success, pairs, providerA, providerB } in Compare & Choose mode.
       const data = await requestQuestionGeneration(text, {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
+        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 },
+        ...buildGenModeConfig()
       }, { signal: genAbortRef.current.signal })
 
+      let questions = null
+      if (data.success && data.pairs && data.pairs.length > 0) {
+        // Compare mode: pause here until the teacher finishes picking a winner per question in
+        // DualQuestionComparePopup (rendered near the bottom of this component).
+        questions = await new Promise((resolve) => {
+          compareResolveRef.current = resolve
+          setComparePairs({ pairs: data.pairs, providerA: data.providerA, providerB: data.providerB })
+        })
+      } else if (data.success && data.questions && data.questions.length > 0) {
+        questions = data.questions
+      }
+
       setIsGeneratingQuestions(false)
-      if (data.success && data.questions && data.questions.length > 0) {
-        return data.questions.map(q => ({
+      if (questions && questions.length > 0) {
+        return questions.map(q => ({
           ...q,
           timeToAnswer: roomSettings.timeToAnswer,
           points: roomSettings.points,
@@ -446,14 +485,33 @@ function RoomDetailPage() {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: typeMix
+        questionTypeMix: typeMix,
+        ...buildGenModeConfig()
       }, { signal: genAbortRef.current.signal })
 
-      setIsGeneratingFromText(false)
-      setShowGeneratingPopup(false) // Close generating popup
+      let questions = null
+      if (data.success && data.pairs && data.pairs.length > 0) {
+        // Compare mode: hand off from the "Generating..." popup to DualQuestionComparePopup —
+        // close this one FIRST, then pause here until the teacher finishes picking a winner per
+        // question. (Closing it only after the promise resolves left it stuck on top of the
+        // compare UI for the whole time the teacher was choosing.)
+        setIsGeneratingFromText(false)
+        setShowGeneratingPopup(false)
+        questions = await new Promise((resolve) => {
+          compareResolveRef.current = resolve
+          setComparePairs({ pairs: data.pairs, providerA: data.providerA, providerB: data.providerB })
+        })
+      } else if (data.success && data.questions && data.questions.length > 0) {
+        questions = data.questions
+        setIsGeneratingFromText(false)
+        setShowGeneratingPopup(false) // Close generating popup
+      } else {
+        setIsGeneratingFromText(false)
+        setShowGeneratingPopup(false) // Close generating popup
+      }
 
-      if (data.success && data.questions && data.questions.length > 0) {
-        const markedQuestions = data.questions.map(q => ({
+      if (questions && questions.length > 0) {
+        const markedQuestions = questions.map(q => ({
           ...q,
           timeToAnswer: roomSettings.timeToAnswer,
           points: roomSettings.points,
@@ -2138,6 +2196,30 @@ function RoomDetailPage() {
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
           isLast={true}
+        />
+      )}
+
+      {/* Compare & Choose: shown BEFORE the normal approval popup when questionGenMode==='compare'.
+          Resolves the promise that generateQuestionsFromText / handleTextToQuestionsGenerate are
+          awaiting, handing back the teacher's picks as a flat questions array — from there both
+          functions continue exactly as they would for a single-provider generation. */}
+      {comparePairs && (
+        <DualQuestionComparePopup
+          pairs={comparePairs.pairs}
+          providerA={comparePairs.providerA}
+          providerB={comparePairs.providerB}
+          onComplete={(winners) => {
+            setComparePairs(null)
+            const resolve = compareResolveRef.current
+            compareResolveRef.current = null
+            resolve?.(winners)
+          }}
+          onClose={() => {
+            setComparePairs(null)
+            const resolve = compareResolveRef.current
+            compareResolveRef.current = null
+            resolve?.([]) // no winners picked — caller treats this the same as "no questions generated"
+          }}
         />
       )}
 

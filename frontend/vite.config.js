@@ -25,6 +25,21 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
+        // Router basename is fixed to "/spandan" (see App.jsx), so in dev the browser always
+        // requests /spandan/api/... and /spandan/socket.io — but the backend mounts its routes
+        // at plain /api and /socket.io (nginx strips the /spandan prefix in production). Proxy
+        // both the prefixed and bare paths here and rewrite away the prefix, so dev works the
+        // same whether VITE_BASE_PATH is set to "/spandan" or left empty.
+        '/spandan/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/spandan/, '')
+        },
+        '/spandan/socket.io': {
+          target: 'http://localhost:3001',
+          ws: true,
+          rewrite: (path) => path.replace(/^\/spandan/, '')
+        },
         '/api': {
           target: 'http://localhost:3001',
           changeOrigin: true

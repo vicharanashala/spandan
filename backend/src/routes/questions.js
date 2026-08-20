@@ -1,6 +1,6 @@
 import express from 'express'
 import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
-import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
+import { generateQuestions, generateQuestionsCompare, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
@@ -34,7 +34,9 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       numQuestions = 2, 
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      twoPass = false,
+      compareProviders = null // ["minimax","google"] — "Compare & choose" mode, mutually exclusive with twoPass
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -44,15 +46,19 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       })
     }
 
-    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
+    const isCompareMode = Array.isArray(compareProviders) && compareProviders.length === 2
+    const jobConfig = isCompareMode
+      ? { numQuestions, difficulty, questionTypeMix, providerA: compareProviders[0], providerB: compareProviders[1] }
+      : { numQuestions, difficulty, provider, questionTypeMix, twoPass }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
-    // The client polls GET /questions/jobs/:jobId for the result.
+    // The client polls GET /questions/jobs/:jobId for the result. worker.js branches on the same
+    // providerA/providerB-vs-provider shape to decide which generation function to run.
     const queue = getGenerationQueue()
     if (queue) {
       const job = await queue.add(
         'generate',
-        { transcript, config: jobConfig, requestedBy: String(req.user._id) },
+        { transcript, config: jobConfig, requestedBy: String(req.user._id), compare: isCompareMode },
         {
           attempts: 2,
           backoff: { type: 'exponential', delay: 3000 },
@@ -64,6 +70,11 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
+    if (isCompareMode) {
+      console.log(`Generating ${numQuestions} questions comparing ${compareProviders[0]} vs ${compareProviders[1]} (sync)...`)
+      const { pairs, providerA, providerB } = await generateQuestionsCompare(transcript, jobConfig)
+      return res.json({ success: true, pairs, providerA, providerB })
+    }
     console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
@@ -94,7 +105,14 @@ router.get('/jobs/:jobId', authorize('teacher'), requireApprovedTeacher, async (
     }
     const state = await job.getState()
     if (state === 'completed') {
-      return res.json({ success: true, status: 'completed', questions: job.returnvalue || [] })
+      // Compare-mode jobs resolve to { pairs, providerA, providerB }; normal jobs resolve to a
+      // plain questions array. Forward whichever shape the worker actually produced so the client
+      // helper (requestQuestionGeneration) can branch on it the same way it does for the sync path.
+      const result = job.returnvalue
+      if (result && !Array.isArray(result) && result.pairs) {
+        return res.json({ success: true, status: 'completed', pairs: result.pairs, providerA: result.providerA, providerB: result.providerB })
+      }
+      return res.json({ success: true, status: 'completed', questions: result || [] })
     }
     if (state === 'failed') {
       return res.json({ success: false, status: 'failed', error: job.failedReason || 'Generation failed' })
