@@ -129,12 +129,18 @@ export const updateProfile = async (userId, profileData) => {
 
   // Handle nested address object
   if (profileData.address) {
-    user.address = { ...user.address.toObject(), ...profileData.address }
+    const existingAddress = user.address && typeof user.address.toObject === 'function'
+      ? user.address.toObject()
+      : (user.address || {})
+    user.address = { ...existingAddress, ...profileData.address }
   }
 
   // Handle nested socialLinks object
   if (profileData.socialLinks) {
-    user.socialLinks = { ...user.socialLinks.toObject(), ...profileData.socialLinks }
+    const existingSocial = user.socialLinks && typeof user.socialLinks.toObject === 'function'
+      ? user.socialLinks.toObject()
+      : (user.socialLinks || {})
+    user.socialLinks = { ...existingSocial, ...profileData.socialLinks }
   }
 
   await user.save()

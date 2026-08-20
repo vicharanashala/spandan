@@ -63,6 +63,14 @@ export const roomSettingsSchema = z.object({
   }).optional()
 })
 
+// Update room schema - strictly whitelists safe update fields
+export const updateRoomSchema = z.object({
+  name: z.string().min(1, 'Room name cannot be empty').max(200).optional(),
+  settings: roomSettingsSchema.optional(),
+  isActive: z.boolean().optional(),
+  endedAt: z.union([z.string().datetime(), z.string(), z.date()]).optional().nullable()
+})
+
 // Question validation schemas
 export const createQuestionSchema = z.object({
   question: z.string().min(1, 'Question text is required'),

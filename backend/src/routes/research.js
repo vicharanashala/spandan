@@ -76,7 +76,8 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
         { $expr: { $in: [{ $hour: { date: '$endedAt', timezone: 'Asia/Kolkata' } }, [20, 21]] } }
       ]
     } else if (namePattern) {
-      filter.name = { $regex: namePattern, $options: 'i' }
+      const safePattern = String(namePattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      filter.name = { $regex: safePattern, $options: 'i' }
     }
 
     const rooms = await Room.find(filter).sort({ endedAt: 1 }).limit(limit).lean()

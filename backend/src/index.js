@@ -458,7 +458,8 @@ async function verifyRoomOwner(socket, roomCode) {
   try {
     const Room = (await import('./models/Room.js')).default
     const room = await Room.findByCode(roomCode)
-    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
+    const teacherId = String(room?.teacher?._id ?? room?.teacher ?? '')
+    return (room && teacherId === String(socket.data.userId)) ? room : null
   } catch {
     return null
   }
@@ -624,9 +625,6 @@ io.on('connection', (socket) => {
 
       let participantCount = 0
       if (room) {
-        if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
-        }
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 

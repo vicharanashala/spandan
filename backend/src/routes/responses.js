@@ -287,7 +287,8 @@ router.get('/', async (req, res) => {
     }
 
     // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const teacherId = String(room.teacher?._id ?? room.teacher)
+    const isTeacher = teacherId === String(currentUser._id)
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
     
     // If student is querying a different student's data, deny

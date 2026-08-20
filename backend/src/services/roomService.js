@@ -56,9 +56,16 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
 }
 
 export const updateRoom = async (roomId, updates) => {
+  // Defense in depth: sanitize updates to prevent mass assignment of sensitive/immutable fields
+  const safeUpdates = { ...(updates || {}) }
+  delete safeUpdates.teacher
+  delete safeUpdates.code
+  delete safeUpdates._id
+  delete safeUpdates.createdAt
+
   const room = await Room.findByIdAndUpdate(
     roomId,
-    { $set: updates },
+    { $set: safeUpdates },
     { new: true, runValidators: true }
   )
 

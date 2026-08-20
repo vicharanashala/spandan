@@ -21,7 +21,8 @@ router.post('/', authenticate, async (req, res) => {
     if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
-    if (room.teacher.toString() !== req.user._id.toString()) {
+    const teacherId = String(room.teacher?._id ?? room.teacher)
+    if (teacherId !== String(req.user._id)) {
       return res.status(403).json({ error: 'Not authorized to add transcripts to this room' })
     }
 
@@ -60,7 +61,8 @@ router.get('/room/:roomId', authenticate, async (req, res) => {
     }
 
     // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const teacherId = String(room.teacher?._id ?? room.teacher)
+    const isTeacher = teacherId === String(currentUser._id)
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
 
     if (!isTeacher && !isStudentMember) {
@@ -94,7 +96,8 @@ router.get('/:roomId/:segmentIndex', authenticate, async (req, res) => {
     }
 
     // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const teacherId = String(room.teacher?._id ?? room.teacher)
+    const isTeacher = teacherId === String(currentUser._id)
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
 
     if (!isTeacher && !isStudentMember) {
@@ -105,10 +108,6 @@ router.get('/:roomId/:segmentIndex', authenticate, async (req, res) => {
       roomId: roomId,
       segmentIndex: parseInt(segmentIndex)
     })
-
-    if (!transcript) {
-      return res.status(404).json({ error: 'Transcript not found' })
-    }
 
     if (!transcript) {
       return res.status(404).json({ error: 'Transcript not found' })
