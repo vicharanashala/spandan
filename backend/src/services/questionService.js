@@ -536,6 +536,43 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
+// Reusable AI text generation helper for features beyond quiz generation.
+// Keeps provider selection in one place while reusing the existing AI integrations.
+export async function generateAIText(prompt, provider = 'minimax') {
+  if (!prompt || !prompt.trim()) {
+    throw new Error('AI prompt is required')
+  }
+
+  let responseText
+
+  switch (provider) {
+    case 'minimax':
+      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+      responseText = await generateWithMiniMax(prompt)
+      break
+
+    case 'openai':
+      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+      responseText = await generateWithOpenAI(prompt)
+      break
+
+    case 'anthropic':
+      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+      responseText = await generateWithAnthropic(prompt)
+      break
+
+    case 'google':
+      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      responseText = await generateWithGoogle(prompt)
+      break
+
+    default:
+      throw new Error(`Unknown provider: ${provider}`)
+  }
+
+  return responseText || ''
+}
+
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
   const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}

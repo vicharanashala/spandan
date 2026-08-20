@@ -21,6 +21,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import learningReportRoutes from './routes/learningReports.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
 
@@ -358,6 +359,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/learning-reports', learningReportRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
 

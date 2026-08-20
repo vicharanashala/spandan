@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
+import { generateRoomLearningReports } from '../services/learningReportGenerator.js'
 
 const router = express.Router()
 
@@ -152,7 +153,15 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       // Pre-warm the results snapshot so the ~N students about to open the results page all read a
       // shared cache instead of each triggering full-room aggregations (the end-session stampede).
       // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
-      rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
+      rebuildSnapshot(room._id).catch((e) =>
+        console.error('[rooms] snapshot pre-warm failed:', e.message)
+      )
+
+      // Generate AI-powered post-class learning reports in the background.
+      // Fire-and-forget so AI generation never delays the room-end response.
+      generateRoomLearningReports(room._id).catch((e) =>
+        console.error('[rooms] learning report generation failed:', e.message)
+      )
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })
