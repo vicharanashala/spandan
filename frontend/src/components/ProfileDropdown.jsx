@@ -33,7 +33,11 @@ export default function ProfileDropdown() {
   return (
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
+        aria-label="Open profile menu"
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
         style={{
           width: '36px',
           height: '36px',
@@ -86,7 +90,9 @@ export default function ProfileDropdown() {
           </div>
           
           <button
+            type="button"
             onClick={handleProfile}
+            role="menuitem"
             style={{
               width: '100%',
               padding: '12px 16px',
@@ -107,7 +113,9 @@ export default function ProfileDropdown() {
           </button>
           
           <button
+            type="button"
             onClick={handleLogout}
+            role="menuitem"
             style={{
               width: '100%',
               padding: '12px 16px',

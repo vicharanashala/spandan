@@ -6,7 +6,10 @@ export default function ThemeToggle() {
 
   return (
     <button
+      type="button"
       onClick={toggleTheme}
+      aria-label={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+      aria-pressed={isDark}
       style={{
         padding: '8px 12px',
         background: 'rgba(255,255,255,0.2)',
