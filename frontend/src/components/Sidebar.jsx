@@ -14,6 +14,7 @@ const menuItems = {
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
+    { id: 'bookmarks', label: 'My Bookmarks', icon: '🔖', path: '/student/bookmarks' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },
   ]
 }

@@ -24,6 +24,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import bookmarkRoutes from './routes/bookmarks.js'
 
 // Import models for reference
 import './models/index.js'
@@ -388,11 +389,12 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/bookmarks', bookmarkRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     version: '0.5.0',
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
@@ -715,7 +717,7 @@ io.on('connection', (socket) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err)
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
@@ -730,7 +732,7 @@ app.use((req, res) => {
 const connectDB = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/spandan'
-    
+
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -740,7 +742,7 @@ const connectDB = async () => {
       maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
       minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
-    
+
     console.log('MongoDB connected successfully')
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
@@ -753,7 +755,7 @@ const PORT = process.env.PORT || 3001
 // Start server
 const startServer = async () => {
   await connectDB()
-  
+
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)

@@ -18,7 +18,7 @@ router.get('/providers', (req, res) => {
     icon: value.icon,
     enabled: value.enabled
   }))
-  
+
   res.json({
     success: true,
     providers
@@ -30,10 +30,10 @@ router.get('/providers', (req, res) => {
 router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const { transcript, config } = req.body
-    const { 
-      numQuestions = 2, 
+    const {
+      numQuestions = 2,
       difficulty = 'medium',
-      provider = 'minimax',
+      provider = 'google',
       questionTypeMix = null
     } = config || {}
 
@@ -111,12 +111,12 @@ router.get('/jobs/:jobId', authorize('teacher'), requireApprovedTeacher, async (
 router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const Question = (await import('../models/Question.js')).default
-    const { 
-      roomId, 
-      type, 
-      question, 
-      options, 
-      timeToAnswer = 30, 
+    const {
+      roomId,
+      type,
+      question,
+      options,
+      timeToAnswer = 30,
       points = 100,
       status = 'approved',
       segmentIndex = 0

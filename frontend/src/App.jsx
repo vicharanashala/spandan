@@ -15,6 +15,7 @@ import CreateRoomPage from './pages/CreateRoomPage'
 import ManageRoomPage from './pages/ManageRoomPage'
 import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
+import BookmarksPage from './pages/BookmarksPage'
 import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
@@ -111,7 +112,7 @@ function App() {
         } />
         {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
         <Route path="/admin" element={
-          <ProtectedRoute allowedRoles={['teacher']}>
+          <ProtectedRoute allowedRoles={['teacher', 'student']}>
             <AdminPage />
           </ProtectedRoute>
         } />
@@ -133,6 +134,11 @@ function App() {
         <Route path="/student/room-history" element={
           <ProtectedRoute allowedRoles={['student']}>
             <RoomHistoryPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/bookmarks" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <BookmarksPage />
           </ProtectedRoute>
         } />
         <Route path="/student/profile" element={

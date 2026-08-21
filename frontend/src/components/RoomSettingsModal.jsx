@@ -37,7 +37,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   if (!isOpen) return null
 
   return (
-    <div 
+    <div
       style={{
         position: 'fixed',
         top: 0,
@@ -52,7 +52,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
       }}
       onClick={onClose}
     >
-      <div 
+      <div
         style={{
           background: 'var(--bg-card)',
           borderRadius: '16px',
@@ -110,8 +110,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
                 style={{
                   padding: '8px 16px',
                   borderRadius: '8px',
-                  border: localSettings.segmentTime === time 
-                    ? '2px solid #3b82f6' 
+                  border: localSettings.segmentTime === time
+                    ? '2px solid #3b82f6'
                     : '1px solid var(--border-color)',
                   background: localSettings.segmentTime === time ? '#dbeafe' : 'transparent',
                   color: localSettings.segmentTime === time ? '#1e40af' : 'var(--text-primary)',
@@ -142,8 +142,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </label>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <button
-              onClick={() => setLocalSettings(prev => ({ 
-                ...prev, 
+              onClick={() => setLocalSettings(prev => ({
+                ...prev,
                 questionsPerSegment: Math.max(1, (prev.questionsPerSegment || 2) - 1)
               }))}
               style={{
@@ -170,8 +170,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               {localSettings.questionsPerSegment || 2}
             </span>
             <button
-              onClick={() => setLocalSettings(prev => ({ 
-                ...prev, 
+              onClick={() => setLocalSettings(prev => ({
+                ...prev,
                 questionsPerSegment: Math.min(10, (prev.questionsPerSegment || 2) + 1)
               }))}
               style={{
@@ -214,8 +214,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
                   flex: 1,
                   padding: '10px 16px',
                   borderRadius: '8px',
-                  border: localSettings.difficulty === level 
-                    ? '2px solid #3b82f6' 
+                  border: localSettings.difficulty === level
+                    ? '2px solid #3b82f6'
                     : '1px solid var(--border-color)',
                   background: localSettings.difficulty === level ? '#dbeafe' : 'transparent',
                   color: localSettings.difficulty === level ? '#1e40af' : 'var(--text-primary)',
@@ -243,7 +243,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             Question Generator
           </label>
           <select
-            value={localSettings.questionProvider || 'minimax'}
+            value={localSettings.questionProvider || 'google'}
             onChange={(e) => setLocalSettings(prev => ({ ...prev, questionProvider: e.target.value }))}
             style={{
               width: '100%',
@@ -333,8 +333,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               min="0"
               max="300"
               value={localSettings.timeToAnswer || 30}
-              onChange={(e) => setLocalSettings(prev => ({ 
-                ...prev, 
+              onChange={(e) => setLocalSettings(prev => ({
+                ...prev,
                 timeToAnswer: Math.min(300, Math.max(0, parseInt(e.target.value) || 30))
               }))}
               style={{
@@ -375,8 +375,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               min="1"
               max="500"
               value={localSettings.points || 10}
-              onChange={(e) => setLocalSettings(prev => ({ 
-                ...prev, 
+              onChange={(e) => setLocalSettings(prev => ({
+                ...prev,
                 points: Math.min(500, Math.max(1, parseInt(e.target.value) || 10))
               }))}
               style={{

@@ -17,6 +17,17 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setCurrentIndex(0)
   }, [questions])
 
+  useEffect(() => {
+    if (pendingQuestions.length === 0) {
+      setCurrentIndex(0)
+      return
+    }
+
+    if (currentIndex >= pendingQuestions.length) {
+      setCurrentIndex(pendingQuestions.length - 1)
+    }
+  }, [pendingQuestions.length, currentIndex])
+
   // Leave edit mode whenever we move to a different question.
   useEffect(() => { setIsEditing(false) }, [currentIndex])
 
@@ -29,12 +40,12 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     if (timerRef.current) {
       clearInterval(timerRef.current)
     }
-    
+
     const tta = pendingQuestions[questionIndex]?.timeToAnswer || defaultTimeToAnswer
     setTimeLeft(tta)
     setIsTimerActive(true)
     setLaunchedQuestionIndex(questionIndex)
-    
+
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
@@ -108,6 +119,10 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
   const currentQuestion = pendingQuestions[currentIndex]
 
+  if (!currentQuestion) {
+    return null
+  }
+
   const getTypeLabel = (type) => {
     switch (type) {
       case 'MCQ': return 'Multiple Choice (Single Answer)'
@@ -175,9 +190,9 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                 background: timeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
                 border: `2px solid ${timeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
-                <span style={{ 
-                  fontSize: '18px', 
-                  color: timeLeft <= 5 ? '#ef4444' : '#10b981', 
+                <span style={{
+                  fontSize: '18px',
+                  color: timeLeft <= 5 ? '#ef4444' : '#10b981',
                   fontWeight: '700',
                   animation: timeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
                 }}>
@@ -233,8 +248,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
               style={{
                 padding: '4px 12px',
                 borderRadius: '20px',
-                border: index === currentIndex 
-                  ? '2px solid #3b82f6' 
+                border: index === currentIndex
+                  ? '2px solid #3b82f6'
                   : '1px solid var(--border-color)',
                 background: index === currentIndex ? '#dbeafe' : 'transparent',
                 color: index === currentIndex ? '#1e40af' : 'var(--text-secondary)',
@@ -251,100 +266,100 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
         {isEditing ? (
           <QuestionEditor question={currentQuestion} onChange={updateCurrent} />
         ) : (
-        <div style={{
-          background: 'var(--bg-primary)',
-          borderRadius: '16px',
-          padding: '24px',
-          marginBottom: '20px',
-          border: '1px solid var(--border-color)'
-        }}>
-          {/* Question Type Badge */}
           <div style={{
-            display: 'inline-block',
-            padding: '4px 12px',
-            borderRadius: '20px',
-            background: getTypeColor(currentQuestion.type) + '20',
-            color: getTypeColor(currentQuestion.type),
-            fontSize: '12px',
-            fontWeight: '600',
-            marginBottom: '12px'
+            background: 'var(--bg-primary)',
+            borderRadius: '16px',
+            padding: '24px',
+            marginBottom: '20px',
+            border: '1px solid var(--border-color)'
           }}>
-            {getTypeLabel(currentQuestion.type)}
-          </div>
+            {/* Question Type Badge */}
+            <div style={{
+              display: 'inline-block',
+              padding: '4px 12px',
+              borderRadius: '20px',
+              background: getTypeColor(currentQuestion.type) + '20',
+              color: getTypeColor(currentQuestion.type),
+              fontSize: '12px',
+              fontWeight: '600',
+              marginBottom: '12px'
+            }}>
+              {getTypeLabel(currentQuestion.type)}
+            </div>
 
-          {/* Question Text */}
-          <h3 style={{ 
-            margin: '0 0 20px', 
-            fontSize: '18px', 
-            fontWeight: '500', 
-            color: 'var(--text-primary)',
-            lineHeight: '1.5'
-          }}>
-            {currentQuestion.question}
-          </h3>
+            {/* Question Text */}
+            <h3 style={{
+              margin: '0 0 20px',
+              fontSize: '18px',
+              fontWeight: '500',
+              color: 'var(--text-primary)',
+              lineHeight: '1.5'
+            }}>
+              {currentQuestion.question}
+            </h3>
 
-          {/* Options */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {currentQuestion.options?.map((option, optIndex) => (
-              <div
-                key={optIndex}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  padding: '12px 16px',
-                  borderRadius: '10px',
-                  background: option.isCorrect ? '#d1fae5' : 'var(--bg-card)',
-                  border: option.isCorrect ? '2px solid #10b981' : '1px solid var(--border-color)',
-                  color: 'var(--text-primary)'
-                }}
-              >
-                <span style={{
-                  width: '28px',
-                  height: '28px',
-                  borderRadius: '50%',
-                  background: option.isCorrect ? '#10b981' : 'var(--nav-hover)',
-                  color: 'white',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '12px',
-                  fontWeight: '600'
-                }}>
-                  {String.fromCharCode(65 + optIndex)}
-                </span>
-                <span style={{ flex: 1, fontSize: '14px' }}>{option.text}</span>
-                {option.isCorrect && (
-                  <span style={{ 
-                    padding: '2px 8px', 
-                    borderRadius: '4px', 
-                    background: '#10b981', 
-                    color: 'white', 
-                    fontSize: '10px', 
+            {/* Options */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {currentQuestion.options?.map((option, optIndex) => (
+                <div
+                  key={optIndex}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 16px',
+                    borderRadius: '10px',
+                    background: option.isCorrect ? '#d1fae5' : 'var(--bg-card)',
+                    border: option.isCorrect ? '2px solid #10b981' : '1px solid var(--border-color)',
+                    color: 'var(--text-primary)'
+                  }}
+                >
+                  <span style={{
+                    width: '28px',
+                    height: '28px',
+                    borderRadius: '50%',
+                    background: option.isCorrect ? '#10b981' : 'var(--nav-hover)',
+                    color: 'white',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '12px',
                     fontWeight: '600'
                   }}>
-                    CORRECT
+                    {String.fromCharCode(65 + optIndex)}
                   </span>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Explanation */}
-          {currentQuestion.explanation && (
-            <div style={{
-              marginTop: '16px',
-              padding: '12px',
-              borderRadius: '8px',
-              background: '#fef3c7',
-              border: '1px solid #fcd34d',
-              fontSize: '13px',
-              color: '#92400e'
-            }}>
-              <strong>Explanation:</strong> {currentQuestion.explanation}
+                  <span style={{ flex: 1, fontSize: '14px' }}>{option.text}</span>
+                  {option.isCorrect && (
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      background: '#10b981',
+                      color: 'white',
+                      fontSize: '10px',
+                      fontWeight: '600'
+                    }}>
+                      CORRECT
+                    </span>
+                  )}
+                </div>
+              ))}
             </div>
-          )}
-        </div>
+
+            {/* Explanation */}
+            {currentQuestion.explanation && (
+              <div style={{
+                marginTop: '16px',
+                padding: '12px',
+                borderRadius: '8px',
+                background: '#fef3c7',
+                border: '1px solid #fcd34d',
+                fontSize: '13px',
+                color: '#92400e'
+              }}>
+                <strong>Explanation:</strong> {currentQuestion.explanation}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Action Buttons */}

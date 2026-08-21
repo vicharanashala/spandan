@@ -41,7 +41,7 @@ const roomSchema = new mongoose.Schema({
     segmentTime: { type: Number, default: 2 },
     questionsPerSegment: { type: Number, default: 2 },
     difficulty: { type: String, default: 'medium' },
-    questionProvider: { type: String, default: 'minimax' },
+    questionProvider: { type: String, default: 'google' },
     questionTypeMix: {
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
@@ -63,7 +63,7 @@ const roomSchema = new mongoose.Schema({
 })
 
 // Generate unique room code before saving
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', function (next) {
   if (!this.code) {
     this.code = generateRoomCode()
   }
@@ -80,7 +80,7 @@ function generateRoomCode() {
 }
 
 // Static method to find by code
-roomSchema.statics.findByCode = function(code) {
+roomSchema.statics.findByCode = function (code) {
   return this.findOne({ code: code.toUpperCase() })
 }
 

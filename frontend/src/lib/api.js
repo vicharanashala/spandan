@@ -36,6 +36,15 @@ export const api = {
     return this.handleResponse(response)
   },
 
+  async patch(endpoint, data) {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      method: 'PATCH',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    })
+    return this.handleResponse(response)
+  },
+
   async delete(endpoint) {
     const response = await fetch(`${API_URL}${endpoint}`, {
       method: 'DELETE',
@@ -86,6 +95,24 @@ export const questionApi = {
   submitResponse: (data) => api.post('/questions/response', data),
   getResponses: (id) => api.get(`/questions/${id}/responses`),
   getResults: (id) => api.get(`/questions/${id}/results`)
+}
+
+export const bookmarkApi = {
+  getAll: () => api.get('/bookmarks'),
+
+  create: (questionId, note = '') =>
+    api.post('/bookmarks', {
+      questionId,
+      note
+    }),
+
+  update: (id, note) =>
+    api.patch(`/bookmarks/${id}`, {
+      note
+    }),
+
+  delete: (id) =>
+    api.delete(`/bookmarks/${id}`)
 }
 
 export default api
