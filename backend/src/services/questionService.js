@@ -12,6 +12,7 @@ export const createQuestion = async (data, createdBy) => {
   const question = new Question({
     roomId: data.roomId,  // Use roomId to match Question model
     question: data.question,
+    topic: data.topic,
     options: data.options,
     type: data.type || 'MCQ',
     status: data.status || 'pending',  // pending for manual, approved for AI
@@ -261,6 +262,7 @@ HOW TO WRITE GOOD QUESTIONS:
 - Inference beyond what is explicitly stated is encouraged, as long as it is clearly supported by the content's own logic.
 - Distractors and false statements must target REAL misconceptions: intuitive and plausible, wrong only on careful thought — never obviously wrong.
 - The "explanation" is a brief "why" that TEACHES: state what makes the answer correct and why the tempting alternative is wrong, in one or two sentences.
+- Give every question a short "topic" label (1–5 words) naming the student-friendly concept being tested. Do not repeat the question or write a sentence.
 
 WORDING:
 - Write each question so it stands on its own as a direct subject-knowledge question.
@@ -275,6 +277,7 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
     {
       "type": "MCQ",
       "question": "The question text here?",
+      "topic": "Concept Name",
       "options": [
         { "text": "Option A", "isCorrect": true },
         { "text": "Option B", "isCorrect": false },
@@ -286,6 +289,7 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
     {
       "type": "TF",
       "question": "The statement here?",
+      "topic": "Concept Name",
       "options": [
         { "text": "True", "isCorrect": true },
         { "text": "False", "isCorrect": false }
@@ -295,6 +299,7 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
     {
       "type": "MSQ",
       "question": "The question here?",
+      "topic": "Concept Name",
       "options": [
         { "text": "Option A", "isCorrect": true },
         { "text": "Option B", "isCorrect": false },
@@ -339,6 +344,7 @@ export function parseQuestions(responseText, expectedTypes) {
       id: `q_${Date.now()}_${index}`,
       type: q.type || expectedTypes[index] || 'MCQ',
       question: q.question || 'Question text missing',
+      topic: typeof q.topic === 'string' ? q.topic.trim() : '',
       options: parseOptions(q.options || [], q.type),
       explanation: q.explanation || '',
       segmentIndex: 0,

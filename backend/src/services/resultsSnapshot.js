@@ -102,6 +102,7 @@ export async function buildSnapshot(roomId) {
       return {
         _id: toIdStr(q._id),
         question: q.question,
+        topic: q.topic,
         type: q.type,
         options: q.options,
         segmentIndex: q.segmentIndex,
