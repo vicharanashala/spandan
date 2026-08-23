@@ -26,6 +26,9 @@ function RoomResultsPage() {
     averageScore: 0,
     participationRate: 0
   })
+  const [inactiveStudents, setInactiveStudents] = useState(null)
+  const [isGeneratingAnalytics, setIsGeneratingAnalytics] = useState(false)
+  const [analyticsError, setAnalyticsError] = useState('')
 
   useEffect(() => {
     if (token) {
@@ -147,6 +150,28 @@ function RoomResultsPage() {
     }
   }
 
+  const generateInactiveStudentsReport = async () => {
+    setIsGeneratingAnalytics(true)
+    setAnalyticsError('')
+    setInactiveStudents(null)
+
+    try {
+      const response = await fetch(`${API_URL}/responses/stats/room/${roomId}/inactive-students`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to generate student analytics')
+      }
+      setInactiveStudents(data.students || [])
+    } catch (err) {
+      console.error('Failed to generate inactive students report:', err)
+      setAnalyticsError(err.message || 'Unable to generate student analytics. Please try again.')
+    } finally {
+      setIsGeneratingAnalytics(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div style={{
@@ -186,6 +211,7 @@ function RoomResultsPage() {
     { icon: '✅', value: `${stats.averageScore}%`, label: 'Average Score', tint: '#059669', valueColor: '#059669' },
     { icon: '🎯', value: stats.totalCorrect, label: 'Correct Answers', tint: 'var(--accent)', valueColor: 'var(--accent)' },
   ]
+  const flaggedStudents = inactiveStudents?.filter((student) => student.flagged) || []
 
   return (
     <div style={{
@@ -318,6 +344,98 @@ function RoomResultsPage() {
               </div>
             ))}
           </div>
+
+          {user?.role === 'teacher' && room?.endedAt && (
+            <div style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-md)',
+              padding: isMobile ? '18px' : '24px',
+              marginBottom: '24px',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Student Participation Analytics
+                  </h2>
+                  <p style={{ margin: '6px 0 0', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                    Identify students who missed five or more eligible polls.
+                  </p>
+                </div>
+                {/* Manual, on-demand report: it is generated only when the teacher requests it. */}
+                <button
+                  onClick={generateInactiveStudentsReport}
+                  disabled={isGeneratingAnalytics}
+                  style={{
+                    padding: '10px 16px',
+                    background: isGeneratingAnalytics ? '#93c5fd' : 'var(--accent)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    cursor: isGeneratingAnalytics ? 'wait' : 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {isGeneratingAnalytics ? 'Generating...' : 'Generate Analytics'}
+                </button>
+              </div>
+
+              {analyticsError && (
+                <p style={{ margin: '18px 0 0', color: '#dc2626', fontSize: '14px', fontWeight: 500 }}>
+                  {analyticsError}
+                </p>
+              )}
+
+              {inactiveStudents !== null && !analyticsError && (
+                flaggedStudents.length === 0 ? (
+                  <p style={{ margin: '18px 0 0', color: 'var(--text-secondary)', fontSize: '14px' }}>
+                    No inactive students detected.
+                  </p>
+                ) : (
+                  <div style={{ marginTop: '18px', overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '680px', fontSize: '14px' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                          {['Name', 'Email', 'Answered / Eligible', 'Missed', 'Status'].map((heading) => (
+                            <th key={heading} style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 600 }}>{heading}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {flaggedStudents.map((student) => (
+                          <tr key={student.studentId} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                            <td style={{ padding: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>{student.name || 'Unknown student'}</td>
+                            <td style={{ padding: '12px', color: 'var(--text-secondary)' }}>{student.email || '—'}</td>
+                            <td style={{ padding: '12px', color: 'var(--text-primary)' }}>{student.totalAnswered} / {student.totalEligible}</td>
+                            <td style={{ padding: '12px', color: '#dc2626', fontWeight: 600 }}>{student.totalMissed}</td>
+                            <td style={{ padding: '12px' }}>
+                              <span style={{
+                                display: 'inline-block',
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                background: 'color-mix(in srgb, #dc2626 16%, transparent)',
+                                color: '#dc2626',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                whiteSpace: 'nowrap'
+                              }}>
+                                Possibly Inactive
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
+            </div>
+          )}
 
           {/* Questions Analysis */}
           <div style={{
