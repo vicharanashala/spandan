@@ -8,6 +8,7 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 import useIsMobile from '../hooks/useIsMobile'
+import RevisionTopics from '../components/RevisionTopics'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -318,6 +319,10 @@ function RoomResultsPage() {
               </div>
             ))}
           </div>
+
+          {user?.role === 'student' && (
+            <RevisionTopics questions={questions} isSessionComplete={!!room?.endedAt} />
+          )}
 
           {/* Questions Analysis */}
           <div style={{
