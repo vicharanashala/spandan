@@ -45,6 +45,12 @@ describe('buildQuestionPrompt', () => {
     const p = buildQuestionPrompt(transcript, ['MCQ', 'TF'], 'medium')
     expect(p).toContain('write 2 high-quality quiz questions')
   })
+
+  it('requests a short topic in the same generated JSON object', () => {
+    const p = buildQuestionPrompt(transcript, ['MCQ'], 'medium')
+    expect(p).toContain('short "topic" label (1–5 words)')
+    expect(p).toContain('"topic": "Concept Name"')
+  })
 })
 
 describe('parseQuestions', () => {
@@ -55,6 +61,7 @@ describe('parseQuestions', () => {
       questions: [{
         type: 'MCQ',
         question: 'What sealed the booster?',
+        topic: 'O-ring Seals',
         options: [
           { text: 'An O-ring', isCorrect: true },
           { text: 'A bolt', isCorrect: false },
@@ -68,6 +75,7 @@ describe('parseQuestions', () => {
     expect(out).toHaveLength(1)
     expect(out[0].type).toBe('MCQ')
     expect(out[0].question).toBe('What sealed the booster?')
+    expect(out[0].topic).toBe('O-ring Seals')
     expect(out[0].options).toHaveLength(4)
     expect(out[0].options.filter(o => o.isCorrect)).toHaveLength(1)
     expect(out[0].explanation).toBe('The O-ring seals it.')
@@ -90,6 +98,11 @@ describe('parseQuestions', () => {
     const raw = JSON.stringify({ questions: [{ question: 'Q?', options: [], explanation: '' }] })
     const out = parseQuestions(raw, ['MSQ'])
     expect(out[0].type).toBe('MSQ')
+  })
+
+  it('keeps topic optional for older generated questions', () => {
+    const raw = JSON.stringify({ questions: [{ question: 'Q?', options: [] }] })
+    expect(parseQuestions(raw, expected)[0].topic).toBe('')
   })
 })
 

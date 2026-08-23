@@ -619,6 +619,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       return {
         _id: qIdStr,
         question: q.question,
+        topic: q.topic,
         type: q.type,
         options,
         segmentIndex: q.segmentIndex,
