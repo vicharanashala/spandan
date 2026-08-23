@@ -10,6 +10,7 @@ const router = express.Router()
 // How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
 // socket broadcast cutoff in index.js — both read the same env so the value is a single knob.
 const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
+const INACTIVE_MISSED_THRESHOLD = 5
 
 // Apply authentication to all routes
 router.use(authenticate)
@@ -500,6 +501,72 @@ router.get('/stats/room/:roomId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching room stats:', error)
     res.status(500).json({ success: false, error: 'Failed to fetch stats' })
+  }
+})
+
+// GET /api/responses/stats/room/:roomId/inactive-students - Post-room participation report
+router.get('/stats/room/:roomId/inactive-students', async (req, res) => {
+  try {
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const mongoose = (await import('mongoose')).default
+
+    const { roomId } = req.params
+    const currentUser = req.user
+
+    // Keep this ownership check identical to the room stats endpoint.
+    const room = await Room.findById(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+
+    if (room.teacher.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
+    }
+
+    if (!room.endedAt) {
+      return res.status(400).json({ error: 'Room must be ended to generate this report' })
+    }
+
+    const roomObjectId = new mongoose.Types.ObjectId(roomId)
+    const [members, questions, responses] = await Promise.all([
+      RoomMember.find({ roomId }).select('studentId joinedAt').populate('studentId', 'name email').lean(),
+      getRoomQuestionsCached(Question, roomObjectId),
+      Response.find({ roomId }).select('studentId questionId').lean()
+    ])
+
+    const answered = new Set(responses.map((response) =>
+      `${response.studentId.toString()}_${response.questionId.toString()}`
+    ))
+
+    // "Missed" means no Response document exists for a question; a wrong answer is still answered/touched.
+    const students = members.map((member) => {
+      const student = member.studentId
+      const studentId = student?._id?.toString() || student?.toString()
+      const eligibleQuestions = questions.filter((question) => question.createdAt >= member.joinedAt)
+      const totalAnswered = eligibleQuestions.reduce((count, question) => (
+        answered.has(`${studentId}_${question._id.toString()}`) ? count + 1 : count
+      ), 0)
+      const totalEligible = eligibleQuestions.length
+      const totalMissed = totalEligible - totalAnswered
+
+      return {
+        studentId,
+        name: student?.name || '',
+        email: student?.email || '',
+        totalEligible,
+        totalAnswered,
+        totalMissed,
+        flagged: totalMissed >= INACTIVE_MISSED_THRESHOLD
+      }
+    }).sort((a, b) => b.totalMissed - a.totalMissed)
+
+    res.json({ success: true, threshold: INACTIVE_MISSED_THRESHOLD, students })
+  } catch (error) {
+    console.error('Error generating inactive students report:', error)
+    res.status(500).json({ success: false, error: 'Failed to generate inactive students report' })
   }
 })
 
