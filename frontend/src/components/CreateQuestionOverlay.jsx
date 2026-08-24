@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react'
 function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
   const [questionType, setQuestionType] = useState(defaultType)
   const [question, setQuestion] = useState('')
+  const [topic, setTopic] = useState('')  // TAWM
   const [options, setOptions] = useState([
     { text: '', isCorrect: true },
     { text: '', isCorrect: false },
@@ -100,6 +101,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     // First, emit the question to students via onLaunch
     onLaunch({
       type: questionType,
+      topic: topic.trim() || null,  // TAWM
       question: question.trim(),
       options: questionType === 'TF' 
         ? [{ text: 'True', isCorrect: options[0].isCorrect }, { text: 'False', isCorrect: options[1].isCorrect }]
@@ -145,6 +147,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     ])
     setTimeToAnswer(30)
     setPoints(100)
+    setTopic('')  // TAWM
     onClose()
   }
 
@@ -281,6 +284,38 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
               fontFamily: 'inherit'
             }}
           />
+        </div>
+
+         {/* TAWM: Topic input */}
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{
+            fontSize: '13px',
+            fontWeight: '500',
+            color: 'var(--text-primary)',
+            display: 'block',
+            marginBottom: '8px'
+          }}>
+            Topic (Optional - for analytics)
+          </label>
+          <input
+            type="text"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="e.g., Newton's 1st Law, Photosynthesis, Algebra"
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              boxSizing: 'border-box'
+            }}
+          />
+          <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-secondary)' }}>
+            Adding a topic helps track which concepts students struggle with
+          </p>
         </div>
 
         {/* Options */}
