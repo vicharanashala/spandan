@@ -45,13 +45,20 @@ function DashboardPage() {
 
   const fetchTeacherStats = async () => {
     try {
-      // Fetch all rooms
-      const roomsRes = await fetch(`${API_URL}/rooms`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const roomsData = await roomsRes.json()
-
-      const allRooms = roomsData.rooms || []
+      // Fetch ALL rooms by paging through the result set (the API caps each page at 100).
+      // Previously this read only the first 20 rooms, so every card below undercounted for
+      // teachers with more than 20 rooms.
+      const headers = { 'Authorization': `Bearer ${token}` }
+      let allRooms = []
+      let page = 1
+      while (true) {
+        const roomsRes = await fetch(`${API_URL}/rooms?page=${page}&limit=100`, { headers })
+        const roomsData = await roomsRes.json()
+        allRooms = allRooms.concat(roomsData.rooms || [])
+        const pages = roomsData.pagination?.pages || 1
+        if (page >= pages) break
+        page++
+      }
       const activeRooms = allRooms.filter(r => !r.endedAt)
 
       // Fetch all questions for teacher's rooms

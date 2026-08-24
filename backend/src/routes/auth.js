@@ -6,7 +6,18 @@ import { generateToken } from '../middleware/auth.js'
 import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
 import { authenticate } from '../middleware/auth.js'
-import { findOrCreateSamagamaUser, verifySamagamaToken } from '../services/samagamaService.js'
+import {
+  isGoogleOAuthConfigured,
+  signState,
+  verifyState,
+  buildConsentUrl,
+  exchangeCodeForProfile,
+  findGoogleUser,
+  createGoogleUser,
+  signPendingRegistration,
+  verifyPendingRegistration
+} from '../services/googleService.js'
+import { config } from '../config.js'
 
 const router = express.Router()
 
@@ -94,8 +105,8 @@ router.post('/login', validate(loginSchema), async (req, res) => {
 })
 
 // SECURITY FIX: Disabled endpoint to prevent role escalation.
-// Role is set once at registration (services/authService.js register()) or derived from
-// Samagama SSO (services/samagamaService.js), and must never be updated via self-service afterward.
+// Role is set once at registration (services/authService.js register()) and must never be
+// updated via self-service afterward.
 // Verified that there is no legitimate frontend caller (frontend authStore.js updateRole() only
 // mutates local Zustand state and never calls /api/auth/role).
 router.put('/role', authenticate, (req, res) => {
@@ -209,43 +220,109 @@ router.put('/password', authenticate, async (req, res) => {
 })
 
 // ==========================================
-// SAMAGAMA SEAMLESS SSO
-// User visits https://samagama.in/spandan/ while logged into Samagama.
-// The client sends its Samagama session token; the server verifies that token
-// with Samagama and provisions the Spandan account from the identity Samagama
-// returns. The client's own claims about email/name/admin are never trusted.
+// GOOGLE OAUTH 2.0 — Authorization Code flow
+// Browser hits /google (with the role picked on the AuthPage) -> we sign that role into a short-lived
+// state and redirect to Google -> Google redirects back to /google/callback with a code -> we exchange
+// the code server-side (client secret), verify the ID token, provision/link the user, and hand the
+// result to the SPA's /auth/callback route. The client's own claims are never trusted.
 // ==========================================
 
-router.post('/samagama-auto-login', async (req, res) => {
+// Step 1 — begin sign-in. `role` is remembered inside the signed state (default student).
+router.get('/google', (req, res) => {
+  if (!isGoogleOAuthConfigured()) {
+    return res.status(503).json({ error: 'Google sign-in is not configured' })
+  }
+  const role = req.query.role === 'teacher' ? 'teacher' : 'student'
+  const state = signState(role)
+  return res.redirect(buildConsentUrl(state))
+})
+
+// Step 2 — Google redirects here with ?code&state. Every outcome redirects back to the SPA's
+// /auth/callback (never a raw JSON page): success carries the JWT in the URL fragment (which does
+// not reach server logs); a new-but-unapproved teacher carries a pending flag; failures carry an
+// error message.
+router.get('/google/callback', async (req, res) => {
+  const base = `${config.frontendUrl}/auth/callback`
   try {
-    // Accept the Samagama token from the Authorization header or the body.
-    const authHeader = req.headers.authorization || ''
-    const samagamaToken = authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7).trim()
-      : (req.body && req.body.samagamaToken)
+    if (!isGoogleOAuthConfigured()) {
+      return res.redirect(`${base}#error=${encodeURIComponent('Google sign-in is not configured')}`)
+    }
 
-    // Verify the token with Samagama and use ONLY the identity it returns.
-    const verifiedUser = await verifySamagamaToken(samagamaToken)
+    const { code, state, error: googleError } = req.query
+    if (googleError) {
+      return res.redirect(`${base}#error=${encodeURIComponent('Google sign-in was cancelled')}`)
+    }
+    if (!code || !state) {
+      return res.redirect(`${base}#error=${encodeURIComponent('Missing authorization code')}`)
+    }
 
-    // Find or create the Spandan user from the verified identity.
-    const user = await findOrCreateSamagamaUser(verifiedUser)
+    let role
+    try {
+      ;({ role } = verifyState(state))
+    } catch {
+      return res.redirect(`${base}#error=${encodeURIComponent('Sign-in session expired, please try again')}`)
+    }
 
-    // Generate Spandan JWT
+    const profile = await exchangeCodeForProfile(code)
+    const user = await findGoogleUser(profile)
+
+    // Brand-new user: don't guess a role. Hand a signed pending-registration token back to the SPA so
+    // it can ask Student/Teacher, then finalize via POST /google/complete. `role` from the state is
+    // only a preselect hint (whatever was picked on the AuthPage, defaulting to student).
+    if (!user) {
+      const reg = signPendingRegistration(profile, role)
+      return res.redirect(`${base}#status=needs_role&reg=${encodeURIComponent(reg)}&hint=${encodeURIComponent(role)}`)
+    }
+
+    // A teacher who is not yet approved gets NO token — same as the email/password teacher flow.
+    if (user.role === 'teacher' && user.teacherApprovalStatus !== 'approved') {
+      return res.redirect(`${base}#status=pending_teacher`)
+    }
+
     const token = generateToken(user._id)
-
-    console.log(`Samagama auto-login: ${verifiedUser.email} (${user.role})`)
-
-    res.json({
-      message: 'Auto-login successful',
-      user: user.toJSON(),
-      token
-    })
+    console.log(`Google sign-in: ${user.email} (${user.role})`)
+    return res.redirect(`${base}#token=${encodeURIComponent(token)}`)
   } catch (error) {
     const status = error.status || 500
-    if (status >= 500) console.error('Samagama auto-login error:', error.message)
-    res.status(status).json({
-      error: status >= 500 ? 'Auto-login failed' : error.message
-    })
+    if (status >= 500) console.error('Google OAuth callback error:', error.message)
+    const msg = status >= 500 ? 'Google sign-in failed, please try again' : error.message
+    return res.redirect(`${base}#error=${encodeURIComponent(msg)}`)
+  }
+})
+
+// Finalize a first-time Google sign-up once the user has chosen a role. The `reg` token carries the
+// Google-VERIFIED identity (signed by us in the callback); only the role is taken from the request.
+router.post('/google/complete', async (req, res) => {
+  try {
+    if (!isGoogleOAuthConfigured()) {
+      return res.status(503).json({ error: 'Google sign-in is not configured' })
+    }
+    const { reg, role } = req.body || {}
+    if (!reg) return res.status(400).json({ error: 'Missing registration session' })
+    if (role !== 'teacher' && role !== 'student') {
+      return res.status(400).json({ error: 'Please choose a valid role' })
+    }
+
+    let profile
+    try {
+      profile = verifyPendingRegistration(reg)
+    } catch {
+      return res.status(400).json({ error: 'Your sign-up session expired, please try again' })
+    }
+
+    const user = await createGoogleUser(profile, role)
+
+    // A new teacher is created pending admin approval and gets NO token.
+    if (user.role === 'teacher' && user.teacherApprovalStatus !== 'approved') {
+      return res.status(202).json({ status: 'pending_teacher' })
+    }
+
+    const token = generateToken(user._id)
+    console.log(`Google sign-up completed: ${user.email} (${user.role})`)
+    return res.json({ token })
+  } catch (error) {
+    console.error('Google /complete error:', error.message)
+    return res.status(500).json({ error: 'Sign-up could not be completed, please try again' })
   }
 })
 

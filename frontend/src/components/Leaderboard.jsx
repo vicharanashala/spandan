@@ -12,6 +12,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
   const [topN, setTopN] = useState(10)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
+  // Anonymous-leaderboard mode (server-driven). When on, names arrive already masked; the client must
+  // additionally suppress the own-row and the "(You)" highlight so a student can't locate themselves.
+  const [anonymous, setAnonymous] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   // Keep the latest isTeacher available inside the socket listener without rebinding it.
@@ -30,6 +33,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
       const board = data.leaderboard || []
       const n = data.topN || 10
       setTopN(n)
+      setAnonymous(!!data.anonymous)
       if (data.isTeacher) {
         // Teachers are authorized to see the whole board.
         setLeaderboard(board)
@@ -79,6 +83,10 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
           setError(null) // a live push means the server is reachable — clear any stale fetch error
           if (typeof payload.topN === 'number') setTopN(payload.topN)
           if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
+          if (typeof payload.anonymous === 'boolean') setAnonymous(payload.anonymous)
+          // Anonymous mode: the server sends no own-row and the board is masked; drop any stale own-row
+          // so a student can never see their own position.
+          if (payload.anonymous) { setMyRow(null); return }
           if (userId) {
             const me = payload.leaderboard.find(e => String(e.studentId) === String(userId))
             if (me) {
@@ -237,9 +245,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     )
   }
 
-  // Ellipsis marking the gap between the top 10 and the student's own (lower) rank.
-  const renderGap = () => (
-    <div style={{
+  // Ellipsis marking a jump in ranks (top-N → own row, or top-N → revealed bottom slice).
+  const renderGap = (key) => (
+    <div key={key} style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -252,8 +260,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     </div>
   )
 
-  // Show the student's own row (with a ••• gap) only when they rank below the public top N.
-  const showOwnRow = !isTeacher && myRow && myRow.rank > topN
+  // Show the student's own row (with a ••• gap) only when they rank below the public top N — never in
+  // anonymous mode (a student must not be able to locate themselves).
+  const showOwnRow = !isTeacher && !anonymous && myRow && myRow.rank > topN
 
   return (
     <div style={{ position: 'relative', width: '100%', minWidth: 0, maxWidth: '100%' }}>
@@ -269,7 +278,14 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         maxHeight: '60vh',
         boxSizing: 'border-box'
       }}>
-        {leaderboard.map((entry) => renderRank(entry))}
+        {/* Render the board; when ranks jump (e.g. masked top-N → revealed bottom slice) show a ••• gap. */}
+        {leaderboard.flatMap((entry, i) => {
+          const prev = leaderboard[i - 1]
+          const rows = []
+          if (prev && entry.rank - prev.rank > 1) rows.push(renderGap(`gap-${entry.rank}`))
+          rows.push(renderRank(entry))
+          return rows
+        })}
 
         {/* Student ranked below the top 10: a ••• gap then their OWN row (delivered privately). */}
         {showOwnRow && (

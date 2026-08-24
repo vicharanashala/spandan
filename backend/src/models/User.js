@@ -23,9 +23,26 @@ const userSchema = new mongoose.Schema({
     trim: true,
     match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email']
   },
-  password: {
+  // Google account subject id (stable per Google account). sparse+unique lets the many
+  // non-Google accounts (field absent) coexist while each Google account maps to exactly
+  // one Spandan user. Set only from a server-verified Google ID token, never client input.
+  googleId: {
     type: String,
-    required: [true, 'Password is required'],
+    unique: true,
+    sparse: true,
+    default: undefined
+  },
+  // How the account authenticates: 'local' (email+password), 'google' (OAuth), 'samagama' (SSO).
+  authProvider: {
+    type: String,
+    enum: ['local', 'google', 'samagama'],
+    default: 'local'
+  },
+  password: {
+    // Optional for accounts provisioned via an external identity provider (Google OAuth),
+    // which have no local password. Still required for normal email/password accounts.
+    type: String,
+    required: [function () { return !this.googleId }, 'Password is required'],
     minlength: [6, 'Password must be at least 6 characters']
   },
   role: {
@@ -143,6 +160,9 @@ userSchema.pre('save', async function(next) {
 
 // Compare password method
 userSchema.methods.comparePassword = async function(candidatePassword) {
+  // OAuth-only accounts have no local password: never match, so password login fails cleanly
+  // (surfaced as "invalid email or password") instead of throwing on an undefined hash.
+  if (!this.password) return false
   return compare(candidatePassword, this.password)
 }
 

@@ -66,6 +66,56 @@ export const useAuthStore = create(
         }
       },
 
+      // Completes a Google OAuth sign-in. The backend has already minted the Spandan JWT and handed it
+      // back through the /auth/callback redirect; we store it, resolve the user with it, and mark the
+      // session authenticated (mirrors what login() does after a successful password sign-in).
+      completeGoogleLogin: async (token) => {
+        set({ isLoading: true, error: null })
+        try {
+          const response = await fetch(`${API_URL}/auth/me`, {
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+          })
+          const data = await response.json()
+          if (!response.ok) {
+            throw new Error(data.error || 'Sign-in could not be completed')
+          }
+          set({ user: data.user, token, isAuthenticated: true, isLoading: false, sessionExpired: false })
+          return data.user
+        } catch (error) {
+          set({ user: null, token: null, isAuthenticated: false, isLoading: false, error: error.message })
+          throw error
+        }
+      },
+
+      // Finalizes a FIRST-TIME Google sign-up after the user picks a role. The backend creates the
+      // account and returns either a JWT (student -> log straight in) or a pending_teacher status
+      // (teacher -> awaiting admin approval, no session). Returns { pendingTeacher: true } for the
+      // latter, or the logged-in user for the former.
+      completeGoogleSignup: async (reg, role) => {
+        set({ isLoading: true, error: null })
+        try {
+          const response = await fetch(`${API_URL}/auth/google/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reg, role })
+          })
+          const data = await response.json()
+          if (!response.ok) {
+            throw new Error(data.error || 'Sign-up could not be completed')
+          }
+          if (data.status === 'pending_teacher') {
+            set({ isLoading: false })
+            return { pendingTeacher: true }
+          }
+          // Student: reuse the same session-establishing path as a normal Google login.
+          const user = await get().completeGoogleLogin(data.token)
+          return { user }
+        } catch (error) {
+          set({ error: error.message, isLoading: false })
+          throw error
+        }
+      },
+
       // Registration is email-OTP verified (two steps). Step 1 requests a code; step 2 verifies it and
       // creates the account. Only step 2 sets the auth session.
       sendRegistrationOtp: async (name, email) => {

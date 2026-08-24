@@ -13,6 +13,7 @@ import { initRedis } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
+import { buildStudentBoard } from './services/anonymizeLeaderboard.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -186,10 +187,23 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
 
     const roomCode = await resolveRoomCode(roomId)
 
-    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A).
+    // Anonymous-leaderboard settings, read fresh each fold so a mid-session toggle takes effect on the
+    // next per-segment broadcast. See anonymizeLeaderboard.js for the rule.
+    const RoomModel = (await import('./models/Room.js')).default
+    const anonDoc = await RoomModel.findById(roomId)
+      .select('settings.anonymousLeaderboard settings.anonymityPercent settings.revealBottomToStudents').lean()
+    const anonymous = !!anonDoc?.settings?.anonymousLeaderboard
+    const anonPct = anonDoc?.settings?.anonymityPercent ?? 0
+    const revealBottom = anonymous && !!anonDoc?.settings?.revealBottomToStudents
+
+    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A). We also
+    // stash the anonymous flag (as of this fold) so "rank on submit" can withhold a student's own rank
+    // in anonymous mode — otherwise a student could read their position from the POST /responses reply
+    // even though the leaderboard hides it. Same refresh cadence as the board, so it tracks a
+    // mid-session toggle at the next fold, consistently across instances (shared Redis hash).
     if (redis.enabled) {
       try {
-        const flat = { _total: String(full.length) }
+        const flat = { _total: String(full.length), _anon: anonymous ? '1' : '0' }
         rankByStudent.forEach((rank, sid) => { flat[sid] = String(rank) })
         const key = `live:ranks:${roomId}`
         await redis.client.del(key)
@@ -200,31 +214,41 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
       const s = getRoomState(String(roomId))
       s.rankByStudent = rankByStudent
       s.total = full.length
+      s.anon = anonymous
     }
 
     if (roomCode) {
-      // Public room push: the top N only (safe for every student to see) + the aggregate count.
+      // Public room push: the top N only (safe for every student to see) + the aggregate count. When
+      // anonymous is ON, every public row is masked to 'Anonymous #<rank>' (student viewer) BEFORE it
+      // leaves the server. anonymizeBoard returns NEW objects, so the shared cached `full` is untouched.
+      const publicBoard = full.slice(0, LEADERBOARD_TOP_N)
       io.to(roomCode).emit('leaderboard:updated', {
-        leaderboard: full.slice(0, LEADERBOARD_TOP_N),
+        leaderboard: anonymous
+          ? buildStudentBoard(full, { pct: anonPct, total: full.length, topN: LEADERBOARD_TOP_N, revealBottom })
+          : publicBoard,
         totalParticipants: full.length,
         topN: LEADERBOARD_TOP_N,
+        anonymous,
         counts
       })
       // Private push: each student ranked BELOW the public cutoff gets ONLY their own row, on their
       // personal channel — so no student's browser ever receives the full ranking. Students inside
       // the top N are already in the public payload, so they need no personal push. Runs once per
       // segment; an emit to an offline user-room is a cheap no-op.
-      for (const e of full) {
-        if (e.rank > LEADERBOARD_TOP_N) {
-          io.to('user:' + e.studentId).emit('leaderboard:you', {
-            rank: e.rank,
-            studentId: e.studentId,
-            studentName: e.studentName,
-            totalPoints: e.totalPoints,
-            correctCount: e.correctCount,
-            totalAnswered: e.totalAnswered,
-            totalParticipants: full.length
-          })
+      // SKIPPED entirely in anonymous mode: a student must not be able to locate their own rank.
+      if (!anonymous) {
+        for (const e of full) {
+          if (e.rank > LEADERBOARD_TOP_N) {
+            io.to('user:' + e.studentId).emit('leaderboard:you', {
+              rank: e.rank,
+              studentId: e.studentId,
+              studentName: e.studentName,
+              totalPoints: e.totalPoints,
+              correctCount: e.correctCount,
+              totalAnswered: e.totalAnswered,
+              totalParticipants: full.length
+            })
+          }
         }
       }
     }
@@ -264,14 +288,18 @@ async function getCachedStudentRank(roomId, studentId) {
   const id = String(roomId)
   if (redis.enabled) {
     try {
-      const [rank, total] = await redis.client.hmGet(`live:ranks:${id}`, [String(studentId), '_total'])
-      return { rank: rank != null ? Number(rank) : null, totalParticipants: total != null ? Number(total) : null }
+      const [rank, total, anon] = await redis.client.hmGet(`live:ranks:${id}`, [String(studentId), '_total', '_anon'])
+      const totalParticipants = total != null ? Number(total) : null
+      // Anonymous mode: withhold the student's own position (they must not be able to locate themselves).
+      if (anon === '1') return { rank: null, totalParticipants }
+      return { rank: rank != null ? Number(rank) : null, totalParticipants }
     } catch (e) {
       return { rank: null, totalParticipants: null }
     }
   }
   const state = roomLive.get(id)
   if (!state) return { rank: null, totalParticipants: null }
+  if (state.anon) return { rank: null, totalParticipants: state.total ?? null }
   return { rank: state.rankByStudent?.get(String(studentId)) ?? null, totalParticipants: state.total ?? null }
 }
 

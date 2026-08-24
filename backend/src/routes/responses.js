@@ -3,6 +3,7 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
+import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
@@ -298,8 +299,16 @@ router.get('/', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to access responses for this room' })
     }
 
+    // A student may only ever read their OWN responses; only the room-owning teacher may read all
+    // responses for the room (or narrow to one student). Without this, a student who omitted the
+    // studentId query param bypassed the line-above guard and got every student's responses —
+    // including isCorrect/points — a BOLA that also leaked correct answers mid-poll.
     const filter = { roomId }
-    if (studentId) filter.studentId = studentId
+    if (isTeacher) {
+      if (studentId) filter.studentId = studentId
+    } else {
+      filter.studentId = currentUser._id
+    }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1)
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))
@@ -736,16 +745,35 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       leaderboard = (await computeRankedIncremental(roomId, { fold: false })).full
     }
 
+    // Anonymous-leaderboard settings (see anonymizeLeaderboard.js for the rule). Read from the room
+    // doc so a mid-session toggle takes effect on the next read.
+    const anonymous = !!room?.settings?.anonymousLeaderboard
+    const anonPct = room?.settings?.anonymityPercent ?? 0
+    // Only meaningful while anonymous is on: also show students the bottom-slice real names.
+    const revealBottom = anonymous && !!room?.settings?.revealBottomToStudents
+    const total = leaderboard.length
+
     // Students: top N + their own row (with ellipsis) — never the full board. Teachers: full board.
     let visibleLeaderboard = leaderboard
     let userRank = null
 
-    if (!isTeacher) {
-      // Find current user's rank
+    if (isTeacher) {
+      // Teacher sees the full board; when anonymous is ON, only the bottom anonPct% keep real names.
+      visibleLeaderboard = anonymous
+        ? anonymizeBoard(leaderboard, { anonymous, pct: anonPct, total, viewer: 'teacher' })
+        : leaderboard
+    } else if (anonymous) {
+      // Anonymous mode: masked top-N (no own-row, no self-identification). When the teacher enabled
+      // revealBottomToStudents, the bottom-slice real names are appended too.
+      visibleLeaderboard = buildStudentBoard(leaderboard, {
+        pct: anonPct, total, topN: LEADERBOARD_TOP_N, revealBottom
+      })
+      userRank = null
+    } else {
+      // Normal mode: top N + the user's own row appended if they're below the cutoff.
       const userEntry = leaderboard.find(e => e.studentId === currentUser._id.toString())
       userRank = userEntry?.rank || null
 
-      // Get the top N + the user's own entry if they're below it
       visibleLeaderboard = leaderboard.slice(0, LEADERBOARD_TOP_N)
 
       // If user is beyond the top N, append their own row (the client renders it after a ••• gap)
@@ -763,6 +791,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       success: true,
       leaderboard: visibleLeaderboard,
       isTeacher,
+      anonymous,
       userRank,
       totalParticipants: leaderboard.length,
       topN: LEADERBOARD_TOP_N
