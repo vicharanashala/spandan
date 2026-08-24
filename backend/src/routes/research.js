@@ -14,9 +14,15 @@
 // no dupes, self-healing if a run is missed.
 //
 // "Poll" = a question that received >=1 response.
+
 import express from 'express'
 import crypto from 'crypto'
 import mongoose from 'mongoose'
+
+import {
+  getSegmentDifficulty
+} from '../utils/segmentDifficulty.js'
+
 
 const router = express.Router()
 
@@ -517,6 +523,10 @@ router.get(
               ? segment.correctResponses /
                 segment.responseCount
               : 0
+          const difficulty = getSegmentDifficulty(
+            segment.responseCount,
+            avgAccuracy * 100
+          )
 
           return {
             segmentIndex:
@@ -537,7 +547,9 @@ router.get(
             avgAccuracy_pct:
               Number(
                 (avgAccuracy * 100).toFixed(2)
-              )
+              ),
+
+            difficulty
           }
         })
 
