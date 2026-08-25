@@ -16,14 +16,15 @@ import { computeRankedIncremental, invalidateLeaderboardCache } from './services
 import { buildStudentBoard } from './services/anonymizeLeaderboard.js'
 
 // Import routes
-import authRoutes from './routes/auth.js'
-import roomRoutes from './routes/rooms.js'
-import questionRoutes from './routes/questions.js'
+import authRoutes         from './routes/auth.js'
+import roomRoutes         from './routes/rooms.js'
+import questionRoutes     from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
-import transcriptRoutes from './routes/transcripts.js'
-import responseRoutes from './routes/responses.js'
-import researchRoutes from './routes/research.js'
-import adminRoutes from './routes/admin.js'
+import transcriptRoutes   from './routes/transcripts.js'
+import responseRoutes     from './routes/responses.js'
+import integrityRoutes    from './routes/integrityEvents.js'
+import researchRoutes     from './routes/research.js'
+import adminRoutes        from './routes/admin.js'
 
 // Import models for reference
 import './models/index.js'
@@ -380,14 +381,15 @@ app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard route
 app.use(requestTimeout)
 
 // API Routes
-app.use('/api/auth', authRoutes)
-app.use('/api/rooms', roomRoutes)
-app.use('/api/questions', questionRoutes)
-app.use('/api/transcription', transcriptionRoutes)
-app.use('/api/transcripts', transcriptRoutes)
-app.use('/api/responses', responseRoutes)
-app.use('/api/research', researchRoutes)
-app.use('/api/admin', adminRoutes)
+app.use('/api/auth',               authRoutes)
+app.use('/api/rooms',              roomRoutes)
+app.use('/api/questions',          questionRoutes)
+app.use('/api/transcription',      transcriptionRoutes)
+app.use('/api/transcripts',        transcriptRoutes)
+app.use('/api/responses',          responseRoutes)
+app.use('/api/integrity-events',   integrityRoutes)
+app.use('/api/research',           researchRoutes)
+app.use('/api/admin',              adminRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -401,6 +403,7 @@ app.get('/api/health', (req, res) => {
 
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
+app.set('connectedUsers', connectedUsers) // expose for route handlers (integrity events, risk scores)
 
 const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
