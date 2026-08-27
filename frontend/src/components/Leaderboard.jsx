@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { API_URL } from '../config.js'
 
 const Leaderboard = ({ roomId, token, socket, userId }) => {
@@ -21,7 +21,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
   const isTeacherRef = useRef(false)
   useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
 
-  const fetchLeaderboard = async ({ retries = 2, backoffMs = 800 } = {}) => {
+  const fetchLeaderboard = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/responses/leaderboard/${roomId}`, {
         headers: {
@@ -29,21 +29,14 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         }
       })
       const data = await response.json()
-      if (!data.success) throw new Error('leaderboard response not successful')
-      const board = data.leaderboard || []
-      const n = data.topN || 10
-      setTopN(n)
-      setAnonymous(!!data.anonymous)
-      if (data.isTeacher) {
-        // Teachers are authorized to see the whole board.
-        setLeaderboard(board)
-        setMyRow(null)
+      if (data.success) {
+        setLeaderboard(data.leaderboard)
+        setUserRank(data.userRank)
+        setTotalParticipants(data.totalParticipants)
+        setIsTeacher(data.isTeacher)
+        setError(null)
       } else {
-        // Students: the REST board is "top N + my own row appended" for those below the cutoff.
-        // Split it into a clean top-N list plus my own row — the same model the sockets feed.
-        const meBeyond = board.find(e => String(e.studentId) === String(userId) && e.rank > n)
-        setLeaderboard(board.filter(e => e.rank <= n))
-        setMyRow(meBeyond || null)
+        setError(data.error || 'Failed to load leaderboard')
       }
       setTotalParticipants(data.totalParticipants)
       setIsTeacher(data.isTeacher)
@@ -58,64 +51,35 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         return
       }
       console.error('Failed to fetch leaderboard:', err)
-      setError('Failed to load leaderboard')
+      setError('Couldn’t reach the server. Check your connection and try again.')
+    } finally {
       setLoading(false)
     }
-  }
+  }, [roomId, token])
 
   useEffect(() => {
     if (!roomId) return
     fetchLeaderboard()
 
-    // Phase 1: consume the server's throttled, pushed leaderboard payload instead of re-fetching on
-    // every points event (which caused the ~N^2 storm). The public push carries only the TOP 10; a
-    // student ranked below it receives their own row separately on the private `leaderboard:you`
-    // channel, so no student's browser ever sees the full ranking. The teacher is a single client,
-    // so it just re-fetches the full (authorized) board on each tick.
+    // Listen for points:updated events AND socket reconnect
     if (socket) {
-      const handleLiveUpdate = (payload) => {
-        if (isTeacherRef.current) {
-          fetchLeaderboard()
-          return
-        }
-        if (payload?.leaderboard) {
-          setLeaderboard(payload.leaderboard)
-          setError(null) // a live push means the server is reachable — clear any stale fetch error
-          if (typeof payload.topN === 'number') setTopN(payload.topN)
-          if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
-          if (typeof payload.anonymous === 'boolean') setAnonymous(payload.anonymous)
-          // Anonymous mode: the server sends no own-row and the board is masked; drop any stale own-row
-          // so a student can never see their own position.
-          if (payload.anonymous) { setMyRow(null); return }
-          if (userId) {
-            const me = payload.leaderboard.find(e => String(e.studentId) === String(userId))
-            if (me) {
-              // I'm inside the public top 10 — shown there directly, so no separate own-row is needed.
-              setMyRow(null)
-            }
-          }
-        }
+      const onPointsUpdate = () => {
+        fetchLeaderboard()
       }
-      // Private channel: the fold pushes ONLY my own row when I'm ranked below the top 10.
-      const handleYou = (row) => {
-        if (isTeacherRef.current || !row) return
-        setMyRow(row)
-        setError(null) // a live push means the server is reachable — clear any stale fetch error
-        if (typeof row.totalParticipants === 'number') setTotalParticipants(row.totalParticipants)
+      const onReconnect = () => {
+        console.log('[Leaderboard] Socket reconnected, refreshing...')
+        fetchLeaderboard()
       }
-      socket.on('leaderboard:updated', handleLiveUpdate)
-      socket.on('leaderboard:you', handleYou)
+      socket.on('points:updated', onPointsUpdate)
+      socket.on('connect', onReconnect)
       return () => {
-        socket.off('leaderboard:updated', handleLiveUpdate)
-        socket.off('leaderboard:you', handleYou)
+        socket.off('points:updated', onPointsUpdate)
+        socket.off('connect', onReconnect)
       }
     }
-  }, [roomId, socket, userId])
+  }, [roomId, socket, fetchLeaderboard])
 
-  // Only show the loading state while we have nothing yet. If a socket push already delivered a
-  // board (or the student's own row) before the initial fetch settled, render it immediately rather
-  // than waiting out the fetch/retries.
-  if (loading && leaderboard.length === 0 && !myRow) {
+  if (loading) {
     return (
       <div style={{
         padding: '20px',
@@ -136,9 +100,28 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         padding: '20px',
         textAlign: 'center',
         color: '#ef4444',
-        fontSize: '13px'
+        fontSize: '13px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '12px'
       }}>
-        {error}
+        <div>{error}</div>
+        <button
+          onClick={() => { setLoading(true); fetchLeaderboard() }}
+          style={{
+            padding: '6px 14px',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: 'white',
+            background: '#3b82f6',
+            border: 'none',
+            borderRadius: '6px',
+            cursor: 'pointer'
+          }}
+        >
+          Retry
+        </button>
       </div>
     )
   }
@@ -215,9 +198,43 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            maxWidth: '100%'
+            maxWidth: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
           }}>
-            {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            <span style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '100%'
+            }}>
+              {entry.studentName}{isCurrentUser ? ' (You)' : ''}
+            </span>
+            {/* Streak Fire badge — only when currentStreak >= 2 */}
+            {Number(entry.currentStreak) >= 2 && (
+              <span
+                title={`On a ${entry.currentStreak}-answer streak (best: ${entry.bestStreak ?? 0})`}
+                aria-label={`Streak ${entry.currentStreak}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '2px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  color: '#b45309',
+                  background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                  border: '1px solid #f59e0b',
+                  borderRadius: '999px',
+                  padding: '1px 6px',
+                  flexShrink: 0,
+                  lineHeight: 1.4
+                }}
+              >
+                <span style={{ fontSize: '11px' }}>🔥</span>
+                <span>{entry.currentStreak}</span>
+              </span>
+            )}
           </div>
           <div style={{
             fontSize: '11px',

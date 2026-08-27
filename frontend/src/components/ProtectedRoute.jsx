@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
+import ErrorBoundary from './ErrorBoundary'
 
 function ProtectedRoute({ children, allowedRoles }) {
   const { token, user, isAuthenticated } = useAuthStore()
   const [ hydrated, setHydrated ] = useState(false)
-  
+
   // Wait for Zustand persistence to rehydrate
   useEffect(() => {
     // Zustand with persist sets a rehydrate key
@@ -13,7 +14,7 @@ function ProtectedRoute({ children, allowedRoles }) {
     const timer = setTimeout(() => setHydrated(true), 0)
     return () => clearTimeout(timer)
   }, [])
-  
+
   // Show nothing until hydrated
   if (!hydrated) {
     return (
@@ -35,18 +36,19 @@ function ProtectedRoute({ children, allowedRoles }) {
       </div>
     )
   }
-  
+
   // Not authenticated - redirect to login
   if (!token || !isAuthenticated) {
     return <Navigate to="/" replace />
   }
-  
+
   // Check role if specified
   if (allowedRoles && user && !allowedRoles.includes(user.role)) {
     return <Navigate to="/" replace />
   }
-  
-  return children
+
+  // Per-route error boundary: a crash in one page doesn't kill the whole app
+  return <ErrorBoundary>{children}</ErrorBoundary>
 }
 
 export default ProtectedRoute

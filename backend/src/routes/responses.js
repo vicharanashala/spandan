@@ -1,11 +1,13 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { applyAnswer } from '../services/streakService.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { computeRanked } from '../services/leaderboardAgg.js'
 const router = express.Router()
 
 // How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
@@ -102,13 +104,15 @@ router.post('/', authorize('student'), async (req, res) => {
     const Response = (await import('../models/Response.js')).default
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
-    
+    const mongoose = (await import('mongoose')).default
+
     const { roomId, questionId, selectedOptions, responseTime } = req.body
     const studentId = req.user._id // Must be authenticated user
 
-    // Verify student is in the room (member of RoomMember) — cached (Fix 4), DB fallback on miss.
-    const isMember = await isRoomMember(RoomMember, roomId, studentId)
-    if (!isMember) {
+    // Verify student is in the room (member of RoomMember)
+    // NOTE: keep the doc (not .lean()) so we can persist streak fields later.
+    const member = await RoomMember.findOne({ roomId, studentId })
+    if (!member) {
       return res.status(403).json({ error: 'You have not joined this room' })
     }
 
@@ -248,20 +252,94 @@ router.post('/', authorize('student'), async (req, res) => {
     live?.scheduleCounts(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
-    // Withhold the answerer's OWN correctness (isCorrect + points) from the immediate response while
-    // the session is live — otherwise a student (or a dummy / second account) learns the answer the
-    // instant they submit, straight from the Network tab, and can relay it. The answer is still
-    // SCORED and saved server-side; the student sees their result via the results path once polls are
-    // no longer live. The client only uses `rank` from this response, so nothing it renders changes.
-    const { isCorrect: _omitIsCorrect, points: _omitPoints, ...safeResponse } = savedResponse
-    res.status(201).json({
-      success: true,
-      response: safeResponse,
-      rank: rankInfo.rank ?? null,
-      totalParticipants: rankInfo.totalParticipants ?? null
+  // --- Streak Fire ---
+  const computeMultiplier = (s) =>
+    s >= 10 ? 5 : s >= 5 ? 3 : s >= 3 ? 2 : 1
+  const basePoints = points
+  let multiplier = 1
+  let multiplierBoosted = false
+
+  const toObjectId = (id) => {
+    if (!id) return null
+    if (typeof id === 'object' && id._bsontype === 'ObjectId') return id
+    return new mongoose.Types.ObjectId(id)
+  }
+  const sweepEvents = []
+  let sweepBrokeStreak = false
+  let freezeUsed = null
+  try {
+    const lastResponse = await Response.findOne({
+      roomId: toObjectId(roomId),
+      studentId,
+      _id: { $ne: savedResponse._id },
+    }).sort({ createdAt: -1 }).select('createdAt').lean()
+
+    const fromDate = lastResponse ? lastResponse.createdAt : new Date(0)
+    const priorQuestions = await Question.find({
+      roomId: toObjectId(roomId),
+      status: 'approved',
+      _id: { $ne: toObjectId(questionId) },
+      createdAt: { $gte: fromDate, $lt: question.createdAt },
+    }).select('_id').lean()
+
+    const answeredIdsInGap = await Response.distinct('questionId', {
+      roomId: toObjectId(roomId),
+      studentId,
+      questionId: { $in: priorQuestions.map(q => q._id) },
+    })
+    const answeredSet = new Set(answeredIdsInGap.map(id => id.toString()))
+    const missedIds = priorQuestions.filter(q => !answeredSet.has(q._id.toString()))
+
+    if (missedIds.length > 0) {
+      if (member.streakFreezes > 0) {
+        member.streakFreezes -= 1
+        freezeUsed = 'sweep'
+      } else {
+        member.currentStreak = Math.max(0, (Number(member.currentStreak) || 0) - 3)
+      }
+    }
+  } catch (streakSweepErr) {
+    console.error('[streak] missed-question sweep failed:', streakSweepErr)
+  }
+
+  const after = applyAnswer(member, isCorrect)
+  multiplier = isCorrect ? computeMultiplier(after.currentStreak) : 1
+  if (isCorrect && multiplier > 1) {
+    const boosted = Math.round(basePoints * multiplier)
+    if (boosted !== basePoints) {
+      savedResponse.points = boosted
+      multiplierBoosted = true
+    }
+  }
+  member.currentStreak = after.currentStreak
+  member.bestStreak    = after.bestStreak
+  await member.save()
+
+  res.status(201).json({
+    success: true,
+    response: {
+      ...savedResponse,
+      isCorrect,
+      points: savedResponse.points,
+      basePoints,
+      multiplier
+    },
+    streak: {
+      currentStreak: member.currentStreak,
+      bestStreak: member.bestStreak,
+      event: after.event,
+      sweep: sweepEvents,
+      sweepBrokeStreak,
+      missedCount: sweepEvents.length,
+      freezeUsed,
+      streakFreezesRemaining: member.streakFreezes,
+      multiplier,
+      multiplierBoosted,
+    }
     })
   } catch (error) {
-    console.error('Error saving response:', error)
+    console.error(`[ERROR] POST /api/responses — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to save response' })
   }
 })
@@ -330,7 +408,8 @@ router.get('/', async (req, res) => {
       }
     })
   } catch (error) {
-    console.error('Error fetching responses:', error)
+    console.error(`[ERROR] GET /api/responses — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch responses' })
   }
 })
@@ -394,17 +473,42 @@ router.get('/stats/student/:studentId', async (req, res) => {
     })
     const pollsMissed = Math.max(0, launchedCount - pollsTaken)
 
+    // --- Streak Fire ---
+    // Streaks live on RoomMember, one record per (student, room). Aggregate
+    // to give the student a lifetime peak + the strongest active streak.
+    const bestStreak = roomMemberships.reduce(
+      (max, m) => Math.max(max, m.bestStreak || 0),
+      0
+    )
+    // Active streak: the largest non-zero currentStreak across rooms.
+    // (Sums across rooms would inflate numbers; max reflects "best run in
+    // progress right now", which is the meaningful display value.)
+    const activeStreak = roomMemberships.reduce(
+      (max, m) => Math.max(max, m.currentStreak || 0),
+      0
+    )
+    // Total freezes remaining across all active rooms (sum — student could be in
+    // multiple rooms, each gives 1 freeze).
+    const totalStreakFreezes = roomMemberships.reduce(
+      (sum, m) => sum + (m.streakFreezes || 0),
+      0
+    )
+
     res.json({
       success: true,
       stats: {
         totalRooms,
         pollsTaken,
         pollsMissed,
-        average
+        average,
+        bestStreak,
+        currentStreak: activeStreak,
+        streakFreezes: totalStreakFreezes
       }
     })
   } catch (error) {
-    console.error('Error fetching student stats:', error)
+    console.error(`[ERROR] GET /api/responses/stats/student/:id — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch stats' })
   }
 })
@@ -644,7 +748,8 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       questions: questionsWithResponses
     })
   } catch (error) {
-    console.error('Error fetching student room responses:', error)
+    console.error(`[ERROR] GET /api/responses/room/:roomId/student/:studentId — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ success: false, error: 'Failed to fetch responses' })
   }
 })
@@ -685,7 +790,8 @@ router.get('/counts/:roomId', async (req, res) => {
 
     res.json({ success: true, counts: countMap })
   } catch (error) {
-    console.error('Error fetching answer counts:', error)
+    console.error(`[ERROR] GET /api/responses/room/:roomId/counts — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ error: 'Failed to fetch counts' })
   }
 })
@@ -738,11 +844,19 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
     if (!leaderboard) {
-      // Live room: serve the CACHED per-segment board (read-only, NO fold), so the board is stable
-      // within a segment and changes only when a segment fold runs. The cache advances via the
-      // per-segment trigger POST /leaderboard/:roomId/segment-done — not on this read. (Ended rooms
-      // are served from the snapshot above; room end does a full recompute.)
-      leaderboard = (await computeRankedIncremental(roomId, { fold: false })).full
+      const { full: rankedFull } = await computeRanked(roomId)
+      const members = await RoomMember.find({ roomId: toObjectId(roomId) })
+        .select('studentId currentStreak bestStreak streakFreezes').lean()
+      const memberMap = new Map(members.map(m => [m.studentId.toString(), m]))
+      leaderboard = rankedFull.map(entry => {
+        const m = memberMap.get(entry.studentId)
+        return {
+          ...entry,
+          currentStreak: m?.currentStreak ?? 0,
+          bestStreak:    m?.bestStreak    ?? 0,
+          streakFreezes: m?.streakFreezes ?? 0
+        }
+      })
     }
 
     // Anonymous-leaderboard settings (see anonymizeLeaderboard.js for the rule). Read from the room
@@ -797,7 +911,8 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       topN: LEADERBOARD_TOP_N
     })
   } catch (error) {
-    console.error('Error fetching leaderboard:', error)
+    console.error(`[ERROR] GET /api/responses/leaderboard/:roomId — ${error.message}`)
+    console.error('[ERROR] Stack:', error.stack)
     res.status(500).json({ error: 'Failed to fetch leaderboard' })
   }
 })
