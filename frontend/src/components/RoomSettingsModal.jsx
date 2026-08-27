@@ -400,6 +400,133 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </div>
         </div>
 
+        {/* Anonymous Leaderboard */}
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            Anonymous Leaderboard
+          </label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[{ label: 'Off', value: false }, { label: 'On', value: true }].map(opt => {
+              const active = !!localSettings.anonymousLeaderboard === opt.value
+              return (
+                <button
+                  key={opt.label}
+                  onClick={() => setLocalSettings(prev => ({
+                    ...prev,
+                    anonymousLeaderboard: opt.value,
+                    // Seed a sensible default the first time it's switched on.
+                    anonymityPercent: opt.value ? (prev.anonymityPercent ?? 20) : prev.anonymityPercent
+                  }))}
+                  style={{
+                    flex: 1,
+                    padding: '10px 16px',
+                    borderRadius: '8px',
+                    border: active ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                    background: active ? '#dbeafe' : 'transparent',
+                    color: active ? '#1e40af' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: active ? '600' : '400'
+                  }}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {localSettings.anonymousLeaderboard && (
+            <div style={{ marginTop: '12px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '13px',
+                fontWeight: '500',
+                color: 'var(--text-primary)'
+              }}>
+                Anonymity Percentage
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={localSettings.anonymityPercent ?? 20}
+                  onChange={(e) => setLocalSettings(prev => ({
+                    ...prev,
+                    anonymityPercent: Math.min(100, Math.max(0, parseInt(e.target.value) || 0))
+                  }))}
+                  style={{
+                    width: '100px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                    fontSize: '18px',
+                    fontWeight: '600',
+                    textAlign: 'center'
+                  }}
+                />
+                <span style={{ fontSize: '16px', color: 'var(--text-secondary)' }}>
+                  % (0-100)
+                </span>
+              </div>
+              <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                You see real names for the bottom {localSettings.anonymityPercent ?? 20}% (lowest scorers);
+                everyone else is anonymised. Students always see an anonymised board.
+              </p>
+
+              {/* Reveal bottom names to students — only meaningful while anonymous mode is on. */}
+              <div style={{ marginTop: '16px' }}>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontSize: '13px',
+                  fontWeight: '500',
+                  color: 'var(--text-primary)'
+                }}>
+                  Show bottom names to students
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {[{ label: 'Off', value: false }, { label: 'On', value: true }].map(opt => {
+                    const active = !!localSettings.revealBottomToStudents === opt.value
+                    return (
+                      <button
+                        key={opt.label}
+                        onClick={() => setLocalSettings(prev => ({ ...prev, revealBottomToStudents: opt.value }))}
+                        style={{
+                          flex: 1,
+                          padding: '10px 16px',
+                          borderRadius: '8px',
+                          border: active ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                          background: active ? '#dbeafe' : 'transparent',
+                          color: active ? '#1e40af' : 'var(--text-primary)',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: active ? '600' : '400'
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  When On, students also see the real names of the bottom {localSettings.anonymityPercent ?? 20}%
+                  (lowest scorers); the rest of the board stays anonymised for them.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Save Button */}
         <button
           onClick={handleSave}

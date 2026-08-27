@@ -46,7 +46,17 @@ const roomSchema = new mongoose.Schema({
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },
       MSQ: { type: Number, default: 20 }
-    }
+    },
+    // Anonymous leaderboard. When ON, students see only an anonymised top-N board (every row
+    // 'Anonymous #<rank>', no self-highlight); the teacher sees real names for the BOTTOM
+    // anonymityPercent% of the class (the lowest scorers) and 'Anonymous #<rank>' for everyone else.
+    // OFF = names shown as normal (default).
+    anonymousLeaderboard: { type: Boolean, default: false },
+    anonymityPercent: { type: Number, default: 20, min: 0, max: 100 },
+    // Only meaningful while anonymousLeaderboard is ON. When the teacher turns this ON, students ALSO
+    // see the real names of the bottom anonymityPercent% (the same lowest-scorer slice the teacher
+    // sees) appended to their masked top-N board. OFF (default) = students see only the masked top-N.
+    revealBottomToStudents: { type: Boolean, default: false }
   }
 }, {
   timestamps: true

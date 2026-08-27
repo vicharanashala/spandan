@@ -4,6 +4,7 @@ import { applyAnswer } from '../services/streakService.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
+import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
 import { computeRanked } from '../services/leaderboardAgg.js'
@@ -858,16 +859,35 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       })
     }
 
+    // Anonymous-leaderboard settings (see anonymizeLeaderboard.js for the rule). Read from the room
+    // doc so a mid-session toggle takes effect on the next read.
+    const anonymous = !!room?.settings?.anonymousLeaderboard
+    const anonPct = room?.settings?.anonymityPercent ?? 0
+    // Only meaningful while anonymous is on: also show students the bottom-slice real names.
+    const revealBottom = anonymous && !!room?.settings?.revealBottomToStudents
+    const total = leaderboard.length
+
     // Students: top N + their own row (with ellipsis) — never the full board. Teachers: full board.
     let visibleLeaderboard = leaderboard
     let userRank = null
 
-    if (!isTeacher) {
-      // Find current user's rank
+    if (isTeacher) {
+      // Teacher sees the full board; when anonymous is ON, only the bottom anonPct% keep real names.
+      visibleLeaderboard = anonymous
+        ? anonymizeBoard(leaderboard, { anonymous, pct: anonPct, total, viewer: 'teacher' })
+        : leaderboard
+    } else if (anonymous) {
+      // Anonymous mode: masked top-N (no own-row, no self-identification). When the teacher enabled
+      // revealBottomToStudents, the bottom-slice real names are appended too.
+      visibleLeaderboard = buildStudentBoard(leaderboard, {
+        pct: anonPct, total, topN: LEADERBOARD_TOP_N, revealBottom
+      })
+      userRank = null
+    } else {
+      // Normal mode: top N + the user's own row appended if they're below the cutoff.
       const userEntry = leaderboard.find(e => e.studentId === currentUser._id.toString())
       userRank = userEntry?.rank || null
 
-      // Get the top N + the user's own entry if they're below it
       visibleLeaderboard = leaderboard.slice(0, LEADERBOARD_TOP_N)
 
       // If user is beyond the top N, append their own row (the client renders it after a ••• gap)
@@ -885,6 +905,7 @@ router.get('/leaderboard/:roomId', async (req, res) => {
       success: true,
       leaderboard: visibleLeaderboard,
       isTeacher,
+      anonymous,
       userRank,
       totalParticipants: leaderboard.length,
       topN: LEADERBOARD_TOP_N
