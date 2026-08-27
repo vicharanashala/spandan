@@ -20,6 +20,7 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const [isExporting, setIsExporting] = useState(false)
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -147,6 +148,33 @@ function RoomResultsPage() {
     }
   }
 
+  const handleExport = async () => {
+    setIsExporting(true)
+    try {
+      const res = await fetch(`${API_URL}/responses/room/${roomId}/export`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to export results')
+      }
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(room?.name || 'room').replace(/[^a-z0-9-_]+/gi, '_')}-results.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Failed to export room results:', err)
+      alert(err.message || 'Failed to export results. Please try again.')
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div style={{
@@ -249,27 +277,51 @@ function RoomResultsPage() {
           maxWidth: '100%',
           boxSizing: 'border-box'
         }}>
-          {/* Back Button */}
-          <button
-            onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '8px 14px',
-              background: 'var(--bg-card)',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '14px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              boxShadow: 'var(--shadow-sm)',
-              marginBottom: '24px'
-            }}
-          >
-            ← Back
-          </button>
+          {/* Back Button + Export */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
+            <button
+              onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                background: 'var(--bg-card)',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-sm)'
+              }}
+            >
+              ← Back
+            </button>
+
+            {user?.role === 'teacher' && (
+              <button
+                onClick={handleExport}
+                disabled={isExporting}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  background: isExporting ? 'var(--border-color)' : '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  cursor: isExporting ? 'not-allowed' : 'pointer',
+                  boxShadow: 'var(--shadow-sm)'
+                }}
+              >
+                {isExporting ? 'Exporting…' : '⬇ Download CSV'}
+              </button>
+            )}
+          </div>
 
           {/* Overview Stats */}
           <div style={{
