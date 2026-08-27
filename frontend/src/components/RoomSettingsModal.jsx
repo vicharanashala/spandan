@@ -268,6 +268,30 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </select>
         </div>
 
+        {/* Two-pass generation: optional second AI review of generated questions before approval */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            cursor: 'pointer'
+          }}>
+            <input
+              type="checkbox"
+              checked={!!localSettings.twoPassGeneration}
+              onChange={(e) => setLocalSettings(prev => ({ ...prev, twoPassGeneration: e.target.checked }))}
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>
+              ✨ Quality review pass
+            </span>
+          </label>
+          <p style={{ margin: '6px 0 0 26px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            After generating, a second AI model reviews and fixes ambiguous questions or weak answer
+            options before they reach you for approval. Roughly doubles generation time.
+          </p>
+        </div>
+
         {/* Question Type Distribution */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{
