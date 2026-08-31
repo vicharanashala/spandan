@@ -410,9 +410,11 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role name teacherApprovalStatus').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
+  socket.data.userName = u?.name || 'Teacher'
+  socket.data.teacherApprovalStatus = u?.teacherApprovalStatus || null
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
@@ -458,11 +460,30 @@ async function verifyRoomOwner(socket, roomCode) {
   try {
     const Room = (await import('./models/Room.js')).default
     const room = await Room.findByCode(roomCode)
-    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
+    if (!room) return null
+    const teacherId = String(room.teacher?._id ?? room.teacher)
+    return teacherId === String(socket.data.userId) ? room : null
   } catch {
     return null
   }
 }
+
+// Teacher-only + room-editor guard (Owner OR Co-Host) for shared permissions.
+async function verifyRoomEditor(socket, roomCode) {
+  if (socket.data?.role !== 'teacher' || !roomCode) return null
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const room = await Room.findByCode(roomCode)
+    if (!room) return null
+    const uid = String(socket.data.userId)
+    const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+    const isCoHost = Array.isArray(room.coHosts) && room.coHosts.some(ch => String(ch.userId?._id ?? ch.userId) === uid)
+    return (isOwner || isCoHost) ? room : null
+  } catch {
+    return null
+  }
+}
+
 
 // Video mode: the teacher periodically broadcasts their current playback position. Students use it as
 // the forward-seek ceiling so a late-joiner / page reload can catch up to where the class is (instead
@@ -470,6 +491,8 @@ async function verifyRoomOwner(socket, roomCode) {
 // immediately without waiting for the next broadcast tick.
 const videoProgress = new Map() // roomCode -> { time }
 const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
+const activeRecordings = new Map() // roomCode -> { teacherId, teacherName, isOwner, transcript, socketId }
+const activeQuestionCreators = new Map() // roomCode -> { userId, name, roleLabel, action, socketId }
 
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
@@ -554,9 +577,11 @@ io.on('connection', (socket) => {
 
   // Join room — identity is taken from the AUTHENTICATED socket, not the client payload
   // (so a client can't join/register as another user).
-  socket.on('room:join', async ({ roomCode }) => {
+  socket.on('room:join', async ({ roomCode, coHostCode }) => {
     const userId = socket.data?.userId
     const role = socket.data?.role
+    const userName = socket.data?.userName
+    const teacherApprovalStatus = socket.data?.teacherApprovalStatus
     if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
     // Token this socket authenticated with has since lapsed — refuse the join and tell the client to
     // re-login rather than trusting the userId cached at connect time.
@@ -571,12 +596,37 @@ io.on('connection', (socket) => {
       const RoomMember = (await import('./models/RoomMember.js')).default
 
       // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
-      // caller is allowed in (teacher must own it; student may join an active room by code).
+      // caller is allowed in (teacher must own it or be co-host; student may join an active room by code).
       const room = await Room.findByCode(roomCode)
-      const decision = canJoinRoom({ role, userId, room })
-      if (!decision.ok) {
-        socket.emit('room:error', { error: decision.error })
-        return
+      if (role === 'teacher') {
+        const { addCoHostAtomic } = await import('./services/roomJoinAuthz.js')
+        const result = await addCoHostAtomic({
+          Room,
+          room,
+          userId,
+          userName,
+          coHostCode,
+          teacherApprovalStatus
+        })
+
+        if (!result.ok) {
+          socket.emit('room:error', { error: result.error })
+          return
+        }
+
+        if (!result.isOwner && (result.isCoHost || result.isNewCoHost)) {
+          // Notify room participants about the co-host joining/reconnecting
+          io.to(roomCode).emit('cohost:joined', {
+            coHost: { userId, name: userName || 'Teacher', joinedAt: new Date() },
+            coHosts: result.room.coHosts
+          })
+        }
+      } else {
+        const decision = canJoinRoom({ role, userId, room, coHostCode, teacherApprovalStatus })
+        if (!decision.ok) {
+          socket.emit('room:error', { error: decision.error })
+          return
+        }
       }
 
       // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
@@ -604,9 +654,125 @@ io.on('connection', (socket) => {
       if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
       // If the teacher's question popup is currently open, a late-joining student must start paused.
       if (videoPaused.get(roomCode)) socket.emit('video:pause')
+
+      // Seed joining teacher with active room recording state (if another teacher is currently recording)
+      const rec = activeRecordings.get(roomCode)
+      if (rec && role === 'teacher') {
+        socket.emit('recording:started', {
+          teacherId: rec.teacherId,
+          teacherName: rec.teacherName,
+          isOwner: rec.isOwner
+        })
+        if (rec.transcript) {
+          socket.emit('recording:transcript-updated', { transcript: rec.transcript })
+        }
+      }
+
+      // Seed joining teacher with active creator lock state (if someone is creating questions)
+      const creator = activeQuestionCreators.get(roomCode)
+      if (creator && role === 'teacher') {
+        socket.emit('questions:creator-locked', {
+          creator: {
+            userId: creator.userId,
+            name: creator.name,
+            roleLabel: creator.roleLabel,
+            action: creator.action
+          }
+        })
+      }
     } catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
+    }
+  })
+
+  // Explicit co-host leave (permanent revoke)
+  socket.on('cohost:leave', async ({ roomCode }) => {
+    const userId = socket.data?.userId
+    if (!roomCode || !userId) return
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room) return
+
+      // Clean up creator lock if held by this leaving co-host
+      const creator = activeQuestionCreators.get(roomCode)
+      if (creator && String(creator.userId) === String(userId)) {
+        activeQuestionCreators.delete(roomCode)
+        io.to(roomCode).emit('questions:creator-unlocked')
+      }
+
+      const isCoHost = Array.isArray(room.coHosts) && room.coHosts.some(ch => String(ch.userId?._id ?? ch.userId) === String(userId))
+      if (!isCoHost) return
+
+      const updatedRoom = await Room.findByIdAndUpdate(
+        room._id,
+        { $pull: { coHosts: { userId } } },
+        { new: true }
+      )
+
+      socket.leave(roomCode)
+      socket.emit('cohost:left-confirmed', { roomCode })
+      io.to(roomCode).emit('cohost:left', { userId, coHosts: updatedRoom?.coHosts || [] })
+    } catch (error) {
+      console.error('Error in cohost:leave:', error)
+    }
+  })
+
+  // Owner removes a co-host from room
+  socket.on('cohost:remove', async ({ roomCode, coHostUserId }) => {
+    const room = await verifyRoomOwner(socket, roomCode)
+    if (!room || !coHostUserId) return
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const updatedRoom = await Room.findByIdAndUpdate(
+        room._id,
+        { $pull: { coHosts: { userId: coHostUserId } } },
+        { new: true }
+      )
+
+      // Force target user's active socket(s) in this room to leave
+      const roomSockets = await io.in(roomCode).fetchSockets()
+      for (const s of roomSockets) {
+        if (String(s.data?.userId) === String(coHostUserId)) {
+          s.leave(roomCode)
+          s.emit('cohost:removed-from-room', { roomCode })
+        }
+      }
+
+      io.to(roomCode).emit('cohost:left', { userId: coHostUserId, coHosts: updatedRoom?.coHosts || [] })
+    } catch (error) {
+      console.error('Error in cohost:remove:', error)
+    }
+  })
+
+  // Owner generates or regenerates co-host join code (duration 1 - 60 min)
+  socket.on('cohost:generate-code', async ({ roomCode, durationMinutes = 15 }) => {
+    const room = await verifyRoomOwner(socket, roomCode)
+    if (!room) {
+      socket.emit('cohost:code-error', { error: 'Only the room owner can generate a co-host code' })
+      return
+    }
+    try {
+      const { generateCoHostCodeForRoom } = await import('./services/roomJoinAuthz.js')
+      const result = await generateCoHostCodeForRoom({
+        roomId: room._id,
+        durationMinutes,
+        userId: socket.data?.userId
+      })
+
+      if (!result.ok) {
+        socket.emit('cohost:code-error', { error: result.error })
+        return
+      }
+
+      socket.emit('cohost:code-generated', {
+        coHostCode: result.coHostCode,
+        coHostCodeExpiresAt: result.coHostCodeExpiresAt
+      })
+    } catch (error) {
+      console.error('Error in cohost:generate-code:', error)
+      socket.emit('cohost:code-error', { error: 'Failed to generate code' })
     }
   })
 
@@ -637,18 +803,19 @@ io.on('connection', (socket) => {
     }
   })
 
-  // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
-  // handlers were removed in Phase 1. They let clients forge points/answers and caused a
-  // ~N^2 leaderboard-refetch storm. Live answer-count updates (throttled) are emitted server-side
-  // from the authenticated REST submit handler (scheduleCountsBroadcast(), see routes/responses.js),
-  // and the ranked leaderboard is folded per-segment via POST /responses/leaderboard/:id/segment-done.
-
-  // Question events — teacher-only and restricted to the room's OWNER (server-verified),
-  // so a student can no longer forge question start/end or push a fake question to the room.
+  // Question events — shared permissions for Host & Co-Hosts (server-verified via verifyRoomEditor)
   socket.on('question:start', async (data) => {
-    const room = await verifyRoomOwner(socket, data?.roomCode)
+    const room = await verifyRoomEditor(socket, data?.roomCode)
     if (!room) return
-    if (data.questionId) setLiveQuestion(room._id, data.questionId)
+
+    // Guard against same-instant double-launch race condition: if currentQuestion matches, ignore duplicate start
+    if (data.questionId) {
+      if (room.currentQuestion && String(room.currentQuestion) === String(data.questionId)) {
+        return
+      }
+      setLiveQuestion(room._id, data.questionId)
+    }
+
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
@@ -658,26 +825,173 @@ io.on('connection', (socket) => {
   })
 
   socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    if (!(await verifyRoomEditor(socket, data?.roomCode))) return
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
   })
 
-  // New question pushed by the teacher (manually created)
+  // New question pushed by teacher or co-host (manually created)
   socket.on('new_question', async (data) => {
-    const room = await verifyRoomOwner(socket, data?.roomCode)
+    const room = await verifyRoomEditor(socket, data?.roomCode)
     if (!room) {
-      console.warn('new_question rejected — not the room owner:', socket.id)
+      console.warn('new_question rejected — not the room owner or co-host:', socket.id)
       return
     }
     if (data.question) {
       const qId = data.question._id || data.question.id
-      if (qId) setLiveQuestion(room._id, qId)
+      if (qId) {
+        if (room.currentQuestion && String(room.currentQuestion) === String(qId)) {
+          return
+        }
+        setLiveQuestion(room._id, qId)
+      }
       io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
     }
   })
+
+  // Review popup synchronization for Host & Co-Hosts
+  socket.on('questions:broadcast-popup', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room || !Array.isArray(data?.questions)) return
+    io.to(data.roomCode).emit('questions:show-popup', {
+      questions: data.questions,
+      segmentIndex: data.segmentIndex
+    })
+  })
+
+  socket.on('questions:dismiss-popup', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room) return
+    io.to(data.roomCode).emit('questions:hide-popup')
+  })
+
+  socket.on('questions:gen-status', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room) return
+    io.to(data.roomCode).emit('questions:gen-status', {
+      isGenerating: !!data?.isGenerating
+    })
+  })
+
+  socket.on('questions:lock-launcher', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room || !data?.launcher) return
+    io.to(data.roomCode).emit('questions:launcher-locked', {
+      launcher: data.launcher
+    })
+  })
+
+  socket.on('questions:unlock-launcher', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room) return
+    io.to(data.roomCode).emit('questions:launcher-unlocked')
+  })
+
+  // Lock manual question creation / text-to-questions generation for other teachers
+  socket.on('questions:creator-lock', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room || !data?.roomCode) return
+    const uid = String(socket.data?.userId)
+    const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+    const roleLabel = isOwner ? 'Host' : 'Co-Host'
+    const name = socket.data?.userName || roleLabel
+    const creatorObj = {
+      userId: socket.data?.userId,
+      name,
+      roleLabel,
+      action: data?.action || 'create', // 'create' | 'paste'
+      socketId: socket.id
+    }
+    activeQuestionCreators.set(data.roomCode, creatorObj)
+    io.to(data.roomCode).emit('questions:creator-locked', {
+      creator: {
+        userId: creatorObj.userId,
+        name: creatorObj.name,
+        roleLabel: creatorObj.roleLabel,
+        action: creatorObj.action
+      }
+    })
+  })
+
+  // Unlock question creation / text-to-questions generation
+  socket.on('questions:creator-unlock', async (data) => {
+    const room = await verifyRoomEditor(socket, data?.roomCode)
+    if (!room || !data?.roomCode) return
+    const existing = activeQuestionCreators.get(data.roomCode)
+    if (existing) {
+      const uid = String(socket.data?.userId)
+      const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+      if (String(existing.userId) === uid || existing.socketId === socket.id || isOwner) {
+        activeQuestionCreators.delete(data.roomCode)
+        io.to(data.roomCode).emit('questions:creator-unlocked')
+      }
+    }
+  })
+
+  // Recording & Live Transcript synchronization for Host & Co-Hosts
+  socket.on('recording:start', async (data) => {
+    try {
+      const room = await verifyRoomEditor(socket, data?.roomCode)
+      if (!room) return
+      const uid = String(socket.data?.userId)
+      const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+      const defaultName = isOwner ? 'Host' : 'Co-Host'
+      const payload = {
+        teacherId: socket.data?.userId,
+        teacherName: socket.data?.userName || defaultName,
+        isOwner,
+        transcript: ''
+      }
+      activeRecordings.set(data.roomCode, { ...payload, socketId: socket.id })
+      io.to(data.roomCode).emit('recording:started', payload)
+    } catch (err) {
+      console.error('[recording:start error]', err)
+    }
+  })
+
+  socket.on('recording:stop', async (data) => {
+    try {
+      if (!data?.roomCode) return
+      activeRecordings.delete(data.roomCode)
+      io.to(data.roomCode).emit('recording:stopped', {
+        teacherId: socket.data?.userId
+      })
+    } catch (err) {
+      console.error('[recording:stop error]', err)
+    }
+  })
+
+  socket.on('recording:transcript', async (data) => {
+    try {
+      if (!data?.roomCode) return
+      const existing = activeRecordings.get(data.roomCode)
+      if (existing) {
+        existing.transcript = data?.transcript || ''
+      }
+      io.to(data.roomCode).emit('recording:transcript-updated', {
+        transcript: data?.transcript || ''
+      })
+    } catch (err) {
+      console.error('[recording:transcript error]', err)
+    }
+  })
+
+  socket.on('recording:clear-transcript', async (data) => {
+    try {
+      const room = await verifyRoomEditor(socket, data?.roomCode)
+      if (!room) return
+      const rec = activeRecordings.get(data.roomCode)
+      if (rec) {
+        rec.transcript = ''
+      }
+      io.to(data.roomCode).emit('recording:transcript-cleared')
+    } catch (error) {
+      console.error('Error in recording:clear-transcript:', error)
+    }
+  })
+
 
   // Video mode: teacher broadcasts their current playback position (forward-seek ceiling for students).
   // Teacher-only; students receive it and cannot forge it.
@@ -708,17 +1022,47 @@ io.on('connection', (socket) => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
+
+    // Clean up active recording if the disconnected socket was actively recording
+    for (const [rCode, rec] of activeRecordings.entries()) {
+      if (rec.socketId === socket.id) {
+        activeRecordings.delete(rCode)
+        io.to(rCode).emit('recording:stopped', { teacherId: rec.teacherId })
+        break
+      }
+    }
+
+    // Clean up active question creator lock if held by the disconnected socket
+    for (const [rCode, creator] of activeQuestionCreators.entries()) {
+      if (creator.socketId === socket.id) {
+        activeQuestionCreators.delete(rCode)
+        io.to(rCode).emit('questions:creator-unlocked')
+        break
+      }
+    }
+
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
+})
+
+// Process-level error guards to prevent server process crash
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception (handled to prevent server crash):', err)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection (handled to prevent server crash):', reason)
 })
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err)
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
-  })
+  if (!res.headersSent) {
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
+    })
+  }
 })
 
 // 404 handler
@@ -750,9 +1094,35 @@ const connectDB = async () => {
 
 const PORT = process.env.PORT || 3001
 
+const ensureTranscriptionEngine = async () => {
+  const serviceUrl = process.env.TRANSCRIPTION_SERVICE_URL || 'http://127.0.0.1:3003'
+  try {
+    const res = await fetch(`${serviceUrl}/health`, { signal: AbortSignal.timeout(1500) })
+    if (res.ok) {
+      console.log('🎤 Transcription engine is active and ready')
+      return
+    }
+  } catch {
+    console.log('🚀 Auto-starting transcription engine process...')
+    const { spawn } = await import('child_process')
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3'
+    try {
+      const child = spawn(pythonCmd, ['-u', 'transcription_server.py'], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: 'ignore'
+      })
+      child.unref()
+    } catch (e) {
+      console.warn('⚠️ Could not auto-start transcription server:', e.message)
+    }
+  }
+}
+
 // Start server
 const startServer = async () => {
   await connectDB()
+  await ensureTranscriptionEngine()
   
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)

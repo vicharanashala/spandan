@@ -92,7 +92,8 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+      const normalizedQ = data.question ? { ...data.question, _id: data.questionId || data.question._id, timeToAnswer: data.timer || data.question.timeToAnswer } : data
+      setCurrentQuestion(normalizedQ)
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)

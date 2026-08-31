@@ -36,7 +36,7 @@ export const useSocketStore = create((set, get) => ({
       // until they manually refresh the page. Re-join the room we were in so delivery self-heals.
       const { joinedRoom } = get()
       if (joinedRoom?.roomCode) {
-        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId })
+        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId, coHostCode: joinedRoom.coHostCode })
       }
     })
 
@@ -104,12 +104,17 @@ export const useSocketStore = create((set, get) => ({
     }
   },
 
-  joinRoom: (roomCode, userId) => {
+  joinRoom: (roomCode, userId, coHostCode) => {
     const { socket } = get()
     // Remember the room so the socket auto-rejoins after a reconnect (see the 'connect' handler).
-    set({ joinedRoom: { roomCode, userId } })
+    set({ joinedRoom: { roomCode, userId, coHostCode } })
     if (socket) {
-      socket.emit('room:join', { roomCode, userId })
+      socket.emit('room:join', { roomCode, userId, coHostCode })
+      if (!socket.connected) {
+        console.warn('[socketStore] joinRoom emitted while socket is connecting (buffered by Socket.IO):', { roomCode, userId })
+      }
+    } else {
+      console.error('[socketStore] joinRoom failed: socket is not initialized', { roomCode, userId })
     }
   },
 
@@ -120,6 +125,48 @@ export const useSocketStore = create((set, get) => ({
     if (socket) {
       socket.emit('room:leave', { roomCode, userId })
       set({ currentRoom: null, participants: 0 })
+    } else {
+      console.error('[socketStore] leaveRoom failed: socket is not initialized', { roomCode, userId })
+    }
+  },
+
+  leaveCoHostRoom: (roomCode) => {
+    const { socket } = get()
+    set({ joinedRoom: null })
+    if (socket) {
+      socket.emit('cohost:leave', { roomCode })
+      set({ currentRoom: null, participants: 0 })
+    } else {
+      console.error('[socketStore] leaveCoHostRoom failed: socket is not initialized', { roomCode })
+    }
+  },
+
+  generateCoHostCode: (roomCode, durationMinutes) => {
+    const { socket } = get()
+    if (!roomCode) {
+      console.warn('[socketStore] generateCoHostCode failed: missing roomCode')
+      return
+    }
+    if (socket) {
+      socket.emit('cohost:generate-code', { roomCode, durationMinutes })
+      if (!socket.connected) {
+        console.warn('[socketStore] generateCoHostCode emitted while socket is connecting:', { roomCode })
+      }
+    } else {
+      console.error('[socketStore] generateCoHostCode failed: socket is not initialized', { roomCode })
+    }
+  },
+
+  removeCoHost: (roomCode, coHostUserId) => {
+    const { socket } = get()
+    if (!roomCode || !coHostUserId) {
+      console.warn('[socketStore] removeCoHost failed: missing roomCode or coHostUserId', { roomCode, coHostUserId })
+      return
+    }
+    if (socket) {
+      socket.emit('cohost:remove', { roomCode, coHostUserId })
+    } else {
+      console.error('[socketStore] removeCoHost failed: socket is not initialized', { roomCode, coHostUserId })
     }
   },
 
@@ -127,6 +174,8 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('response:submit', data)
+    } else {
+      console.error('[socketStore] submitResponse failed: socket is not initialized', data)
     }
   },
 
@@ -134,6 +183,8 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('question:start', data)
+    } else {
+      console.error('[socketStore] startQuestion failed: socket is not initialized', data)
     }
   },
 
@@ -141,8 +192,11 @@ export const useSocketStore = create((set, get) => ({
     const { socket } = get()
     if (socket) {
       socket.emit('question:end', data)
+    } else {
+      console.error('[socketStore] endQuestion failed: socket is not initialized', data)
     }
   }
+
 }))
 
 export default useSocketStore

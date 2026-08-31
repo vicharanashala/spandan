@@ -28,6 +28,34 @@ const roomSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Question'
   },
+  coHosts: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    joinedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  maxCoHosts: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  coHostCode: {
+    type: String,
+    default: null
+  },
+  coHostCodeExpiresAt: {
+    type: Date,
+    default: null
+  },
   settings: {
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
@@ -70,10 +98,19 @@ roomSchema.pre('save', function(next) {
   next()
 })
 
-function generateRoomCode() {
+export function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
   for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return code
+}
+
+export function generateCoHostCode(length = 8) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let code = ''
+  for (let i = 0; i < length; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length))
   }
   return code
@@ -86,6 +123,7 @@ roomSchema.statics.findByCode = function(code) {
 
 // Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
 roomSchema.index({ teacher: 1, createdAt: -1 })
+roomSchema.index({ 'coHosts.userId': 1 })
 
 const Room = mongoose.model('Room', roomSchema)
 

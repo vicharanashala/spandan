@@ -18,6 +18,7 @@ router.get('/status', authenticate, async (req, res) => {
     const data = await r.json()
     res.json({ status: data.loaded ? 'ready' : 'loading', model: data.model || 'unknown' })
   } catch (err) {
+    if (res.headersSent) return
     res.status(503).json({ status: 'unavailable', error: 'Transcription service not reachable' })
   }
 })
@@ -35,8 +36,11 @@ router.post('/transcribe', authenticate, authorize('teacher'), requireApprovedTe
       signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS)
     })
     const data = await r.json()
-    res.status(r.status).json(data)
+    if (!res.headersSent) {
+      res.status(r.status).json(data)
+    }
   } catch (err) {
+    if (res.headersSent) return
     const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError'
     console.error('Transcription proxy error:', err.message)
     res.status(502).json({ error: timedOut ? 'Transcription timed out' : 'Transcription service unavailable' })

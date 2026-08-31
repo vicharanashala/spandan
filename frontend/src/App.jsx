@@ -109,6 +109,11 @@ function App() {
             <HelpPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/join-cohost" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <JoinRoomPage />
+          </ProtectedRoute>
+        } />
         {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
         <Route path="/admin" element={
           <ProtectedRoute allowedRoles={['teacher']}>

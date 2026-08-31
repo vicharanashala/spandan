@@ -38,15 +38,24 @@ function RoomDetailPage() {
   const [isRoomJoined, setIsRoomJoined] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [coHostCodeCopied, setCoHostCodeCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
+  const roomCodeRef = useRef('')
+
+  useEffect(() => {
+    if (room?.code) {
+      roomCodeRef.current = room.code
+    }
+  }, [room?.code])
 
   // Real-time transcription state
   const [isRecording, setIsRecording] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [modelStatus, setModelStatus] = useState('Ready')
+  const [remoteRecorder, setRemoteRecorder] = useState({ isRecording: false, teacherName: '', teacherId: '' })
 
   // MediaRecorder refs for server-side Whisper transcription
   const mediaRecorderRef = useRef(null)
@@ -85,8 +94,11 @@ function RoomDetailPage() {
   const [pendingQuestions, setPendingQuestions] = useState([])
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
+  const [batchLauncher, setBatchLauncher] = useState(null)
+  const [popupIndex, setPopupIndex] = useState(0)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [creatorLock, setCreatorLock] = useState(null) // { userId, name, roleLabel, action: 'create' | 'paste' }
   const [pastedText, setPastedText] = useState('') // preserved so a failed generation can reopen the popup with the text intact
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
@@ -110,6 +122,14 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [activeCoHostCode, setActiveCoHostCode] = useState('')
+  const [activeCoHostCodeExpiresAt, setActiveCoHostCodeExpiresAt] = useState(null)
+  const [codeDuration, setCodeDuration] = useState(15)
+  const [maxCoHostsInput, setMaxCoHostsInput] = useState(0)
+  const [codeTimeLeft, setCodeTimeLeft] = useState(null)
+
+  const isOwner = room && String(room.teacher?._id ?? room.teacher) === String(user?._id)
+  const isCoHost = room && !isOwner && Array.isArray(room.coHosts) && room.coHosts.some(ch => String(ch.userId?._id ?? ch.userId) === String(user?._id))
 
   useEffect(() => {
     if (token) {
@@ -135,6 +155,71 @@ function RoomDetailPage() {
       joinRoom(room.code, user._id)
     }
   }, [room?.code, user?._id])
+
+  // Co-host socket event listeners
+  useEffect(() => {
+    if (!socket) return
+
+    const handleCoHostCodeGenerated = (data) => {
+      if (data?.coHostCode) {
+        setActiveCoHostCode(data.coHostCode)
+        setActiveCoHostCodeExpiresAt(data.coHostCodeExpiresAt)
+      }
+    }
+
+    const handleCoHostCodeError = (data) => {
+      console.error('[COHOST CODE ERROR]', data?.error)
+      setError(data?.error || 'Failed to generate co-host code')
+    }
+
+    const handleCoHostJoined = (data) => {
+      if (data?.coHosts) {
+        setRoom(prev => prev ? { ...prev, coHosts: data.coHosts } : prev)
+      }
+    }
+
+    const handleCoHostLeft = (data) => {
+      if (data?.coHosts) {
+        setRoom(prev => prev ? { ...prev, coHosts: data.coHosts } : prev)
+      }
+    }
+
+    const handleRemovedFromRoom = () => {
+      navigate('/teacher')
+    }
+
+    socket.on('cohost:code-generated', handleCoHostCodeGenerated)
+    socket.on('cohost:code-error', handleCoHostCodeError)
+    socket.on('cohost:joined', handleCoHostJoined)
+    socket.on('cohost:left', handleCoHostLeft)
+    socket.on('cohost:removed-from-room', handleRemovedFromRoom)
+    socket.on('cohost:left-confirmed', handleRemovedFromRoom)
+
+    return () => {
+      socket.off('cohost:code-generated', handleCoHostCodeGenerated)
+      socket.off('cohost:code-error', handleCoHostCodeError)
+      socket.off('cohost:joined', handleCoHostJoined)
+      socket.off('cohost:left', handleCoHostLeft)
+      socket.off('cohost:removed-from-room', handleRemovedFromRoom)
+      socket.off('cohost:left-confirmed', handleRemovedFromRoom)
+    }
+  }, [socket, navigate])
+
+  // Countdown timer for co-host join code expiry
+  useEffect(() => {
+    if (!activeCoHostCodeExpiresAt) {
+      setCodeTimeLeft(null)
+      return
+    }
+    const updateCountdown = () => {
+      const diff = Math.max(0, Math.floor((new Date(activeCoHostCodeExpiresAt).getTime() - Date.now()) / 1000))
+      setCodeTimeLeft(diff)
+    }
+    updateCountdown()
+    const timer = setInterval(updateCountdown, 1000)
+    return () => clearInterval(timer)
+  }, [activeCoHostCodeExpiresAt])
+
 
   // Listen for room:joined event
   useEffect(() => {
@@ -171,47 +256,221 @@ function RoomDetailPage() {
     return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
-  // Listen for question launch events to show timer to teacher
+  // Listen for question launch & end events to sync active question & timer across Host & Co-Host
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question, launchedAt) => {
+      const timeToAnswer = question?.timeToAnswer || roomSettings.timeToAnswer || 30
+      const startTime = launchedAt ? new Date(launchedAt).getTime() : Date.now()
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
-    }
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
+      const getRemaining = () => {
+        const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+        return Math.max(0, timeToAnswer - elapsedSeconds)
+      }
 
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
+      const initialRemaining = getRemaining()
+      setActiveQuestion(question)
+      setQuestionTimeLeft(initialRemaining)
+
+      if (initialRemaining <= 0) {
+        setActiveQuestion(null)
+        return
+      }
+
+      questionTimerRef.current = setInterval(() => {
+        const remaining = getRemaining()
+        setQuestionTimeLeft(remaining)
+        if (remaining <= 0) {
           clearInterval(questionTimerRef.current)
           questionTimerRef.current = null
           setActiveQuestion(null)
-          return 0
         }
-        return prev - 1
-      })
-    }, 1000)
-  }
+      }, 1000)
+    }
 
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED SOCKET EVENT]', data)
+      const q = data?.question || (data?.questionId ? data : null)
+      if (q) {
+        startQuestionTimer(q, data?.startedAt || data?.startTime)
+      }
+      if (room?._id) {
+        loadQuestions(room._id)
+      }
+    }
+
+    const handleQuestionEnded = (data) => {
+      console.log('[QUESTION ENDED SOCKET EVENT]', data)
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+      setActiveQuestion(null)
+      setQuestionTimeLeft(0)
+      if (room?._id) {
+        loadQuestions(room._id)
+      }
+    }
+
+    const handleRoomSettingsUpdated = (data) => {
+      console.log('[ROOM SETTINGS UPDATED SOCKET EVENT]', data)
+      if (data?.settings) {
+        setRoomSettings(prev => ({
+          ...prev,
+          ...data.settings
+        }))
+      }
+    }
+
+    const handleRoomEnded = (data) => {
+      console.log('[ROOM ENDED SOCKET EVENT]', data)
+      const rId = data?.roomId || room?._id || roomId
+      if (rId) {
+        navigate(`/teacher/room/${rId}/results`)
+      }
+    }
+
+    const handleRecordingStarted = (data) => {
+      console.log('[RECORDING STARTED SOCKET EVENT]', data)
+      const roleLabel = data?.isOwner ? 'Host' : 'Co-Host'
+      setRemoteRecorder({
+        isRecording: true,
+        teacherName: data?.teacherName || roleLabel,
+        isOwner: !!data?.isOwner,
+        roleLabel,
+        teacherId: data?.teacherId
+      })
+      setIsTranscribing(true)
+    }
+
+    const handleRecordingStopped = (data) => {
+      console.log('[RECORDING STOPPED SOCKET EVENT]', data)
+      setRemoteRecorder({
+        isRecording: false,
+        teacherName: '',
+        teacherId: ''
+      })
+      setIsTranscribing(false)
+    }
+
+    const handleTranscriptUpdated = (data) => {
+      console.log('[TRANSCRIPT UPDATED SOCKET EVENT]', data?.transcript)
+      if (data?.transcript !== undefined) {
+        setTranscript(data.transcript)
+        setSegmentTranscript(data.transcript)
+        finalTranscriptRef.current = data.transcript
+        segmentTranscriptRef.current = data.transcript
+      }
+    }
+
+    const handleTranscriptCleared = () => {
+      setTranscript('')
+      finalTranscriptRef.current = ''
+      setSegmentTranscript('')
+      segmentTranscriptRef.current = ''
+    }
+
+    const handleShowReviewPopup = (data) => {
+      console.log('[SHOW REVIEW POPUP SOCKET EVENT]', data)
+      if (data?.questions && Array.isArray(data.questions) && data.questions.length > 0) {
+        setBatchLauncher(null)
+        setPopupIndex(0)
+        setPendingQuestions(data.questions)
+        setShowQuestionPopup(true)
+        setIsPopupOpen(true)
+      }
+    }
+
+    const handleHideReviewPopup = () => {
+      console.log('[HIDE REVIEW POPUP SOCKET EVENT]')
+      setShowQuestionPopup(false)
+      setIsPopupOpen(false)
+      setPendingQuestions([])
+    }
+
+    const handleGenStatus = (data) => {
+      console.log('[GEN STATUS SOCKET EVENT]', data)
+      setIsGeneratingQuestions(!!data?.isGenerating)
+      setGenerateQEnabled(!data?.isGenerating)
+    }
+
+    const handleLauncherLocked = (data) => {
+      console.log('[LAUNCHER LOCKED SOCKET EVENT]', data)
+      if (data?.launcher) {
+        setBatchLauncher(data.launcher)
+      }
+    }
+
+    const handleLauncherUnlocked = () => {
+      console.log('[LAUNCHER UNLOCKED SOCKET EVENT]')
+      setBatchLauncher(null)
+    }
+
+    const handlePopupNav = (data) => {
+      console.log('[POPUP NAV SOCKET EVENT]', data)
+      if (typeof data?.index === 'number') {
+        setPopupIndex(data.index)
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
+    socket.on('question:ended', handleQuestionEnded)
+    socket.on('room:settings-updated', handleRoomSettingsUpdated)
+    socket.on('room:ended', handleRoomEnded)
+    socket.on('recording:started', handleRecordingStarted)
+    socket.on('recording:stopped', handleRecordingStopped)
+    socket.on('recording:transcript-updated', handleTranscriptUpdated)
+    socket.on('recording:transcript-cleared', handleTranscriptCleared)
+    const handleCreatorLocked = (data) => {
+      console.log('[CREATOR LOCKED SOCKET EVENT]', data)
+      if (data?.creator) {
+        setCreatorLock(data.creator)
+      }
+    }
+
+    const handleCreatorUnlocked = () => {
+      console.log('[CREATOR UNLOCKED SOCKET EVENT]')
+      setCreatorLock(null)
+    }
+
+    socket.on('questions:show-popup', handleShowReviewPopup)
+    socket.on('questions:hide-popup', handleHideReviewPopup)
+    socket.on('questions:gen-status', handleGenStatus)
+    socket.on('questions:launcher-locked', handleLauncherLocked)
+    socket.on('questions:launcher-unlocked', handleLauncherUnlocked)
+    socket.on('questions:popup-nav', handlePopupNav)
+    socket.on('questions:creator-locked', handleCreatorLocked)
+    socket.on('questions:creator-unlocked', handleCreatorUnlocked)
 
     return () => {
       socket.off('new_question', handleQuestionLaunched)
       socket.off('question:started', handleQuestionLaunched)
+      socket.off('question:ended', handleQuestionEnded)
+      socket.off('room:settings-updated', handleRoomSettingsUpdated)
+      socket.off('room:ended', handleRoomEnded)
+      socket.off('recording:started', handleRecordingStarted)
+      socket.off('recording:stopped', handleRecordingStopped)
+      socket.off('recording:transcript-updated', handleTranscriptUpdated)
+      socket.off('recording:transcript-cleared', handleTranscriptCleared)
+      socket.off('questions:show-popup', handleShowReviewPopup)
+      socket.off('questions:hide-popup', handleHideReviewPopup)
+      socket.off('questions:gen-status', handleGenStatus)
+      socket.off('questions:launcher-locked', handleLauncherLocked)
+      socket.off('questions:launcher-unlocked', handleLauncherUnlocked)
+      socket.off('questions:popup-nav', handlePopupNav)
+      socket.off('questions:creator-locked', handleCreatorLocked)
+      socket.off('questions:creator-unlocked', handleCreatorUnlocked)
     }
-  }, [socket, roomSettings.timeToAnswer])
+  }, [socket, room?._id, roomSettings.timeToAnswer])
+
+  const isOtherTeacherRecording = remoteRecorder.isRecording && String(remoteRecorder.teacherId) !== String(user?._id)
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -388,9 +647,14 @@ function RoomDetailPage() {
     }
 
     if (generated && generated.length > 0) {
+      setBatchLauncher(null)
       setPendingQuestions(generated)
       setShowQuestionPopup(true)
       setIsPopupOpen(true)
+      if (socket && room?.code) {
+        socket.emit('questions:unlock-launcher', { roomCode: room.code })
+        socket.emit('questions:broadcast-popup', { roomCode: room.code, questions: generated, segmentIndex: currentSegment })
+      }
       // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
       // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
       // source defaults to 'audio' (real segment).
@@ -401,6 +665,10 @@ function RoomDetailPage() {
 
   const generateQuestionsFromText = async (text, segmentIndex) => {
     setIsGeneratingQuestions(true)
+    setGenerateQEnabled(false)
+    if (socket && room?.code) {
+      socket.emit('questions:gen-status', { roomCode: room.code, isGenerating: true })
+    }
     // New controller per generation; aborted on unmount (see the [roomId] effect cleanup).
     genAbortRef.current = new AbortController()
     try {
@@ -414,6 +682,10 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+      setGenerateQEnabled(true)
+      if (socket && room?.code) {
+        socket.emit('questions:gen-status', { roomCode: room.code, isGenerating: false })
+      }
       if (data.success && data.questions && data.questions.length > 0) {
         return data.questions.map(q => ({
           ...q,
@@ -425,6 +697,10 @@ function RoomDetailPage() {
       throw new Error(data.error || 'No questions generated')
     } catch (error) {
       setIsGeneratingQuestions(false)
+      setGenerateQEnabled(true)
+      if (socket && room?.code) {
+        socket.emit('questions:gen-status', { roomCode: room.code, isGenerating: false })
+      }
       throw error
     }
   }
@@ -491,6 +767,13 @@ function RoomDetailPage() {
     try {
       const roomData = await getRoom(roomId)
       setRoom(roomData)
+
+      // If room has ended, redirect Host & Co-Host directly to the results page
+      if (roomData?.endedAt) {
+        navigate(`/teacher/room/${roomData._id}/results`)
+        return
+      }
+
       // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
       if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
       // Apply room settings if they exist
@@ -500,6 +783,15 @@ function RoomDetailPage() {
           ...roomData.settings
         }))
       }
+      if (roomData.maxCoHosts !== undefined) {
+        setMaxCoHostsInput(roomData.maxCoHosts)
+      }
+      if (roomData.coHostCode) {
+        setActiveCoHostCode(roomData.coHostCode)
+      }
+      if (roomData.coHostCodeExpiresAt) {
+        setActiveCoHostCodeExpiresAt(roomData.coHostCodeExpiresAt)
+      }
       // Load questions for this room from database
       loadQuestions(roomId)
     } catch (err) {
@@ -508,6 +800,47 @@ function RoomDetailPage() {
       setIsLoading(false)
     }
   }
+
+  const handleGenerateCoHostCode = () => {
+    if (!room?.code) {
+      console.warn('[COHOST] Cannot generate code: room.code is missing', room)
+      setError('Room code is not available. Please refresh.')
+      return
+    }
+    const { socket, generateCoHostCode: genCode } = useSocketStore.getState()
+    if (!socket) {
+      console.warn('[COHOST] Cannot generate code: socket connection is missing')
+      setError('Real-time connection is not active. Please refresh.')
+      return
+    }
+    genCode(room.code, codeDuration)
+  }
+
+  const handleSaveMaxCoHosts = async () => {
+    if (!room?._id) return
+    try {
+      await updateRoom(room._id, { maxCoHosts: Number(maxCoHostsInput) })
+      setRoom(prev => prev ? { ...prev, maxCoHosts: Number(maxCoHostsInput) } : prev)
+    } catch (err) {
+      setError(err.message || 'Failed to update max co-hosts limit')
+    }
+  }
+
+  const handleRemoveCoHost = (coHostUserId) => {
+    if (room?.code) {
+      const { removeCoHost: remCoHost } = useSocketStore.getState()
+      remCoHost(room.code, coHostUserId)
+    }
+  }
+
+  const handleLeaveCoHost = () => {
+    if (room?.code) {
+      const { leaveCoHostRoom: lvcRoom } = useSocketStore.getState()
+      lvcRoom(room.code)
+      navigate('/teacher')
+    }
+  }
+
 
   const loadQuestions = async (rid) => {
     try {
@@ -551,6 +884,13 @@ function RoomDetailPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const copyCoHostCode = () => {
+    if (!activeCoHostCode) return
+    navigator.clipboard.writeText(activeCoHostCode)
+    setCoHostCodeCopied(true)
+    setTimeout(() => setCoHostCodeCopied(false), 2000)
+  }
+
   // Process transcription queue in order
   const processTranscriptionQueue = useCallback(async () => {
     if (isProcessingQueueRef.current) return
@@ -577,6 +917,12 @@ function RoomDetailPage() {
         setTranscript(finalTranscriptRef.current)
         segmentTranscriptRef.current += ' ' + text
         setSegmentTranscript(segmentTranscriptRef.current)
+
+        const activeSocket = socket || useSocketStore.getState().socket
+        const codeToUse = roomCodeRef.current || room?.code
+        if (activeSocket && codeToUse) {
+          activeSocket.emit('recording:transcript', { roomCode: codeToUse, transcript: finalTranscriptRef.current })
+        }
       }
 
       pendingSequenceRef.current++
@@ -594,7 +940,7 @@ function RoomDetailPage() {
   }, [processTranscriptionQueue])
 
   const sendForTranscription = useCallback(async (audioBlob, sequence) => {
-    if (!audioBlob || audioBlob.size < 5000) {
+    if (!audioBlob || audioBlob.size < 100) {
       console.log(`[TRANSCRIPTION] Skipping small audio: ${audioBlob?.size || 0} bytes`)
       addToTranscriptionQueue(sequence, '')
       return
@@ -742,6 +1088,12 @@ function RoomDetailPage() {
       setIsTranscribing(true)
       setModelStatus('Listening...')
 
+      const activeSocket = socket || useSocketStore.getState().socket
+      const codeToUse = roomCodeRef.current || room?.code
+      if (activeSocket && codeToUse) {
+        activeSocket.emit('recording:start', { roomCode: codeToUse })
+      }
+
       startTranscriptionWindow()
 
     } catch (error) {
@@ -752,6 +1104,16 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+    setIsRecording(false)
+    setIsTranscribing(false)
+    setModelStatus('Processing final audio...')
+
+    // Emit stop immediately to notify peers without waiting for async cleanup
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('recording:stop', { roomCode: codeToUse })
+    }
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
@@ -778,14 +1140,29 @@ function RoomDetailPage() {
         streamRef.current.getTracks().forEach(track => track.stop())
         streamRef.current = null
       }
+      if (displayStreamRef.current) {
+        displayStreamRef.current.getTracks().forEach(track => track.stop())
+        displayStreamRef.current = null
+      }
 
     if (segmentTimerRef.current) {
       clearInterval(segmentTimerRef.current)
     }
 
-    setIsRecording(false)
-    setIsTranscribing(false)
     setModelStatus('Ready')
+  }
+
+  const clearTranscript = () => {
+    setTranscript('')
+    setSegmentTranscript('')
+    finalTranscriptRef.current = ''
+    accumulatedTranscriptRef.current = ''
+    segmentTranscriptRef.current = ''
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('recording:clear-transcript', { roomCode: codeToUse })
+    }
   }
 
   const toggleRecording = () => {
@@ -801,6 +1178,7 @@ function RoomDetailPage() {
   const videoId = isVideoMode ? extractYouTubeId(roomSettings.videoUrl) : null
   const videoIsLiveHint = /\/live\//.test(roomSettings.videoUrl || '')
   const ytPlayerRef = useRef(null)
+  const displayStreamRef = useRef(null)
   const [videoSessionActive, setVideoSessionActive] = useState(false)
   const [isLiveStream, setIsLiveStream] = useState(false)
   // Teacher-side editing of the room's YouTube link (live or normal) after creation.
@@ -917,8 +1295,10 @@ function RoomDetailPage() {
         setModelStatus('No tab audio — re-share and tick "Share tab audio"')
         return
       }
-      display.getVideoTracks().forEach(t => t.stop()) // only the audio is needed
-      const stream = new MediaStream(audioTracks)
+      // DO NOT stop the video track! Stopping it causes the audio track to emit silence in Chrome.
+      // We just create a stream with only the audio track for the MediaRecorder.
+      const stream = new MediaStream([audioTracks[0]])
+      displayStreamRef.current = display
       // If the teacher stops sharing via the browser UI, end the capture session.
       audioTracks[0].addEventListener('ended', () => {
         setVideoSessionActive(false)
@@ -940,6 +1320,12 @@ function RoomDetailPage() {
       setCurrentSegment(1)
       setVideoSessionActive(true)
       setModelStatus('Ready - press play to begin')
+
+      const activeSocket = socket || useSocketStore.getState().socket
+      const codeToUse = roomCodeRef.current || room?.code
+      if (activeSocket && codeToUse) {
+        activeSocket.emit('recording:start', { roomCode: codeToUse })
+      }
 
       // If the video is already playing, begin capturing immediately.
       if (ytPlayerRef.current?.getPlayerState?.() === 1) {
@@ -1010,13 +1396,6 @@ function RoomDetailPage() {
     socket.emit('video:pause', { roomCode: room.code })
   }, [showQuestionPopup, isVideoMode, socket, room?.code])
 
-  const clearTranscript = () => {
-    setTranscript('')
-    finalTranscriptRef.current = ''
-    setSegmentTranscript('')
-    segmentTranscriptRef.current = ''
-  }
-
   const handleManualGenerateQuestions = async () => {
     const textToUse = segmentTranscript.trim() || transcript
     if (!textToUse) {
@@ -1034,9 +1413,14 @@ function RoomDetailPage() {
       // startRecording when the teacher resumes).
       const questions = await generateQuestionsFromText(textToUse, currentSegment)
       if (questions && questions.length > 0) {
+        setBatchLauncher(null)
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
+        if (socket && room?.code) {
+          socket.emit('questions:unlock-launcher', { roomCode: room.code })
+          socket.emit('questions:broadcast-popup', { roomCode: room.code, questions, segmentIndex: currentSegment })
+        }
         // Persist the transcript only once questions exist — fire-and-forget so it never blocks.
         // Live transcript → source 'audio'; segmentIndex matches the questions (currentSegment).
         saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
@@ -1051,6 +1435,28 @@ function RoomDetailPage() {
   }
 
   const handleApproveQuestion = async (question) => {
+    if (activeQuestion) {
+      alert('A poll is currently active in this room. Please wait for it to complete before launching another question.')
+      return
+    }
+
+    if (batchLauncher && batchLauncher.userId && String(batchLauncher.userId) !== String(user?._id)) {
+      alert(`This set of questions is being managed by ${batchLauncher.roleLabel} (${batchLauncher.name}). Only they can launch these questions.`)
+      return
+    }
+
+    // Lock batch launcher if not locked yet
+    if (!batchLauncher && user) {
+      const launcherObj = {
+        userId: user._id,
+        name: user.name || 'Teacher',
+        roleLabel: isOwner ? 'Host' : 'Co-Host'
+      }
+      setBatchLauncher(launcherObj)
+      if (socket && room?.code) {
+        socket.emit('questions:lock-launcher', { roomCode: room.code, launcher: launcherObj })
+      }
+    }
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -1075,8 +1481,13 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to students via socket
         if (socket && isConnected) {
+          socket.emit('question:start', {
+            roomCode: room.code,
+            questionId: data.question._id,
+            question: data.question,
+            timer: data.question.timeToAnswer || roomSettings.timeToAnswer || 30
+          })
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -1094,6 +1505,10 @@ function RoomDetailPage() {
 
   // Handle approve from TextQuestionApprovalPopup (text-based questions)
   const handleTextQuestionApprove = async (question) => {
+    if (activeQuestion) {
+      alert('A poll is currently active in this room. Please wait for it to complete before launching another question.')
+      return
+    }
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -1119,6 +1534,12 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         if (socket && isConnected) {
+          socket.emit('question:start', {
+            roomCode: room.code,
+            questionId: data.question._id,
+            question: data.question,
+            timer: data.question.timeToAnswer || roomSettings.timeToAnswer || 30
+          })
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -1134,13 +1555,63 @@ function RoomDetailPage() {
     console.log('Text question rejected:', question.question)
   }
 
+  const isOtherCreating = !!(creatorLock && String(creatorLock.userId) !== String(user?._id))
+
+  const handleOpenCreateQuestion = () => {
+    if (isOtherCreating || isEnded) return
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('questions:creator-lock', { roomCode: codeToUse, action: 'create' })
+    }
+    setShowCreateQuestion(true)
+  }
+
+  const handleCloseCreateQuestion = () => {
+    setShowCreateQuestion(false)
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('questions:creator-unlock', { roomCode: codeToUse })
+    }
+  }
+
+  const handleOpenTextToQuestions = () => {
+    if (isOtherCreating || isEnded) return
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('questions:creator-lock', { roomCode: codeToUse, action: 'paste' })
+    }
+    setPastedText('')
+    setShowTextToQuestions(true)
+  }
+
+  const handleCloseTextToQuestions = () => {
+    setShowTextToQuestions(false)
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('questions:creator-unlock', { roomCode: codeToUse })
+    }
+  }
+
   const handleTextQuestionClose = () => {
     setShowTextQuestionPopup(false)
     setPendingTextQuestions([])
+    const activeSocket = socket || useSocketStore.getState().socket
+    const codeToUse = roomCodeRef.current || room?.code
+    if (activeSocket && codeToUse) {
+      activeSocket.emit('questions:creator-unlock', { roomCode: codeToUse })
+    }
     // leaderboard fold fires via the pop-up-close watcher (textPopupWasOpenRef) on close
   }
 
   const handleCreateQuestion = async (questionData) => {
+    if (activeQuestion) {
+      alert('A poll is currently active in this room. Please wait for it to complete before launching another question.')
+      return
+    }
     try {
       const response = await fetch(`${API_URL}/questions`, {
         method: 'POST',
@@ -1163,17 +1634,17 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        // Emit to socket for students to receive (include roomCode)
-        console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
-        console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
         if (socket && isConnected) {
+          socket.emit('question:start', {
+            roomCode: room.code,
+            questionId: data.question._id,
+            question: data.question,
+            timer: data.question.timeToAnswer || roomSettings.timeToAnswer || 30
+          })
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
           })
-          console.log('new_question event emitted successfully')
-        } else {
-          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
         }
       } else {
         const errorData = await response.json()
@@ -1403,22 +1874,47 @@ function RoomDetailPage() {
               </div>
             )}
 
+            {/* Creator Lock Banner Indicator */}
+            {isOtherCreating && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                background: 'rgba(245, 158, 11, 0.12)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: '#d97706',
+                fontWeight: 600
+              }}>
+                <span>🔒</span>
+                <span>
+                  {creatorLock.name || creatorLock.roleLabel} is {creatorLock.action === 'paste' ? 'pasting & generating' : 'creating'} questions
+                </span>
+              </div>
+            )}
+
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
-                onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
+                onClick={handleOpenTextToQuestions}
+                disabled={isOtherCreating || isGeneratingQuestions}
+                title={isOtherCreating ? `${creatorLock?.name || creatorLock?.roleLabel || 'Another teacher'} is currently ${creatorLock?.action === 'paste' ? 'generating questions from text' : 'creating a question'}` : ''}
                 style={{
                   padding: '8px 16px',
-                  background: '#10b981',
+                  background: (isOtherCreating || isGeneratingQuestions) ? '#9ca3af' : '#10b981',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '500',
-                  cursor: 'pointer',
+                  cursor: (isOtherCreating || isGeneratingQuestions) ? 'not-allowed' : 'pointer',
+                  opacity: (isOtherCreating || isGeneratingQuestions) ? 0.6 : 1,
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px'
+                  gap: '6px',
+                  transition: 'all 0.2s ease'
                 }}
               >
                 📝 Paste & Generate
@@ -1428,19 +1924,23 @@ function RoomDetailPage() {
             {/* Create Question Button */}
             {!isEnded && (
               <button
-                onClick={() => setShowCreateQuestion(true)}
+                onClick={handleOpenCreateQuestion}
+                disabled={isOtherCreating || isGeneratingQuestions}
+                title={isOtherCreating ? `${creatorLock?.name || creatorLock?.roleLabel || 'Another teacher'} is currently ${creatorLock?.action === 'paste' ? 'generating questions from text' : 'creating a question'}` : ''}
                 style={{
                   padding: '8px 16px',
-                  background: '#3b82f6',
+                  background: (isOtherCreating || isGeneratingQuestions) ? '#9ca3af' : '#3b82f6',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '500',
-                  cursor: 'pointer',
+                  cursor: (isOtherCreating || isGeneratingQuestions) ? 'not-allowed' : 'pointer',
+                  opacity: (isOtherCreating || isGeneratingQuestions) ? 0.6 : 1,
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px'
+                  gap: '6px',
+                  transition: 'all 0.2s ease'
                 }}
               >
                 ✍️ Create Q
@@ -1492,8 +1992,8 @@ function RoomDetailPage() {
               />
             </div>
 
-            {/* End Room Button */}
-            {!isEnded && (
+            {/* End Room Button (Host Only) */}
+            {!isEnded && isOwner && (
               <button onClick={handleEndRoom} style={{
                 padding: '8px 16px',
                 background: '#ef4444',
@@ -1507,7 +2007,147 @@ function RoomDetailPage() {
                 End Room
               </button>
             )}
+
+            {/* Leave Room Button (Co-Host Only) */}
+            {isCoHost && (
+              <button onClick={handleLeaveCoHost} style={{
+                padding: '8px 16px',
+                background: '#f59e0b',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}>
+                Leave Room
+              </button>
+            )}
           </div>
+
+          {/* Co-Hosts Management Panel (Host Only) */}
+          {isOwner && (
+            <div style={{
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              padding: '20px',
+              marginBottom: '20px',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span>👥</span> Co-Host Management
+                  </h3>
+                  <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                    Generate a join code for approved teachers to join as co-hosts with shared operational permissions.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Max Co-Hosts:
+                  </label>
+                  <input
+                    type="number"
+                    min={room?.coHosts?.length || 0}
+                    max={10}
+                    value={maxCoHostsInput}
+                    onChange={(e) => setMaxCoHostsInput(Math.max(room?.coHosts?.length || 0, parseInt(e.target.value, 10) || 0))}
+                    style={{ width: '60px', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
+                  />
+                  <button
+                    onClick={handleSaveMaxCoHosts}
+                    style={{ padding: '6px 12px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-primary)', padding: '14px', borderRadius: 'var(--radius)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>Validity Window:</label>
+                  <select
+                    value={codeDuration}
+                    onChange={(e) => setCodeDuration(Number(e.target.value))}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '13px' }}
+                  >
+                    <option value={10}>10 minutes</option>
+                    <option value={15}>15 minutes</option>
+                    <option value={30}>30 minutes</option>
+                    <option value={60}>60 minutes</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={handleGenerateCoHostCode}
+                  style={{ padding: '8px 16px', background: 'var(--accent-gradient)', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  {activeCoHostCode ? '🔄 Regenerate Code' : '⚡ Generate Join Code'}
+                </button>
+
+                {activeCoHostCode && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', background: 'var(--bg-card)', padding: '8px 14px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', fontWeight: 600 }}>ACTIVE CODE</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                        <span style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '2px', color: 'var(--accent)' }}>{activeCoHostCode}</span>
+                        <button
+                          onClick={copyCoHostCode}
+                          style={{
+                            padding: '3px 10px',
+                            background: coHostCodeCopied ? '#10b981' : '#3b82f6',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            transition: 'background 0.2s ease, transform 0.1s ease'
+                          }}
+                        >
+                          {coHostCodeCopied ? '✓ Copied' : '📋 Copy'}
+                        </button>
+                      </div>
+                    </div>
+                    {codeTimeLeft !== null && (
+                      <div style={{ fontSize: '12px', color: codeTimeLeft > 0 ? '#10b981' : '#ef4444', fontWeight: 600, marginLeft: '4px' }}>
+                        {codeTimeLeft > 0 ? `Expires in ${Math.floor(codeTimeLeft / 60)}m ${codeTimeLeft % 60}s` : 'Expired'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Joined Co-Hosts List */}
+              <div style={{ marginTop: '16px' }}>
+                <h4 style={{ margin: '0 0 8px', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Active Co-Hosts ({room?.coHosts?.length || 0} / {room?.maxCoHosts || 0})
+                </h4>
+                {(!room?.coHosts || room.coHosts.length === 0) ? (
+                  <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>No co-hosts joined yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {room.coHosts.map(ch => (
+                      <div key={ch.userId} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'var(--bg-primary)', borderRadius: '20px', border: '1px solid var(--border-color)', fontSize: '13px' }}>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{ch.name}</span>
+                        <button
+                          onClick={() => handleRemoveCoHost(ch.userId)}
+                          title="Remove Co-Host"
+                          style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: '14px', padding: '0 2px' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '470px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
@@ -1624,21 +2264,23 @@ function RoomDetailPage() {
                   {videoId && !videoSessionActive && (
                     <button
                       onClick={beginVideoSession}
-                      disabled={isEnded}
+                      disabled={isEnded || isOtherTeacherRecording}
                       style={{
                         width: '100%',
                         marginTop: '12px',
                         padding: '11px 16px',
-                        background: isEnded ? '#9ca3af' : 'var(--accent-gradient)',
+                        background: (isEnded || isOtherTeacherRecording) ? '#9ca3af' : 'var(--accent-gradient)',
                         color: '#fff',
                         border: 'none',
                         borderRadius: 'var(--radius)',
                         fontSize: '13px',
                         fontWeight: 600,
-                        cursor: isEnded ? 'not-allowed' : 'pointer'
+                        cursor: (isEnded || isOtherTeacherRecording) ? 'not-allowed' : 'pointer'
                       }}
                     >
-                      Start Session (share this tab's audio)
+                      {isOtherTeacherRecording
+                        ? `Session started by ${remoteRecorder.teacherName || (remoteRecorder.isOwner ? 'Host' : 'Co-Host')}`
+                        : "Start Session (share this tab's audio)"}
                     </button>
                   )}
                   <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
@@ -1656,19 +2298,20 @@ function RoomDetailPage() {
               {/* Mic Button */}
               <button
                 onClick={toggleRecording}
-                disabled={isEnded}
+                disabled={isEnded || isOtherTeacherRecording}
                 style={{
                   width: '80px',
                   height: '80px',
                   borderRadius: '50%',
-                  background: isEnded
+                  background: (isEnded || isOtherTeacherRecording)
                     ? 'linear-gradient(135deg, #6b7280, #9ca3af)'
                     : (isRecording
                         ? 'linear-gradient(135deg, #dc2626, #ef4444)'
                         : 'linear-gradient(135deg, #10b981, #059669)'),
                   color: 'white',
                   border: 'none',
-                  cursor: isEnded ? 'not-allowed' : 'pointer',
+                  cursor: (isEnded || isOtherTeacherRecording) ? 'not-allowed' : 'pointer',
+                  opacity: isOtherTeacherRecording ? 0.6 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1695,16 +2338,20 @@ function RoomDetailPage() {
 
               {/* Status Text */}
               <div style={{ textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
-                  {isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording')}
+                <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: (isRecording || isOtherTeacherRecording) ? '#ef4444' : 'var(--text-primary)' }}>
+                  {isOtherTeacherRecording
+                    ? `🎙️ ${remoteRecorder.roleLabel || remoteRecorder.teacherName || 'Co-Host'} is recording...`
+                    : (isTranscribing ? 'Listening...' : (isRecording ? 'Recording...' : 'Start Recording'))}
                 </p>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {modelStatus}
+                <p style={{ margin: '4px 0 0', fontSize: '12px', color: isOtherTeacherRecording ? '#ef4444' : 'var(--text-secondary)', fontWeight: isOtherTeacherRecording ? '600' : 'normal' }}>
+                  {isOtherTeacherRecording
+                    ? `Recording is currently active by ${remoteRecorder.roleLabel ? remoteRecorder.roleLabel.toLowerCase() : (remoteRecorder.isOwner ? 'room host' : 'co-host')}`
+                    : modelStatus}
                 </p>
               </div>
 
               {/* Live indicator */}
-              {isRecording && (
+              {(isRecording || isOtherTeacherRecording) && (
                 <div style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -1714,7 +2361,9 @@ function RoomDetailPage() {
                   borderRadius: '20px'
                 }}>
                   <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', animation: 'blink 1s infinite' }} />
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>LIVE</span>
+                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '500' }}>
+                    {isOtherTeacherRecording ? `${remoteRecorder.roleLabel || remoteRecorder.teacherName || 'Co-Host'} LIVE` : 'LIVE'}
+                  </span>
                 </div>
               )}
               </>
@@ -1842,9 +2491,13 @@ function RoomDetailPage() {
                 maxHeight: isMobile ? '220px' : '470px',
                 overflowY: 'auto'
               }}>
-                {transcript ? transcript : (
-                  <span style={{ fontStyle: 'italic' }}>
-                    Click the microphone to start real-time transcription.
+                {transcript ? (
+                  transcript
+                ) : (
+                  <span style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>
+                    {isOtherTeacherRecording
+                      ? `Waiting for live transcript from ${remoteRecorder.teacherName || 'Host'}...`
+                      : 'Click the microphone to start real-time transcription.'}
                   </span>
                 )}
               </div>
@@ -2020,6 +2673,15 @@ function RoomDetailPage() {
       {showQuestionPopup && pendingQuestions.length > 0 && (
         <QuestionApprovalPopup
           questions={pendingQuestions}
+          batchLauncher={batchLauncher}
+          currentUserId={user?._id}
+          popupIndex={popupIndex}
+          onNavIndexChange={(idx) => {
+            setPopupIndex(idx)
+            if (socket && room?.code) {
+              socket.emit('questions:popup-nav', { roomCode: room.code, index: idx })
+            }
+          }}
           onApprove={handleApproveQuestion}
           onReject={handleRejectQuestion}
           onComplete={() => {
@@ -2027,6 +2689,11 @@ function RoomDetailPage() {
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
             setPendingQuestions([])
+            setBatchLauncher(null)
+            if (socket && room?.code) {
+              socket.emit('questions:dismiss-popup', { roomCode: room.code })
+              socket.emit('questions:unlock-launcher', { roomCode: room.code })
+            }
 
             // Clear segment transcript for fresh start
             setSegmentTranscript('')
@@ -2040,26 +2707,35 @@ function RoomDetailPage() {
             // Reset segment timer
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
 
-            // Resume recording for next segment
-            startRecording({ resetSegment: false })
-            if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
+            // Resume recording for next segment (only Host triggers room recording)
+            if (isOwner) {
+              startRecording({ resetSegment: false })
+              if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
+            }
             // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
 
             // Timer will auto-start via the useEffect since isPendingReview is now false
           }}
           onClose={() => {
-            // Teacher manually closed popup - same as complete for next segment
+            // Co-Host closing popup closes only locally; Host closing popup dismisses for all & resumes
             setShowQuestionPopup(false)
             setIsPopupOpen(false)
-            setPendingQuestions([])
-            setSegmentTranscript('')
-            segmentTranscriptRef.current = ''
-            finalTranscriptRef.current = ''
-            setIsPendingReview(false)
-            setGenerateQEnabled(true)
-            setSegmentTimeLeft(roomSettings.segmentTime * 60)
-            startRecording({ resetSegment: false })
-            if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
+            if (isOwner) {
+              setPendingQuestions([])
+              setBatchLauncher(null)
+              if (socket && room?.code) {
+                socket.emit('questions:dismiss-popup', { roomCode: room.code })
+                socket.emit('questions:unlock-launcher', { roomCode: room.code })
+              }
+              setSegmentTranscript('')
+              segmentTranscriptRef.current = ''
+              finalTranscriptRef.current = ''
+              setIsPendingReview(false)
+              setGenerateQEnabled(true)
+              setSegmentTimeLeft(roomSettings.segmentTime * 60)
+              startRecording({ resetSegment: false })
+              if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
+            }
             // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
           }}
         />
@@ -2069,7 +2745,7 @@ function RoomDetailPage() {
       {showCreateQuestion && (
         <CreateQuestionOverlay
           isOpen={showCreateQuestion}
-          onClose={() => setShowCreateQuestion(false)}
+          onClose={handleCloseCreateQuestion}
           onLaunch={handleCreateQuestion}
         />
       )}
@@ -2078,7 +2754,7 @@ function RoomDetailPage() {
       {showTextToQuestions && (
         <TextToQuestionsPopup
           isOpen={showTextToQuestions}
-          onClose={() => setShowTextToQuestions(false)}
+          onClose={handleCloseTextToQuestions}
           onGenerate={handleTextToQuestionsGenerate}
           roomSettings={roomSettings}
           isGenerating={isGeneratingFromText}

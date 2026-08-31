@@ -160,6 +160,33 @@ export const useRoomStore = create((set, get) => ({
     }
   },
 
+  fetchRoomByCode: async (code) => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+
+    set({ isLoading: true, error: null })
+    try {
+      const response = await fetch(`${API_URL}/rooms/by-code/${code}`, {
+        headers: { 
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to find room')
+      }
+
+      set({ currentRoom: data.room, isLoading: false })
+      return data.room
+    } catch (error) {
+      set({ error: error.message, isLoading: false })
+      throw error
+    }
+  },
+
   joinRoomByCode: async (code) => {
     const { authToken } = get()
     if (!authToken) throw new Error('Not authenticated')
@@ -177,6 +204,35 @@ export const useRoomStore = create((set, get) => ({
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to join room')
+      }
+
+      set({ currentRoom: data.room, isLoading: false })
+      return data.room
+    } catch (error) {
+      set({ error: error.message, isLoading: false })
+      throw error
+    }
+  },
+
+  joinCoHostRoom: async (roomCode, coHostCode) => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+
+    set({ isLoading: true, error: null })
+    try {
+      const response = await fetch(`${API_URL}/rooms/join-cohost/${roomCode}`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ coHostCode })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to join as co-host')
       }
 
       set({ currentRoom: data.room, isLoading: false })

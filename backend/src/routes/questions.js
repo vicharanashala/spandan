@@ -3,7 +3,7 @@ import { authenticate, authorize, requireApprovedTeacher } from '../middleware/a
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
 import { stripObject } from '../utils/sanitize.js'
-import { checkRoomOwnership } from '../utils/roomOwnership.js'
+import { checkRoomOwnership, checkRoomEditor } from '../utils/roomOwnership.js'
 
 const router = express.Router()
 
@@ -126,13 +126,12 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
-    // Authorization: only the room's OWNING teacher may add questions to it. Without this,
-    // any teacher could inject questions into another teacher's room by supplying its roomId.
+    // Authorization: room owner OR co-host may add questions to it.
     const Room = (await import('../models/Room.js')).default
     const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
+    const editorAuth = checkRoomEditor(room, req.user._id)
+    if (!editorAuth.ok) {
+      return res.status(editorAuth.status).json({ error: editorAuth.error })
     }
 
     // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
@@ -171,9 +170,9 @@ router.get('/', async (req, res) => {
     const RoomMember = (await import('../models/RoomMember.js')).default
     const currentUser = req.user
 
-    // Check access: teacher owns room OR student is member
+    // Check access: teacher (owner or co-host) OR student is member
     const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = checkRoomEditor(room, currentUser._id).ok
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
 
     if (!isTeacher && !isStudentMember) {

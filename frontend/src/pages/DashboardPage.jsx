@@ -12,7 +12,7 @@ import useIsMobile from '../hooks/useIsMobile'
 function DashboardPage() {
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
-  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
+  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, joinCoHostRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
   const isMobile = useIsMobile()
 
@@ -33,15 +33,32 @@ function DashboardPage() {
     totalResponses: 0
   })
 
+  const [coHostActiveRooms, setCoHostActiveRooms] = useState([])
+
   // Initial setup
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchRooms()
       fetchTeacherStats()
+      fetchCoHostActiveRooms()
     }
     setChecked(true)
   }, [token])
+
+  const fetchCoHostActiveRooms = async () => {
+    try {
+      const res = await fetch(`${API_URL}/rooms/teacher/cohost/active`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCoHostActiveRooms(data.rooms || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch co-host active rooms:', err)
+    }
+  }
 
   const fetchTeacherStats = async () => {
     try {
@@ -265,9 +282,30 @@ function DashboardPage() {
             maxWidth: '100%',
             boxSizing: 'border-box'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Create New Room
-            </h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                Create New Room
+              </h2>
+              <button
+                onClick={() => navigate('/teacher/join-cohost')}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--nav-hover)',
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 'var(--radius)',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                🤝 Join Room as Co-Host
+              </button>
+            </div>
+
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
@@ -389,10 +427,74 @@ function DashboardPage() {
             </div>
           </div>
 
+          {/* Active Co-Host Rooms Section */}
+          {coHostActiveRooms && coHostActiveRooms.length > 0 && (
+            <div style={{ marginBottom: '32px' }}>
+              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>🔄</span> Rejoin as Co-Host
+              </h2>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
+                gap: '16px'
+              }}>
+                {coHostActiveRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    onClick={() => navigate(`/teacher/room/${room._id}`)}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '20px',
+                      background: 'var(--bg-card)',
+                      borderRadius: 'var(--radius-lg)',
+                      border: '2px solid var(--accent)',
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      cursor: 'pointer',
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'inline-block', padding: '2px 8px', background: 'rgba(59,130,246,0.15)', color: 'var(--accent)', borderRadius: '12px', fontSize: '11px', fontWeight: 700, marginBottom: '8px' }}>
+                        CO-HOST
+                      </div>
+                      <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Host: {room.teacher?.name || 'Teacher'}
+                      </p>
+                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => navigate(`/teacher/room/${room._id}`)}
+                      style={{
+                        marginTop: '16px',
+                        padding: '10px 16px',
+                        background: 'var(--accent-gradient)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 'var(--radius)',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Rejoin Room →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Active Rooms List */}
           <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              My Active Rooms
-            </h2>
+            My Active Rooms
+          </h2>
 
             {isLoading ? (
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>

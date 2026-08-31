@@ -40,6 +40,22 @@ function RoomHistoryPage() {
     }
   }
 
+  const [coHostHistoryRooms, setCoHostHistoryRooms] = React.useState([])
+
+  const fetchCoHostHistory = async () => {
+    try {
+      const res = await fetch(`${API_URL}/rooms/teacher/cohost/history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCoHostHistoryRooms(data.rooms || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch cohost room history:', e)
+    }
+  }
+
   useEffect(() => {
     if (token) {
       setAuthToken(token)
@@ -48,6 +64,7 @@ function RoomHistoryPage() {
         useRoomStore.getState().fetchStudentRoomHistory()
       } else {
         fetchRooms()
+        fetchCoHostHistory()
       }
     }
   }, [token, user?.role])
@@ -226,6 +243,84 @@ function RoomHistoryPage() {
               <p style={{ fontSize: '13px', marginTop: '8px' }}>Rooms you end will appear here for review.</p>
             </div>
           )}
+
+          {/* Joined as Co-Host Section for Teachers */}
+          {user?.role === 'teacher' && coHostHistoryRooms.length > 0 && (
+            <div style={{ marginTop: '40px' }}>
+              <h2 style={{
+                margin: '0 0 24px',
+                fontSize: isMobile ? '17px' : '18px',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                letterSpacing: '-0.01em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span>🤝</span> Joined as Co-Host
+              </h2>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: '16px'
+              }}>
+                {coHostHistoryRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '22px',
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius-lg)',
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      minWidth: 0,
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'inline-block', padding: '2px 8px', background: 'rgba(59,130,246,0.15)', color: 'var(--accent)', borderRadius: '12px', fontSize: '11px', fontWeight: 700, marginBottom: '8px' }}>
+                        CO-HOST SESSION
+                      </div>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px', letterSpacing: '-0.01em' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Host: {room.teacher?.name || 'Teacher'}
+                      </p>
+                      <p style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        {room.endedAt ? `Ended ${new Date(room.endedAt).toLocaleDateString()}` : 'Active session'}
+                      </p>
+                    </div>
+                    <div style={{ marginTop: '18px', display: 'flex', gap: '10px' }}>
+                      <button
+                        onClick={() => navigate(`/teacher/room/${room._id}${room.endedAt ? '/results' : ''}`)}
+                        style={{
+                          flex: 1,
+                          padding: '10px 16px',
+                          background: 'var(--accent-gradient)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 'var(--radius)',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {room.endedAt ? 'View Results →' : 'Open Room →'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
     </div>
