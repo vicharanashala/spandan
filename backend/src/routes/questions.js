@@ -2,6 +2,8 @@ import express from 'express'
 import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
+import { resolveAdaptiveDifficulty } from '../services/adaptiveDifficultyService.js'
+import { setRoomDifficulty } from '../services/roomService.js'
 import { stripObject } from '../utils/sanitize.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
@@ -30,11 +32,12 @@ router.get('/providers', (req, res) => {
 router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const { transcript, config } = req.body
-    const { 
-      numQuestions = 2, 
+    const {
+      numQuestions = 2,
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      roomId = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -44,7 +47,30 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       })
     }
 
-    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
+    let resolvedDifficulty = null
+    let adaptiveMeta = null
+    let effectiveDifficulty = difficulty
+
+    if (roomId) {
+      const Room = (await import('../models/Room.js')).default
+      const room = await Room.findById(roomId)
+      const ownership = checkRoomOwnership(room, req.user._id)
+      if (!ownership.ok) {
+        return res.status(ownership.status).json({ success: false, error: ownership.error })
+      }
+
+      if (room.settings?.adaptiveDifficulty) {
+        const result = await resolveAdaptiveDifficulty(roomId, room.settings.difficulty || 'medium')
+        effectiveDifficulty = result.difficulty
+        resolvedDifficulty = result.difficulty
+        adaptiveMeta = { sampleSize: result.sampleSize, correctnessPct: result.correctnessPct }
+        if (result.difficulty !== room.settings.difficulty) {
+          await setRoomDifficulty(roomId, result.difficulty)
+        }
+      }
+    }
+
+    const jobConfig = { numQuestions, difficulty: effectiveDifficulty, provider, questionTypeMix }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
     // The client polls GET /questions/jobs/:jobId for the result.
@@ -60,14 +86,14 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
           removeOnFail: { age: 900 }
         }
       )
-      return res.status(202).json({ success: true, async: true, jobId: job.id })
+      return res.status(202).json({ success: true, async: true, jobId: job.id, resolvedDifficulty, adaptiveMeta })
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
     console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-    res.json({ success: true, questions })
+    res.json({ success: true, questions, resolvedDifficulty, adaptiveMeta })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({

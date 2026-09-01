@@ -194,6 +194,62 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </p>
         </div>
 
+        {/* Adaptive Difficulty */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            Difficulty Mode
+          </label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => setLocalSettings(prev => ({ ...prev, adaptiveDifficulty: false }))}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                borderRadius: '8px',
+                border: !localSettings.adaptiveDifficulty
+                  ? '2px solid #3b82f6'
+                  : '1px solid var(--border-color)',
+                background: !localSettings.adaptiveDifficulty ? '#dbeafe' : 'transparent',
+                color: !localSettings.adaptiveDifficulty ? '#1e40af' : 'var(--text-primary)',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: !localSettings.adaptiveDifficulty ? '600' : '400'
+              }}
+            >
+              Manual
+            </button>
+            <button
+              onClick={() => setLocalSettings(prev => ({ ...prev, adaptiveDifficulty: true }))}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                borderRadius: '8px',
+                border: localSettings.adaptiveDifficulty
+                  ? '2px solid #3b82f6'
+                  : '1px solid var(--border-color)',
+                background: localSettings.adaptiveDifficulty ? '#dbeafe' : 'transparent',
+                color: localSettings.adaptiveDifficulty ? '#1e40af' : 'var(--text-primary)',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: localSettings.adaptiveDifficulty ? '600' : '400'
+              }}
+            >
+              ⚡ Adaptive
+            </button>
+          </div>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            {localSettings.adaptiveDifficulty
+              ? 'Difficulty auto-adjusts each batch based on how the class scored on the last one.'
+              : 'Difficulty stays fixed at the level you pick below.'}
+          </p>
+        </div>
+
         {/* Difficulty Level */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{
@@ -203,7 +259,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             fontWeight: '500',
             color: 'var(--text-primary)'
           }}>
-            Difficulty Level
+            {localSettings.adaptiveDifficulty ? 'Starting Difficulty' : 'Difficulty Level'}
           </label>
           <div style={{ display: 'flex', gap: '8px' }}>
             {DIFFICULTY_LEVELS.map(level => (
