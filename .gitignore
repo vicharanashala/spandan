@@ -26,7 +26,6 @@ npm-debug.log*
 # Testing
 coverage/
 
-# Misc
-*.tgz
-.cache/
-# Research plans (local only - stored at /home/spandan/RESEARCH_PLAN.md)
+# Uploads
+uploads/
+backend/uploads/

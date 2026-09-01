@@ -3,7 +3,9 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
+import ChatMessage from '../models/ChatMessage.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
+import { flushAndCleanRoom } from './chatService.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -71,6 +73,7 @@ export const updateRoom = async (roomId, updates) => {
   // isActive:false / endedAt). Non-fatal if Redis is unavailable.
   if (updates && (updates.isActive === false || updates.endedAt)) {
     await invalidateRoomLive(roomId)
+    await flushAndCleanRoom(roomId)
   }
 
   return room
@@ -81,20 +84,26 @@ export const deleteRoom = async (roomId) => {
   if (!room) {
     throw new Error('Room not found')
   }
-  // Cascade-delete everything tied to this room so no orphaned records are left behind.
+
+  // Step 1: Flush any pending buffered chat messages to MongoDB and delete Redis keys FIRST.
+  await flushAndCleanRoom(roomId)
+
+  // Step 2: Cascade-delete everything tied to this room so no orphaned records are left behind.
   // Orphans (e.g. a Response whose room is gone) otherwise break student room-history and
   // skew per-room queries. The room doc is removed first (fail-fast on not-found); if a
   // cascade delete were to partially fail, the null-guards in the read paths still cope.
-  const [responses, members, questions, transcripts] = await Promise.all([
+  const [responses, members, questions, transcripts, chatMessages] = await Promise.all([
     Response.deleteMany({ roomId }),
     RoomMember.deleteMany({ roomId }),
     Question.deleteMany({ roomId }),
-    Transcript.deleteMany({ roomId })
+    Transcript.deleteMany({ roomId }),
+    ChatMessage.deleteMany({ roomId })
   ])
   console.log(
     `[rooms] deleted room ${roomId} + cascade: ` +
     `${responses.deletedCount} responses, ${members.deletedCount} members, ` +
-    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts`
+    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts, ` +
+    `${chatMessages.deletedCount} chatMessages`
   )
   return room
 }
@@ -127,6 +136,7 @@ export const deactivateRoom = async (roomId) => {
   // Drop the room-live cache so POST /responses re-reads Mongo and sees endedAt → refuses further
   // submits (Phase 3 response-window). Non-fatal if Redis is unavailable.
   await invalidateRoomLive(roomId)
+  await flushAndCleanRoom(roomId)
 
   return room
 }

@@ -1,3 +1,5 @@
+import { registerShutdownTask } from '../utils/shutdown.js'
+
 // Fix 3b (Stage 2) — OPTIONAL, env-gated write-buffering for POST /responses. DEFAULT OFF.
 //
 // When RESPONSE_BATCH=on, student answers are held briefly in memory and written in BATCHES via
@@ -67,17 +69,9 @@ export async function flushNow() {
 }
 
 // Flush remaining answers on a graceful shutdown so a planned restart/deploy doesn't drop the
-// in-flight buffer. Registered lazily on first use, so when batching is OFF the process's shutdown
-// behavior is entirely unchanged (the main backend has no other signal handlers).
+// in-flight buffer. Registered lazily on first use via centralized shutdown coordinator.
 function ensureShutdownHook() {
   if (shutdownHooked) return
   shutdownHooked = true
-  const graceful = async () => {
-    const force = setTimeout(() => process.exit(0), 2000) // never hang shutdown on a slow flush
-    try { await flushNow() } catch (e) { console.error('[response-batch] shutdown flush error:', e?.message) }
-    clearTimeout(force)
-    process.exit(0)
-  }
-  process.once('SIGTERM', graceful)
-  process.once('SIGINT', graceful)
+  registerShutdownTask('responseBuffer', flushNow)
 }
