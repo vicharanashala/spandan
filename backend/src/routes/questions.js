@@ -1,7 +1,7 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
-import { stripObject } from '../utils/sanitize.js'
+import { stripObject, stripHtml } from '../utils/sanitize.js'
 
 const router = express.Router()
 
@@ -79,59 +79,66 @@ router.post('/', authorize('teacher'), async (req, res) => {
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
-      segmentIndex = 0
+      segmentIndex = 0,
+      explanation = '',
+      sourceBankId = null
     } = req.body
 
     if (!roomId || !type || !question || !options) {
       return res.status(400).json({ error: 'Missing required fields' })
     }
 
-    // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
-    // The frontend renders these as React text nodes, which auto-escape at
-    // render time, so entity-encoding here is unnecessary and would show
-    // literally (e.g. &quot;) on the student side.
-    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    // Normalize options
+    let normalizedOptions = Array.isArray(options) ? options.map(opt => {
+      if (typeof opt === 'string') {
+        return { text: opt, isCorrect: false }
+      }
+      return {
+        text: opt.text || '',
+        isCorrect: opt.isCorrect === true
+      }
+    }) : []
 
+    if (typeof req.body.correctOptionIndex === 'number' && normalizedOptions[req.body.correctOptionIndex]) {
+      normalizedOptions = normalizedOptions.map((o, idx) => ({
+        ...o,
+        isCorrect: idx === req.body.correctOptionIndex
+      }))
+    }
+
+    // Strip any HTML tags but keep text as-is (quotes/apostrophes preserved).
+    const sanitizedData = { 
+      roomId, 
+      type: stripHtml(type), 
+      question: stripHtml(question), 
+      options: normalizedOptions.map(o => ({
+        text: stripHtml(o.text),
+        isCorrect: o.isCorrect === true
+      })), 
+      explanation: stripHtml(explanation || ''),
+      timeToAnswer: Number(timeToAnswer) || 30, 
+      points: Number(points) || 100, 
+      status: status || 'approved', 
+      segmentIndex: Number(segmentIndex) || 0,
+      createdBy: req.user._id,
+      sourceBankId: sourceBankId || null
+    }
+
+    const newQuestion = new Question(sanitizedData)
     await newQuestion.save()
 
-    // Auto-capture to QuestionBank
-    try {
-      const QuestionBank = (await import('../models/QuestionBank.js')).default
-      const QuestionBankFolder = (await import('../models/QuestionBankFolder.js')).default
-      const Room = (await import('../models/Room.js')).default
-
-      let folder = await QuestionBankFolder.findOne({ roomId })
-      if (!folder) {
-        const room = await Room.findById(roomId).select('name code teacher').lean()
-        if (room) {
-          folder = await QuestionBankFolder.create({
-            teacherId: room.teacher,
-            name: room.name,
-            roomCode: room.code,
-            roomId: room._id
-          })
+    // Broadcast question to room if socket is available
+    const io = req.app.get('io')
+    if (io) {
+      try {
+        const Room = (await import('../models/Room.js')).default
+        const room = await Room.findById(roomId).select('code').lean()
+        if (room && room.code) {
+          io.to(room.code).emit('new_question', newQuestion)
         }
+      } catch (ioErr) {
+        console.error('[Socket emit error on question create]:', ioErr)
       }
-
-      await QuestionBank.create({
-        teacherId: req.user._id,
-        folderId: folder ? folder._id : null,
-        type: newQuestion.type || 'MCQ',
-        questionText: newQuestion.question,
-        options: (newQuestion.options || []).map(o => ({ text: o.text, isCorrect: o.isCorrect === true })),
-        explanation: newQuestion.explanation || '',
-        timeToAnswer: newQuestion.timeToAnswer || 30,
-        topic: '',
-        difficulty: 'medium',
-        provenance: {
-          origin: 'manual',
-          sourceSessionId: roomId,
-          generatedAt: new Date(),
-          approvedAt: new Date()
-        }
-      })
-    } catch (qbErr) {
-      console.error('[Auto-Capture to QuestionBank Error]:', qbErr)
     }
 
     res.status(201).json({
@@ -142,7 +149,7 @@ router.post('/', authorize('teacher'), async (req, res) => {
     console.error('Error creating question:', error)
     res.status(500).json({
       success: false,
-      error: 'Failed to create question'
+      error: error.message || 'Failed to create question'
     })
   }
 })

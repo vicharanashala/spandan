@@ -101,6 +101,9 @@ export const stripObject = (obj) => {
   }
 
   if (typeof obj === 'object') {
+    if (obj.constructor && obj.constructor.name !== 'Object') {
+      return obj
+    }
     const result = {}
     for (const [key, value] of Object.entries(obj)) {
       result[key] = stripObject(value)

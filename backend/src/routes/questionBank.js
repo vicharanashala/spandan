@@ -98,76 +98,10 @@ const verifyRoomOwnership = async (roomId, userId) => {
 }
 
 
-const syncRoomQuestionsToBank = async (teacherId) => {
-  try {
-    const Room = (await import('../models/Room.js')).default
-    const Question = (await import('../models/Question.js')).default
-    const QuestionBankFolder = (await import('../models/QuestionBankFolder.js')).default
-
-    const rooms = await Room.find({ teacher: teacherId }).select('_id name code settings').lean()
-    if (!rooms || rooms.length === 0) return
-
-    for (const room of rooms) {
-      let folder = await QuestionBankFolder.findOne({ roomId: room._id })
-      if (!folder) {
-        folder = await QuestionBankFolder.create({
-          teacherId,
-          name: room.name,
-          roomCode: room.code,
-          roomId: room._id
-        })
-      }
-
-      const roomQuestions = await Question.find({ roomId: room._id }).lean()
-      if (roomQuestions.length === 0) continue
-
-      for (const rq of roomQuestions) {
-        if (!rq.question) continue
-        const existing = await QuestionBank.findOne({
-          teacherId,
-          isArchived: false,
-          $or: [
-            { folderId: folder._id, questionText: rq.question },
-            { 'provenance.sourceSessionId': room._id, questionText: rq.question },
-            ...(rq.sourceBankId ? [{ _id: rq.sourceBankId }] : [])
-          ]
-        })
-
-        if (!existing) {
-          await QuestionBank.create({
-            teacherId,
-            folderId: folder._id,
-            type: rq.type || 'MCQ',
-            questionText: rq.question,
-            options: (rq.options || []).map(o => ({ text: o.text || '', isCorrect: o.isCorrect === true })),
-            explanation: rq.explanation || '',
-            timeToAnswer: rq.timeToAnswer || 30,
-            topic: room.settings?.topic || '',
-            difficulty: room.settings?.difficulty || 'medium',
-            provenance: {
-              origin: 'ai-generated',
-              sourceSessionId: room._id,
-              generatedAt: rq.createdAt || new Date(),
-              approvedAt: new Date()
-            }
-          })
-        } else if (!existing.folderId) {
-          await QuestionBank.updateOne({ _id: existing._id }, { $set: { folderId: folder._id } })
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[syncRoomQuestionsToBank Error]', err)
-  }
-}
-
 // ---- Routes ----
 
 router.get('/', async (req, res) => {
   try {
-    // Auto-sync room questions to QuestionBank folders
-    await syncRoomQuestionsToBank(req.user._id)
-
     const { search, topic, difficulty, folderId, page = 1, limit = 50 } = req.query
     const pageNum = Math.max(1, Math.min(1000, parseInt(page, 10) || 1))
     const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 50))
@@ -269,9 +203,6 @@ router.get('/meta/topics', async (req, res) => {
 
 router.get('/folders', async (req, res) => {
   try {
-    // Auto-sync room questions before returning folders
-    await syncRoomQuestionsToBank(req.user._id)
-
     const QuestionBankFolder = (await import('../models/QuestionBankFolder.js')).default
 
     const folders = await QuestionBankFolder.find({ teacherId: req.user._id }).sort({ createdAt: -1 }).lean()
