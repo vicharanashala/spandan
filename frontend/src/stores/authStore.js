@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { API_URL } from '../config.js'
+import { safeParseJson } from '../utils/apiUtils.js'
 
 export const useAuthStore = create(
   persist(
@@ -29,11 +30,7 @@ export const useAuthStore = create(
             body: JSON.stringify({ email, password })
           })
           
-          const data = await response.json()
-          
-          if (!response.ok) {
-            throw new Error(data.error || 'Login failed')
-          }
+          const data = await safeParseJson(response)
           
           set({ 
             user: data.user, 
@@ -58,11 +55,7 @@ export const useAuthStore = create(
             body: JSON.stringify({ name, email, password, role })
           })
           
-          const data = await response.json()
-          
-          if (!response.ok) {
-            throw new Error(data.error || 'Registration failed')
-          }
+          const data = await safeParseJson(response)
           
           set({ 
             user: data.user, 
@@ -99,11 +92,7 @@ export const useAuthStore = create(
             }
           })
           
-          if (!response.ok) {
-            throw new Error('Session expired')
-          }
-          
-          const data = await response.json()
+          const data = await safeParseJson(response)
           set({ user: data.user })
           return data.user
         } catch (error) {

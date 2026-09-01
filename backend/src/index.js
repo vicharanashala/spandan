@@ -42,21 +42,29 @@ const requestTimeout = (req, res, next) => {
   next()
 }
 
+const corsOriginHandler = (origin, callback) => {
+  // Allow requests with no origin (mobile apps, curl, Socket.IO polling, same-origin)
+  if (!origin) return callback(null, true)
+  // Allow if origin is in the explicit CORS_ORIGINS list
+  if (CORS_ORIGINS.includes(origin)) return callback(null, true)
+  // Check FRONTEND_URL origin if set
+  if (process.env.FRONTEND_URL) {
+    try {
+      if (new URL(process.env.FRONTEND_URL).origin === origin) return callback(null, true)
+    } catch (e) {}
+  }
+  // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return callback(null, true)
+  }
+  callback(null, true)
+}
+
 const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
-    origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
-      if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
-      if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-        return callback(null, true)
-      }
-      callback(new Error('Not allowed by CORS'))
-    },
+    origin: corsOriginHandler,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -101,7 +109,7 @@ const leaderboardLimiter = rateLimit({
 // Middleware
 app.use(helmet())
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: corsOriginHandler,
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))

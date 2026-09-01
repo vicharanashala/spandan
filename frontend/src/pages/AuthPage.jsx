@@ -7,6 +7,7 @@ import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
 import { API_URL } from '../config.js'
+import { safeParseJson } from '../utils/apiUtils.js'
 
 // Password requirements for registration
 const PASSWORD_REQUIREMENTS = [
@@ -129,8 +130,7 @@ function AuthPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotPasswordEmail })
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to send reset email')
+      const data = await safeParseJson(res)
       setForgotPasswordMsg('✓ Password reset link sent! Check your email.')
       setForgotPasswordEmail('')
     } catch (err) {

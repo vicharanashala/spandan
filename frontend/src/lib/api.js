@@ -1,5 +1,6 @@
 import { API_URL } from '../config.js'
 import useAuthStore from '../stores/authStore.js'
+import { safeParseJson } from '../utils/apiUtils.js'
 
 const getHeaders = () => {
   const { token } = useAuthStore.getState()
@@ -45,16 +46,14 @@ export const api = {
   },
 
   async handleResponse(response) {
-    const data = await response.json()
-
-    if (!response.ok) {
-      if (response.status === 401) {
+    try {
+      return await safeParseJson(response)
+    } catch (error) {
+      if (error.status === 401) {
         useAuthStore.getState().logout()
       }
-      throw new Error(data.error || data.message || 'Request failed')
+      throw error
     }
-
-    return data
   }
 }
 

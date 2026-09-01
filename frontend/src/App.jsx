@@ -18,6 +18,7 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import QuestionBankPage from './pages/QuestionBankPage'
 import { API_URL } from './config.js'
+import { safeParseJson } from './utils/apiUtils.js'
 
 class GlobalErrorBoundary extends Component {
   constructor(props) {
@@ -78,7 +79,7 @@ function App() {
           return
         }
 
-        const data = await response.json()
+        const data = await safeParseJson(response)
         const samagamaUser = data.user
         console.log('[Spandan] Samagama user:', samagamaUser?.email)
 
@@ -104,7 +105,7 @@ function App() {
           return
         }
 
-        const spandanData = await spandanResponse.json()
+        const spandanData = await safeParseJson(spandanResponse)
         setAuth(spandanData.user, spandanData.token)
 
         // Open dashboard in new tab
