@@ -12,7 +12,7 @@ function RoomHistoryPage() {
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   const { user, token } = useAuthStore()
-  const { rooms, isLoading, fetchRooms, setAuthToken } = useRoomStore()
+  const { rooms, coHostRooms = [], isLoading, fetchRooms, setAuthToken } = useRoomStore()
   const [downloadingId, setDownloadingId] = React.useState(null)
 
   // Download a room's complete results as a CSV (teacher-only endpoint; needs the auth
@@ -54,6 +54,8 @@ function RoomHistoryPage() {
 
   // Filter ended rooms for teacher view
   const endedRooms = rooms?.filter(r => r.endedAt) || []
+  // Ended sessions where the logged-in teacher was a co-host
+  const endedCoHostRooms = user?.role === 'teacher' ? (coHostRooms?.filter(r => r.endedAt) || []) : []
 
   return (
     <div style={{
@@ -225,6 +227,128 @@ function RoomHistoryPage() {
               <p style={{ margin: 0, color: 'var(--text-primary)', fontWeight: 600 }}>No ended rooms yet.</p>
               <p style={{ fontSize: '13px', marginTop: '8px' }}>Rooms you end will appear here for review.</p>
             </div>
+          )}
+
+          {/* Co-hosted sessions section */}
+          {user?.role === 'teacher' && endedCoHostRooms.length > 0 && (
+            <>
+              <div style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: '12px',
+                marginTop: '40px',
+                marginBottom: '20px',
+                flexWrap: 'wrap'
+              }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: isMobile ? '17px' : '18px',
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                  letterSpacing: '-0.01em',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  🤝 Co-hosted Sessions
+                  <span style={{
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    background: '#7c3aed',
+                    color: 'white',
+                    borderRadius: '999px',
+                    padding: '2px 10px'
+                  }}>{endedCoHostRooms.length}</span>
+                </h2>
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: '16px'
+              }}>
+                {endedCoHostRooms.map((room) => (
+                  <div
+                    key={room._id}
+                    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--shadow-lg)' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)' }}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '22px',
+                      background: 'var(--bg-card)',
+                      border: '2px solid #7c3aed33',
+                      borderRadius: 'var(--radius-lg)',
+                      boxShadow: 'var(--shadow-md)',
+                      minHeight: '140px',
+                      minWidth: 0,
+                      transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                      position: 'relative'
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: '14px', right: '14px',
+                      fontSize: '11px', fontWeight: 600,
+                      background: '#7c3aed22', color: '#7c3aed',
+                      borderRadius: '999px', padding: '3px 10px',
+                      border: '1px solid #7c3aed44'
+                    }}>Co-host</span>
+
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <h3 style={{ margin: '0 0 10px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em', paddingRight: '70px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {room.name}
+                      </h3>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Owner: <strong>{room.teacher?.name || 'Unknown'}</strong>
+                      </p>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Code: <strong style={{ color: '#7c3aed', letterSpacing: '1px' }}>{room.code}</strong>
+                      </p>
+                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Ended {room.endedAt ? new Date(room.endedAt).toLocaleDateString() : ''}
+                      </p>
+                    </div>
+
+                    <div style={{ marginTop: '18px', display: 'flex', gap: '10px' }}>
+                      <button
+                        onClick={() => navigate(`/teacher/room/${room._id}/results`)}
+                        style={{
+                          flex: 1,
+                          padding: '10px 16px',
+                          background: 'linear-gradient(135deg, #7c3aed, #9333ea)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 'var(--radius)',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        View Results →
+                      </button>
+                      <button
+                        onClick={() => downloadCsv(room)}
+                        disabled={downloadingId === room._id}
+                        title="Download results as CSV"
+                        style={{
+                          padding: '10px 14px',
+                          background: 'transparent',
+                          color: '#7c3aed',
+                          border: '1.5px solid #7c3aed',
+                          borderRadius: 'var(--radius)',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: downloadingId === room._id ? 'wait' : 'pointer',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        {downloadingId === room._id ? '…' : '⬇ CSV'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -410,9 +410,10 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role name').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
+  socket.data.name = u?.name || 'Teacher'
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
@@ -450,16 +451,30 @@ function scheduleSocketExpiry(socket) {
 }
 
 // Teacher-only + room-ownership guard for privileged events (question:start/end, new_question).
-// Returns the room doc when the socket is the room's teacher-owner, else null. Returning the room
-// (not just a bool) lets callers use room._id (e.g. to mark the current question) without re-looking
-// it up; truthiness of the result is still a valid owner check.
+// Returns a room-like object { _id } if the socket's authenticated user is the owner or a co-host,
+// or null otherwise. Host status is cached on socket.data.hostedRooms at room:join time so this
+// function never needs to hit MongoDB during a live session — critical for reliability when Atlas
+// DNS is briefly flaky.
 async function verifyRoomOwner(socket, roomCode) {
   if (socket.data?.role !== 'teacher' || !roomCode) return null
+
+  // Fast path: use the host-status we already verified at room:join time.
+  const cachedId = socket.data?.hostedRooms?.[roomCode]
+  if (cachedId) return { _id: cachedId }
+
+  // Cold path: socket joined before this cache existed (e.g. after a server restart mid-session)
+  // — fall back to a live DB look-up and then warm the cache.
   try {
     const Room = (await import('./models/Room.js')).default
+    const { isRoomHost } = await import('./services/roomService.js')
     const room = await Room.findByCode(roomCode)
-    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
-  } catch {
+    if (!room || !isRoomHost(room, socket.data.userId)) return null
+    // Warm the cache so the next event is fast.
+    if (!socket.data.hostedRooms) socket.data.hostedRooms = {}
+    socket.data.hostedRooms[roomCode] = room._id
+    return room
+  } catch (err) {
+    console.error('[verifyRoomOwner] DB error:', err.message)
     return null
   }
 }
@@ -470,6 +485,8 @@ async function verifyRoomOwner(socket, roomCode) {
 // immediately without waiting for the next broadcast tick.
 const videoProgress = new Map() // roomCode -> { time }
 const videoPaused = new Map() // roomCode -> true while the teacher's question popup is open (students hold their video paused)
+const recordingLocks = new Map() // roomCode -> { userId: string, userName: string } — recording mutex
+const videoControllers = new Map() // roomCode -> { userId: string, userName: string } — video session controller
 
 // Mark which question is CURRENTLY LIVE for a room. Set on every launch and NEVER cleared: the read
 // endpoints withhold the correct answer of `currentQuestion` from students while it is live, and it
@@ -579,6 +596,17 @@ io.on('connection', (socket) => {
         return
       }
 
+      // Cache host status so verifyRoomOwner never needs to re-query the DB mid-session.
+      // Expired co-hosts are let in as viewers but NOT added to hostedRooms, so they can't
+      // trigger privileged events (question:start, recording:lock, etc.).
+      if (role === 'teacher' && room && !decision.expiredCoHost) {
+        const { isRoomHost } = await import('./services/roomService.js')
+        if (isRoomHost(room, userId)) {
+          if (!socket.data.hostedRooms) socket.data.hostedRooms = {}
+          socket.data.hostedRooms[roomCode] = room._id
+        }
+      }
+
       // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
       if (role === 'student') {
         await RoomMember.findOneAndUpdate(
@@ -598,12 +626,24 @@ io.on('connection', (socket) => {
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
 
+      // Tell an expired co-host their validity has lapsed — they're still in the room
+      // as a teacher viewer but no longer have host privileges.
+      if (decision.expiredCoHost) {
+        socket.emit('cohost:expired', { roomCode })
+      }
+
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
       if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
       // If the teacher's question popup is currently open, a late-joining student must start paused.
       if (videoPaused.get(roomCode)) socket.emit('video:pause')
+      // Seed recording and video-controller lock states so a refresh restores the correct UI.
+      const rl = recordingLocks.get(roomCode)
+      if (rl) socket.emit('recording:locked', { userId: rl.userId, userName: rl.userName, roomCode })
+      const vc = videoControllers.get(roomCode)
+      if (vc) socket.emit('video:session:locked', { userId: vc.userId, userName: vc.userName, roomCode })
+
     } catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
@@ -704,11 +744,96 @@ io.on('connection', (socket) => {
     socket.to(data.roomCode).emit('video:resume')
   })
 
+  // Recording mutex — only one host/co-host may record at a time.
+  // The lock is enforced SERVER-SIDE: a second teacher's recording:lock is rejected
+  // if someone else already holds it. Released on recording:unlock or socket disconnect.
+  socket.on('recording:lock', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+
+    const userId = String(socket.data?.userId)
+    const userName = socket.data?.name || 'Another teacher'
+    const existing = recordingLocks.get(data.roomCode)
+
+    if (existing && existing.userId !== userId) {
+      // Lock held by someone else — reject and inform the requester
+      socket.emit('recording:lock_rejected', { lockedBy: existing.userName })
+      return
+    }
+
+    // Acquire the lock
+    recordingLocks.set(data.roomCode, { userId, userName })
+    io.to(data.roomCode).emit('recording:locked', { userId, userName, roomCode: data.roomCode })
+  })
+
+  socket.on('recording:unlock', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    const userId = String(socket.data?.userId)
+    const existing = recordingLocks.get(data.roomCode)
+    if (!existing || existing.userId !== userId) return
+    recordingLocks.delete(data.roomCode)
+    io.to(data.roomCode).emit('recording:unlocked', { roomCode: data.roomCode })
+  })
+
+  // Video session controller lock — only one teacher/co-host drives the video at a time.
+  // The controller's video:progress/pause/resume events are already broadcast to the whole room;
+  // non-controllers slave their player to those broadcasts.
+  socket.on('video:session:lock', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    const userId = String(socket.data?.userId)
+    const userName = socket.data?.name || 'Another teacher'
+    const existing = videoControllers.get(data.roomCode)
+    if (existing && existing.userId !== userId) {
+      socket.emit('video:session:lock_rejected', { controlledBy: existing.userName })
+      return
+    }
+    videoControllers.set(data.roomCode, { userId, userName })
+    io.to(data.roomCode).emit('video:session:locked', { userId, userName, roomCode: data.roomCode })
+  })
+
+  socket.on('video:session:unlock', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    const userId = String(socket.data?.userId)
+    const existing = videoControllers.get(data.roomCode)
+    if (!existing || existing.userId !== userId) return
+    videoControllers.delete(data.roomCode)
+    io.to(data.roomCode).emit('video:session:unlocked', { roomCode: data.roomCode })
+  })
+
+  // Relay the controller's running transcript to other teacher pages so they see
+  // the live text without doing their own audio capture.
+  socket.on('transcript:sync', async (data) => {
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
+    socket.to(data.roomCode).emit('transcript:sync', { text: data.text })
+  })
+
   socket.on('disconnect', () => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
-    const userId = connectedUsers.get(socket.id)
+    const userId = String(socket.data?.userId || '')
     connectedUsers.delete(socket.id)
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
+
+    // Release recording lock and video controller lock so rooms aren't left permanently locked.
+    if (userId) {
+      for (const [roomCode, lock] of recordingLocks.entries()) {
+        if (lock.userId === userId) {
+          recordingLocks.delete(roomCode)
+          io.to(roomCode).emit('recording:unlocked', { roomCode })
+          break
+        }
+      }
+      for (const [roomCode, controller] of videoControllers.entries()) {
+        if (controller.userId === userId) {
+          videoControllers.delete(roomCode)
+          io.to(roomCode).emit('video:session:unlocked', { roomCode })
+          break
+        }
+      }
+    }
   })
 })
 

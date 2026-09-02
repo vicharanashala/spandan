@@ -3,6 +3,7 @@ import { API_URL } from '../config.js'
 
 export const useRoomStore = create((set, get) => ({
   rooms: [],
+  coHostRooms: [],
   activeRooms: [],
   currentRoom: null,
   isLoading: false,
@@ -40,7 +41,8 @@ export const useRoomStore = create((set, get) => ({
         page++
       }
 
-      set({ rooms, isLoading: false })
+
+      set({ rooms, coHostRooms: data.coHostRooms || [], isLoading: false })
     } catch (error) {
       set({ error: error.message, isLoading: false })
     }

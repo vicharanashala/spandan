@@ -12,6 +12,15 @@ const roomSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // Per-room co-hosts. NOT a global user role — these teachers can run sessions in
+  // this specific room (launch/end questions, view analytics/transcripts, export CSV)
+  // but cannot record/paste transcripts, change room settings, end the room, delete it,
+  // or manage co-hosts. Each entry carries an optional expiry set by the owner.
+  coHosts: [{
+    _id: false,
+    user:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    expiresAt: { type: Date, default: null }   // null = valid until the session ends
+  }],
   code: {
     type: String,
     unique: true
@@ -57,6 +66,16 @@ const roomSchema = new mongoose.Schema({
     // see the real names of the bottom anonymityPercent% (the same lowest-scorer slice the teacher
     // sees) appended to their masked top-N board. OFF (default) = students see only the masked top-N.
     revealBottomToStudents: { type: Boolean, default: false }
+  },
+  // Single active invite code that any teacher can use to join as co-host.
+  // Multi-use for its TTL: one code, multiple teachers. Owner can regenerate
+  // at any time to invalidate the old code (new code overwrites).
+  coHostInvite: {
+    code:            { type: String },
+    expiresAt:       { type: Date },
+    // Duration (ms) the co-host relationship lasts after a teacher redeems the code.
+    // null = until the session ends (room is ended by the owner).
+    coHostDuration:  { type: Number, default: null }
   }
 }, {
   timestamps: true
@@ -86,6 +105,8 @@ roomSchema.statics.findByCode = function(code) {
 
 // Teacher dashboards and access checks query rooms by teacher; index avoids a COLLSCAN.
 roomSchema.index({ teacher: 1, createdAt: -1 })
+// Co-host dashboards query rooms where the user appears in coHosts[]; index avoids a COLLSCAN.
+roomSchema.index({ 'coHosts.user': 1 })
 
 const Room = mongoose.model('Room', roomSchema)
 
