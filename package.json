@@ -9,16 +9,21 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:all": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:transcription\"",
     "dev:frontend": "npm run dev --workspace=frontend",
     "dev:backend": "npm run dev --workspace=backend",
+    "dev:transcription": "npm run transcription --workspace=backend",
     "build": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
+    "copy:vad": "npm run copy:vad --workspace=frontend",
+    "postinstall": "npm run copy:vad --workspace=frontend",
     "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
   },
   "dependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.18.0",
     "pm2": "^7.0.1"
   }
 }

@@ -26,11 +26,11 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
-          target: 'http://localhost:3001',
+          target: env.VITE_BACKEND_URL || `http://localhost:${env.VITE_BACKEND_PORT || 7001}`,
           changeOrigin: true
         },
         '/socket.io': {
-          target: 'http://localhost:3001',
+          target: env.VITE_BACKEND_URL || `http://localhost:${env.VITE_BACKEND_PORT || 7001}`,
           ws: true
         }
       }
