@@ -8,6 +8,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const [timeLeft, setTimeLeft] = useState(30)
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1) // which question is currently launched
+  const [launchedIndices, setLaunchedIndices] = useState(new Set())
   const [isEditing, setIsEditing] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
@@ -15,6 +16,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   useEffect(() => {
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
+    setLaunchedIndices(new Set())
   }, [questions])
 
   // Leave edit mode whenever we move to a different question.
@@ -38,19 +40,6 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
-          clearInterval(timerRef.current)
-          timerRef.current = null
-          setIsTimerActive(false)
-          // Auto-advance to next question when timer hits 0
-          if (questionIndex < pendingQuestions.length - 1) {
-            setTimeout(() => moveToNext(), 300)
-          } else {
-            // Last question - call onComplete
-            setTimeout(() => {
-              if (onComplete) onComplete()
-              else onClose()
-            }, 300)
-          }
           return 0
         }
         return prev - 1
@@ -68,9 +57,25 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setLaunchedQuestionIndex(-1)
   }
 
+  // Handle timer completion side effects reactively
+  useEffect(() => {
+    if (isTimerActive && timeLeft === 0) {
+      setIsTimerActive(false)
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      
+      if (launchedQuestionIndex < pendingQuestions.length - 1) {
+        setTimeout(() => moveToNext(), 300)
+      }
+    }
+  }, [timeLeft, isTimerActive, launchedQuestionIndex, pendingQuestions.length, onComplete, onClose])
+
   const handleApprove = () => {
     const current = pendingQuestions[currentIndex]
     onApprove(current)
+    setLaunchedIndices(prev => new Set(prev).add(currentIndex))
     // Start timer when question is launched
     startTimer(currentIndex)
   }
@@ -98,9 +103,17 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
   // Skip to a question (from navigation pills) - stops current timer
   const skipToQuestion = (index) => {
-    stopTimer()
     setCurrentIndex(index)
   }
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+      }
+    }
+  }, [])
 
   if (pendingQuestions.length === 0) {
     return null
@@ -394,48 +407,146 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
               </button>
             )
           ) : (
-            <>
-              <button
-                onClick={handleReject}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  borderRadius: '12px',
-                  border: '2px solid #ef4444',
-                  background: 'transparent',
-                  color: '#ef4444',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px'
-                }}
-              >
-                ✕ Reject
-              </button>
-              <button
-                onClick={handleApprove}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  borderRadius: '12px',
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #10b981, #059669)',
-                  color: 'white',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px'
-                }}
-              >
-                ✓ Approve & Launch
-              </button>
-            </>
+            launchedIndices.has(currentIndex) ? (
+              currentIndex === pendingQuestions.length - 1 ? (
+                <>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('This question was already launched. Send it to students again?')) {
+                        handleApprove()
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      borderRadius: '12px',
+                      border: '2px solid #6b7280',
+                      background: 'transparent',
+                      color: '#6b7280',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    Relaunch (already sent to students)
+                  </button>
+                  <button
+                    onClick={onClose}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      borderRadius: '12px',
+                      border: '2px solid #6b7280',
+                      background: 'transparent',
+                      color: '#6b7280',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    ✕ Close
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('This question was already launched. Send it to students again?')) {
+                        handleApprove()
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      borderRadius: '12px',
+                      border: '2px solid #6b7280',
+                      background: 'transparent',
+                      color: '#6b7280',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    Relaunch (already sent to students)
+                  </button>
+                  <button
+                    onClick={moveToNext}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      background: 'linear-gradient(135deg, #3b82f6, #1e40af)',
+                      color: 'white',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    Next Question →
+                  </button>
+                </>
+              )
+            ) : (
+              <>
+                <button
+                  onClick={handleReject}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    borderRadius: '12px',
+                    border: '2px solid #ef4444',
+                    background: 'transparent',
+                    color: '#ef4444',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  ✕ Reject
+                </button>
+                <button
+                  onClick={handleApprove}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: 'white',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  ✓ Approve & Launch
+                </button>
+              </>
+            )
           )}
         </div>
 

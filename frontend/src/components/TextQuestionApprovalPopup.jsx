@@ -46,19 +46,6 @@ function TextQuestionApprovalPopup({
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
-          clearInterval(timerRef.current)
-          timerRef.current = null
-          setIsTimerActive(false)
-          
-          // Auto-advance when timer hits 0
-          if (questionIndex < pendingQuestions.length - 1) {
-            setTimeout(() => moveToNext(), 300)
-          } else {
-            setTimeout(() => {
-              if (onNext) onNext()
-              else onClose()
-            }, 300)
-          }
           return 0
         }
         return prev - 1
@@ -74,6 +61,35 @@ function TextQuestionApprovalPopup({
     setIsTimerActive(false)
     setLaunchedQuestionIndex(-1)
   }
+
+  // Handle timer completion side effects reactively
+  useEffect(() => {
+    if (isTimerActive && timeLeft === 0) {
+      setIsTimerActive(false)
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      
+      if (launchedQuestionIndex < pendingQuestions.length - 1) {
+        setTimeout(() => moveToNext(), 300)
+      } else {
+        setTimeout(() => {
+          if (onNext) onNext()
+          else onClose()
+        }, 300)
+      }
+    }
+  }, [timeLeft, isTimerActive, launchedQuestionIndex, pendingQuestions.length, onNext, onClose])
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+      }
+    }
+  }, [])
 
   const moveToNext = () => {
     if (currentIndex < pendingQuestions.length - 1) {
@@ -394,6 +410,19 @@ function TextQuestionApprovalPopup({
               )
             })}
           </div>
+          {currentQuestion.explanation && (
+            <div style={{
+              marginTop: '16px',
+              padding: '12px',
+              borderRadius: '8px',
+              background: '#fef3c7',
+              border: '1px solid #fcd34d',
+              fontSize: '13px',
+              color: '#92400e'
+            }}>
+              <strong>Explanation:</strong> {currentQuestion.explanation}
+            </div>
+          )}
         </div>
         )}
 

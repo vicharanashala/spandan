@@ -26,14 +26,20 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
-          target: 'http://localhost:3001',
-          changeOrigin: true
-        },
+            target: 'http://localhost:3001',
+            changeOrigin: true
+                },
         '/socket.io': {
-          target: 'http://localhost:3001',
-          ws: true
-        }
-      }
+            target: 'http://localhost:3001',
+            ws: true
+            },
+        // ADD THIS EXACT MATCH BELOW IT
+        '/spandan/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/spandan/, '')
+  }
+}
     }
   }
 })

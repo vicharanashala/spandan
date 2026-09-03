@@ -317,6 +317,14 @@ IMPORTANT:
 - For True/False questions, balance the correct answers across the set — roughly half should be correct "True" and half correct "False"; do not make most statements True (or most False)`
 }
 
+function normalizeQuestionType(raw) {
+  const t = String(raw || '').trim().toUpperCase().replace(/[^A-Z]/g, '')
+  if (t === 'TF' || t === 'TRUEFALSE') return 'TF'
+  if (t === 'MSQ') return 'MSQ'
+  if (t === 'MCQ') return 'MCQ'
+  return null
+}
+
 // Parse questions from AI response
 export function parseQuestions(responseText, expectedTypes) {
   try {
@@ -337,7 +345,7 @@ export function parseQuestions(responseText, expectedTypes) {
     
     return questions.map((q, index) => ({
       id: `q_${Date.now()}_${index}`,
-      type: q.type || expectedTypes[index] || 'MCQ',
+      type: normalizeQuestionType(q.type) || expectedTypes[index] || 'MCQ',
       question: q.question || 'Question text missing',
       options: parseOptions(q.options || [], q.type),
       explanation: q.explanation || '',
@@ -504,7 +512,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-3.1-flash-lite') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {

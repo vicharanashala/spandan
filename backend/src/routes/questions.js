@@ -7,6 +7,14 @@ import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
 const router = express.Router()
 
+function normalizeQuestionType(raw) {
+  const normalized = String(raw || '').trim().toUpperCase().replace(/[^A-Z]/g, '')
+  if (normalized === 'TF' || normalized === 'TRUEFALSE') return 'TF'
+  if (normalized === 'MSQ') return 'MSQ'
+  if (normalized === 'MCQ') return 'MCQ'
+  return null
+}
+
 // Apply authentication to all routes
 router.use(authenticate)
 
@@ -111,11 +119,13 @@ router.get('/jobs/:jobId', authorize('teacher'), requireApprovedTeacher, async (
 router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const Question = (await import('../models/Question.js')).default
+    
     const { 
       roomId, 
       type, 
       question, 
-      options, 
+      options,
+      explanation = '', 
       timeToAnswer = 30, 
       points = 100,
       status = 'approved',
@@ -124,6 +134,11 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
 
     if (!roomId || !type || !question || !options) {
       return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    const normalizedType = normalizeQuestionType(type)
+    if (!normalizedType) {
+      return res.status(400).json({ error: 'Invalid question type' })
     }
 
     // Authorization: only the room's OWNING teacher may add questions to it. Without this,
@@ -139,7 +154,7 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
     // The frontend renders these as React text nodes, which auto-escape at
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
-    const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    const sanitizedData = stripObject({ roomId, type: normalizedType, question, options, explanation, timeToAnswer, points, status, segmentIndex })
 
     const newQuestion = new Question(sanitizedData)
 

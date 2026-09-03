@@ -36,6 +36,22 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  originalPoints: {
+    type: Number,
+    default: 0
+  },
+  violationPoints: {
+    type: Number,
+    default: 0
+  },
+  penaltyApplied: {
+    type: Number, // Percentage of penalty applied (e.g. 0, 50, 80, 100)
+    default: 0
+  },
+  isFullscreenUnsupported: {
+    type: Boolean,
+    default: false
+  },
   createdAt: {
     type: Date,
     default: Date.now

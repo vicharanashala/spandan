@@ -107,6 +107,7 @@ export async function buildSnapshot(roomId) {
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
+        explanation: q.explanation,
         answered: !!resp,
         ...(resp && {
           selectedOption: resp.selectedOption,

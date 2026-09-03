@@ -624,9 +624,8 @@ io.on('connection', (socket) => {
 
       let participantCount = 0
       if (room) {
-        if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
-        }
+        // Keep the student membership record intact on leave so the room roster remains stable.
+        // This preserves the full registered/enrolled student count for teacher dashboards.
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 

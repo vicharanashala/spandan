@@ -175,34 +175,35 @@ function RoomDetailPage() {
   useEffect(() => {
     if (!socket) return
 
-  const startQuestionTimer = (question) => {
-    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    const startQuestionTimer = (question) => {
+      const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
 
-    // Clear any existing timer
-    if (questionTimerRef.current) {
-      clearInterval(questionTimerRef.current)
-      questionTimerRef.current = null
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+
+      setActiveQuestion(question)
+      setQuestionTimeLeft(timeToAnswer)
+
+      questionTimerRef.current = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
 
-    setActiveQuestion(question)
-    setQuestionTimeLeft(timeToAnswer)
-
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(questionTimerRef.current)
-          questionTimerRef.current = null
-          setActiveQuestion(null)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const handleQuestionLaunched = (data) => {
-    console.log('[QUESTION LAUNCHED]', data)
-  }
+    const handleQuestionLaunched = (data) => {
+      console.log('[QUESTION LAUNCHED]', data)
+      if (data && data.question) {
+        startQuestionTimer(data.question)
+      } else if (data) {
+        startQuestionTimer(data)
+      }
+    }
 
     socket.on('new_question', handleQuestionLaunched)
     socket.on('question:started', handleQuestionLaunched)
@@ -212,6 +213,17 @@ function RoomDetailPage() {
       socket.off('question:started', handleQuestionLaunched)
     }
   }, [socket, roomSettings.timeToAnswer])
+
+  // Handle active question countdown timeout side effects reactively
+  useEffect(() => {
+    if (questionTimeLeft === 0 && activeQuestion) {
+      if (questionTimerRef.current) {
+        clearInterval(questionTimerRef.current)
+        questionTimerRef.current = null
+      }
+      setActiveQuestion(null)
+    }
+  }, [questionTimeLeft, activeQuestion])
 
   // Auto-scroll transcription
   useEffect(() => {

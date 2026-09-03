@@ -491,6 +491,19 @@ function RoomResultsPage() {
                               )
                             })}
                           </div>
+                          {!isTeacher && q.answered && !q.isCorrect && q.explanation && (
+                            <div style={{
+                              marginTop: '12px',
+                              padding: '12px 14px',
+                              background: 'var(--bg-card)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '8px',
+                              fontSize: '13px',
+                              color: 'var(--text-secondary)'
+                            }}>
+                              <strong style={{ color: 'var(--text-primary)' }}>Why:</strong> {q.explanation}
+                            </div>
+                          )}
 
                           {/* Teacher: visual distribution bar of class correctness (purely presentational) */}
                           {isTeacher && (

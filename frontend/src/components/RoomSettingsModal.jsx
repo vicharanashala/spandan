@@ -358,6 +358,42 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           </div>
         </div>
 
+        {/* Dynamic Anti-Cheat Proctor Toggle */}
+        <div style={{ 
+          marginBottom: '24px',
+          padding: '12px 16px',
+          background: 'var(--bg-primary)',
+          borderRadius: '8px',
+          border: '1px solid var(--border-color)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <div>
+            <label style={{
+              display: 'block',
+              fontSize: '14px',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              🔒 Enable Anti-Cheat Proctored Exam Mode
+            </label>
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              Enforces secure fullscreen and logging of tab/focus switches.
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={localSettings.enableAntiCheat || false}
+            onChange={(e) => setLocalSettings(prev => ({ ...prev, enableAntiCheat: e.target.checked }))}
+            style={{
+              width: '20px',
+              height: '20px',
+              cursor: 'pointer'
+            }}
+          />
+        </div>
+
         {/* Points */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{

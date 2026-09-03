@@ -2,6 +2,7 @@ import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
+import Telemetry from '../models/Telemetry.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
@@ -14,6 +15,50 @@ const LEADERBOARD_TOP_N = Number(process.env.LEADERBOARD_TOP_N) || 10
 
 // Apply authentication to all routes
 router.use(authenticate)
+
+// POST /api/responses/telemetry - Securely record tab switch and fullscreen exits
+router.post('/telemetry', authorize('student'), async (req, res) => {
+  try {
+    const { roomId, questionId, eventType } = req.body
+    const studentId = req.user._id
+
+    if (!roomId || !questionId || !eventType) {
+      return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    if (!['visibilitychange', 'fullscreenchange', 'fullscreen_unsupported', 'blur'].includes(eventType)) {
+      return res.status(400).json({ error: 'Invalid telemetry event type' })
+    }
+
+    const incField = eventType === 'visibilitychange' ? 'tabSwitches' :
+                     eventType === 'fullscreenchange' ? 'fullscreenExits' :
+                     eventType === 'blur' ? 'blurs' : null
+
+    if (incField) {
+      await Telemetry.findOneAndUpdate(
+        { roomId, questionId, studentId },
+        {
+          $inc: { [incField]: 1 },
+          $set: { updatedAt: new Date() }
+        },
+        { upsert: true, new: true }
+      )
+    } else if (eventType === 'fullscreen_unsupported') {
+      await Telemetry.findOneAndUpdate(
+        { roomId, questionId, studentId },
+        {
+          $set: { isFullscreenUnsupported: true, updatedAt: new Date() }
+        },
+        { upsert: true, new: true }
+      )
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Error recording telemetry:', error)
+    res.status(500).json({ success: false, error: 'Failed to record telemetry' })
+  }
+})
 
 // --- Hot-path read caches (Stage 2, Fix 4 + Fix 3a) --------------------------------------------
 // The POST /responses handler runs on every student answer; under a synchronized burst that is
@@ -192,24 +237,63 @@ router.post('/', authorize('student'), async (req, res) => {
     }
     // Incorrect answers get 0 points
 
+    // --- Start Academic Integrity Telemetry Penalty Engine ---
+    const telemetry = await Telemetry.findOne({ roomId, questionId, studentId }).lean()
+    
+    let tabSwitches = 0
+    let fullscreenExits = 0
+    let blurs = 0
+    let violationPoints = 0
+    let penaltyApplied = 0
+    let isFullscreenUnsupported = false
+    const originalPoints = points
+
+    if (telemetry) {
+      tabSwitches = telemetry.tabSwitches || 0
+      fullscreenExits = telemetry.fullscreenExits || 0
+      blurs = telemetry.blurs || 0
+      isFullscreenUnsupported = telemetry.isFullscreenUnsupported || false
+
+      // Tab switch or split-screen blur triggers instant 10 violation points (100% max penalty)
+      // Fullscreen exit adds 1 violation point each, capped at 10
+      if (tabSwitches > 0 || blurs > 0) {
+        violationPoints = 10
+      } else {
+        violationPoints = Math.min(10, fullscreenExits * 1)
+      }
+
+      // Linear 1:1 mapping: 1 point = 10% penalty, 10 points = 100% penalty
+      penaltyApplied = Math.min(100, Math.round(violationPoints * 10))
+
+      points = Math.round(originalPoints * (1 - (penaltyApplied / 100)))
+    }
+    // --- End Penalty Engine ---
+
     // Guard 2 (defense in depth): a single answer can never be worth more than the question's
-    // configured max points, nor go below 0 — regardless of the decay factor or any future change
-    // upstream. This hard-caps the stored score to the valid [0, maxPoints] range.
+    // configured max points, nor go below 0 — regardless of the decay factor, the integrity penalty above, or any future change upstream.
+    // This hard-caps the FINAL stored score.
     points = Math.max(0, Math.min(points, maxPoints))
 
     const responseData = {
       roomId,
       questionId,
       studentId,
-      selectedOption: selectedOptions[0], // Store first selection for MCQ compatibility
-      selectedOptions, // Store all selections for MSQ
+      selectedOption: selectedOptions[0],
+      selectedOptions,
       isCorrect,
       responseTime: respTime,
-      points
+      points,
+      originalPoints,
+      violationPoints,
+      penaltyApplied,
+      isFullscreenUnsupported
     }
 
-    // Persist. DEFAULT path: save() immediately and let the unique index
-    // {roomId,questionId,studentId} reject duplicates as a 409 (no pre-check → no extra query, no
+    // Right before the response is saved or buffered, clean up the telemetry document:
+    if (telemetry) {
+      await Telemetry.deleteOne({ _id: telemetry._id })
+    }
+
     // check-then-act race). OPTIONAL path (RESPONSE_BATCH=on, Fix 3b): buffer the doc for a batched
     // insertMany — the SAME unique index still enforces dedup/no-double-scoring at flush, so a
     // duplicate is dropped there rather than returned as a 409. Points are already computed above
@@ -253,7 +337,7 @@ router.post('/', authorize('student'), async (req, res) => {
     // instant they submit, straight from the Network tab, and can relay it. The answer is still
     // SCORED and saved server-side; the student sees their result via the results path once polls are
     // no longer live. The client only uses `rank` from this response, so nothing it renders changes.
-    const { isCorrect: _omitIsCorrect, points: _omitPoints, ...safeResponse } = savedResponse
+    const { isCorrect: _omitIsCorrect, points: _omitPoints, originalPoints: _omitOriginalPoints, ...safeResponse } = savedResponse
     res.status(201).json({
       success: true,
       response: safeResponse,
@@ -624,6 +708,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
+        explanation: q.explanation,
         answered: !!studentResponse,
         // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
         // a "missed" tag if unanswered — no correct/incorrect until it is revealed.

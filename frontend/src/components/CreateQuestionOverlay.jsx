@@ -115,12 +115,6 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     launchedTimerRef.current = setInterval(() => {
       setLaunchedTimeLeft(prev => {
         if (prev <= 1) {
-          clearInterval(launchedTimerRef.current)
-          launchedTimerRef.current = null
-          // Auto-close when timer hits 0
-          setTimeout(() => {
-            handleCloseAndReset()
-          }, 500)
           return 0
         }
         return prev - 1
@@ -155,6 +149,29 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     }
     handleCloseAndReset()
   }
+
+  // Handle manual question completion reactively
+  useEffect(() => {
+    if (isLaunched && launchedTimeLeft === 0) {
+      setIsLaunched(false)
+      if (launchedTimerRef.current) {
+        clearInterval(launchedTimerRef.current)
+        launchedTimerRef.current = null
+      }
+      setTimeout(() => {
+        handleCloseAndReset()
+      }, 500)
+    }
+  }, [launchedTimeLeft, isLaunched])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (launchedTimerRef.current) {
+        clearInterval(launchedTimerRef.current)
+      }
+    }
+  }, [])
 
   const getOptionLabel = (index) => String.fromCharCode(65 + index)
 

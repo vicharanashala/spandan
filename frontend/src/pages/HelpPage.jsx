@@ -88,12 +88,14 @@ const STUDENT_SECTIONS = [
     ],
   },
   {
-    icon: '❓', title: 'Answering questions', ordered: true,
+    icon: '❓', title: 'Answering questions & score calculation', ordered: true,
     body: [
-      'When the teacher launches a poll, the question appears at the top of your screen and takes over.',
-      'Read the question and pick your answer: MCQ and True/False want one choice; MSQ (multiple-select) wants every correct option — select all that apply.',
+      'When the teacher starts a poll, the question will appear on your screen.',
+      'Read carefully and pick your answer: For MCQ and True/False, select one option. For MSQ , you must choose all correct options to get points.',
       'Answer before the timer runs out. Points reward both correctness and speed, so answer promptly.',
-      'When the poll closes, the question disappears and your position updates on the leaderboard.',
+      'Anti-cheat rules: If your teacher has enabled exam mode, do not switch tabs , use split screen or exit full screen mode . If you switch tabs or split your screen, you will get 0 points for that question. Each time you exit full screen , you will lose 10% of your points on that question. Even if full-screen is not supported on your device , other proctoring mechanisms will remain active.',
+      'Score = (original_points - original_points * penalty/10) where penalty = (1.0 * no. of full screen exits + 10 * split-screen detected + 10 * tab change detected) capped at maximum 10 points.',
+      'Your score and the correct answer will be shown after the question closes along with explanation for the wrong answers.',
     ],
   },
   {
@@ -116,7 +118,7 @@ const STUDENT_SECTIONS = [
   {
     icon: '🏆', title: 'Leaderboard',
     body: [
-      'Your score builds up across the whole session from your correct answers and how quickly you answer.',
+      'Your score builds up across the whole session from your correct answers , how quickly you answer and penalties applied to each question.',
       'The final leaderboard appears once the teacher ends the room.',
     ],
   },

@@ -32,6 +32,7 @@ const roomSchema = new mongoose.Schema({
     allowLateJoin: { type: Boolean, default: true },
     showResultsImmediately: { type: Boolean, default: true },
     requireCorrectAnswer: { type: Boolean, default: false },
+    enableAntiCheat: { type: Boolean, default: false },
     // Video mode: 'normal' = live mic + transcript (default); 'video' = YouTube link, tab-audio transcript
     mode: { type: String, enum: ['normal', 'video'], default: 'normal' },
     videoUrl: { type: String, default: '' },
