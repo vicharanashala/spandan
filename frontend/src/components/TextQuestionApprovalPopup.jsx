@@ -81,6 +81,12 @@ function TextQuestionApprovalPopup({
     }
   }
 
+  // Skip to a question (from navigation pills) - stops current timer
+  const skipToQuestion = (index) => {
+    stopTimer()
+    setCurrentIndex(index)
+  }
+
   const handleApprove = () => {
     const question = pendingQuestions[currentIndex]
     stopTimer()
@@ -271,7 +277,42 @@ function TextQuestionApprovalPopup({
             }}>
               {currentIndex + 1} / {pendingQuestions.length}
             </span>
+            <button
+              onClick={onClose}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: '20px',
+                cursor: 'pointer',
+                color: 'var(--text-secondary)'
+              }}
+            >
+              ✕
+            </button>
           </div>
+        </div>
+
+        {/* Question Navigation Pills */}
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          {pendingQuestions.map((q, index) => (
+            <button
+              key={q.id || index}
+              onClick={() => skipToQuestion(index)}
+              style={{
+                padding: '4px 12px',
+                borderRadius: '20px',
+                border: index === currentIndex 
+                  ? '2px solid #3b82f6' 
+                  : '1px solid var(--border-color)',
+                background: index === currentIndex ? '#dbeafe' : 'transparent',
+                color: index === currentIndex ? '#1e40af' : 'var(--text-secondary)',
+                fontSize: '12px',
+                cursor: 'pointer'
+              }}
+            >
+              Q{index + 1} ({q.type})
+            </button>
+          ))}
         </div>
 
         {/* Question Card — editable when the teacher taps Edit, read-only otherwise */}
