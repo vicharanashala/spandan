@@ -504,7 +504,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = process.env.GEMINI_MODEL || 'gemini-3.6-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
