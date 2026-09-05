@@ -9,8 +9,11 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
+import TimerRing from '../components/TimerRing'
 import useIsMobile from '../hooks/useIsMobile'
+import SoundToggle from '../components/SoundToggle'
 import { API_URL } from '../config.js'
+import { playQuestionReceived, playAnswerSubmitted, playCorrect, playIncorrect, playTimeUp } from '../lib/audio.js'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
 // ends, all students receive room:ended at once; without a spread they'd all hit the results
@@ -40,6 +43,13 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  // Full-screen "Time's Up" flash: shows briefly (and vibrates) when the question timer hits 0.
+  const [timeUpFlash, setTimeUpFlash] = useState(false)
+  const timeUpFlashTimerRef = useRef(null)
+  // Latest question the student answered — used to play correct/incorrect when the poll closes
+  // and its result becomes visible. playedResultSoundsRef guards against replaying on later refetches.
+  const lastAnsweredQuestionIdRef = useRef(null)
+  const playedResultSoundsRef = useRef(new Set())
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -88,6 +98,30 @@ function StudentRoomPage() {
 
 
 
+  // Brief full-screen "Time's Up" overlay + device vibration when the question timer expires.
+  const showTimeUpFlash = () => {
+    if (timeUpFlashTimerRef.current) clearTimeout(timeUpFlashTimerRef.current)
+    setTimeUpFlash(true)
+    playTimeUp()
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([200, 80, 200])
+    }
+    timeUpFlashTimerRef.current = setTimeout(() => setTimeUpFlash(false), 1400)
+  }
+
+  // After a refetch, play the correct/incorrect reveal sound ONCE for the question the student
+  // just answered, the moment its withheld result becomes visible (poll closed).
+  const notifyRevealedResult = (questions) => {
+    const lastId = lastAnsweredQuestionIdRef.current
+    if (!lastId) return
+    const entry = (questions || []).find(q => q.answered && String(q._id) === String(lastId))
+    if (!entry || entry.resultPending) return
+    if (playedResultSoundsRef.current.has(lastId)) return
+    playedResultSoundsRef.current.add(lastId)
+    if (entry.isCorrect) playCorrect()
+    else playIncorrect()
+  }
+
   useEffect(() => {
     if (!socket) return
 
@@ -96,6 +130,7 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
+      playQuestionReceived()
       
       if (data.question && data.question.timeToAnswer) {
         setTimeLeft(data.question.timeToAnswer)
@@ -113,6 +148,7 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
+            showTimeUpFlash()
             if (room?._id && user?._id) {
               fetchPastResponses(room._id, user._id)
             }
@@ -141,6 +177,7 @@ function StudentRoomPage() {
 
     const handleNewQuestion = (question) => {
       // Handle manually created questions from teacher
+      playQuestionReceived()
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
@@ -158,6 +195,7 @@ function StudentRoomPage() {
             clearInterval(timerIntervalRef.current)
             timerIntervalRef.current = null
             // Time expired - refresh from MongoDB only if room/user available
+            showTimeUpFlash()
             if (room?._id && user?._id) {
               fetchPastResponses(room._id, user._id)
             }
@@ -214,6 +252,7 @@ function StudentRoomPage() {
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      if (timeUpFlashTimerRef.current) clearTimeout(timeUpFlashTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
@@ -271,6 +310,8 @@ function StudentRoomPage() {
       const data = await response.json()
       if (data.success && data.questions) {
         setPastResponses(data.questions)
+        // If the just-concluded poll's result became visible, play the correct/incorrect reveal.
+        notifyRevealedResult(data.questions)
         // If student has already answered polls, disable leave button
         if (data.questions.some(q => q.answered)) {
           setHasAnsweredPoll(true)
@@ -296,6 +337,10 @@ function StudentRoomPage() {
     // even though the network POST itself is deferred by a small random delay.
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
+
+    // Confirm the tap right away; the correct/incorrect reveal sound plays once the poll closes.
+    lastAnsweredQuestionIdRef.current = questionId
+    playAnswerSubmitted()
 
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
     // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
@@ -465,6 +510,7 @@ function StudentRoomPage() {
               <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
             </div>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <SoundToggle />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -564,18 +610,11 @@ function StudentRoomPage() {
             }}>
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-                <div style={{
-                  width: '100px',
-                  height: '100px',
-                  borderRadius: '50%',
-                  border: '4px solid rgba(255,255,255,0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  margin: '0 auto 16px'
-                }}>
-                  <span style={{ fontSize: '36px', fontWeight: '700' }}>{timeLeft}</span>
-                </div>
+                <TimerRing
+                  timeLeft={timeLeft}
+                  total={currentQuestion.timeToAnswer || currentQuestion.timer || 30}
+                  size={110}
+                />
                 <p style={{ fontSize: '14px', opacity: 0.9 }}>seconds remaining</p>
               </div>
 
@@ -961,6 +1000,37 @@ function StudentRoomPage() {
             </div>
         </div>
       </div>
+
+      {/* Time's Up full-screen flash — brief overlay when the question timer expires */}
+      {timeUpFlash && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(239, 68, 68, 0.35)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 5000,
+          pointerEvents: 'none',
+          animation: 'timeUpFade 1.4s ease forwards'
+        }}>
+          <div style={{ textAlign: 'center', color: '#fff' }}>
+            <div style={{ fontSize: '80px', marginBottom: '12px' }}>⏰</div>
+            <div style={{ fontSize: '38px', fontWeight: '800', letterSpacing: '0.03em', textShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+              TIME'S UP!
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes timeUpFade {
+          0% { opacity: 0; }
+          15% { opacity: 1; }
+          75% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+      `}</style>
     </div>
   )
 }

@@ -11,7 +11,7 @@ function ResetPasswordPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token')
-  const { isDark, toggleTheme } = useThemeStore()
+  const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
 
   const [formData, setFormData] = useState({ password: '', confirmPassword: '' })
@@ -92,30 +92,13 @@ function ResetPasswordPage() {
       overflowX: 'hidden'
     }}>
       {/* Theme toggle - top right */}
-      <button
-        onClick={toggleTheme}
-        aria-label="Toggle theme"
-        style={{
-          position: 'absolute',
-          top: isMobile ? '16px' : '24px',
-          right: isMobile ? '16px' : '24px',
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border-color)',
-          borderRadius: 'var(--radius)',
-          padding: '9px 14px',
-          fontSize: '16px',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          color: 'var(--text-primary)',
-          boxShadow: 'var(--shadow-sm)',
-          transition: 'all 0.2s'
-        }}
-      >
-        {isDark ? '☀️' : '🌙'}
-        <span style={{ fontSize: '13px', fontWeight: 600 }}>{isDark ? 'Light' : 'Dark'}</span>
-      </button>
+      <div style={{
+        position: 'absolute',
+        top: isMobile ? '16px' : '24px',
+        right: isMobile ? '16px' : '24px'
+      }}>
+        <ThemeToggle />
+      </div>
 
       {success ? (
         <div style={{ ...cardStyle, textAlign: 'center', animation: 'fadeInUp 0.5s ease-out' }}>

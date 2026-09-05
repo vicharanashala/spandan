@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import QuestionEditor from './QuestionEditor'
+import QuestionPreviewModal from './QuestionPreviewModal'
 
-function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
+function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete, controlsRef }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
@@ -9,6 +10,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1) // which question is currently launched
   const [isEditing, setIsEditing] = useState(false)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
@@ -102,6 +104,30 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setCurrentIndex(index)
   }
 
+  // Move to the previous question (used by ← keyboard shortcut).
+  const goToPrev = () => {
+    stopTimer()
+    setCurrentIndex(prev => Math.max(0, prev - 1))
+  }
+
+  // Expose imperative controls to the parent (keyboard shortcuts). Re-created on each render so the
+  // closures always see the current question/index.
+  useEffect(() => {
+    if (!controlsRef) return
+    controlsRef.current = {
+      launch: handleApprove,
+      next: moveToNext,
+      prev: goToPrev,
+    }
+  })
+
+  // On unmount, clear the shared ref so stale handlers can't fire from the parent's listeners.
+  useEffect(() => {
+    return () => {
+      if (controlsRef) controlsRef.current = null
+    }
+  }, [controlsRef])
+
   if (pendingQuestions.length === 0) {
     return null
   }
@@ -193,21 +219,38 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             {!(isTimerActive && launchedQuestionIndex === currentIndex) && (
-              <button
-                onClick={() => setIsEditing(e => !e)}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: '20px',
-                  border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
-                  background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
-                  color: isEditing ? '#10b981' : 'var(--text-secondary)',
-                  fontSize: '13px',
-                  fontWeight: '600',
-                  cursor: 'pointer'
-                }}
-              >
-                {isEditing ? '✓ Done' : '✏️ Edit'}
-              </button>
+              <>
+                <button
+                  onClick={() => setIsPreviewOpen(true)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    border: `1px solid ${isEditing ? '#3b82f6' : 'var(--border-color)'}`,
+                    background: 'rgba(59, 130, 246, 0.12)',
+                    color: '#3b82f6',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  👁️ Preview
+                </button>
+                <button
+                  onClick={() => setIsEditing(e => !e)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
+                    background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                    color: isEditing ? '#10b981' : 'var(--text-secondary)',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {isEditing ? '✓ Done' : '✏️ Edit'}
+                </button>
+              </>
             )}
             <button
               onClick={onClose}
@@ -439,7 +482,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
           )}
         </div>
 
-        {/* Progress Bar */}
+          {/* Progress Bar */}
         <div style={{
           marginTop: '16px',
           height: '4px',
@@ -455,6 +498,11 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
           }} />
         </div>
       </div>
+
+      {/* Student-preview modal */}
+      {isPreviewOpen && (
+        <QuestionPreviewModal question={currentQuestion} onClose={() => setIsPreviewOpen(false)} />
+      )}
     </div>
   )
 }

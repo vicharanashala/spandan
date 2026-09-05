@@ -7,6 +7,8 @@ import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import SoundToggle from '../components/SoundToggle'
+import { playQuestionLaunched, playRecordOn, playRecordOff } from '../lib/audio.js'
 import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
@@ -16,6 +18,7 @@ import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
+import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -41,6 +44,9 @@ function RoomDetailPage() {
   const [showSettings, setShowSettings] = useState(false)
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
+  // Imperative handles exposed by the approval popups so global keyboard shortcuts can drive them.
+  const approvalControlsRef = useRef(null)
+  const textApprovalControlsRef = useRef(null)
 
   // Real-time transcription state
   const [isRecording, setIsRecording] = useState(false)
@@ -697,6 +703,7 @@ function RoomDetailPage() {
       setIsTranscribing(true)
       setModelStatus('Listening...')
       startTranscriptionWindow()
+      playRecordOn()
       return
     }
 
@@ -743,6 +750,7 @@ function RoomDetailPage() {
       setModelStatus('Listening...')
 
       startTranscriptionWindow()
+      playRecordOn()
 
     } catch (error) {
       console.error('Error starting recording:', error)
@@ -786,6 +794,7 @@ function RoomDetailPage() {
     setIsRecording(false)
     setIsTranscribing(false)
     setModelStatus('Ready')
+    playRecordOff()
   }
 
   const toggleRecording = () => {
@@ -1082,6 +1091,7 @@ function RoomDetailPage() {
             question: data.question
           })
         }
+        playQuestionLaunched()
       }
     } catch (error) {
       console.error('Failed to save question:', error)
@@ -1124,6 +1134,7 @@ function RoomDetailPage() {
             question: data.question
           })
         }
+        playQuestionLaunched()
       }
     } catch (error) {
       console.error('Failed to save text question:', error)
@@ -1175,6 +1186,7 @@ function RoomDetailPage() {
         } else {
           console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
         }
+        playQuestionLaunched()
       } else {
         const errorData = await response.json()
         console.error('Failed to save question:', errorData)
@@ -1191,6 +1203,39 @@ function RoomDetailPage() {
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
+
+  // Global teacher keyboard shortcuts (ignored while typing in fields):
+  //   Space = approve & launch the current reviewed question
+  //   ← / →  = move to previous / next pending question in the review popup
+  //   R      = start/stop recording
+  //   Q      = open the Create Question overlay
+  useKeyboardShortcuts({
+    ' ': () => {
+      if (isEnded) return
+      const ctrl = approvalControlsRef.current || textApprovalControlsRef.current
+      ctrl?.launch?.()
+    },
+    ArrowLeft: () => {
+      approvalControlsRef.current?.prev?.()
+      textApprovalControlsRef.current?.prev?.()
+    },
+    ArrowRight: () => {
+      approvalControlsRef.current?.next?.()
+      textApprovalControlsRef.current?.next?.()
+    },
+    r: () => {
+      if (!isEnded && !isVideoMode) toggleRecording()
+    },
+    R: () => {
+      if (!isEnded && !isVideoMode) toggleRecording()
+    },
+    q: () => {
+      if (!isEnded) setShowCreateQuestion(true)
+    },
+    Q: () => {
+      if (!isEnded) setShowCreateQuestion(true)
+    },
+  })
 
   if (isLoading) {
     return (
@@ -1252,6 +1297,17 @@ function RoomDetailPage() {
               <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <span
+                title="Keyboard shortcuts: Space = launch poll, ←/→ = prev/next question, R = record, Q = create question"
+                style={{
+                  fontSize: '12px',
+                  color: 'rgba(255,255,255,0.7)',
+                  display: isMobile ? 'none' : 'inline'
+                }}
+              >
+                ⌨️ Space ⏯ · ←→ 🡺 · R 🎙️ · Q ✍️
+              </span>
+              <SoundToggle />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -2022,6 +2078,7 @@ function RoomDetailPage() {
           questions={pendingQuestions}
           onApprove={handleApproveQuestion}
           onReject={handleRejectQuestion}
+          controlsRef={approvalControlsRef}
           onComplete={() => {
             // All questions reviewed - close popup and resume for next segment
             setShowQuestionPopup(false)
@@ -2137,6 +2194,7 @@ function RoomDetailPage() {
           onReject={handleTextQuestionReject}
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
+          controlsRef={textApprovalControlsRef}
           isLast={true}
         />
       )}

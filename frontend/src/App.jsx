@@ -64,7 +64,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={import.meta.env.VITE_BASE_PATH || ''}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
