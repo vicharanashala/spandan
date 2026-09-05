@@ -10,8 +10,92 @@ results and a leaderboard update in real time. The goal is to keep large classes
 engaged with low-friction, in-the-moment questions rather than after-the-fact
 quizzes.
 
+## What's new in this build
+
+A batch of frontend feature work and fixes were added on top of the base
+project. Everything below is implemented, tested, and running in the local setup
+described in [Getting started](#getting-started).
+
+### 1. Timer Progress Ring (`frontend/src/components/TimerRing.jsx`)
+- Replaced the static countdown circle on the student room with an animated
+  **SVG progress ring** that sweeps around the remaining-seconds number.
+- Color transitions with the time remaining: **green** → **amber** (≤10s) →
+  **red** (≤5s, shows "LEFT!").
+- Dropped into `StudentRoomPage.jsx` and reused inside the question-preview modal.
+
+### 2. "Time's Up" full-screen flash (`StudentRoomPage.jsx`)
+- When a poll timer hits 0 the student gets a red full-screen **"⏰ TIME'S UP!"**
+  overlay that flashes and fades over ~1.4s.
+- Adds `navigator.vibrate([200, 80, 200])` on supporting devices.
+- Fired from both question handlers (`handleQuestionStarted`, `handleNewQuestion`).
+
+### 3. Dark Mode "Auto (System)" (`frontend/src/stores/themeStore.js`, `ThemeToggle.jsx`)
+- Theme is now a 3-way choice: **☀️ Light / 🖥️ System / 🌙 Dark**.
+- `system` follows the OS via `matchMedia('(prefers-color-scheme: dark)')` and
+  updates **live** when the OS preference changes.
+- `isDark` is still exposed as a plain boolean (the *effective* applied theme),
+  so every existing consumer keeps working.
+- `ThemeToggle` is now a segmented 3-button control; wired into the auth, reset
+  password, and room pages.
+
+### 4. Teacher keyboard shortcuts (`frontend/src/hooks/useKeyboardShortcuts.js`, `RoomDetailPage.jsx`)
+- **Space** — approve & launch the current reviewed question
+- **← / →** — previous / next pending question in the approval popup
+- **R / r** — start/stop recording
+- **Q / q** — open "Create Question"
+- Shortcuts are ignored while typing in inputs/textareas and when modifier keys
+  are held. A ⌨️ hint chip shows the mapping in the room header.
+- Backed by an imperative `controlsRef` API on the approval popups so the
+  shortcut layer can drive their launch/prev/next actions.
+
+### 5. Question Preview in approval popups (`frontend/src/components/QuestionPreviewModal.jsx`)
+- Both `QuestionApprovalPopup` and `TextQuestionApprovalPopup` now have a
+  **👁️ Preview** button.
+- It opens a modal that simulates the exact student live-view: purple gradient
+  card, animated timer ring, question text, lettered options, and a Submit button
+  — with the correct answer **not** revealed (matching real student data rules).
+
+### 6. Interactive sound effects (WebAudio, no files needed)
+- `frontend/src/lib/audio.js` — a zero-dependency WebAudio synthesizer that
+  generates every sound on the fly (oscillators + gain envelopes), so no `.mp3`
+  assets are committed and it works offline.
+- Sounds wired in:
+  | Sound | When | Tone |
+  |-------|------|------|
+  | New question | Question arrives on student screen | Soft ascending 2-tone |
+  | Answer submitted | Student taps Submit | Quiet confirmation blip |
+  | Correct | Poll closes, answer revealed correct | Upbeat 3-note chime (C-E-G) |
+  | Incorrect | Poll closes, answer revealed wrong | Low descending "wah" |
+  | Time's up | Timer hits 0 | Double alarm beep |
+  | Question launched | Teacher approves & launches | Short confirm ding |
+  | Record on / off | Teacher toggles recording | Single / double blip |
+  | Rank-up | Student's points climb on the leaderboard | Bright rising chime |
+- Correct/incorrect sounds fire **when the poll closes** because the server
+  deliberately withholds answer correctness until then (anti-cheat, see
+  `backend/src/routes/responses.js`).
+- A persistent **🔊/🔇 toggle** (`frontend/src/components/SoundToggle.jsx` +
+  `frontend/src/stores/soundStore.js`) lives in both room headers; the setting is
+  saved to `localStorage`.
+- Note: browsers require a first user gesture before audio — tapping any button
+  (e.g. the toggle) unlocks audio for the session.
+
+### 7. Base-path & socket path fixes (the "always reconnecting" fix)
+- `App.jsx` no longer hardcodes `basename="/spandan"`; it derives from
+  `VITE_BASE_PATH` (empty locally, `/spandan` in production).
+- `socketStore.js` no longer hardcodes `path: '/spandan/socket.io'`; a new
+  `SOCKET_PATH` in `config.js` derives from `VITE_BASE_PATH` too. The old
+  hardcoded path caused the student socket to hit a 404 and **reconnect forever**
+  when running without the `/spandan` prefix.
+
+### Other local-dev quality-of-life fixes
+- `vite.config.js` proxies `/api` and `/socket.io` to the real backend port
+  (7001) instead of a stale hardcoded 3001.
+- Test teacher/student accounts seeded directly into MongoDB so the app is
+  usable immediately (see below).
+
 ## Contents
 
+- [What's new in this build](#whats-new-in-this-build)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
@@ -151,11 +235,54 @@ npm run dev
 ```
 
 - Frontend (Vite dev server): **http://localhost:5173**
-- Backend API: **http://localhost:3001** (the Vite dev server proxies `/api` and
+- Backend API: **http://localhost:7001** (the Vite dev server proxies `/api` and
   `/socket.io` to it)
 
-That is enough to log in, create rooms, and run manual polls. Question
-generation and audio transcription need the optional services below.
+Alternatively, run them as separate processes (what the bundled `.env` files in
+this build already do):
+
+```bash
+# 1) MongoDB (Docker)
+docker run -d --name spandan-mongo -p 27017:27017 mongo:7
+
+# 2) Backend
+cd backend && node src/index.js        # → http://localhost:7001/api/health
+
+# 3) Frontend
+cd frontend && npx vite                # → http://localhost:5173
+```
+
+That is enough to log in, create rooms, and run manual polls with all the
+features added in this build. Question generation and audio transcription need
+the optional services below. (Redis is optional — with `REDIS_URL` unset the
+app runs in single-instance in-memory mode.)
+
+### Test accounts
+
+Two accounts are pre-seeded directly into MongoDB so you can test both roles
+immediately (password is hashed with the app's own bcrypt at the same cost the
+app uses):
+
+| Role | Email | Password | Notes |
+|------|-------|----------|-------|
+| **Teacher** | `teacher@test.com` | `TestPass123!` | Admin-approved (`teacherApprovalStatus: 'approved'`) |
+| **Student** | `student@test.com` | `TestPass123!` | Students are approved by default |
+
+To (re)create them after wiping the database, run inside the `spandan-mongo`
+container (replace `$HASH` with `node -e "import {hash} from '@node-rs/bcrypt'; console.log(await hash('TestPass123!',10))"` run from the `backend/` folder):
+
+```js
+// mongosh spandan
+db.users.insertOne({ name: 'Test Teacher', email: 'teacher@test.com',
+  password: '<HASH>', role: 'teacher', emailVerified: true, authProvider: 'local',
+  teacherApprovalStatus: 'approved', createdAt: new Date(), updatedAt: new Date() })
+db.users.insertOne({ name: 'Test Student', email: 'student@test.com',
+  password: '<HASH>', role: 'student', emailVerified: true, authProvider: 'local',
+  createdAt: new Date(), updatedAt: new Date() })
+```
+
+Registration in the UI is email-OTP verified, so it needs SMTP configured; the
+seeded accounts bypass that friction for local testing.
 
 ## Configuration
 
@@ -165,7 +292,7 @@ source of truth. The variables you will most often set:
 
 | Variable | Purpose |
 |----------|---------|
-| `PORT` | API listen port (local dev default `3001`) |
+| `PORT` | API listen port (this build's bundled `.env` uses `7001`) |
 | `NODE_ENV` | `production` gates off verbose logging and hides error detail |
 | `MONGODB_URI` | MongoDB connection string |
 | `JWT_SECRET` | Secret for signing login tokens (use a strong random value) |

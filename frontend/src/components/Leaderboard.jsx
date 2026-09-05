@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
+import { playRankUp } from '../lib/audio.js'
 
 const Leaderboard = ({ roomId, token, socket, userId }) => {
   const [leaderboard, setLeaderboard] = useState([])
@@ -20,6 +21,11 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
   // Keep the latest isTeacher available inside the socket listener without rebinding it.
   const isTeacherRef = useRef(false)
   useEffect(() => { isTeacherRef.current = isTeacher }, [isTeacher])
+  // Last points we saw for this student (for the rank-up fanfare) + throttle so the chime
+  // fires at most once every few seconds even if a big leaderboard fold pumps many updates.
+  // null until the first push — the very first row must NOT trigger a fanfare on join.
+  const lastPointsRef = useRef(null)
+  const lastRankUpAtRef = useRef(0)
 
   const fetchLeaderboard = async ({ retries = 2, backoffMs = 800 } = {}) => {
     try {
@@ -102,6 +108,20 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         setMyRow(row)
         setError(null) // a live push means the server is reachable — clear any stale fetch error
         if (typeof row.totalParticipants === 'number') setTotalParticipants(row.totalParticipants)
+
+        // "Level-up" chime: play when my points climb vs the last value we saw (throttled, and
+        // only for the leading update of a fold — later same-points rows are silent).
+        const pts = typeof row.points === 'number' ? row.points : 0
+        const now = Date.now()
+        if (
+          lastPointsRef.current !== null &&
+          pts > lastPointsRef.current &&
+          now - lastRankUpAtRef.current > 15000
+        ) {
+          lastRankUpAtRef.current = now
+          playRankUp()
+        }
+        lastPointsRef.current = pts
       }
       socket.on('leaderboard:updated', handleLiveUpdate)
       socket.on('leaderboard:you', handleYou)

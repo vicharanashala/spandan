@@ -33,7 +33,7 @@ function AuthPage() {
     clearError,
     sessionExpired
   } = useAuthStore()
-  const { isDark, toggleTheme } = useThemeStore()
+  const { isDark } = useThemeStore()
   const socket = useSocketStore(state => state.socket)
   const isMobile = useIsMobile()
 
@@ -310,30 +310,16 @@ function AuthPage() {
         </div>
       </div>
       {/* Theme toggle - top right (available on all layouts) */}
-      <button
-        onClick={toggleTheme}
-        style={{
-          position: 'absolute',
-          top: '20px',
-          right: '20px',
-          zIndex: 5,
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border-color)',
-          borderRadius: 'var(--radius)',
-          padding: '9px 14px',
-          fontSize: '18px',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          color: 'var(--text-primary)',
-          boxShadow: 'var(--shadow-sm)',
-          transition: 'all 0.2s'
-        }}
-      >
-        {isDark ? '☀️' : '🌙'}
-        <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
-      </button>
+      <div style={{
+        position: 'absolute',
+        top: '20px',
+        right: '20px',
+        zIndex: 5,
+        display: 'flex',
+        alignItems: 'center'
+      }}>
+        <ThemeToggle />
+      </div>
 
       {/* Left side - Branding (desktop only) */}
       {!isMobile && (

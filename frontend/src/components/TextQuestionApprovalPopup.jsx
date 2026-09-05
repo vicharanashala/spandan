@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import QuestionEditor from './QuestionEditor'
+import QuestionPreviewModal from './QuestionPreviewModal'
 
 function TextQuestionApprovalPopup({
   questions,
@@ -7,7 +8,8 @@ function TextQuestionApprovalPopup({
   onReject,
   onClose,
   onNext,
-  isLast
+  isLast,
+  controlsRef
 }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
@@ -15,6 +17,7 @@ function TextQuestionApprovalPopup({
   const [isTimerActive, setIsTimerActive] = useState(false)
   const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1)
   const [isEditing, setIsEditing] = useState(false)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
@@ -80,6 +83,27 @@ function TextQuestionApprovalPopup({
       setCurrentIndex(prev => prev + 1)
     }
   }
+
+  const goToPrev = () => {
+    stopTimer()
+    setCurrentIndex(prev => Math.max(0, prev - 1))
+  }
+
+  // Expose imperative controls to the parent (keyboard shortcuts).
+  useEffect(() => {
+    if (!controlsRef) return
+    controlsRef.current = {
+      launch: launchQuestion,
+      next: handleNext,
+      prev: goToPrev,
+    }
+  })
+
+  useEffect(() => {
+    return () => {
+      if (controlsRef) controlsRef.current = null
+    }
+  }, [controlsRef])
 
   const handleApprove = () => {
     const question = pendingQuestions[currentIndex]
@@ -245,21 +269,38 @@ function TextQuestionApprovalPopup({
               </div>
             )}
             {!isQuestionLaunched && (
-              <button
-                onClick={() => setIsEditing(e => !e)}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: '20px',
-                  border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
-                  background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
-                  color: isEditing ? '#10b981' : 'var(--text-secondary)',
-                  fontSize: '13px',
-                  fontWeight: '600',
-                  cursor: 'pointer'
-                }}
-              >
-                {isEditing ? '✓ Done' : '✏️ Edit'}
-              </button>
+              <>
+                <button
+                  onClick={() => setIsPreviewOpen(true)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    border: '1px solid #3b82f6',
+                    background: 'rgba(59, 130, 246, 0.12)',
+                    color: '#3b82f6',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  👁️ Preview
+                </button>
+                <button
+                  onClick={() => setIsEditing(e => !e)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    border: `1px solid ${isEditing ? '#10b981' : 'var(--border-color)'}`,
+                    background: isEditing ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                    color: isEditing ? '#10b981' : 'var(--text-secondary)',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {isEditing ? '✓ Done' : '✏️ Edit'}
+                </button>
+              </>
             )}
             <span style={{
               padding: '6px 12px',
@@ -466,6 +507,11 @@ function TextQuestionApprovalPopup({
           </div>
         )}
       </div>
+
+      {/* Student-preview modal */}
+      {isPreviewOpen && (
+        <QuestionPreviewModal question={currentQuestion} onClose={() => setIsPreviewOpen(false)} />
+      )}
     </div>
   )
 }
