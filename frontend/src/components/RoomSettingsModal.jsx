@@ -294,7 +294,7 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
                   onChange={(e) => setLocalSettings(prev => ({
                     ...prev,
                     questionTypeMix: {
-                      ...(prev.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }),
+                      ...(prev.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 }),
                       [type]: parseInt(e.target.value) || 0
                     }
                   }))}

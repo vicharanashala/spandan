@@ -25,6 +25,7 @@ function App() {
   const { isDark } = useThemeStore()
   const { token, isAuthenticated } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
+  const routerBase = import.meta.env.VITE_BASE_PATH || ''
 
   // On load, if the persisted token is already expired (e.g. the app was opened from a bookmark with a
   // cached session), drop it immediately so the user lands on the login screen with a clear message
@@ -64,7 +65,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={routerBase}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />

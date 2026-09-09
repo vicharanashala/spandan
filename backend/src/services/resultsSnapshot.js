@@ -113,6 +113,9 @@ export async function buildSnapshot(roomId) {
           selectedOptions: resp.selectedOptions || [resp.selectedOption],
           isCorrect: resp.isCorrect,
           responseTime: resp.responseTime,
+          focusLost: Boolean(resp.focusLost),
+          timeAway: resp.timeAway || 0,
+          focusLocked: Boolean(resp.focusLocked),
           pointsEarned: resp.points
         }),
         createdAt: q.createdAt
@@ -126,18 +129,60 @@ export async function buildSnapshot(roomId) {
     const list = respByQuestion.get(toIdStr(q._id)) || []
     const answerCounts = {}
     let correctCount = 0
+    let spamCount = 0
+    let spamCorrect = 0
+    let thoughtfulCount = 0
+    let thoughtfulCorrect = 0
+    let lateCount = 0
+    let focusLostCount = 0
+    let totalTime = 0
+
+    list.forEach((r) => {
+      const rt = Number(r.responseTime) || 0
+      totalTime += rt
+      if (rt < 2.0) {
+        spamCount++
+        if (r.isCorrect) spamCorrect++
+      } else if (rt <= 15.0) {
+        thoughtfulCount++
+        if (r.isCorrect) thoughtfulCorrect++
+      }
+      if (rt > 25.0) {
+        lateCount++
+      }
+      if (r.focusLost) {
+        focusLostCount++
+      }
+    })
+
+    const avgResponseTime = list.length > 0 ? Number((totalTime / list.length).toFixed(1)) : 0
+    const spamAccuracy = spamCount > 0 ? Math.round((spamCorrect / spamCount) * 100) : null
+    const thoughtfulAccuracy = thoughtfulCount > 0 ? Math.round((thoughtfulCorrect / thoughtfulCount) * 100) : null
+    const focusRate = list.length > 0 ? Math.round(((list.length - focusLostCount) / list.length) * 100) : 100
+
     q.options.forEach((opt, idx) => {
       const c = list.filter((r) => r.selectedOption === idx).length
       answerCounts[idx] = c
       if (opt.isCorrect) correctCount += c
     })
+
     return {
       questionId: toIdStr(q._id),
       question: q.question,
       type: q.type,
       totalResponses: list.length,
       correctCount,
-      answerCounts
+      answerCounts,
+      velocityStats: {
+        avgResponseTime,
+        spamCount,
+        spamAccuracy,
+        thoughtfulCount,
+        thoughtfulAccuracy,
+        lateCount,
+        focusLostCount,
+        focusRate
+      }
     }
   })
 

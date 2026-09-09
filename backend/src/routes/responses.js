@@ -6,6 +6,56 @@ import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { summarizeBenchmark, normalizeRoomBenchmarkData } from '../services/studentBenchmark.js'
+
+/**
+ * Cognitive Fair-Play Points Calculation:
+ * Addresses the "fastest-finger button spamming" exploit where students blindly click True/False or Option A
+ * in 0.5-1.5s purely for attendance or lucky top-points.
+ * - Under 2.0s: Physically faster than human reading comprehension speed for a prompt + 4 options.
+ *   Attendance is recorded, correctness is preserved, but speed bonus is locked (capped at 50% max points).
+ * - 2.0s to 6.0s: The "Thoughtful Reading Window" — earns 100% full max points.
+ * - > 6.0s: Graceful linear decay down to a 10% floor.
+ */
+export function calculateCognitivePoints(isCorrect, maxPoints = 100, tta = 30, rawRespTime) {
+  if (!isCorrect) return 0
+  const max = Number(maxPoints) || 100
+  const totalTime = Number(tta) || 30
+  const raw = Number(rawRespTime)
+  const respTime = (Number.isFinite(raw) && raw >= 0 && raw <= totalTime) ? raw : totalTime
+
+  const SPAM_THRESHOLD_S = 2.0
+  const OPTIMAL_WINDOW_S = 6.0
+
+  // 1. Blind spam penalty: human reading speed threshold
+  if (respTime < SPAM_THRESHOLD_S) {
+    return Math.round(max * 0.5)
+  }
+
+  // 2. Thoughtful Reading Window: full points without twitch-reaction penalty
+  if (respTime <= OPTIMAL_WINDOW_S) {
+    return max
+  }
+
+  // 3. Graceful time decay for remaining duration
+  const remaining = Math.max(0, totalTime - respTime)
+  const decaySpan = Math.max(1, totalTime - OPTIMAL_WINDOW_S)
+  const decayFraction = Math.max(0.1, remaining / decaySpan)
+  const earned = Math.round(max * decayFraction)
+  return Math.max(0, Math.min(earned, max))
+}
+
+// Helper to validate Focus Mode tab-switch integrity.
+// If a student was away for 2.0 seconds or more, they are locked out from answering.
+export function checkFocusIntegrity(focusLocked, focusLost, timeAway) {
+  const awaySec = Number(timeAway)
+  const isLocked = focusLocked === true || (Boolean(focusLost) && Number.isFinite(awaySec) && awaySec >= 2.0)
+  return {
+    isLocked,
+    timeAway: Number.isFinite(awaySec) && awaySec >= 0 ? awaySec : 0
+  }
+}
+
 const router = express.Router()
 
 // How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
@@ -103,7 +153,7 @@ router.post('/', authorize('student'), async (req, res) => {
     const Question = (await import('../models/Question.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
     
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const { roomId, questionId, selectedOptions, responseTime, focusLost, timeAway, focusLocked } = req.body
     const studentId = req.user._id // Must be authenticated user
 
     // Verify student is in the room (member of RoomMember) — cached (Fix 4), DB fallback on miss.
@@ -114,6 +164,16 @@ router.post('/', authorize('student'), async (req, res) => {
 
     if (!roomId || !questionId || !selectedOptions || !Array.isArray(selectedOptions)) {
       return res.status(400).json({ error: 'Missing required fields: roomId, questionId, and selectedOptions (array)' })
+    }
+
+    // Focus Mode Guard: If student was away for 2.0s or more, reject submission.
+    const focusCheck = checkFocusIntegrity(focusLocked, focusLost, timeAway)
+    if (focusCheck.isLocked) {
+      return res.status(403).json({
+        success: false,
+        error: 'focus_lost_locked',
+        message: 'Question locked: navigated away from the poll for 2 or more seconds.'
+      })
     }
 
     // Get the question to check correct answer and points — cached (Fix 3a); immutable while live.
@@ -167,35 +227,20 @@ router.post('/', authorize('student'), async (req, res) => {
       isCorrect = selectedOptionData?.isCorrect || false
     }
     
-    // Time-decay points calculation
-    // Formula: earnedPoints = isCorrect ? maxPoints × max(0.1, (tta - respTime) / tta) : 0
-    // Minimum 10% of max points for correct answers (even if time runs out)
+    // Cognitive Fair-Play Points Calculation
+    // Replaces blind fastest-finger spam with human reading threshold and cognitive window
     const maxPoints = question.points || 100
     const tta = question.timeToAnswer || 30
 
     // Guard 1 (input validation): responseTime is client-supplied. A genuine value is
     // `tta - timeLeft` and therefore always falls within [0, tta]. Anything outside that range
-    // is forged or untrusted (e.g. a negative value crafted to inflate the score), so we treat it
-    // as the slowest possible answer (respTime = tta -> 10% floor for a correct answer). Honest
-    // clients keep their fair, receipt-based timing; a forged value can never earn a bonus.
-    // NOTE: we intentionally do NOT clamp a negative to 0 — that would award full (max) points.
+    // is treated as slowest possible answer.
     const rawRespTime = Number(responseTime)
     const respTime = (Number.isFinite(rawRespTime) && rawRespTime >= 0 && rawRespTime <= tta)
       ? rawRespTime
       : tta
-    let points = 0
 
-    if (isCorrect) {
-      const timeRemaining = Math.max(0, tta - respTime)
-      const timeDecayFactor = Math.max(0.1, timeRemaining / tta) // Minimum 10% even if slow
-      points = Math.round(maxPoints * timeDecayFactor)
-    }
-    // Incorrect answers get 0 points
-
-    // Guard 2 (defense in depth): a single answer can never be worth more than the question's
-    // configured max points, nor go below 0 — regardless of the decay factor or any future change
-    // upstream. This hard-caps the stored score to the valid [0, maxPoints] range.
-    points = Math.max(0, Math.min(points, maxPoints))
+    const points = calculateCognitivePoints(isCorrect, maxPoints, tta, respTime)
 
     const responseData = {
       roomId,
@@ -205,7 +250,10 @@ router.post('/', authorize('student'), async (req, res) => {
       selectedOptions, // Store all selections for MSQ
       isCorrect,
       responseTime: respTime,
-      points
+      points,
+      focusLost: Boolean(focusLost),
+      timeAway: focusCheck.timeAway,
+      focusLocked: false
     }
 
     // Persist. DEFAULT path: save() immediately and let the unique index
@@ -409,6 +457,46 @@ router.get('/stats/student/:studentId', async (req, res) => {
   }
 })
 
+router.get('/stats/student/:studentId/benchmark', async (req, res) => {
+  try {
+    const Response = (await import('../models/Response.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+
+    const { studentId } = req.params
+    if (!studentId) {
+      return res.status(400).json({ error: 'Student id is required' })
+    }
+
+    const currentUser = req.user
+    const isSelf = currentUser._id.toString() === studentId
+
+    if (currentUser.role === 'student' && !isSelf) {
+      return res.status(403).json({ error: 'Not authorized to view other students\' benchmark' })
+    }
+
+    const memberships = await RoomMember.find({ studentId }).lean()
+    const roomIds = [...new Set(memberships.map(m => String(m.roomId)))]
+
+    if (!roomIds.length) {
+      return res.json({
+        success: true,
+        benchmark: summarizeBenchmark(0, 0)
+      })
+    }
+
+    const allResponses = await Response.find({ roomId: { $in: roomIds } }).lean()
+    const benchmarkData = normalizeRoomBenchmarkData(studentId, roomIds, allResponses)
+
+    res.json({
+      success: true,
+      benchmark: summarizeBenchmark(benchmarkData.studentAccuracy, benchmarkData.cohortAverage)
+    })
+  } catch (error) {
+    console.error('Error fetching student benchmark:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch benchmark' })
+  }
+})
+
 // GET /api/responses/stats/room/:roomId - Get room stats for teacher
 router.get('/stats/room/:roomId', async (req, res) => {
   try {
@@ -444,8 +532,8 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const roomObjId = new mongoose.Types.ObjectId(roomId)
 
     // One pass for the counts (grouped by question × selected option) plus the light room-wide
-    // totals, all in parallel — replaces the old N+1 (one Response.find per question).
-    const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
+    // totals, and velocity statistics (spam vs thoughtful vs late), all in parallel.
+    const [totalResponses, uniqueStudents, totalJoined, questions, grouped, velocityGrouped] = await Promise.all([
       Response.countDocuments({ roomId }),
       Response.distinct('studentId', { roomId }),
       RoomMember.countDocuments({ roomId }),
@@ -453,6 +541,22 @@ router.get('/stats/room/:roomId', async (req, res) => {
       Response.aggregate([
         { $match: { roomId: roomObjId } },
         { $group: { _id: { q: '$questionId', opt: '$selectedOption' }, count: { $sum: 1 } } }
+      ]),
+      Response.aggregate([
+        { $match: { roomId: roomObjId } },
+        {
+          $group: {
+            _id: '$questionId',
+            totalResponses: { $sum: 1 },
+            totalTime: { $sum: '$responseTime' },
+            spamCount: { $sum: { $cond: [{ $lt: ['$responseTime', 2.0] }, 1, 0] } },
+            spamCorrect: { $sum: { $cond: [{ $and: [{ $lt: ['$responseTime', 2.0] }, { $eq: ['$isCorrect', true] }] }, 1, 0] } },
+            thoughtfulCount: { $sum: { $cond: [{ $and: [{ $gte: ['$responseTime', 2.0] }, { $lte: ['$responseTime', 15.0] }] }, 1, 0] } },
+            thoughtfulCorrect: { $sum: { $cond: [{ $and: [{ $gte: ['$responseTime', 2.0] }, { $lte: ['$responseTime', 15.0] }, { $eq: ['$isCorrect', true] }] }, 1, 0] } },
+            lateCount: { $sum: { $cond: [{ $gt: ['$responseTime', 25.0] }, 1, 0] } },
+            focusLostCount: { $sum: { $cond: [{ $eq: ['$focusLost', true] }, 1, 0] } }
+          }
+        }
       ])
     ])
 
@@ -467,6 +571,27 @@ router.get('/stats/room/:roomId', async (req, res) => {
       if (!m) { m = new Map(); countsByQuestion.set(qid, m) }
       m.set(g._id.opt, g.count)
       totalByQuestion.set(qid, (totalByQuestion.get(qid) || 0) + g.count)
+    }
+
+    const velocityByQuestion = new Map()
+    for (const v of velocityGrouped) {
+      const qid = v._id ? v._id.toString() : null
+      if (!qid) continue
+      const avgResponseTime = v.totalResponses > 0 ? Number((v.totalTime / v.totalResponses).toFixed(1)) : 0
+      const spamAccuracy = v.spamCount > 0 ? Math.round((v.spamCorrect / v.spamCount) * 100) : null
+      const thoughtfulAccuracy = v.thoughtfulCount > 0 ? Math.round((v.thoughtfulCorrect / v.thoughtfulCount) * 100) : null
+      const focusLostCount = v.focusLostCount || 0
+      const focusRate = v.totalResponses > 0 ? Math.round(((v.totalResponses - focusLostCount) / v.totalResponses) * 100) : 100
+      velocityByQuestion.set(qid, {
+        avgResponseTime,
+        spamCount: v.spamCount,
+        spamAccuracy,
+        thoughtfulCount: v.thoughtfulCount,
+        thoughtfulAccuracy,
+        lateCount: v.lateCount,
+        focusLostCount,
+        focusRate
+      })
     }
 
     const questionStats = questions.map((q) => {
@@ -484,7 +609,17 @@ router.get('/stats/room/:roomId', async (req, res) => {
         type: q.type,
         totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
-        answerCounts
+        answerCounts,
+        velocityStats: velocityByQuestion.get(q._id.toString()) || {
+          avgResponseTime: 0,
+          spamCount: 0,
+          spamAccuracy: null,
+          thoughtfulCount: 0,
+          thoughtfulAccuracy: null,
+          lateCount: 0,
+          focusLostCount: 0,
+          focusRate: 100
+        }
       }
     })
 
@@ -632,6 +767,9 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
           selectedOption: studentResponse.selectedOption,
           selectedOptions: studentResponse.selectedOptions || [studentResponse.selectedOption],
           responseTime: studentResponse.responseTime,
+          focusLost: Boolean(studentResponse.focusLost),
+          timeAway: studentResponse.timeAway || 0,
+          focusLocked: Boolean(studentResponse.focusLocked),
           // isCorrect + pointsEarned both reveal correctness → withhold for the live poll, send once past.
           ...(isActive ? {} : { isCorrect: studentResponse.isCorrect, pointsEarned: studentResponse.points })
         }),

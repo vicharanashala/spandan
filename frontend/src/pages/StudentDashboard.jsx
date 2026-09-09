@@ -24,14 +24,21 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+  const [benchmark, setBenchmark] = useState({
+    studentAccuracy: 0,
+    cohortAverage: 0,
+    delta: 0,
+    status: 'No room data yet'
+  })
 
   useEffect(() => {
-    if (token) {
+    if (token && user?._id) {
       setAuthToken(token)
       fetchStudentStats()
+      fetchStudentBenchmark()
       fetchActiveRooms()
     }
-  }, [token])
+  }, [token, user?._id])
 
   const fetchStudentStats = async () => {
     try {
@@ -49,6 +56,28 @@ function StudentDashboard() {
       }
     } catch (err) {
       console.error('Failed to fetch student stats:', err)
+    }
+  }
+
+  const fetchStudentBenchmark = async () => {
+    if (!user?._id || !token) return
+
+    try {
+      const res = await fetch(`${API_URL}/responses/stats/student/${user._id}/benchmark`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.benchmark) {
+        setBenchmark(data.benchmark)
+      }
+    } catch (err) {
+      console.error('Failed to fetch student benchmark:', err)
+      setBenchmark({
+        studentAccuracy: 0,
+        cohortAverage: 0,
+        delta: 0,
+        status: 'No room data yet'
+      })
     }
   }
 
@@ -175,6 +204,43 @@ function StudentDashboard() {
                 <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>{card.label}</div>
               </div>
             ))}
+          </div>
+
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: 'var(--radius-lg)',
+            padding: isMobile ? '20px' : '24px',
+            boxShadow: 'var(--shadow-md)',
+            border: '1px solid var(--border-color)',
+            marginBottom: isMobile ? '24px' : '32px',
+            boxSizing: 'border-box'
+          }}>
+            <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+              Cohort vs. Personal Benchmark
+            </h2>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, minmax(0, 1fr))',
+              gap: '16px'
+            }}>
+              <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px' }}>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Your accuracy</div>
+                <div style={{ marginTop: '8px', fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{benchmark.studentAccuracy}%</div>
+              </div>
+              <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px' }}>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Class average</div>
+                <div style={{ marginTop: '8px', fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>{benchmark.cohortAverage}%</div>
+              </div>
+              <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px' }}>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Difference</div>
+                <div style={{ marginTop: '8px', fontSize: '28px', fontWeight: '700', color: benchmark.delta >= 0 ? '#10b981' : '#ef4444' }}>
+                  {benchmark.delta >= 0 ? '+' : ''}{benchmark.delta}%
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: '16px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+              <strong style={{ color: 'var(--text-primary)' }}>{benchmark.status}</strong> compared with the cohort across your joined rooms.
+            </div>
           </div>
 
           {/* Quick Join Section */}

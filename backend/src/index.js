@@ -24,6 +24,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import issueRoutes from './routes/issues.js'
 
 // Import models for reference
 import './models/index.js'
@@ -388,6 +389,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/issues', issueRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {

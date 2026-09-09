@@ -61,17 +61,21 @@ function RoomResultsPage() {
         let totalResponses = 0
         let totalCorrect = 0
         let totalPoints = 0
+        let totalResponseTime = 0
 
         studentData.questions?.forEach(q => {
           if (q.answered) {
+            const rt = Number(q.responseTime) || 0
             responsesData[q._id] = {
               totalResponses: 1,
               correctCount: q.isCorrect ? 1 : 0,
-              points: q.pointsEarned || 0
+              points: q.pointsEarned || 0,
+              responseTime: rt
             }
             totalResponses += 1
             if (q.isCorrect) totalCorrect += 1
             totalPoints += q.pointsEarned || 0
+            totalResponseTime += rt
           }
         })
 
@@ -84,12 +88,14 @@ function RoomResultsPage() {
         const leaderboardData = await leaderboardRes.json()
         const userRank = leaderboardData.userRank || 0
 
-        const averageScore = totalResponses > 0 ? Math.round((totalPoints / (totalResponses * 100)) * 100) : 0
+        const averageScore = totalResponses > 0 ? Math.round((totalCorrect / totalResponses) * 100) : 0
+        const avgResponseTime = totalResponses > 0 ? Number((totalResponseTime / totalResponses).toFixed(1)) : 0
 
         setStats({
           totalResponses,
           totalCorrect,
           averageScore,
+          avgResponseTime,
           participationRate: 100,
           userRank,
           totalPoints
@@ -115,7 +121,8 @@ function RoomResultsPage() {
           responsesData[qStat.questionId] = {
             totalResponses: qStat.totalResponses,
             correctCount: qStat.correctCount || 0,
-            answerCounts: qStat.answerCounts || {}
+            answerCounts: qStat.answerCounts || {},
+            velocityStats: qStat.velocityStats || null
           }
         })
 
@@ -182,7 +189,10 @@ function RoomResultsPage() {
     { icon: '👥', value: stats.totalResponses, label: 'Total Responses', tint: 'var(--accent)' },
     ...(user?.role === 'teacher'
       ? [{ icon: '🧑‍🎓', value: stats.totalStudents || 0, label: 'Total Students', tint: 'var(--accent)' }]
-      : [{ icon: '🏅', value: stats.userRank ? `#${stats.userRank}` : '—', label: 'Your Rank', tint: '#f59e0b', valueColor: '#f59e0b' }]),
+      : [
+          { icon: '🏅', value: stats.userRank ? `#${stats.userRank}` : '—', label: 'Your Rank', tint: '#f59e0b', valueColor: '#f59e0b' },
+          { icon: '⚡', value: stats.avgResponseTime !== undefined ? `${stats.avgResponseTime}s` : '—', label: 'Avg Speed', tint: '#8b5cf6', valueColor: '#8b5cf6' }
+        ]),
     { icon: '✅', value: `${stats.averageScore}%`, label: 'Average Score', tint: '#059669', valueColor: '#059669' },
     { icon: '🎯', value: stats.totalCorrect, label: 'Correct Answers', tint: 'var(--accent)', valueColor: 'var(--accent)' },
   ]
@@ -319,6 +329,98 @@ function RoomResultsPage() {
             ))}
           </div>
 
+          {/* Student Thinking Persona & Cognitive Timing Insight */}
+          {user?.role === 'student' && stats.totalResponses > 0 && (() => {
+            const avg = Number(stats.avgResponseTime) || 0
+            const acc = Number(stats.averageScore) || 0
+            let badgeTitle = 'Thoughtful Contender'
+            let badgeIcon = '📚'
+            let badgeColor = '#6366f1'
+            let badgeBg = 'rgba(99, 102, 241, 0.08)'
+            let badgeBorder = 'rgba(99, 102, 241, 0.25)'
+            let badgeDesc = 'Good effort! You engaged with the lecture questions thoughtfully. Keep practicing to build speed and accuracy.'
+
+            if (avg < 2.0) {
+              badgeTitle = 'Speed Gambler / Impulsive Clicker'
+              badgeIcon = '🎲'
+              badgeColor = '#ef4444'
+              badgeBg = 'rgba(239, 68, 68, 0.08)'
+              badgeBorder = 'rgba(239, 68, 68, 0.3)'
+              badgeDesc = `Average response time of ${avg}s detected! Attendance was recorded, but speed multipliers were capped. Human reading comprehension requires at least 2 seconds — take time to read the question to unlock full 100% points!`
+            } else if (acc >= 75 && avg <= 8.0) {
+              badgeTitle = 'Mastery Mind'
+              badgeIcon = '⚡'
+              badgeColor = '#10b981'
+              badgeBg = 'rgba(16, 185, 129, 0.08)'
+              badgeBorder = 'rgba(16, 185, 129, 0.3)'
+              badgeDesc = 'Outstanding cognitive balance! You read carefully and solved accurately within the optimal reading window.'
+            } else if (acc >= 75 && avg > 8.0) {
+              badgeTitle = 'Deep Thinker'
+              badgeIcon = '🎯'
+              badgeColor = '#3b82f6'
+              badgeBg = 'rgba(59, 130, 246, 0.08)'
+              badgeBorder = 'rgba(59, 130, 246, 0.3)'
+              badgeDesc = 'Methodical, thorough, and highly accurate. You prioritized correctness over hasty clicks!'
+            } else if (acc < 50 && avg >= 18.0) {
+              badgeTitle = 'Time-Challenged Learner'
+              badgeIcon = '⏳'
+              badgeColor = '#f59e0b'
+              badgeBg = 'rgba(245, 158, 11, 0.08)'
+              badgeBorder = 'rgba(245, 158, 11, 0.3)'
+              badgeDesc = 'You spent significant time analyzing tricky questions. Reviewing the lecture notes will help sharpen recall speed.'
+            }
+
+            return (
+              <div style={{
+                border: `1.5px solid ${badgeBorder}`,
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: 'var(--shadow-md)',
+                padding: isMobile ? '16px 20px' : '20px 24px',
+                marginBottom: '24px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '16px',
+                background: `linear-gradient(to right, ${badgeBg}, var(--bg-card))`
+              }}>
+                <div style={{
+                  fontSize: '28px',
+                  width: '50px',
+                  height: '50px',
+                  borderRadius: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: badgeBg,
+                  border: `1px solid ${badgeBorder}`,
+                  flexShrink: 0
+                }}>
+                  {badgeIcon}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: badgeColor }}>
+                      Cognitive Persona: {badgeTitle}
+                    </h3>
+                    <span style={{
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: badgeBg,
+                      color: badgeColor,
+                      border: `1px solid ${badgeBorder}`
+                    }}>
+                      Avg Answer Speed: {avg}s
+                    </span>
+                  </div>
+                  <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {badgeDesc}
+                  </p>
+                </div>
+              </div>
+            )
+          })()}
+
           {/* Questions Analysis */}
           <div style={{
             background: 'var(--bg-card)',
@@ -424,6 +526,46 @@ function RoomResultsPage() {
                                 {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
                               </span>
                             )}
+                            {!isTeacher && q.answered && q.responseTime !== undefined && (
+                              <span style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                background: q.responseTime < 2.0 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                                color: q.responseTime < 2.0 ? '#ef4444' : '#10b981',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}>
+                                <span>⚡</span>
+                                <span>{q.responseTime}s</span>
+                                {q.responseTime < 2.0 && <span style={{ opacity: 0.8 }}>(Impulsive)</span>}
+                              </span>
+                            )}
+                            {!isTeacher && (q.answered || q.focusLocked) && (
+                              <span style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                background: q.focusLocked
+                                  ? 'rgba(239, 68, 68, 0.16)'
+                                  : q.focusLost
+                                    ? 'rgba(245, 158, 11, 0.16)'
+                                    : 'rgba(16, 185, 129, 0.12)',
+                                color: q.focusLocked
+                                  ? '#ef4444'
+                                  : q.focusLost
+                                    ? '#d97706'
+                                    : '#10b981',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}>
+                                <span>{q.focusLocked ? '🔒 Focus Locked (>2s away)' : q.focusLost ? `⚠️ Tab Switched (${q.timeAway || 0}s)` : '🛡️ 100% Focused'}</span>
+                              </span>
+                            )}
                           </div>
                           <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
                             {q.question}
@@ -522,6 +664,208 @@ function RoomResultsPage() {
                               </div>
                             </div>
                           )}
+
+                          {/* Teacher: Response Velocity Curve & Cognitive Effort Breakdown */}
+                          {isTeacher && qStats.velocityStats && qStats.totalResponses > 0 && (() => {
+                            const v = qStats.velocityStats
+                            const total = qStats.totalResponses || 1
+                            const spamPct = Math.round((v.spamCount / total) * 100)
+                            const thoughtfulPct = Math.round((v.thoughtfulCount / total) * 100)
+                            const latePct = Math.round((v.lateCount / total) * 100)
+                            const moderatePct = Math.max(0, 100 - spamPct - thoughtfulPct - latePct)
+
+                            return (
+                              <div style={{
+                                marginTop: '16px',
+                                padding: '12px 14px',
+                                background: 'var(--bg-card)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: 'var(--radius-sm)'
+                              }}>
+                                <div style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  marginBottom: '8px',
+                                  flexWrap: 'wrap',
+                                  gap: '6px'
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                    <span>⚡ Response Velocity Curve</span>
+                                  </div>
+                                  <span style={{
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    color: 'var(--accent)',
+                                    background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                                    padding: '2px 8px',
+                                    borderRadius: '12px'
+                                  }}>
+                                    Avg speed: {v.avgResponseTime || 0}s
+                                  </span>
+                                </div>
+
+                                {/* Multi-segment velocity bar */}
+                                <div style={{
+                                  height: '8px',
+                                  borderRadius: '999px',
+                                  background: 'var(--border-color)',
+                                  display: 'flex',
+                                  overflow: 'hidden',
+                                  marginBottom: '10px'
+                                }}>
+                                  {v.spamCount > 0 && (
+                                    <div
+                                      title={`Impulsive (<2s): ${v.spamCount} (${spamPct}%)`}
+                                      style={{
+                                        height: '100%',
+                                        width: `${spamPct}%`,
+                                        background: '#ef4444',
+                                        transition: 'width 0.3s ease'
+                                      }}
+                                    />
+                                  )}
+                                  {v.thoughtfulCount > 0 && (
+                                    <div
+                                      title={`Thoughtful (2-15s): ${v.thoughtfulCount} (${thoughtfulPct}%)`}
+                                      style={{
+                                        height: '100%',
+                                        width: `${thoughtfulPct}%`,
+                                        background: '#10b981',
+                                        transition: 'width 0.3s ease'
+                                      }}
+                                    />
+                                  )}
+                                  {moderatePct > 0 && (
+                                    <div
+                                      title={`Deliberate (15-25s): ${Math.max(0, total - v.spamCount - v.thoughtfulCount - v.lateCount)} (${moderatePct}%)`}
+                                      style={{
+                                        height: '100%',
+                                        width: `${moderatePct}%`,
+                                        background: '#6366f1',
+                                        transition: 'width 0.3s ease'
+                                      }}
+                                    />
+                                  )}
+                                  {v.lateCount > 0 && (
+                                    <div
+                                      title={`Late (>25s): ${v.lateCount} (${latePct}%)`}
+                                      style={{
+                                        height: '100%',
+                                        width: `${latePct}%`,
+                                        background: '#f59e0b',
+                                        transition: 'width 0.3s ease'
+                                      }}
+                                    />
+                                  )}
+                                </div>
+
+                                {/* Category Chips */}
+                                <div style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(130px, 1fr))',
+                                  gap: '8px',
+                                  fontSize: '11px'
+                                }}>
+                                  <div style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    background: 'rgba(239, 68, 68, 0.08)',
+                                    border: '1px solid rgba(239, 68, 68, 0.2)',
+                                    color: 'var(--text-primary)'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#ef4444' }}>
+                                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444' }}></span>
+                                      Impulsive (&lt;2s)
+                                    </div>
+                                    <div style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>
+                                      <strong>{v.spamCount}</strong> ({spamPct}%) • {v.spamAccuracy !== null ? `${v.spamAccuracy}% acc` : 'N/A'}
+                                    </div>
+                                    {v.spamCount > 0 && (
+                                      <div style={{ fontSize: '10px', color: '#ef4444', marginTop: '2px', fontStyle: 'italic' }}>
+                                        Speed bonus capped (50%)
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    background: 'rgba(16, 185, 129, 0.08)',
+                                    border: '1px solid rgba(16, 185, 129, 0.2)',
+                                    color: 'var(--text-primary)'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#10b981' }}>
+                                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></span>
+                                      Thoughtful (2-15s)
+                                    </div>
+                                    <div style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>
+                                      <strong>{v.thoughtfulCount}</strong> ({thoughtfulPct}%) • {v.thoughtfulAccuracy !== null ? `${v.thoughtfulAccuracy}% acc` : 'N/A'}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#10b981', marginTop: '2px' }}>
+                                      Full points window
+                                    </div>
+                                  </div>
+
+                                  {v.lateCount > 0 && (
+                                    <div style={{
+                                      padding: '6px 8px',
+                                      borderRadius: '6px',
+                                      background: 'rgba(245, 158, 11, 0.08)',
+                                      border: '1px solid rgba(245, 158, 11, 0.2)',
+                                      color: 'var(--text-primary)'
+                                    }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#f59e0b' }}>
+                                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f59e0b' }}></span>
+                                        Late (&gt;25s)
+                                      </div>
+                                      <div style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>
+                                        <strong>{v.lateCount}</strong> ({latePct}%)
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    background: 'rgba(99, 102, 241, 0.08)',
+                                    border: '1px solid rgba(99, 102, 241, 0.2)',
+                                    color: 'var(--text-primary)'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#6366f1' }}>
+                                      <span>🛡️</span>
+                                      Focus Integrity
+                                    </div>
+                                    <div style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>
+                                      <strong>{v.focusRate !== undefined ? `${v.focusRate}%` : '100%'}</strong> stayed in-tab
+                                    </div>
+                                    {v.focusLostCount > 0 && (
+                                      <div style={{ fontSize: '10px', color: '#f59e0b', marginTop: '2px' }}>
+                                        {v.focusLostCount} switched away
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })()}
+
+                          {/* Student: Impulsive speed explanation if < 2s */}
+                          {!isTeacher && q.answered && q.responseTime !== undefined && q.responseTime < 2.0 && (
+                            <div style={{
+                              marginTop: '12px',
+                              padding: '8px 12px',
+                              background: 'rgba(239, 68, 68, 0.08)',
+                              border: '1px solid rgba(239, 68, 68, 0.2)',
+                              borderRadius: '6px',
+                              fontSize: '12px',
+                              color: 'var(--text-secondary)',
+                              lineHeight: 1.4
+                            }}>
+                              <span style={{ fontWeight: 600, color: '#ef4444' }}>⚡ Impulsive Speed Notice: </span>
+                              Answered in {q.responseTime}s (&lt; 2.0s human reading speed threshold). Your participation & attendance were recorded, but speed bonus was capped at 50% max points.
+                            </div>
+                          )}
                         </div>
 
                         {/* Question Stats */}
@@ -543,6 +887,11 @@ function RoomResultsPage() {
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
                                 {qStats.totalResponses || 0} responses
                               </div>
+                              {qStats.velocityStats?.avgResponseTime !== undefined && (
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 600 }}>
+                                  ⚡ {qStats.velocityStats.avgResponseTime}s avg
+                                </div>
+                              )}
                             </>
                           ) : (
                             <>
@@ -552,6 +901,11 @@ function RoomResultsPage() {
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
                                 / {q.maxPoints || 100} pts
                               </div>
+                              {q.answered && q.responseTime !== undefined && (
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 600 }}>
+                                  ⚡ {q.responseTime}s
+                                </div>
+                              )}
                             </>
                           )}
                         </div>

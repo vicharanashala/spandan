@@ -36,6 +36,18 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  focusLost: {
+    type: Boolean,
+    default: false
+  },
+  timeAway: {
+    type: Number,
+    default: 0
+  },
+  focusLocked: {
+    type: Boolean,
+    default: false
+  },
   createdAt: {
     type: Date,
     default: Date.now

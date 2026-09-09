@@ -9,6 +9,7 @@ export const config = {
   emailApiKey: process.env.EMAIL_API_KEY || process.env.BREVO_API_KEY || '',
   // Verified sender address; falls back to the old SMTP_EMAIL for continuity.
   mailFrom: process.env.MAIL_FROM || process.env.SMTP_EMAIL || '',
+  supportEmail: process.env.SUPPORT_EMAIL || 'support@spandan.fun',
   // Email provider: 'brevo' (default), 'resend', 'sendgrid' (HTTP APIs — SMTP is blocked on the DO
   // droplet), or 'smtp'. EMAIL_TRANSPORT is accepted as an alias for back-compat.
   emailProvider: (process.env.EMAIL_PROVIDER || process.env.EMAIL_TRANSPORT || 'brevo').toLowerCase(),

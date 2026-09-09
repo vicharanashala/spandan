@@ -16,7 +16,7 @@ export default function AdminPage() {
 
   const [tab, setTab] = useState('pending')
   const [rows, setRows] = useState([])
-  const [counts, setCounts] = useState({ pending: 0, approved: 0, rejected: 0 })
+  const [counts, setCounts] = useState({ pending: 0, approved: 0, rejected: 0, open: 0, resolved: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState(null)
@@ -28,9 +28,11 @@ export default function AdminPage() {
   const load = useCallback(async (status) => {
     setLoading(true); setError('')
     try {
-      const data = await adminApi.listTeacherRequests(status)
-      setRows(data.requests || [])
-      if (data.counts) setCounts(data.counts)
+      const data = status === 'issues'
+        ? await adminApi.listIssueReports('open')
+        : await adminApi.listTeacherRequests(status)
+      setRows(status === 'issues' ? (data.reports || []) : (data.requests || []))
+      if (data.counts) setCounts(prev => ({ ...prev, ...data.counts }))
     } catch (e) {
       setError(e.message || 'Failed to load requests')
     } finally {
@@ -44,6 +46,7 @@ export default function AdminPage() {
     setBusyId(id)
     try {
       if (kind === 'approve') await adminApi.approve(id)
+      else if (kind === 'resolve') await adminApi.resolveIssue(id)
       else await adminApi.reject(id)
       await load(tab)
     } catch (e) {
@@ -59,11 +62,13 @@ export default function AdminPage() {
       border: `1px solid ${tab === t ? 'transparent' : 'var(--border-color)'}`,
       background: tab === t ? 'var(--accent-color, #4f46e5)' : 'var(--bg-secondary)',
       color: tab === t ? 'white' : 'var(--text-secondary)'
-    }}>{label} ({counts[t] ?? 0})</button>
+    }}>{label} ({t === 'issues' ? (counts.open ?? 0) : (counts[t] ?? 0)})</button>
   )
 
   const th = { padding: '10px 12px', textAlign: 'left', fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600 }
   const td = { padding: '14px 12px', fontSize: '14px', color: 'var(--text-primary)', borderTop: '1px solid var(--border-color)' }
+
+  const issueTab = tab === 'issues'
 
   return (
     <div style={{
@@ -100,6 +105,7 @@ export default function AdminPage() {
             {tabBtn('pending', 'Pending')}
             {tabBtn('approved', 'Approved')}
             {tabBtn('rejected', 'Rejected')}
+            {tabBtn('issues', 'Issue reports')}
           </div>
 
           {error && (
@@ -117,28 +123,29 @@ export default function AdminPage() {
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)', fontSize: '14px' }}>Loading…</div>
             ) : rows.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)', fontSize: '14px' }}>
-                No {tab} teacher accounts.
+                {issueTab ? 'No open issue reports.' : `No ${tab} teacher accounts.`}
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr>
-                      <th style={th}>Name</th>
-                      <th style={th}>Email</th>
-                      <th style={th}>Requested</th>
-                      {tab === 'rejected' && <th style={th}>Reason</th>}
-                      {tab === 'pending' && <th style={{ ...th, textAlign: 'right' }}>Action</th>}
+                      <th style={th}>{issueTab ? 'Reporter' : 'Name'}</th>
+                      <th style={th}>{issueTab ? 'Type' : 'Email'}</th>
+                      <th style={th}>{issueTab ? 'Problem' : 'Requested'}</th>
+                      {!issueTab && tab === 'rejected' && <th style={th}>Reason</th>}
+                      {(!issueTab && tab === 'pending') && <th style={{ ...th, textAlign: 'right' }}>Action</th>}
+                      {issueTab && <th style={{ ...th, textAlign: 'right' }}>Action</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map(r => (
                       <tr key={r._id}>
-                        <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
-                        <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.email}</td>
-                        <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—'}</td>
-                        {tab === 'rejected' && <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.rejectionReason || '—'}</td>}
-                        {tab === 'pending' && (
+                        <td style={{ ...td, fontWeight: 600 }}>{issueTab ? (r.reporter?.name || 'Unknown') : r.name}</td>
+                        <td style={{ ...td, color: 'var(--text-secondary)' }}>{issueTab ? r.category : r.email}</td>
+                        <td style={{ ...td, color: 'var(--text-secondary)', maxWidth: issueTab ? '520px' : undefined }}>{issueTab ? <>{r.description}<br /><small>{r.roomCode ? `Room ${r.roomCode} · ` : ''}{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</small></> : (r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—')}</td>
+                        {!issueTab && tab === 'rejected' && <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.rejectionReason || '—'}</td>}
+                        {!issueTab && tab === 'pending' && (
                           <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                             <button disabled={busyId === r._id} onClick={() => act(r._id, 'approve')} style={{
                               padding: '7px 16px', marginRight: '8px', borderRadius: 'var(--radius-sm)', border: 'none',
@@ -152,6 +159,7 @@ export default function AdminPage() {
                             }}>Reject</button>
                           </td>
                         )}
+                        {issueTab && <td style={{ ...td, textAlign: 'right' }}><button disabled={busyId === r._id} onClick={() => act(r._id, 'resolve')} style={{ padding: '7px 12px', borderRadius: 'var(--radius-sm)', border: 'none', background: '#16a34a', color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Resolve</button></td>}
                       </tr>
                     ))}
                   </tbody>

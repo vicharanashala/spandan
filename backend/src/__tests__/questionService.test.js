@@ -1,7 +1,7 @@
 // Unit tests for the pure question-generation helpers: the prompt builder and the
 // model-response parser. These guard the quality rules (no meta-reference leaks,
 // difficulty-driven Bloom emphasis) and the JSON parsing/normalization.
-import { buildQuestionPrompt, parseQuestions, parseOptions } from '../services/questionService.js'
+import { buildQuestionPrompt, parseQuestions, parseOptions, DEFAULT_QUESTION_TYPE_MIX, getQuestionTypeMix } from '../services/questionService.js'
 
 describe('buildQuestionPrompt', () => {
   const transcript = 'The O-ring contracted in the cold and let gas leak, destroying the shuttle.'
@@ -44,6 +44,11 @@ describe('buildQuestionPrompt', () => {
   it('reflects the requested count in the header', () => {
     const p = buildQuestionPrompt(transcript, ['MCQ', 'TF'], 'medium')
     expect(p).toContain('write 2 high-quality quiz questions')
+  })
+
+  it('uses a balanced default mix instead of TF-only generation', () => {
+    expect(DEFAULT_QUESTION_TYPE_MIX).toEqual({ MCQ: 50, TF: 30, MSQ: 20 })
+    expect(getQuestionTypeMix(4)).toEqual(expect.arrayContaining(['MCQ', 'TF', 'MSQ']))
   })
 })
 

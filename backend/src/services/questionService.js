@@ -8,6 +8,12 @@ import { config, AI_PROVIDERS } from '../config.js'
 // Re-export for convenience
 export { AI_PROVIDERS }
 
+export const DEFAULT_QUESTION_TYPE_MIX = {
+  MCQ: 50,
+  TF: 30,
+  MSQ: 20
+}
+
 export const createQuestion = async (data, createdBy) => {
   const question = new Question({
     roomId: data.roomId,  // Use roomId to match Question model
@@ -171,9 +177,9 @@ export const getQuestionResults = async (questionId) => {
 }
 
 // Question Type Mix helper
-function getQuestionTypeMix(numQuestions) {
+export function getQuestionTypeMix(numQuestions) {
   const types = []
-  
+
   if (numQuestions === 1) {
     types.push('MCQ')
   } else if (numQuestions === 2) {
@@ -184,18 +190,18 @@ function getQuestionTypeMix(numQuestions) {
     const mcqCount = Math.round(numQuestions * 0.5)
     const tfCount = Math.round(numQuestions * 0.3)
     const msqCount = numQuestions - mcqCount - tfCount
-    
+
     for (let i = 0; i < mcqCount; i++) types.push('MCQ')
     for (let i = 0; i < tfCount; i++) types.push('TF')
     for (let i = 0; i < msqCount; i++) types.push('MSQ')
   }
-  
+
   return types.slice(0, numQuestions)
 }
 
 // Generate question types from provided mix percentages
 function generateFromMix(questionTypeMix, numQuestions) {
-  const { MCQ = 0, TF = 100, MSQ = 0 } = questionTypeMix
+  const { MCQ = DEFAULT_QUESTION_TYPE_MIX.MCQ, TF = DEFAULT_QUESTION_TYPE_MIX.TF, MSQ = DEFAULT_QUESTION_TYPE_MIX.MSQ } = questionTypeMix || DEFAULT_QUESTION_TYPE_MIX
   const total = MCQ + TF + MSQ
 
   // Guard against an all-zero mix (avoids divide-by-zero → NaN counts)
