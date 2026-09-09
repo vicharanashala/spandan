@@ -4,6 +4,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import { issueApi } from '../lib/api'
 
 // Role-aware in-app manual. Reached from the sidebar "Manual" item (/teacher/help, /student/help).
 const TEACHER_SECTIONS = [
@@ -131,7 +132,21 @@ export default function HelpPage() {
   // Collapsible sections — accordion: at most ONE open at a time, all collapsed by default.
   // Opening a section closes whichever was open; clicking the open one closes it.
   const [openIdx, setOpenIdx] = useState(null)
+  const [issue, setIssue] = useState({ category: 'other', description: '', roomCode: '' })
+  const [issueState, setIssueState] = useState({ sending: false, message: '', error: '' })
   const toggle = (i) => setOpenIdx((prev) => (prev === i ? null : i))
+
+  const submitIssue = async (e) => {
+    e.preventDefault()
+    setIssueState({ sending: true, message: '', error: '' })
+    try {
+      await issueApi.report({ ...issue, page: window.location.pathname })
+      setIssue({ category: 'other', description: '', roomCode: '' })
+      setIssueState({ sending: false, message: 'Report sent to the administrator.', error: '' })
+    } catch (error) {
+      setIssueState({ sending: false, message: '', error: error.message || 'Could not send report' })
+    }
+  }
 
   return (
     <div style={{
@@ -223,9 +238,26 @@ export default function HelpPage() {
               )
             })}
 
-            <p style={{ margin: '18px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Need more help? Contact your Spandan administrator.
-            </p>
+            <form onSubmit={submitIssue} style={{ marginTop: '24px', padding: isMobile ? '16px' : '20px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '14px' }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: '18px', color: 'var(--text-primary)' }}>Report a problem</h2>
+              <p style={{ margin: '0 0 16px', fontSize: '14px', color: 'var(--text-secondary)' }}>Send video, audio, poll, room joining, profile, or other issues to an administrator.</p>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Issue type
+                  <select value={issue.category} onChange={(e) => setIssue({ ...issue, category: e.target.value })} style={{ display: 'block', width: '100%', marginTop: '6px', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+                    <option value="video">Video</option><option value="audio">Audio</option><option value="poll">Poll</option><option value="room-joining">Room joining</option><option value="profile">Profile / bio</option><option value="other">Other</option>
+                  </select>
+                </label>
+                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room code (optional)
+                  <input value={issue.roomCode} onChange={(e) => setIssue({ ...issue, roomCode: e.target.value })} maxLength={20} placeholder="e.g. ABC123" style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '6px', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }} />
+                </label>
+              </div>
+              <label style={{ display: 'block', marginTop: '12px', fontSize: '13px', color: 'var(--text-secondary)' }}>What happened?
+                <textarea value={issue.description} onChange={(e) => setIssue({ ...issue, description: e.target.value })} minLength={10} maxLength={2000} required rows={4} placeholder="Describe what you tried and what went wrong" style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '6px', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', resize: 'vertical' }} />
+              </label>
+              <button type="submit" disabled={issueState.sending} style={{ marginTop: '14px', padding: '10px 16px', border: 'none', borderRadius: '8px', background: 'var(--accent-color, #4f46e5)', color: 'white', cursor: issueState.sending ? 'default' : 'pointer', opacity: issueState.sending ? 0.6 : 1 }}>{issueState.sending ? 'Sending...' : 'Send report'}</button>
+              {issueState.message && <p style={{ color: '#16a34a', fontSize: '13px', margin: '10px 0 0' }}>{issueState.message}</p>}
+              {issueState.error && <p style={{ color: '#dc2626', fontSize: '13px', margin: '10px 0 0' }}>{issueState.error}</p>}
+            </form>
           </div>
         </main>
       </div>

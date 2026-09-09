@@ -36,6 +36,15 @@ export const api = {
     return this.handleResponse(response)
   },
 
+  async patch(endpoint, data) {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      method: 'PATCH',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    })
+    return this.handleResponse(response)
+  },
+
   async delete(endpoint) {
     const response = await fetch(`${API_URL}${endpoint}`, {
       method: 'DELETE',
@@ -65,6 +74,12 @@ export const adminApi = {
   listTeacherRequests: (status = 'pending') => api.get(`/admin/teacher-requests?status=${status}`),
   approve: (id) => api.post(`/admin/teacher-requests/${id}/approve`, {}),
   reject: (id, reason = '') => api.post(`/admin/teacher-requests/${id}/reject`, { reason })
+  ,listIssueReports: (status = 'open') => api.get(`/issues?status=${status}`),
+  resolveIssue: (id) => api.patch(`/issues/${id}/resolve`, {})
+}
+
+export const issueApi = {
+  report: (data) => api.post('/issues', data)
 }
 
 export const roomApi = {

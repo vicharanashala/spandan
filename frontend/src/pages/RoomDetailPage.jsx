@@ -104,7 +104,7 @@ function RoomDetailPage() {
     questionsPerSegment: 2,
     difficulty: 'medium',
     questionProvider: 'minimax',
-    questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
+    questionTypeMix: { MCQ: 50, TF: 30, MSQ: 20 },
     timeToAnswer: 30,
     points: 100
   })
@@ -410,7 +410,7 @@ function RoomDetailPage() {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
+        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 }
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
@@ -437,8 +437,8 @@ function RoomDetailPage() {
 
     try {
       const typeMix = mode === 'TF'
-        ? { MCQ: 0, TF: 100, MSQ: 0 }
-        : (roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 })
+        ? { MCQ: 50, TF: 30, MSQ: 20 }
+        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
 
       genAbortRef.current = new AbortController()
       // Helper handles both the sync response and the async (jobId → poll) path.

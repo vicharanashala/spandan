@@ -76,6 +76,25 @@ async function sendEmail(mailOptions) {
   return send({ to: mailOptions.to, subject: mailOptions.subject, html: mailOptions.html })
 }
 
+export const sendIssueReportEmail = async ({ reporter, category, description, roomCode, page, createdAt }) => {
+  const mailOptions = {
+    from: `${FROM_NAME} <${config.mailFrom}>`,
+    to: config.supportEmail,
+    subject: `[Spandan support] ${category} issue reported by ${reporter.name || reporter.email}`,
+    html: `
+      <h2>New Spandan troubleshooting report</h2>
+      <p><strong>Reporter:</strong> ${reporter.name || 'Unknown'} (${reporter.email})</p>
+      <p><strong>Issue type:</strong> ${category}</p>
+      <p><strong>Room code:</strong> ${roomCode || 'Not provided'}</p>
+      <p><strong>Page:</strong> ${page || 'Not provided'}</p>
+      <p><strong>Reported:</strong> ${new Date(createdAt).toISOString()}</p>
+      <p><strong>Description:</strong></p>
+      <p>${description.replace(/\n/g, '<br>')}</p>
+    `
+  }
+  return sendEmail(mailOptions)
+}
+
 // Send reset password email
 export const sendResetPasswordEmail = async (email, token) => {
   const resetUrl = `${config.frontendUrl}/reset-password?token=${token}`

@@ -41,6 +41,107 @@ function StudentRoomPage() {
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
 
+  // Focus Mode & Distraction Blocker:
+  // When a live poll is active, leaving the screen (tab switch, minimize, blur) for >= 2.0s locks the question.
+  const [isFocusLocked, setIsFocusLocked] = useState(false)
+  const [focusWarning, setFocusWarning] = useState('')
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [timeAway, setTimeAway] = useState(0)
+  const awayStartRef = useRef(null)
+  const lockTimerRef = useRef(null)
+  const warningTimerRef = useRef(null)
+
+  // Fullscreen toggle helper for distraction-free kiosk view
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen?.()
+        setIsFullscreen(true)
+      } else {
+        await document.exitFullscreen?.()
+        setIsFullscreen(false)
+      }
+    } catch (err) {
+      console.warn('Fullscreen request failed:', err)
+    }
+  }
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
+  // Focus Mode Guard: Active strictly while a question is live, before submit, and while timer ticks
+  useEffect(() => {
+    if (!currentQuestion || submitted || timeLeft <= 0) {
+      if (lockTimerRef.current) clearTimeout(lockTimerRef.current)
+      awayStartRef.current = null
+      return
+    }
+
+    const handleAway = () => {
+      if (isFocusLocked) return
+      if (!awayStartRef.current) {
+        awayStartRef.current = Date.now()
+      }
+      // If student is away for 2.0s or more, lock the question
+      if (!lockTimerRef.current) {
+        lockTimerRef.current = setTimeout(() => {
+          setIsFocusLocked(true)
+          setFocusWarning('')
+        }, 2000)
+      }
+    }
+
+    const handleReturn = () => {
+      if (isFocusLocked) return
+      if (lockTimerRef.current) {
+        clearTimeout(lockTimerRef.current)
+        lockTimerRef.current = null
+      }
+      if (awayStartRef.current) {
+        const elapsed = (Date.now() - awayStartRef.current) / 1000
+        setTimeAway(prev => Number((prev + elapsed).toFixed(1)))
+        if (elapsed >= 2.0) {
+          setIsFocusLocked(true)
+          setFocusWarning('')
+        } else {
+          // Returned within the 2-second grace period (< 2.0s)
+          setFocusWarning(`⚠️ Quick switch detected (${elapsed.toFixed(1)}s). Returned within 2s grace period. Stay on screen to avoid lockout!`)
+          if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
+          warningTimerRef.current = setTimeout(() => setFocusWarning(''), 4000)
+        }
+        awayStartRef.current = null
+      }
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleAway()
+      } else {
+        handleReturn()
+      }
+    }
+
+    const handleWindowBlur = () => handleAway()
+    const handleWindowFocus = () => handleReturn()
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('blur', handleWindowBlur)
+    window.addEventListener('focus', handleWindowFocus)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('blur', handleWindowBlur)
+      window.removeEventListener('focus', handleWindowFocus)
+      if (lockTimerRef.current) {
+        clearTimeout(lockTimerRef.current)
+        lockTimerRef.current = null
+      }
+    }
+  }, [currentQuestion, submitted, timeLeft, isFocusLocked])
+
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
   const isVideoMode = room?.settings?.mode === 'video'
@@ -96,6 +197,12 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(data.timer || 30)
+      setIsFocusLocked(false)
+      setFocusWarning('')
+      setTimeAway(0)
+      awayStartRef.current = null
+      if (lockTimerRef.current) clearTimeout(lockTimerRef.current)
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
       
       if (data.question && data.question.timeToAnswer) {
         setTimeLeft(data.question.timeToAnswer)
@@ -117,6 +224,8 @@ function StudentRoomPage() {
               fetchPastResponses(room._id, user._id)
             }
             setCurrentQuestion(null)
+            setIsFocusLocked(false)
+            setFocusWarning('')
             return 0
           }
           return prev - 1
@@ -130,6 +239,11 @@ function StudentRoomPage() {
         clearInterval(timerIntervalRef.current)
         timerIntervalRef.current = null
       }
+      setIsFocusLocked(false)
+      setFocusWarning('')
+      awayStartRef.current = null
+      if (lockTimerRef.current) clearTimeout(lockTimerRef.current)
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
       
       // Only fetch if room and user are available
       if (room?._id && user?._id) {
@@ -151,6 +265,12 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
+      setIsFocusLocked(false)
+      setFocusWarning('')
+      setTimeAway(0)
+      awayStartRef.current = null
+      if (lockTimerRef.current) clearTimeout(lockTimerRef.current)
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
@@ -162,6 +282,8 @@ function StudentRoomPage() {
               fetchPastResponses(room._id, user._id)
             }
             setCurrentQuestion(null)
+            setIsFocusLocked(false)
+            setFocusWarning('')
             return 0
           }
           return prev - 1
@@ -282,7 +404,7 @@ function StudentRoomPage() {
   }
 
   const handleSubmitAnswer = async () => {
-    if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    if (selectedOptions.length === 0 || submitted || !currentQuestion || isFocusLocked) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
     const tta = currentQuestion.timeToAnswer || 30
@@ -304,7 +426,8 @@ function StudentRoomPage() {
     const jitterMs = Math.floor(Math.random() * 2000)
 
     console.log('[StudentRoom] Submitting answer:', {
-      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs,
+      focusLost: timeAway > 0, timeAway, focusLocked: isFocusLocked
     })
 
     if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
@@ -322,10 +445,18 @@ function StudentRoomPage() {
           questionId,
           studentId,
           selectedOptions,
-          responseTime
+          responseTime,
+          focusLost: timeAway > 0,
+          timeAway,
+          focusLocked: isFocusLocked
         })
       })
       const saveData = await saveResponse.json()
+      if (!saveResponse.ok && saveData.error === 'focus_lost_locked') {
+        setIsFocusLocked(true)
+        setSubmitted(false)
+        return
+      }
       console.log('[StudentRoom] Response saved:', saveData)
 
       // Phase 1: the server emits the throttled leaderboard/answer-count updates itself from this
@@ -562,6 +693,88 @@ function StudentRoomPage() {
               maxWidth: '100%',
               boxSizing: 'border-box'
             }}>
+              {/* Focus Mode & Fullscreen Bar */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
+                padding: '8px 12px',
+                background: 'rgba(0, 0, 0, 0.25)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                flexWrap: 'wrap',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '14px' }}>🛡️</span>
+                  <span style={{ fontWeight: 600 }}>Focus Mode Active</span>
+                  <span style={{ opacity: 0.8, fontSize: '11px' }}>(2s tab-switch lockout)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.15)',
+                    border: '1px solid rgba(255, 255, 255, 0.3)',
+                    color: 'white',
+                    borderRadius: '6px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  <span>{isFullscreen ? '⛶ Exit Fullscreen' : '⛶ Fullscreen'}</span>
+                </button>
+              </div>
+
+              {/* Grace Period Warning (Returned in < 2.0s) */}
+              {focusWarning && (
+                <div style={{
+                  background: 'rgba(245, 158, 11, 0.25)',
+                  border: '1px solid #f59e0b',
+                  color: '#fef3c7',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  fontSize: '12.5px',
+                  fontWeight: 500,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <span>{focusWarning}</span>
+                </div>
+              )}
+
+              {/* Lockout Notice (Away for >= 2.0s) */}
+              {isFocusLocked && (
+                <div style={{
+                  background: 'rgba(239, 68, 68, 0.3)',
+                  border: '2px solid #ef4444',
+                  borderRadius: '12px',
+                  padding: '16px 18px',
+                  marginBottom: '20px',
+                  textAlign: 'center',
+                  color: 'white'
+                }}>
+                  <div style={{ fontSize: '28px', marginBottom: '6px' }}>🔒</div>
+                  <h3 style={{ margin: '0 0 4px', fontSize: '16px', fontWeight: 700 }}>
+                    Poll Locked — Focus Lost
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '12.5px', opacity: 0.95, lineHeight: 1.4 }}>
+                    You navigated away from the poll for 2 or more seconds. In Focus Mode, leaving the screen during an active question locks answering.
+                  </p>
+                  <div style={{ marginTop: '8px', fontSize: '11px', color: '#fca5a5', fontWeight: 600 }}>
+                    Attendance is recorded. Stay on screen for the next question!
+                  </div>
+                </div>
+              )}
+
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -595,7 +808,7 @@ function StudentRoomPage() {
                   const optionLabel = String.fromCharCode(65 + index)
                   
                   const handleOptionClick = () => {
-                    if (submitted) return
+                    if (submitted || isFocusLocked) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
                       setSelectedOptions(prev => 
@@ -613,13 +826,13 @@ function StudentRoomPage() {
                     <button
                       key={index}
                       onClick={handleOptionClick}
-                      disabled={submitted}
+                      disabled={submitted || isFocusLocked}
                       style={{
                         width: '100%',
                         minHeight: '48px',
                         boxSizing: 'border-box',
                         padding: isMobile ? '14px 16px' : '20px 24px',
-                        background: submitted
+                        background: (submitted || isFocusLocked)
                           ? 'rgba(255,255,255,0.1)'
                           : (isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'),
                         border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
@@ -627,7 +840,8 @@ function StudentRoomPage() {
                         color: 'white',
                         fontSize: isMobile ? '16px' : '18px',
                         textAlign: 'left',
-                        cursor: submitted ? 'default' : 'pointer',
+                        cursor: (submitted || isFocusLocked) ? 'not-allowed' : 'pointer',
+                        opacity: isFocusLocked ? 0.6 : 1,
                         display: 'flex',
                         alignItems: 'center',
                         gap: isMobile ? '12px' : '16px'
@@ -671,8 +885,22 @@ function StudentRoomPage() {
                 })}
               </div>
 
-              {/* Submit Button */}
-              {submitted ? (
+              {/* Submit Button or Lockout State */}
+              {isFocusLocked ? (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '16px',
+                  background: 'rgba(0, 0, 0, 0.2)',
+                  borderRadius: '12px'
+                }}>
+                  <p style={{ fontSize: '15px', fontWeight: '600', margin: 0, color: '#fca5a5' }}>
+                    🔒 Answering Locked for this Question
+                  </p>
+                  <p style={{ fontSize: '13px', opacity: 0.8, marginTop: '6px' }}>
+                    Waiting for next question...
+                  </p>
+                </div>
+              ) : submitted ? (
                 <div style={{
                   textAlign: 'center',
                   padding: '20px',
@@ -687,17 +915,17 @@ function StudentRoomPage() {
               ) : (
                 <button
                   onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
+                  disabled={selectedOptions.length === 0 || isFocusLocked}
                   style={{
                     width: '100%',
                     padding: '16px',
-                    background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
-                    color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
+                    background: (selectedOptions.length > 0 && !isFocusLocked) ? '#ffd700' : 'rgba(255,255,255,0.2)',
+                    color: (selectedOptions.length > 0 && !isFocusLocked) ? '#1f2937' : 'rgba(255,255,255,0.5)',
                     border: 'none',
                     borderRadius: '12px',
                     fontSize: '16px',
                     fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    cursor: (selectedOptions.length > 0 && !isFocusLocked) ? 'pointer' : 'not-allowed'
                   }}
                 >
                   Submit Answer

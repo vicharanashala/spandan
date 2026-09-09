@@ -7,6 +7,8 @@ const OTP_TTL_MS         = Number(process.env.OTP_TTL_MS)         || 10 * 60 * 1
 const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_MS) || 60 * 1000 // 60 s
 const OTP_MAX_SENDS      = Number(process.env.OTP_MAX_SENDS)      || 5   // per email per window
 const OTP_MAX_ATTEMPTS   = Number(process.env.OTP_MAX_ATTEMPTS)   || 5   // verify attempts per code
+const DEV_OTP_BYPASS_ENABLED = process.env.NODE_ENV !== 'production' && process.env.DEV_OTP_BYPASS === 'true'
+const DEV_OTP_BYPASS_CODE = '000000'
 
 const norm = (e) => (e || '').trim().toLowerCase()
 const genOtp = () => String(crypto.randomInt(0, 1_000_000)).padStart(6, '0') // crypto-random 000000–999999
@@ -40,7 +42,11 @@ export async function requestRegistrationOtp(email, name) {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   )
-  await sendRegistrationOtp(e, name, otp) // throws if the email fails → route returns 500
+  if (DEV_OTP_BYPASS_ENABLED) {
+    console.warn(`[dev] OTP email skipped for ${e}; use ${DEV_OTP_BYPASS_CODE} to verify`)
+  } else {
+    await sendRegistrationOtp(e, name, otp) // throws if the email fails → route returns 500
+  }
   return { expiresInSec: Math.round(OTP_TTL_MS / 1000) }
 }
 
@@ -56,7 +62,8 @@ export async function verifyRegistrationOtp(email, otp) {
     await EmailOtp.deleteOne({ email: e })
     throw fail('Too many incorrect attempts. Please request a new code.', 'ATTEMPTS')
   }
-  if (doc.otpHash !== hashOtp(e, String(otp))) {
+  const bypassAccepted = DEV_OTP_BYPASS_ENABLED && String(otp) === DEV_OTP_BYPASS_CODE
+  if (!bypassAccepted && doc.otpHash !== hashOtp(e, String(otp))) {
     await EmailOtp.updateOne({ email: e }, { $inc: { attempts: 1 } })
     const left = OTP_MAX_ATTEMPTS - (doc.attempts + 1)
     throw fail(left > 0 ? `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} left.` : 'Incorrect code.', 'MISMATCH')
