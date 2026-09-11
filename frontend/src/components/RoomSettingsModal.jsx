@@ -527,6 +527,46 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           )}
         </div>
 
+        {/* Follow-up Questions */}
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            Follow-up Questions per Student
+          </label>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {[0, 1, 2, 3, 4, 5].map(num => (
+              <button
+                key={num}
+                onClick={() => setLocalSettings(prev => ({ ...prev, maxFollowUpQuestions: num }))}
+                style={{
+                  flex: '1 1 60px',
+                  padding: '10px 16px',
+                  borderRadius: '8px',
+                  border: (localSettings.maxFollowUpQuestions ?? 2) === num
+                    ? '2px solid #3b82f6'
+                    : '1px solid var(--border-color)',
+                  background: (localSettings.maxFollowUpQuestions ?? 2) === num ? '#dbeafe' : 'transparent',
+                  color: (localSettings.maxFollowUpQuestions ?? 2) === num ? '#1e40af' : 'var(--text-primary)',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: (localSettings.maxFollowUpQuestions ?? 2) === num ? '600' : '400'
+                }}
+              >
+                {num === 0 ? 'Off' : num}
+              </button>
+            ))}
+          </div>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            After the room ends, students who missed a question get up to this many personalized
+            follow-up questions covering the hardest things they got wrong.
+          </p>
+        </div>
+
         {/* Save Button */}
         <button
           onClick={handleSave}

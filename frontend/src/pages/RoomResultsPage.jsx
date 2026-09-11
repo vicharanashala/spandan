@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
+import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -14,6 +15,7 @@ function RoomResultsPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
+  const { socket, joinRoom, leaveRoom } = useSocketStore()
   const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
@@ -33,6 +35,27 @@ function RoomResultsPage() {
       fetchRoomData()
     }
   }, [token, roomId])
+
+  // Join the room's socket channel and listen for remediation submissions, so a teacher sitting
+  // on this page sees new remediation answers come in live instead of needing to refresh.
+  // RoomDetailPage already leaves this channel when the room is ended, so this page has to
+  // (re)join it for itself. Students don't need this — their own answer already updates their
+  // view instantly via local state, and other students' answers don't affect what they see.
+  useEffect(() => {
+    if (user?.role !== 'teacher' || !room?.code || !user?._id || !socket) return
+
+    joinRoom(room.code, user._id)
+
+    const handleRemediationSubmitted = () => {
+      fetchRoomData()
+    }
+    socket.on('remediation:submitted', handleRemediationSubmitted)
+
+    return () => {
+      socket.off('remediation:submitted', handleRemediationSubmitted)
+      leaveRoom(room.code, user._id)
+    }
+  }, [room?.code, user?._id, user?.role, socket])
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -56,7 +79,9 @@ function RoomResultsPage() {
         // Use studentData.questions for rendering (has answered, isCorrect, pointsEarned, etc.)
         setQuestions(studentData.questions || [])
 
-        // Build responses data from student's question data
+        // Build responses data from student's question data. Remediation Q&A is still stored here
+        // (so the remediation section below can render it) but is excluded from the headline
+        // stats — it's extra practice worth different points, not part of the quiz score.
         const responsesData = {}
         let totalResponses = 0
         let totalCorrect = 0
@@ -69,9 +94,11 @@ function RoomResultsPage() {
               correctCount: q.isCorrect ? 1 : 0,
               points: q.pointsEarned || 0
             }
-            totalResponses += 1
-            if (q.isCorrect) totalCorrect += 1
-            totalPoints += q.pointsEarned || 0
+            if (!q.isRemediation) {
+              totalResponses += 1
+              if (q.isCorrect) totalCorrect += 1
+              totalPoints += q.pointsEarned || 0
+            }
           }
         })
 
@@ -176,9 +203,17 @@ function RoomResultsPage() {
     )
   }
 
+  // Remediation questions are personalized, generated after the fact, and worth different points
+  // than the quiz itself — mixing them into the main numbered list (and the "Total Questions"
+  // count) makes the session look bigger/different than what the teacher actually built, and on
+  // the teacher side they'd sort ahead of the real questions (newest-first). Split them into their
+  // own reviewable section instead.
+  const mainQuestions = questions.filter(q => !q.isRemediation)
+  const remediationQuestions = questions.filter(q => q.isRemediation)
+
   // Stat cards config — same data, presented uniformly. Role-specific 3rd card handled inline.
   const statCards = [
-    { icon: '📝', value: questions.length, label: 'Total Questions', tint: 'var(--accent)' },
+    { icon: '📝', value: mainQuestions.length, label: 'Total Questions', tint: 'var(--accent)' },
     { icon: '👥', value: stats.totalResponses, label: 'Total Responses', tint: 'var(--accent)' },
     ...(user?.role === 'teacher'
       ? [{ icon: '🧑‍🎓', value: stats.totalStudents || 0, label: 'Total Students', tint: 'var(--accent)' }]
@@ -339,14 +374,14 @@ function RoomResultsPage() {
               Question-wise Analysis
             </h2>
 
-            {questions.length === 0 ? (
+            {mainQuestions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-secondary)' }}>
                 <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
                 <p style={{ margin: 0 }}>No questions were asked in this room.</p>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {questions.map((q, index) => {
+                {mainQuestions.map((q, index) => {
                   const qStats = responses[q._id] || {}
                   const isTeacher = user?.role === 'teacher'
 
@@ -562,6 +597,211 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+
+          {/* Remediation Questions — shown separately from the main quiz: personalized per student,
+              generated after the session, and worth different points, so mixing them into the
+              numbered list above would misrepresent the quiz the teacher built. */}
+          {remediationQuestions.length > 0 && (
+            <div style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-md)',
+              padding: isMobile ? '18px' : '24px',
+              maxWidth: '100%',
+              boxSizing: 'border-box',
+              marginTop: '24px'
+            }}>
+              <h2 style={{
+                margin: '0 0 6px',
+                fontSize: '18px',
+                fontWeight: 700,
+                letterSpacing: '-0.01em',
+                color: 'var(--text-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span aria-hidden="true">🎯</span> Follow-up Questions
+              </h2>
+              <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                {user?.role === 'teacher'
+                  ? 'Personalized follow-up questions generated for students who missed one of the quiz questions above.'
+                  : 'Extra practice questions generated for you based on what you missed above.'}
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {remediationQuestions.map((q, index) => {
+                  const qStats = responses[q._id] || {}
+                  const isTeacher = user?.role === 'teacher'
+
+                  const correctRate = isTeacher && qStats.totalResponses > 0
+                    ? Math.round((qStats.correctCount / qStats.totalResponses) * 100)
+                    : q.answered ? (q.isCorrect ? 100 : 0) : null
+
+                  const scoreColor = isTeacher
+                    ? (correctRate >= 70 ? '#059669' : correctRate >= 40 ? '#d97706' : '#dc2626')
+                    : (q.answered ? (q.isCorrect ? '#059669' : '#dc2626') : '#d97706')
+
+                  return (
+                    <div key={q._id} style={{
+                      padding: isMobile ? '16px' : '20px',
+                      background: 'var(--bg-primary)',
+                      borderRadius: 'var(--radius)',
+                      border: '1px solid var(--border-color)',
+                      minWidth: 0
+                    }}>
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        gap: '16px',
+                        flexDirection: isMobile ? 'column' : 'row'
+                      }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                            <span style={{
+                              padding: '3px 8px',
+                              background: 'color-mix(in srgb, #8b5cf6 16%, transparent)',
+                              color: '#7c3aed',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 700
+                            }}>
+                              Follow-up · worth {q.maxPoints || q.points || 50} pts
+                            </span>
+                            {!isTeacher && q.answered && (
+                              <span style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
+                                color: q.isCorrect ? '#059669' : '#dc2626'
+                              }}>
+                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                              </span>
+                            )}
+                          </div>
+                          <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                            {q.question}
+                          </p>
+
+                          <div style={{ display: 'grid', gap: '8px' }}>
+                            {q.options && q.options.map((opt, optIdx) => {
+                              // for follow-up questions, only reveal correct answer if student has answered
+                              // (teachers always see the correct answer)
+                              const showCorrectAnswer = isTeacher || q.answered
+                              const isCorrect = showCorrectAnswer && opt.isCorrect
+                              const isSelected = q.selectedOption === optIdx
+                              const showAsSelected = isTeacher ? isCorrect : isSelected
+                              const highlightStyle = showAsSelected
+                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
+                                : 'var(--bg-card)'
+                              const borderStyle = showAsSelected
+                                ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
+                                : '1px solid var(--border-color)'
+
+                              return (
+                                <div key={optIdx} style={{
+                                  padding: '10px 14px',
+                                  background: highlightStyle,
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: borderStyle,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '12px',
+                                  minWidth: 0
+                                }}>
+                                  <span style={{
+                                    width: '24px',
+                                    height: '24px',
+                                    borderRadius: '50%',
+                                    background: isCorrect ? '#059669' : 'var(--border-color)',
+                                    color: isCorrect ? 'white' : 'var(--text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    flexShrink: 0
+                                  }}>
+                                    {String.fromCharCode(65 + optIdx)}
+                                  </span>
+                                  <span style={{
+                                    fontSize: '14px',
+                                    color: 'var(--text-primary)',
+                                    fontWeight: isCorrect ? 600 : 400,
+                                    minWidth: 0
+                                  }}>
+                                    {opt.text}
+                                  </span>
+                                  {isTeacher && isCorrect && (
+                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                  )}
+                                  {!isTeacher && isSelected && (
+                                    <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
+                                  )}
+                                  {!isTeacher && isCorrect && !isSelected && (
+                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          {!isTeacher && !q.answered && (
+                            <div style={{
+                              marginTop: '12px',
+                              padding: '12px',
+                              background: 'rgba(245,158,11,0.1)',
+                              borderRadius: '8px',
+                              color: '#d97706',
+                              fontSize: '13px',
+                              fontWeight: '600'
+                            }}>
+                              ⚠️ You didn't complete this follow-up question
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{
+                          minWidth: isMobile ? 0 : '120px',
+                          width: isMobile ? '100%' : 'auto',
+                          textAlign: 'center',
+                          padding: '16px',
+                          background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
+                          border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
+                          borderRadius: 'var(--radius)',
+                          flexShrink: 0
+                        }}>
+                          {isTeacher ? (
+                            <>
+                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                {correctRate !== null ? `${correctRate}%` : '—'}
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                {qStats.totalResponses || 0} responses
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                                {q.answered ? (q.pointsEarned || 0) : '—'}
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
+                                / {q.maxPoints || 50} pts
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

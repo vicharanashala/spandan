@@ -16,6 +16,7 @@ import ManageRoomPage from './pages/ManageRoomPage'
 import JoinRoomPage from './pages/JoinRoomPage'
 import RoomHistoryPage from './pages/RoomHistoryPage'
 import RoomResultsPage from './pages/RoomResultsPage'
+import RemediationPage from './pages/RemediationPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
@@ -148,6 +149,11 @@ function App() {
         <Route path="/student/session/:roomCode" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentRoomPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/room/:roomId/remediation" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <RemediationPage />
           </ProtectedRoute>
         } />
       </Routes>

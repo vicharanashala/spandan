@@ -195,12 +195,12 @@ function StudentRoomPage() {
     socket.on('video:resume', handleVideoResume)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
-      // Show the interstitial immediately, but stagger the actual navigation across a jitter window
-      // so all students don't hit the results endpoints in the same instant.
+      // Show the interstitial immediately, then navigate to remediation (which redirects to results
+      // if no wrong answers). Stagger across jitter window to avoid thundering herd on the API.
       setSessionEnded(true)
       const delay = Math.random() * RESULTS_NAV_JITTER_MS
       resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/results`)
+        navigate(`/student/room/${room?._id}/remediation?max=${room?.settings?.maxFollowUpQuestions ?? 2}`)
       }, delay)
     })
 

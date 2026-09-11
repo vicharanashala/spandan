@@ -1,4 +1,4 @@
-import { Queue } from 'bullmq'
+import { Queue, QueueEvents } from 'bullmq'
 import IORedis from 'ioredis'
 import { isRedisEnabled } from '../config/redis.js'
 
@@ -6,6 +6,12 @@ import { isRedisEnabled } from '../config/redis.js'
 // return a jobId immediately (freeing the HTTP connection) while a separate worker runs the LLM
 // call with bounded concurrency. Graceful: when Redis is disabled the route falls back to
 // synchronous generation, so nothing here is required for single-instance / no-Redis setups.
+//
+// Remediation generation (single-question follow-up calls, see questionService.js's
+// generateRemediationQuestion) shares this same queue/worker instead of running its own separate
+// in-process concurrency limiter — one process-wide LLM concurrency cap (GENERATION_CONCURRENCY in
+// worker.js) covers both quiz generation and remediation generation, decoupled from the API server
+// the same way quiz generation already is.
 
 export const GENERATION_QUEUE = 'question-generation'
 
@@ -23,4 +29,17 @@ export function getGenerationQueue() {
     queue = new Queue(GENERATION_QUEUE, { connection: makeBullConnection() })
   }
   return queue
+}
+
+let queueEvents = null
+// QueueEvents is what job.waitUntilFinished() listens on to resolve/reject when a job completes —
+// needed by callers (like ensureRemediationQuestion) that enqueue a single-item job and want to
+// await its result in-process, rather than polling a separate HTTP endpoint the way the teacher-
+// facing quiz-generation UI does. Returns null when Redis is disabled, matching getGenerationQueue.
+export function getGenerationQueueEvents() {
+  if (!isRedisEnabled()) return null
+  if (!queueEvents) {
+    queueEvents = new QueueEvents(GENERATION_QUEUE, { connection: makeBullConnection() })
+  }
+  return queueEvents
 }

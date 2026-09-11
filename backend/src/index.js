@@ -24,6 +24,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import remediationRoutes from './routes/remediation.js'
 
 // Import models for reference
 import './models/index.js'
@@ -37,9 +38,13 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
 const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
   // 10- or 30-minute session) that can take minutes, so those routes get a much
-  // longer timeout. Everything else keeps the tight 30s cap.
-  const isGeneration = req.path.startsWith('/api/questions/generate')
-  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+  // longer timeout. Remediation generation does the same kind of synchronous LLM call, and at
+  // scale (100s of students) can now also queue behind the shared generation worker's concurrency
+  // limit and retry several times with backoff (see questionService.js) — worst case, a student
+  // needing 2 sequential remediation questions that both queue+retry can take a few minutes. It
+  // needs at least as much room as question generation. Everything else keeps the tight 30s cap.
+  const isGeneration = req.path.startsWith('/api/questions/generate') || req.path.startsWith('/api/remediation/generate')
+  const timeoutMs = isGeneration ? 600000 : 30000 // 10 min for generation, 30s otherwise
 
   req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
@@ -60,6 +65,7 @@ const requestTimeout = (req, res, next) => {
 const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
+  path: BASE_PATH + '/socket.io',
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
@@ -387,6 +393,7 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
+app.use('/api/remediation', remediationRoutes)
 app.use('/api/admin', adminRoutes)
 
 // Health check
@@ -498,6 +505,42 @@ async function setLiveQuestion(roomId, questionId) {
     const { setRoomLive } = await import('./services/roomLiveCache.js')
     await setRoomLive(roomId, questionId)
   } catch { /* non-fatal */ }
+}
+
+// Pre-generate the remediation question for a just-ended question, rather than making the
+// student's browser wait on a cold LLM call once the room ends (previously: up to ~10s of "preparing
+// your personalised questions..." for a couple of MiniMax calls back to back). Fire-and-forget from
+// the question:end handler — never awaited there, and every failure here is caught and logged so a
+// bad generation can't crash the socket handler or block the 'question:ended' broadcast.
+//
+// Waits PRE_GEN_DELAY_MS first so most stragglers' responses land before we compute the class-wide
+// "most commonly picked wrong answer" that's used as LLM context — a late response or two trickling
+// in after that doesn't matter, it just wouldn't shift that stat.
+//
+// Uses the same ensureRemediationQuestion() as the /remediation/generate route, so it's race-safe:
+// if a fast student calls /generate before this delay finishes, whichever of them gets there first
+// wins the generation and the other one just waits on it — no duplicate LLM calls either way.
+const PRE_GEN_DELAY_MS = Number(process.env.REMEDIATION_PRE_GEN_DELAY_MS) || 4000
+
+async function preGenerateRemediation(room, questionId) {
+  await new Promise(r => setTimeout(r, PRE_GEN_DELAY_MS))
+  try {
+    const Question = (await import('./models/Question.js')).default
+    const Response = (await import('./models/Response.js')).default
+    const { ensureRemediationQuestion } = await import('./services/questionService.js')
+
+    const parentQuestion = await Question.findById(questionId).lean()
+    if (!parentQuestion || parentQuestion.isRemediation) return
+
+    // Skip the LLM call entirely if nobody actually got this one wrong.
+    const anyWrong = await Response.exists({ roomId: room._id, questionId, isCorrect: false })
+    if (!anyWrong) return
+
+    const provider = room.settings?.questionProvider || 'minimax'
+    await ensureRemediationQuestion(room._id, parentQuestion, provider)
+  } catch (err) {
+    console.error('[remediation] Pre-generation failed for question:', questionId, err.message)
+  }
 }
 
 // Remove answer-revealing fields (which option is correct, and the explanation) from a question
@@ -658,11 +701,17 @@ io.on('connection', (socket) => {
   })
 
   socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const room = await verifyRoomOwner(socket, data?.roomCode)
+    if (!room) return
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
+    // Pre-generate this question's remediation question now, in the background, instead of
+    // waiting until room end. By the time students reach the remediation page, generation is
+    // usually already done (or in flight and race-safe) rather than a cold LLM call each time —
+    // see preGenerateRemediation() above for why the delay and race-safety matter.
+    if (data.questionId) preGenerateRemediation(room, data.questionId)
   })
 
   // New question pushed by the teacher (manually created)
