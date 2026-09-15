@@ -1,7 +1,7 @@
 import express from 'express'
 import { authenticate, authorize } from '../middleware/auth.js'
 import UserLifetimeStats from '../models/UserLifetimeStats.js'
-import { getUserAchievements, getSectionAchievements, getAchievementProgress, getAchievementOverview } from '../services/achievementEngine.js'
+import { getUserAchievements, getSectionAchievements, getSectionAchievementLeaderboard, getAchievementProgress, getAchievementOverview } from '../services/achievementEngine.js'
 
 const router = express.Router()
 router.use(authenticate, authorize('student'))
@@ -26,6 +26,11 @@ router.get('/sections', async (req, res) => {
 router.get('/section/:roomCode', async (req, res) => {
   try { res.json(await getSectionAchievements(req.user._id, req.params.roomCode.toUpperCase())) }
   catch (error) { console.error('Section achievement error:', error); res.status(500).json({ success: false, error: 'Failed to fetch section achievements' }) }
+})
+
+router.get('/section/:roomCode/leaderboard', async (req, res) => {
+  try { res.json(await getSectionAchievementLeaderboard(req.user._id, req.params.roomCode.toUpperCase())) }
+  catch (error) { console.error('Section achievement leaderboard error:', error); res.status(500).json({ success: false, error: 'Failed to fetch section badge leaderboard' }) }
 })
 
 // Backwards-compatible endpoint.

@@ -104,6 +104,60 @@ export async function getSectionAchievements(userId, roomCode) {
   }
 }
 
+export async function getSectionAchievementLeaderboard(userId, roomCode) {
+  const achievements = await UserAchievement.find({ scope: 'section', roomCode })
+    .sort({ earnedAt: -1, _id: -1 })
+    .populate('badgeId')
+    .populate('userId', 'name')
+    .lean()
+
+  const grouped = new Map()
+  for (const achievement of achievements) {
+    if (!achievement.badgeId || !achievement.userId) continue
+    const id = String(achievement.userId._id)
+    const entry = grouped.get(id) || {
+      userId: id,
+      name: achievement.userId.name,
+      badges: []
+    }
+    entry.badges.push({
+      id: String(achievement.badgeId._id),
+      name: achievement.badgeId.name,
+      description: achievement.badgeId.description,
+      criteria: achievement.badgeId.criteria,
+      icon: achievement.badgeId.icon,
+      category: achievement.badgeId.category,
+      earnedAt: achievement.earnedAt
+    })
+    grouped.set(id, entry)
+  }
+
+  const userIds = [...grouped.keys()]
+  const stats = await UserRoomStats.find({ roomCode, userId: { $in: userIds } })
+    .select('userId totalPoints correctAnswers totalAnswers')
+    .lean()
+  const statsByUser = new Map(stats.map(stat => [String(stat.userId), stat]))
+
+  const ranked = [...grouped.values()]
+    .map(entry => ({
+      ...entry,
+      totalPoints: statsByUser.get(entry.userId)?.totalPoints || 0,
+      correctAnswers: statsByUser.get(entry.userId)?.correctAnswers || 0,
+      totalAnswers: statsByUser.get(entry.userId)?.totalAnswers || 0
+    }))
+    .sort((a, b) => b.badges.length - a.badges.length || b.totalPoints - a.totalPoints || b.correctAnswers - a.correctAnswers || a.name.localeCompare(b.name))
+    .map((entry, index) => ({ ...entry, rank: index + 1 }))
+
+  const top = ranked.slice(0, 5).map(entry => ({
+    ...entry,
+    isCurrentUser: entry.userId === String(userId)
+  }))
+  const current = ranked.find(entry => entry.userId === String(userId))
+  if (current && !top.some(entry => entry.userId === current.userId)) top.push({ ...current, displayRank: 6, isCurrentUser: true })
+
+  return { roomCode, entries: top }
+}
+
 export async function getAchievementProgress(userId) {
   await syncEligibleAchievements(userId)
   const [earnedIds, total] = await Promise.all([

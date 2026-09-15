@@ -9,6 +9,22 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
 
+const fetchWithRetry = async (url, options, attempts = 4) => {
+  let lastError
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const response = await fetch(url, options)
+      if (response.status < 500 || attempt === attempts - 1) return response
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < attempts - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt))
+    }
+  }
+  throw lastError
+}
+
 function StudentDashboard() {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
@@ -37,7 +53,7 @@ function StudentDashboard() {
 
   const fetchStudentStats = async () => {
     try {
-      const res = await fetch(`${API_URL}/responses/stats/student/${user._id}`, {
+      const res = await fetchWithRetry(`${API_URL}/responses/stats/student/${user._id}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -56,7 +72,7 @@ function StudentDashboard() {
 
   const fetchAchievementProgress = async () => {
     try {
-      const res = await fetch(`${API_URL}/achievements/progress`, {
+      const res = await fetchWithRetry(`${API_URL}/achievements/progress`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       if (!res.ok) return
