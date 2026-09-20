@@ -31,9 +31,71 @@ function App() {
   // instead of a logged-in-looking UI that only fails when they try to answer. This backs up the
   // onRehydrateStorage check in authStore for any timing edge.
   useEffect(() => {
-    const { token: t } = useAuthStore.getState()
-    if (t && isTokenExpired(t)) {
-      useAuthStore.getState().handleSessionExpired()
+    if (isAuthenticated || samagamaChecked) return
+
+    const checkSamagamaSession = async () => {
+      try {
+        const samagamaToken = localStorage.getItem('samagama_auth_token')
+        console.log('[Spandan] Samagama token found:', !!samagamaToken)
+
+        if (!samagamaToken) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const response = await fetch('https://samagama.in/api/auth/me', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${samagamaToken}`,
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (!response.ok) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const data = await response.json()
+        const samagamaUser = data.user
+        console.log('[Spandan] Samagama user:', samagamaUser?.email)
+
+        if (!samagamaUser || !samagamaUser.email) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        // Send to Spandan backend for auto-provisioning
+        const spandanResponse = await fetch(`${API_URL}/auth/samagama-auto-login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: samagamaUser.email,
+            name: samagamaUser.name,
+            isAdmin: samagamaUser.isAdmin || false,
+            isSuperAdmin: samagamaUser.isSuperAdmin || false
+          })
+        })
+
+        if (!spandanResponse.ok) {
+          setSamagamaChecked(true)
+          return
+        }
+
+        const spandanData = await spandanResponse.json()
+        setAuth(spandanData.user, spandanData.token)
+
+        // Open dashboard in new tab
+        const dashboard = spandanData.user.role === 'teacher' ? '/teacher' : '/student'
+        const basename = import.meta.env.VITE_BASE_PATH || ''
+        const redirectUrl = `${window.location.origin}${basename}${dashboard}`
+        console.log('[Spandan] Opening dashboard:', redirectUrl)
+        window.open(redirectUrl, '_blank')
+      } catch (error) {
+        console.error('[Spandan] Samagama session check failed:', error)
+      } finally {
+        setSamagamaChecked(true)
+      }
     }
   }, [])
 
@@ -63,8 +125,10 @@ function App() {
     }
   }, [isDark])
 
+  const basename = import.meta.env.VITE_BASE_PATH || '/'
+
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={basename}>
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
