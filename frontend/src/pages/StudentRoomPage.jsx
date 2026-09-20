@@ -52,6 +52,8 @@ function StudentRoomPage() {
   // True while the teacher's question-approval popup is open. The student video stays paused for the
   // WHOLE popup window (across every question the teacher launches from it), not just per-question.
   const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
+  const [supportNudge, setSupportNudge] = useState(null)
+  const seenNudgeIdsRef = useRef(new Set())
 
   useEffect(() => {
     if (!isVideoMode) return
@@ -187,12 +189,19 @@ function StudentRoomPage() {
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
 
+    const handleSupportNudge = (data) => {
+      if (String(data?.roomId) !== String(room?._id) || !data?.messageId || seenNudgeIdsRef.current.has(data.messageId)) return
+      seenNudgeIdsRef.current.add(data.messageId)
+      setSupportNudge({ messageId: data.messageId, message: data.message || 'Your teacher sent you encouragement.' })
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
     socket.on('video:progress', handleVideoProgress)
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
+    socket.on('struggle:nudge', handleSupportNudge)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -211,6 +220,7 @@ function StudentRoomPage() {
       socket.off('video:progress', handleVideoProgress)
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
+      socket.off('struggle:nudge', handleSupportNudge)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
@@ -515,6 +525,15 @@ function StudentRoomPage() {
               Leave
             </button>
           </div>
+
+          {supportNudge && (
+            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: '12px', justifyContent: 'space-between', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '12px', padding: '12px 16px', marginBottom: '24px', color: '#1e3a8a' }}>
+              <span>{supportNudge.message}</span>
+              <button onClick={() => setSupportNudge(null)} aria-label="Dismiss encouragement" style={{ border: 'none', background: 'transparent', color: '#1e40af', cursor: 'pointer', fontWeight: '700' }}>
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
               Hidden (not unmounted) while a question is live so the poll takes over like normal mode. */}
