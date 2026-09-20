@@ -1,6 +1,9 @@
 import express from 'express'
+import mongoose from 'mongoose'
+import { randomUUID } from 'node:crypto'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
+import { computeSupportRadar } from '../services/supportRadar.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
@@ -245,6 +248,9 @@ router.post('/', authorize('student'), async (req, res) => {
     // event, see index.js). Return this student's current rank ("rank on submit") from the board as
     // of the last segment fold (Option A) — the student still gets their points immediately below.
     const live = req.app.get('liveUpdates')
+    // A buffered response is acknowledged before it reaches MongoDB, so it cannot safely invalidate
+    // the radar yet. The default save path is durable here; notification failure is non-fatal.
+    if (!isBatchEnabled()) live?.notifySupportRadarChanged(roomId)
     live?.scheduleCounts(roomId)
     const rankInfo = (live ? await live.getRank(roomId, studentId) : null) || {}
 
@@ -263,6 +269,78 @@ router.post('/', authorize('student'), async (req, res) => {
   } catch (error) {
     console.error('Error saving response:', error)
     res.status(500).json({ success: false, error: 'Failed to save response' })
+  }
+})
+
+// GET /api/responses/struggle/:roomId - Teacher-only, temporary support signals for a live room.
+router.get('/struggle/:roomId', authorize('teacher'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    if (!mongoose.Types.ObjectId.isValid(roomId)) {
+      return res.status(400).json({ error: 'Invalid room ID' })
+    }
+
+    const Room = (await import('../models/Room.js')).default
+    const Response = (await import('../models/Response.js')).default
+    const User = (await import('../models/User.js')).default
+    const room = await Room.findById(roomId).select('teacher').lean()
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) return res.status(ownership.status).json({ error: ownership.error })
+
+    const responses = await Response.find({ roomId })
+      .select('studentId isCorrect createdAt _id')
+      .sort({ studentId: 1, createdAt: 1, _id: 1 })
+      .lean()
+    const flagged = computeSupportRadar(responses)
+    const users = await User.find({ _id: { $in: flagged.map(({ studentId }) => studentId) } })
+      .select('name')
+      .lean()
+    const nameById = new Map(users.map(user => [user._id.toString(), user.name || 'Unknown Student']))
+
+    return res.json({
+      success: true,
+      roomId,
+      students: flagged.map(student => ({
+        studentId: student.studentId,
+        name: nameById.get(student.studentId) || 'Unknown Student',
+        tier: student.tier
+      }))
+    })
+  } catch (error) {
+    console.error('Error fetching support radar:', error)
+    return res.status(500).json({ error: 'Failed to fetch support radar' })
+  }
+})
+
+// POST /api/responses/struggle/:roomId/nudge - Send a fixed private encouragement message.
+router.post('/struggle/:roomId/nudge', authorize('teacher'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const { studentId } = req.body || {}
+    if (!mongoose.Types.ObjectId.isValid(roomId) || !mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ error: 'Valid roomId and studentId are required' })
+    }
+
+    const Room = (await import('../models/Room.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const room = await Room.findById(roomId).select('teacher endedAt').lean()
+    const ownership = checkRoomOwnership(room, req.user._id)
+    if (!ownership.ok) return res.status(ownership.status).json({ error: ownership.error })
+    if (room.endedAt) return res.status(409).json({ error: 'Room has ended' })
+
+    const member = await RoomMember.findOne({ roomId, studentId }).select('_id').lean()
+    if (!member) return res.status(404).json({ error: 'Student is not a member of this room' })
+
+    const messageId = randomUUID()
+    req.app.get('io')?.to(`user:${studentId}`).emit('struggle:nudge', {
+      roomId,
+      messageId,
+      message: 'Your teacher is cheering you on. Take a breath and try the next question.'
+    })
+    return res.json({ success: true, messageId })
+  } catch (error) {
+    console.error('Error sending support nudge:', error)
+    return res.status(500).json({ error: 'Failed to send support nudge' })
   }
 })
 

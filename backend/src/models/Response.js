@@ -46,6 +46,8 @@ const responseSchema = new mongoose.Schema({
 responseSchema.index({ roomId: 1, questionId: 1, studentId: 1 }, { unique: true })
 // Index for leaderboard queries
 responseSchema.index({ roomId: 1, studentId: 1, points: -1 })
+// Support radar reads a student's response history in submission order.
+responseSchema.index({ roomId: 1, studentId: 1, createdAt: 1 })
 // Student-centric queries (stats, room history, distinct rooms) filter by studentId alone;
 // the compound indexes above start with roomId, so they can't serve these — hence a COLLSCAN without this.
 responseSchema.index({ studentId: 1 })
