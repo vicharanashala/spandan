@@ -1,4 +1,9 @@
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const currentDir = path.dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: path.resolve(currentDir, '../.env') })
 dotenv.config()
 
 export const config = {
@@ -13,6 +18,7 @@ export const config = {
   // droplet), or 'smtp'. EMAIL_TRANSPORT is accepted as an alias for back-compat.
   emailProvider: (process.env.EMAIL_PROVIDER || process.env.EMAIL_TRANSPORT || 'brevo').toLowerCase(),
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  nvidiaApiKey: process.env.NVIDIA_API_KEY || '',
   minimaxApiKey: process.env.MINIMAX_API_KEY || '',
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
@@ -21,6 +27,11 @@ export const config = {
 }
 
 export const AI_PROVIDERS = {
+  nvidia: {
+    name: 'NVIDIA NIM (Llama 3.1)',
+    enabled: !!config.nvidiaApiKey,
+    icon: '🟢'
+  },
   minimax: {
     name: 'MiniMax',
     enabled: !!config.minimaxApiKey,

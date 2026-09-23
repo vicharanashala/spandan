@@ -3,22 +3,69 @@
   "version": "0.1.0",
   "private": true,
   "description": "Spandan - Poll Question Generator",
+  "main": "electron/main.js",
   "workspaces": [
     "frontend",
     "backend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev": "concurrently -n backend,frontend,electron -c blue,cyan,green \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
     "dev:frontend": "npm run dev --workspace=frontend",
     "dev:backend": "npm run dev --workspace=backend",
+    "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "transcription": "npm run transcription --workspace=backend",
+    "tunnel": "node run-tunnel.js",
+    "dev:tunnel": "concurrently -n frontend,backend,transcribe,tunnel -c cyan,blue,magenta,yellow \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run transcription\" \"npm run tunnel\"",
     "build": "npm run build --workspace=frontend",
+    "build:frontend": "npm run build --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
+    "build:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable",
+    "dist:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable",
+    "dist:mac": "npm run build:frontend && electron-builder --mac",
     "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.2"
   },
   "dependencies": {
     "pm2": "^7.0.1"
+  },
+  "build": {
+    "appId": "com.vibe.spandan",
+    "productName": "Spandan",
+    "executableName": "Spandan",
+    "asar": true,
+    "electronVersion": "34.5.8",
+    "compression": "maximum",
+    "icon": "frontend/public/spandan-icon.ico",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "!dist/**/*.zip",
+      "!dist/**/*.exe"
+    ],
+    "win": {
+      "executableName": "Spandan",
+      "icon": "frontend/public/spandan-icon.ico",
+      "target": ["portable"],
+      "sign": null
+    },
+    "portable": {
+      "artifactName": "Spandan-Portable.exe"
+    },
+    "mac": {
+      "icon": "frontend/public/spandan-icon.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Spandan needs microphone access to record your voice during live sessions.",
+        "NSCameraUsageDescription": "Spandan needs camera access for video during live sessions."
+      }
+    }
   }
 }

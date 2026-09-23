@@ -41,7 +41,10 @@ export const useAuthStore = create(
         try {
           const response = await fetch(`${API_URL}/auth/login`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
             body: JSON.stringify({ email, password })
           })
           
@@ -123,7 +126,10 @@ export const useAuthStore = create(
         try {
           const response = await fetch(`${API_URL}/auth/register/send-otp`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
             body: JSON.stringify({ name, email })
           })
           const data = await response.json()
@@ -143,7 +149,10 @@ export const useAuthStore = create(
         try {
           const response = await fetch(`${API_URL}/auth/register/verify`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
             body: JSON.stringify({ name, email, password, role, otp })
           })
           const data = await response.json()
@@ -230,11 +239,15 @@ export const useAuthStore = create(
       // load and flag it, so the app shows the login screen (with a reason) instead of a
       // logged-in-looking UI that only fails later at answer-submit time.
       onRehydrateStorage: () => (state) => {
-        if (state && state.token && isTokenExpired(state.token)) {
-          state.user = null
-          state.token = null
-          state.isAuthenticated = false
-          state.sessionExpired = true
+        if (state && state.token) {
+          const expired = isTokenExpired(state.token)
+          console.log('[Spandan AuthStore] Rehydrated token exists, expired check:', expired)
+          if (expired) {
+            state.user = null
+            state.token = null
+            state.isAuthenticated = false
+            state.sessionExpired = true
+          }
         }
       }
     }

@@ -142,6 +142,14 @@ router.post('/', authorize('student'), async (req, res) => {
       if (!closeAt || Date.now() >= closeAt) {
         return res.status(409).json({ error: 'poll_closed' })
       }
+    } else {
+      // If it is the current question, check if its duration + grace has expired
+      const timeToAnswer = question.timeToAnswer || 30
+      const createdAtTime = new Date(question.createdAt).getTime()
+      const GRACE = Number(process.env.POLL_RESPONSE_GRACE_MS) || 10000
+      if (Date.now() > createdAtTime + (timeToAnswer * 1000) + GRACE) {
+        return res.status(409).json({ error: 'poll_closed' })
+      }
     }
 
     // Check if answer is correct based on question type

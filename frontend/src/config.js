@@ -1,7 +1,11 @@
-// Central configuration - change VITE_BASE_PATH in .env to update entire app
-// Only ONE value to change when deploying to a different path
+// Central configuration
+// Set VITE_BACKEND_URL in frontend/.env to point directly to your backend tunnel URL
+// (e.g. VITE_BACKEND_URL=https://your-backend-tunnel.trycloudflare.com)
 
-const BASE_PATH = import.meta.env.VITE_BASE_PATH || ''
+const customBackendUrl = (import.meta.env.VITE_BACKEND_URL || '').trim()
 
-export const API_URL = BASE_PATH + '/api'
-export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin
+export const API_URL = customBackendUrl
+  ? `${customBackendUrl.replace(/\/+$/, '')}/api`
+  : `${import.meta.env.VITE_BASE_PATH || ''}/api`
+
+export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || customBackendUrl || window.location.origin

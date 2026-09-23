@@ -74,7 +74,25 @@ router.get('/:id', authenticate, async (req, res) => {
     // number immediately (the room:joined/room:left socket events keep it updated after load).
     const participants = await RoomMember.countDocuments({ roomId: req.params.id })
 
-    res.json({ room, participants })
+    let activeQuestion = null
+    if (room.currentQuestion) {
+      const Question = (await import('../models/Question.js')).default
+      const q = await Question.findById(room.currentQuestion).lean()
+      if (q && (!q.closeAt || new Date(q.closeAt) > new Date())) {
+        const launchedAtTime = q.launchedAt ? new Date(q.launchedAt).getTime() : new Date(q.createdAt).getTime()
+        const elapsedSeconds = Math.floor((Date.now() - launchedAtTime) / 1000)
+        const tta = q.timeToAnswer || 30
+        if (elapsedSeconds < tta) {
+          activeQuestion = isOwner ? { ...q, remainingTime: tta - elapsedSeconds } : {
+            ...q,
+            options: Array.isArray(q.options) ? q.options.map(({ isCorrect, ...o }) => o) : q.options,
+            remainingTime: tta - elapsedSeconds
+          }
+        }
+      }
+    }
+
+    res.json({ room, participants, activeQuestion })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -99,7 +117,26 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
       { upsert: true, new: true }
     )
     
-    res.json({ room })
+    let activeQuestion = null
+    if (room.currentQuestion) {
+      const Question = (await import('../models/Question.js')).default
+      const q = await Question.findById(room.currentQuestion).lean()
+      if (q && (!q.closeAt || new Date(q.closeAt) > new Date())) {
+        const launchedAtTime = q.launchedAt ? new Date(q.launchedAt).getTime() : new Date(q.createdAt).getTime()
+        const elapsedSeconds = Math.floor((Date.now() - launchedAtTime) / 1000)
+        const tta = q.timeToAnswer || 30
+        if (elapsedSeconds < tta) {
+          const { explanation, options, ...rest } = q
+          activeQuestion = {
+            ...rest,
+            options: Array.isArray(options) ? options.map(({ isCorrect, ...o }) => o) : options,
+            remainingTime: tta - elapsedSeconds
+          }
+        }
+      }
+    }
+
+    res.json({ room, activeQuestion })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })
@@ -140,6 +177,15 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       return res.status(400).json({ error: 'Cannot reactivate an ended room' })
     }
 
+    const oldProvider = room.settings?.transcriptionProvider || 'whisper'
+    const newProvider = req.body.settings?.transcriptionProvider
+    let logMessage = null
+
+    if (newProvider && oldProvider !== newProvider) {
+      logMessage = `Transcription provider switched from '${oldProvider}' to '${newProvider}'`
+      console.log(`[TRANSCRIPTION CHANGE] Room ${room.code || req.params.id}: ${logMessage}`)
+    }
+
     const updatedRoom = await updateRoom(req.params.id, req.body)
     
     // If room is being ended, emit socket event to notify all participants
@@ -155,7 +201,7 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
     }
     
-    res.json({ message: 'Room updated successfully', room: updatedRoom })
+    res.json({ message: 'Room updated successfully', room: updatedRoom, log: logMessage })
   } catch (error) {
     const status = error.message === 'Room not found' ? 404 : 500
     res.status(status).json({ error: error.message })

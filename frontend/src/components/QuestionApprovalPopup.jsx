@@ -4,10 +4,9 @@ import QuestionEditor from './QuestionEditor'
 function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
-  const [timeToAnswer, setTimeToAnswer] = useState(30)
-  const [timeLeft, setTimeLeft] = useState(30)
+  const [timeLeft, setTimeLeft] = useState(0)
   const [isTimerActive, setIsTimerActive] = useState(false)
-  const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1) // which question is currently launched
+  const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1)
   const [isEditing, setIsEditing] = useState(false)
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
@@ -19,6 +18,13 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
   // Leave edit mode whenever we move to a different question.
   useEffect(() => { setIsEditing(false) }, [currentIndex])
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [])
 
   // Persist an edited question back into local state so Approve & Launch sends the edited version.
   const updateCurrent = (updated) =>
@@ -41,16 +47,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
           clearInterval(timerRef.current)
           timerRef.current = null
           setIsTimerActive(false)
-          // Auto-advance to next question when timer hits 0
-          if (questionIndex < pendingQuestions.length - 1) {
-            setTimeout(() => moveToNext(), 300)
-          } else {
-            // Last question - call onComplete
-            setTimeout(() => {
-              if (onComplete) onComplete()
-              else onClose()
-            }, 300)
-          }
+          setLaunchedQuestionIndex(-1)
           return 0
         }
         return prev - 1
@@ -58,36 +55,28 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     }, 1000)
   }
 
-  // Stop the current timer
-  const stopTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-    setIsTimerActive(false)
-    setLaunchedQuestionIndex(-1)
-  }
-
   const handleApprove = () => {
     const current = pendingQuestions[currentIndex]
     onApprove(current)
-    // Start timer when question is launched
+    // Start timer for the launched question
     startTimer(currentIndex)
+    // Immediately advance to next question so teacher can preview it
+    if (currentIndex < pendingQuestions.length - 1) {
+      setCurrentIndex(prev => prev + 1)
+    }
   }
 
   const handleReject = () => {
-    stopTimer() // Stop timer when rejecting
     const current = pendingQuestions[currentIndex]
     onReject(current)
     moveToNext()
   }
 
   const moveToNext = () => {
-    stopTimer() // Stop timer when moving to next
     if (currentIndex < pendingQuestions.length - 1) {
       setCurrentIndex(prev => prev + 1)
     } else {
-      // All questions processed - call onComplete instead of just onClose
+      // All questions processed
       if (onComplete) {
         onComplete()
       } else {
@@ -96,9 +85,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     }
   }
 
-  // Skip to a question (from navigation pills) - stops current timer
+  // Skip to a question (from navigation pills)
   const skipToQuestion = (index) => {
-    stopTimer()
     setCurrentIndex(index)
   }
 
@@ -107,6 +95,9 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   }
 
   const currentQuestion = pendingQuestions[currentIndex]
+  const isCurrentLaunched = launchedQuestionIndex === currentIndex
+  // A question is considered "already launched" if its index <= launchedQuestionIndex
+  const isAlreadyLaunched = launchedQuestionIndex >= 0 && currentIndex <= launchedQuestionIndex
 
   const getTypeLabel = (type) => {
     switch (type) {
@@ -149,6 +140,41 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
         boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
         border: '1px solid var(--border-color)'
       }}>
+        {/* Live Question Timer Banner — persistent while any question is active */}
+        {isTimerActive && launchedQuestionIndex >= 0 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 16px',
+            marginBottom: '16px',
+            borderRadius: '12px',
+            background: timeLeft <= 5 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+            border: `2px solid ${timeLeft <= 5 ? '#ef4444' : '#10b981'}`
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                background: timeLeft <= 5 ? '#ef4444' : '#10b981',
+                animation: 'pulse 1s infinite'
+              }} />
+              <span style={{ fontSize: '13px', fontWeight: '600', color: timeLeft <= 5 ? '#ef4444' : '#10b981' }}>
+                Q{launchedQuestionIndex + 1} is LIVE
+              </span>
+            </div>
+            <span style={{
+              fontSize: '18px',
+              color: timeLeft <= 5 ? '#ef4444' : '#10b981',
+              fontWeight: '700',
+              animation: timeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+            }}>
+              ⏱️ {timeLeft}s
+            </span>
+          </div>
+        )}
+
         {/* Header */}
         <div style={{
           display: 'flex',
@@ -165,34 +191,9 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
                 Question {currentIndex + 1} of {pendingQuestions.length}
               </p>
             </div>
-            {isTimerActive && launchedQuestionIndex === currentIndex && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '8px 16px',
-                borderRadius: '20px',
-                background: timeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                border: `2px solid ${timeLeft <= 5 ? '#ef4444' : '#10b981'}`
-              }}>
-                <span style={{ 
-                  fontSize: '18px', 
-                  color: timeLeft <= 5 ? '#ef4444' : '#10b981', 
-                  fontWeight: '700',
-                  animation: timeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
-                }}>
-                  ⏱️ {timeLeft}s
-                </span>
-                {timeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    LEFT!
-                  </span>
-                )}
-              </div>
-            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            {!(isTimerActive && launchedQuestionIndex === currentIndex) && (
+            {!isAlreadyLaunched && (
               <button
                 onClick={() => setIsEditing(e => !e)}
                 style={{
@@ -226,25 +227,54 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
         {/* Question Navigation Pills */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
-          {pendingQuestions.map((q, index) => (
-            <button
-              key={q.id || index}
-              onClick={() => skipToQuestion(index)}
-              style={{
-                padding: '4px 12px',
-                borderRadius: '20px',
-                border: index === currentIndex 
-                  ? '2px solid #3b82f6' 
-                  : '1px solid var(--border-color)',
-                background: index === currentIndex ? '#dbeafe' : 'transparent',
-                color: index === currentIndex ? '#1e40af' : 'var(--text-secondary)',
-                fontSize: '12px',
-                cursor: 'pointer'
-              }}
-            >
-              Q{index + 1} ({q.type})
-            </button>
-          ))}
+          {pendingQuestions.map((q, index) => {
+            const isLive = isTimerActive && launchedQuestionIndex === index
+            const wasLaunched = launchedQuestionIndex >= 0 && index <= launchedQuestionIndex
+            return (
+              <button
+                key={q.id || index}
+                onClick={() => skipToQuestion(index)}
+                style={{
+                  padding: '4px 12px',
+                  borderRadius: '20px',
+                  border: index === currentIndex 
+                    ? '2px solid #3b82f6' 
+                    : isLive
+                      ? '2px solid #10b981'
+                      : '1px solid var(--border-color)',
+                  background: index === currentIndex 
+                    ? '#dbeafe' 
+                    : isLive 
+                      ? 'rgba(16, 185, 129, 0.15)'
+                      : wasLaunched 
+                        ? 'rgba(16, 185, 129, 0.08)' 
+                        : 'transparent',
+                  color: index === currentIndex 
+                    ? '#1e40af' 
+                    : isLive 
+                      ? '#10b981'
+                      : wasLaunched 
+                        ? '#059669' 
+                        : 'var(--text-secondary)',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                {isLive && <span style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: '#10b981',
+                  animation: 'pulse 1s infinite'
+                }} />}
+                {wasLaunched && !isLive && '✓ '}
+                Q{index + 1} ({q.type})
+              </button>
+            )
+          })}
         </div>
 
         {/* Current Question Card — editable when the teacher taps Edit, read-only otherwise */}
@@ -349,51 +379,55 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '12px' }}>
-          {isTimerActive && launchedQuestionIndex === currentIndex ? (
-            currentIndex < pendingQuestions.length - 1 ? (
-              <button
-                onClick={moveToNext}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  borderRadius: '12px',
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #3b82f6, #1e40af)',
-                  color: 'white',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px'
-                }}
-              >
-                Next Question →
-              </button>
-            ) : (
-              <button
-                onClick={onClose}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  borderRadius: '12px',
-                  border: '2px solid #6b7280',
-                  background: 'transparent',
-                  color: '#6b7280',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px'
-                }}
-              >
-                ✕ Close
-              </button>
-            )
+          {isAlreadyLaunched ? (
+            /* Already launched — show navigation options */
+            <>
+              {currentIndex < pendingQuestions.length - 1 ? (
+                <button
+                  onClick={moveToNext}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #3b82f6, #1e40af)',
+                    color: 'white',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  Next Question →
+                </button>
+              ) : (
+                <button
+                  onClick={() => onComplete ? onComplete() : onClose()}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: 'white',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  ✓ Done — Resume Session
+                </button>
+              )}
+            </>
           ) : (
+            /* Not yet launched — show reject + approve */
             <>
               <button
                 onClick={handleReject}

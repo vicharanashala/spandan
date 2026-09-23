@@ -395,31 +395,30 @@ export function parseOptions(options, type) {
   }))
 }
 
-// MiniMax API call
-async function generateWithMiniMax(prompt) {
-  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+// MiniMax API call (supports direct MiniMax API and NVIDIA NIM models)
+// NVIDIA NIM API call (Llama 3.1 8B Instruct)
+async function generateWithNvidia(prompt, model = 'meta/llama-3.1-8b-instruct') {
+  const apiKey = config.nvidiaApiKey
+  if (!apiKey) throw new Error('NVIDIA API key not configured')
+
+  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.minimaxApiKey}`
+      'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: 'MiniMax-M2.7',
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
+      model,
+      messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
-      max_tokens: 8000
-    })
+      max_tokens: 4096
+    }),
+    signal: AbortSignal.timeout(120000)
   })
-
 
   if (!response.ok) {
     const errorData = await response.text()
-    throw new Error(`MiniMax API error: ${response.status} - ${errorData}`)
+    throw new Error(`NVIDIA NIM API error (${response.status}): ${errorData}`)
   }
 
   const data = await response.json()
@@ -428,16 +427,51 @@ async function generateWithMiniMax(prompt) {
   const reasoning = choice?.message?.reasoning_content || ''
   const finish = choice?.finish_reason
   const usage = data.usage || {}
-  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
-  // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
-  // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
-  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  console.log(`[gen:nvidia] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+
   const text = content || reasoning
   if (!text) {
-    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
-  } else if (!content && reasoning) {
-    console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+    console.error('[gen:nvidia] EMPTY response. raw choice: ' + JSON.stringify(choice).slice(0, 1000))
+  }
+  return text
+}
+
+// MiniMax API call
+async function generateWithMiniMax(prompt, model = 'MiniMax-M2.7') {
+  const apiKey = config.minimaxApiKey
+  if (!apiKey) throw new Error('MiniMax API key not configured')
+
+  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 8000
+    }),
+    signal: AbortSignal.timeout(120000)
+  })
+
+  if (!response.ok) {
+    const errorData = await response.text()
+    throw new Error(`MiniMax API error (${response.status}): ${errorData}`)
+  }
+
+  const data = await response.json()
+  const choice = data.choices?.[0]
+  const content = choice?.message?.content || ''
+  const reasoning = choice?.message?.reasoning_content || ''
+  const finish = choice?.finish_reason
+  const usage = data.usage || {}
+  console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
+
+  const text = content || reasoning
+  if (!text) {
+    console.error('[gen:minimax] EMPTY response. raw choice: ' + JSON.stringify(choice).slice(0, 1000))
   }
   return text
 }
@@ -536,9 +570,38 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
+// Call a specific provider and return its raw text response
+async function callProvider(provider, prompt) {
+  switch (provider) {
+    case 'nvidia':
+      if (!config.nvidiaApiKey && config.minimaxApiKey?.startsWith('nvapi-')) {
+        config.nvidiaApiKey = config.minimaxApiKey
+      }
+      return await generateWithNvidia(prompt)
+    case 'minimax':
+      if (!config.minimaxApiKey && config.nvidiaApiKey) {
+        return await generateWithNvidia(prompt)
+      }
+      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+      return await generateWithMiniMax(prompt)
+    case 'openai':
+      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+      return await generateWithOpenAI(prompt)
+    case 'anthropic':
+      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+      return await generateWithAnthropic(prompt)
+    case 'google':
+      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      return await generateWithGoogle(prompt)
+    default:
+      throw new Error(`Unknown provider: ${provider}`)
+  }
+}
+
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const defaultProvider = config.nvidiaApiKey ? 'nvidia' : (config.minimaxApiKey ? 'minimax' : 'google')
+  const { numQuestions = 2, difficulty = 'medium', provider = defaultProvider, questionTypeMix = null } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -552,36 +615,16 @@ export async function generateQuestions(transcript, cfg) {
 
   console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
 
-  let responseText
-
-  switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
-    case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
-      break
-    case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
-      break
-    case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
-  }
+  const responseText = await callProvider(provider, prompt)
 
   console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
   const questions = parseQuestions(responseText, questionTypes)
-  if (questions.length === 0) {
+  const slicedQuestions = questions.slice(0, numQuestions)
+  if (slicedQuestions.length === 0) {
     console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
   } else {
-    console.log(`Generated ${questions.length} questions successfully`)
+    console.log(`Generated ${slicedQuestions.length} questions successfully (requested: ${numQuestions}, parsed: ${questions.length})`)
   }
 
-  return questions
-}
+  return slicedQuestions
+}

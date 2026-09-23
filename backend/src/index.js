@@ -28,10 +28,32 @@ import adminRoutes from './routes/admin.js'
 // Import models for reference
 import './models/index.js'
 
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
 dotenv.config()
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
+
+const corsOriginVerifier = (origin, callback) => {
+  // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
+  if (!origin) return callback(null, true)
+  // Allow if origin is in the explicit CORS_ORIGINS list
+  if (CORS_ORIGINS.includes(origin)) return callback(null, true)
+  // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return callback(null, true)
+  }
+  // Allow Cloudflare Quick Tunnels and ngrok tunnels
+  if (origin.endsWith('.trycloudflare.com') || origin.endsWith('.ngrok-free.dev') || origin.endsWith('.ngrok.io')) {
+    return callback(null, true)
+  }
+  callback(null, true)
+}
+
 
 // Request timeout middleware - defined BEFORE use due to hoisting
 const requestTimeout = (req, res, next) => {
@@ -60,18 +82,9 @@ const requestTimeout = (req, res, next) => {
 const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
+  path: '/spandan/socket.io',
   cors: {
-    origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
-      if (!origin) return callback(null, true)
-      // Allow if origin is in the explicit CORS_ORIGINS list
-      if (CORS_ORIGINS.includes(origin)) return callback(null, true)
-      // Allow any localhost origin (covers localhost:5173, :8080, :3001, etc.)
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-        return callback(null, true)
-      }
-      callback(new Error('Not allowed by CORS'))
-    },
+    origin: corsOriginVerifier,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -366,7 +379,7 @@ const otpLimiter = rateLimit({
 // Middleware
 app.use(helmet())
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: corsOriginVerifier,
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
@@ -397,6 +410,33 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
   })
+})
+
+// Debug endpoint — inspect Socket.IO room membership (dev only)
+app.get('/api/debug/sockets/:roomCode', async (req, res) => {
+  try {
+    const roomCode = req.params.roomCode
+    const sockets = await io.in(roomCode).fetchSockets()
+    const allSockets = await io.fetchSockets()
+    res.json({
+      roomCode,
+      socketsInRoom: sockets.map(s => ({
+        id: s.id,
+        userId: s.data?.userId,
+        role: s.data?.role,
+        rooms: [...s.rooms]
+      })),
+      totalConnectedSockets: allSockets.length,
+      allSocketRooms: allSockets.map(s => ({
+        id: s.id,
+        userId: s.data?.userId,
+        role: s.data?.role,
+        rooms: [...s.rooms]
+      }))
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // Socket.IO connection handling
@@ -453,7 +493,10 @@ function scheduleSocketExpiry(socket) {
 // Returns the room doc when the socket is the room's teacher-owner, else null. Returning the room
 // (not just a bool) lets callers use room._id (e.g. to mark the current question) without re-looking
 // it up; truthiness of the result is still a valid owner check.
-async function verifyRoomOwner(socket, roomCode) {
+async function verifyRoomOwner(socket, roomCode, token) {
+  if (!socket.data?.userId && token) {
+    try { await authenticateSocket(socket, token) } catch {}
+  }
   if (socket.data?.role !== 'teacher' || !roomCode) return null
   try {
     const Room = (await import('./models/Room.js')).default
@@ -490,8 +533,8 @@ async function setLiveQuestion(roomId, questionId) {
     if (outgoing && String(outgoing) !== String(questionId)) {
       await Question.updateOne({ _id: outgoing }, { $set: { closeAt: new Date(Date.now() + GRACE) } })
     }
-    // The incoming poll is now live — clear any stale closeAt (e.g. if it is being re-launched).
-    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null } })
+    // The incoming poll is now live — clear any stale closeAt and record the exact launch timestamp.
+    await Question.updateOne({ _id: questionId }, { $set: { closeAt: null, launchedAt: new Date() } })
     await Room.updateOne({ _id: roomId }, { currentQuestion: questionId })
     // Refresh the shared room-live cache so POST /responses can check the live poll without a Mongo
     // read per submit (see services/roomLiveCache.js). Launch is the sole writer of this value.
@@ -554,9 +597,16 @@ io.on('connection', (socket) => {
 
   // Join room — identity is taken from the AUTHENTICATED socket, not the client payload
   // (so a client can't join/register as another user).
-  socket.on('room:join', async ({ roomCode }) => {
-    const userId = socket.data?.userId
-    const role = socket.data?.role
+  socket.on('room:join', async ({ roomCode, token }) => {
+    let userId = socket.data?.userId
+    let role = socket.data?.role
+    if (!userId && token) {
+      try {
+        await authenticateSocket(socket, token)
+        userId = socket.data?.userId
+        role = socket.data?.role
+      } catch (e) {}
+    }
     if (!userId) { socket.emit('room:error', { error: 'Not authenticated' }); return }
     // Token this socket authenticated with has since lapsed — refuse the join and tell the client to
     // re-login rather than trusting the userId cached at connect time.
@@ -646,7 +696,7 @@ io.on('connection', (socket) => {
   // Question events — teacher-only and restricted to the room's OWNER (server-verified),
   // so a student can no longer forge question start/end or push a fake question to the room.
   socket.on('question:start', async (data) => {
-    const room = await verifyRoomOwner(socket, data?.roomCode)
+    const room = await verifyRoomOwner(socket, data?.roomCode, data?.token)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
     io.to(data.roomCode).emit('question:started', {
@@ -658,24 +708,37 @@ io.on('connection', (socket) => {
   })
 
   socket.on('question:end', async (data) => {
-    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    const room = await verifyRoomOwner(socket, data?.roomCode, data?.token)
+    if (!room) return
+
+    try {
+      const Room = (await import('./models/Room.js')).default
+      await Room.updateOne({ _id: room._id }, { $unset: { currentQuestion: 1 } })
+      
+      const { setRoomLive } = await import('./services/roomLiveCache.js')
+      await setRoomLive(room._id, null)
+    } catch (err) {
+      console.error('Error clearing live question in question:end:', err)
+    }
+
     io.to(data.roomCode).emit('question:ended', {
       questionId: data.questionId,
       results: data.results
     })
   })
 
-  // New question pushed by the teacher (manually created)
+  // New question pushed by the teacher (manually created) — fallback path.
+  // The primary broadcast path is now POST /api/questions (REST), but keep this
+  // handler so older clients or custom integrations still work.
   socket.on('new_question', async (data) => {
-    const room = await verifyRoomOwner(socket, data?.roomCode)
+    const room = await verifyRoomOwner(socket, data?.roomCode, data?.token)
     if (!room) {
       console.warn('new_question rejected — not the room owner:', socket.id)
       return
     }
     if (data.question) {
-      const qId = data.question._id || data.question.id
-      if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+      const { launchQuestion } = await import('./services/questionBroadcast.js')
+      await launchQuestion(io, room._id, data.roomCode, data.question)
     }
   })
 
@@ -754,7 +817,7 @@ const PORT = process.env.PORT || 3001
 const startServer = async () => {
   await connectDB()
   
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
   })
@@ -762,4 +825,4 @@ const startServer = async () => {
 
 startServer().catch(console.error)
 
-export { app, io }
+export { app, io, setLiveQuestion, sanitizeQuestionForStudents }

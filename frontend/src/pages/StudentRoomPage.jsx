@@ -91,15 +91,20 @@ function StudentRoomPage() {
   useEffect(() => {
     if (!socket) return
 
-    const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
+    const startQuestionTimer = (data) => {
+      if (!data) return
+      let q = data
+      if (data.question && typeof data.question === 'object') {
+        q = data.question
+      }
+      if (!q || typeof q.question !== 'string') return
+      
+      setCurrentQuestion(q)
       setSelectedOptions([])
       setSubmitted(false)
-      setTimeLeft(data.timer || 30)
       
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
+      const tta = data?.timer || q?.timeToAnswer || 30
+      setTimeLeft(tta)
       
       // Clear any existing timer
       if (timerIntervalRef.current) {
@@ -122,6 +127,10 @@ function StudentRoomPage() {
           return prev - 1
         })
       }, 1000)
+    }
+
+    const handleQuestionStarted = (data) => {
+      startQuestionTimer(data)
     }
 
     const handleQuestionEnded = (data) => {
@@ -140,33 +149,7 @@ function StudentRoomPage() {
     }
 
     const handleNewQuestion = (question) => {
-      // Handle manually created questions from teacher
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      setCurrentQuestion(question)
-      setSelectedOptions([])
-      setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
+      startQuestionTimer(question)
     }
 
     // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
@@ -222,6 +205,42 @@ function StudentRoomPage() {
     try {
       const roomData = await joinRoomByCode(roomCode)
       setRoom(roomData)
+      
+      // If there is an active running question when joining, start the student timer!
+      if (roomData.activeQuestion) {
+        const q = roomData.activeQuestion
+        const remaining = typeof q.remainingTime === 'number'
+          ? q.remainingTime
+          : (() => {
+              const launchedAtTime = q.launchedAt ? new Date(q.launchedAt).getTime() : (q.createdAt ? new Date(q.createdAt).getTime() : Date.now())
+              const elapsed = Math.floor((Date.now() - launchedAtTime) / 1000)
+              return Math.max(0, (q.timeToAnswer || 30) - elapsed)
+            })()
+        
+        if (remaining > 0) {
+          setCurrentQuestion(q)
+          setSelectedOptions([])
+          setSubmitted(false)
+          setTimeLeft(remaining)
+          
+          if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+          timerIntervalRef.current = setInterval(() => {
+            setTimeLeft(prev => {
+              if (prev <= 1) {
+                clearInterval(timerIntervalRef.current)
+                timerIntervalRef.current = null
+                if (roomData._id && user?._id) {
+                  fetchPastResponses(roomData._id, user._id)
+                }
+                setCurrentQuestion(null)
+                return 0
+              }
+              return prev - 1
+            })
+          }, 1000)
+        }
+      }
+
       if (user?._id && socket) {
         // Join via socket - room:joined confirms the student was added to RoomMember
         return new Promise((resolve, reject) => {

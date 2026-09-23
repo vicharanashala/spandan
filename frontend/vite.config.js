@@ -24,14 +24,36 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      allowedHosts: ['.trycloudflare.com'],
       proxy: {
         '/api': {
-          target: 'http://localhost:3001',
-          changeOrigin: true
+          target: 'http://127.0.0.1:3001',
+          changeOrigin: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          configure: (proxy, _options) => {
+            proxy.on('error', (err, _req, res) => {
+              if (err.code === 'ECONNREFUSED') {
+                if (res && !res.headersSent && typeof res.writeHead === 'function') {
+                  res.writeHead(502, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Backend server unavailable' }));
+                }
+              } else {
+                console.error('[vite] http proxy error:', err.message);
+              }
+            });
+          }
         },
-        '/socket.io': {
-          target: 'http://localhost:3001',
-          ws: true
+        '/spandan/socket.io': {
+          target: 'http://127.0.0.1:3001',
+          ws: true,
+          configure: (proxy, _options) => {
+            proxy.on('error', (err, _req, _res) => {
+              if (err.code !== 'ECONNREFUSED') {
+                console.error('[vite] ws proxy error:', err.message);
+              }
+            });
+          }
         }
       }
     }

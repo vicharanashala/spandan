@@ -99,3 +99,4 @@ app.get('/', (req, res) => res.redirect(BASE_PATH + '/'));
 createServer(app).listen(5002, '127.0.0.1', () => {
   console.log('Spandan server running on port 5002 (BASE_PATH=' + BASE_PATH + ')');
 });
+

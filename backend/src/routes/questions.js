@@ -140,10 +140,32 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
     // render time, so entity-encoding here is unnecessary and would show
     // literally (e.g. &quot;) on the student side.
     const sanitizedData = stripObject({ roomId, type, question, options, timeToAnswer, points, status, segmentIndex })
+    sanitizedData.createdBy = req.user._id
+    sanitizedData.launchedAt = new Date()
 
     const newQuestion = new Question(sanitizedData)
-
     await newQuestion.save()
+
+    // If status is approved, set as live question for the room and broadcast via Socket.IO directly from backend!
+    if (status === 'approved') {
+      try {
+        const Room = (await import('../models/Room.js')).default
+        const room = await Room.findById(roomId).select('code').lean()
+        if (room) {
+          const { launchQuestion } = await import('../services/questionBroadcast.js')
+          const io = req.app.get('io')
+          if (io && room.code) {
+            await launchQuestion(io, roomId, room.code, newQuestion)
+          } else {
+            console.error('[REST] io or room.code missing — cannot broadcast', { hasIo: !!io, code: room.code })
+          }
+        } else {
+          console.error('[REST] Room not found for roomId:', roomId)
+        }
+      } catch (broadcastErr) {
+        console.error('[REST] Error broadcasting question live state:', broadcastErr)
+      }
+    }
 
     res.status(201).json({
       success: true,

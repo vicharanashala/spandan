@@ -32,8 +32,13 @@ function App() {
   // onRehydrateStorage check in authStore for any timing edge.
   useEffect(() => {
     const { token: t } = useAuthStore.getState()
-    if (t && isTokenExpired(t)) {
-      useAuthStore.getState().handleSessionExpired()
+    console.log('[Spandan Load] Checking token on mount:', !!t)
+    if (t) {
+      const expired = isTokenExpired(t)
+      console.log('[Spandan Load] Token expired check:', expired)
+      if (expired) {
+        useAuthStore.getState().handleSessionExpired()
+      }
     }
   }, [])
 

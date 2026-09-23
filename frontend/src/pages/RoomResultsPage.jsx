@@ -8,6 +8,8 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 import useIsMobile from '../hooks/useIsMobile'
+import { getTranscripts } from '../services/transcriptService'
+
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -20,6 +22,9 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState('questions')
+  const [transcripts, setTranscripts] = useState([])
+  const [isLoadingTranscripts, setIsLoadingTranscripts] = useState(false)
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -139,6 +144,21 @@ function RoomResultsPage() {
           totalStudents: rData.stats?.totalJoined ?? uniqueStudents,
           participationRate: Math.min(participationRate, 100)
         })
+
+        // Fetch transcripts if user is a teacher
+        if (user?.role === 'teacher') {
+          setIsLoadingTranscripts(true)
+          try {
+            const tData = await getTranscripts(roomId)
+            if (tData.success) {
+              setTranscripts(tData.transcripts || [])
+            }
+          } catch (tErr) {
+            console.error('Failed to load transcripts:', tErr)
+          } finally {
+            setIsLoadingTranscripts(false)
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to fetch room results:', err)
@@ -319,16 +339,64 @@ function RoomResultsPage() {
             ))}
           </div>
 
-          {/* Questions Analysis */}
-          <div style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border-color)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: 'var(--shadow-md)',
-            padding: isMobile ? '18px' : '24px',
-            maxWidth: '100%',
-            boxSizing: 'border-box'
-          }}>
+          {/* Tab buttons */}
+          {user?.role === 'teacher' && (
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              marginBottom: '20px', 
+              borderBottom: '1px solid var(--border-color)', 
+              paddingBottom: '10px' 
+            }}>
+              <button
+                onClick={() => setActiveTab('questions')}
+                style={{
+                  padding: '8px 16px',
+                  background: activeTab === 'questions' ? 'var(--accent)' : 'transparent',
+                  color: activeTab === 'questions' ? 'white' : 'var(--text-secondary)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>📊</span> Question-wise Analysis
+              </button>
+              <button
+                onClick={() => setActiveTab('transcript')}
+                style={{
+                  padding: '8px 16px',
+                  background: activeTab === 'transcript' ? 'var(--accent)' : 'transparent',
+                  color: activeTab === 'transcript' ? 'white' : 'var(--text-secondary)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>🎙️</span> Room Transcript
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'questions' && (
+            <div style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-md)',
+              padding: isMobile ? '18px' : '24px',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
+            }}>
             <h2 style={{
               margin: '0 0 20px',
               fontSize: '18px',
@@ -562,6 +630,90 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+          )}
+
+          {activeTab === 'transcript' && (
+            <div style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-md)',
+              padding: isMobile ? '18px' : '24px',
+              maxWidth: '100%',
+              boxSizing: 'border-box'
+            }}>
+              <h2 style={{
+                margin: '0 0 20px',
+                fontSize: '18px',
+                fontWeight: 700,
+                letterSpacing: '-0.01em',
+                color: 'var(--text-primary)'
+              }}>
+                Room Transcript Reference
+              </h2>
+              
+              {isLoadingTranscripts ? (
+                <div style={{ textAlign: 'center', padding: '24px' }}>
+                  <p style={{ color: 'var(--text-secondary)' }}>Loading transcripts...</p>
+                </div>
+              ) : transcripts.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-secondary)' }}>
+                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔊</div>
+                  <p style={{ margin: 0 }}>No transcript was recorded for this room.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {transcripts.map((t, idx) => (
+                    <div key={t._id || idx} style={{
+                      padding: '16px',
+                      background: 'var(--bg-primary)',
+                      borderRadius: 'var(--radius)',
+                      border: '1px solid var(--border-color)',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{
+                            padding: '3px 8px',
+                            background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+                            color: 'var(--accent)',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600
+                          }}>
+                            {t.segmentIndex === -1 ? 'Pasted Text' : `Segment ${t.segmentIndex + 1}`}
+                          </span>
+                          <span style={{
+                            padding: '3px 8px',
+                            background: 'color-mix(in srgb, #059669 14%, transparent)',
+                            color: '#059669',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600
+                          }}>
+                            {t.source === 'paste' ? '📋 Manual Paste' : '🎙️ Audio Live'}
+                          </span>
+                        </div>
+                        {t.duration > 0 && (
+                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            Duration: {Math.round(t.duration)}s
+                          </span>
+                        )}
+                      </div>
+                      <p style={{ 
+                        fontSize: '14px', 
+                        color: 'var(--text-primary)', 
+                        margin: 0, 
+                        lineHeight: 1.6,
+                        whiteSpace: 'pre-wrap'
+                      }}>
+                        {t.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -24,7 +24,7 @@ export async function setRoomLive(roomId, questionId) {
   try {
     await getRedisClient().set(
       KEY(roomId),
-      JSON.stringify({ currentQuestion: String(questionId), endedAt: null }),
+      JSON.stringify({ currentQuestion: questionId ? String(questionId) : null, endedAt: null }),
       { EX: TTL_SEC }
     )
   } catch { /* non-fatal — POST /responses falls back to a fresh Mongo read */ }

@@ -30,3 +30,9 @@ coverage/
 *.tgz
 .cache/
 # Research plans (local only - stored at /home/spandan/RESEARCH_PLAN.md)
+
+# Local Build & Development Bloat
+release/
+scratch/
+ngrok.exe
+tunnel-link.txt

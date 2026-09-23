@@ -7,6 +7,7 @@ import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
+import InstallAppButton from '../components/InstallAppButton'
 import { API_URL } from '../config.js'
 
 // Password requirements for registration
@@ -309,31 +310,38 @@ function AuthPage() {
           </div>
         </div>
       </div>
-      {/* Theme toggle - top right (available on all layouts) */}
-      <button
-        onClick={toggleTheme}
-        style={{
-          position: 'absolute',
-          top: '20px',
-          right: '20px',
-          zIndex: 5,
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border-color)',
-          borderRadius: 'var(--radius)',
-          padding: '9px 14px',
-          fontSize: '18px',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          color: 'var(--text-primary)',
-          boxShadow: 'var(--shadow-sm)',
-          transition: 'all 0.2s'
-        }}
-      >
-        {isDark ? '☀️' : '🌙'}
-        <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
-      </button>
+      {/* Top action bar: Desktop App Download / Install + Theme Toggle */}
+      <div style={{
+        position: 'absolute',
+        top: '20px',
+        right: '20px',
+        zIndex: 5,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px'
+      }}>
+        {!window.isDesktopApp && <InstallAppButton />}
+        <button
+          onClick={toggleTheme}
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius)',
+            padding: '9px 14px',
+            fontSize: '18px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            color: 'var(--text-primary)',
+            boxShadow: 'var(--shadow-sm)',
+            transition: 'all 0.2s'
+          }}
+        >
+          {isDark ? '☀️' : '🌙'}
+          <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
+        </button>
+      </div>
 
       {/* Left side - Branding (desktop only) */}
       {!isMobile && (

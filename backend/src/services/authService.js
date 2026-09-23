@@ -15,7 +15,7 @@ export const register = async (name, email, password, role) => {
     email: email.toLowerCase(),
     password,
     role,
-    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved'
+    teacherApprovalStatus: (role === 'teacher' && process.env.NODE_ENV !== 'development') ? 'pending' : 'approved'
   })
 
   await user.save()

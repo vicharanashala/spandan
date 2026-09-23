@@ -120,6 +120,10 @@ export const sendResetPasswordEmail = async (email, token) => {
     return true
   } catch (error) {
     console.error(`Failed to send reset email to ${email}:`, error.message)
+    if (config.nodeEnv === 'development') {
+      console.warn(`\n[DEV MODE] SMTP email sending failed. Password reset link for ${email} is:\n${resetUrl}\n`)
+      return true
+    }
     throw new Error('Failed to send reset email')
   }
 }
@@ -166,6 +170,10 @@ export const sendRegistrationOtp = async (email, name, otp) => {
     return true
   } catch (error) {
     console.error(`Failed to send OTP email to ${email}:`, error.message)
+    if (config.nodeEnv === 'development') {
+      console.warn(`\n[DEV MODE] SMTP email sending failed. OTP code for ${email} is:\n*** ${otp} ***\n`)
+      return true
+    }
     throw new Error('Failed to send verification code')
   }
 }

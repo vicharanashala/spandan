@@ -3,8 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="./manifest.json" />
+    <meta name="theme-color" content="#2563eb" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Spandan - Poll Question Generator</title>
+    <script>
+      if (window.location.pathname === '/' || window.location.pathname === '') {
+        window.location.replace('/spandan/');
+      }
+
+      if ('serviceWorker' in navigator && !window.isDesktopApp) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js').catch((err) => {
+            console.log('Service worker registration failed:', err);
+          });
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

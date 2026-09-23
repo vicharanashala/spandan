@@ -29,14 +29,11 @@ export const useSocketStore = create((set, get) => ({
     socket.on('connect', () => {
       console.log('Socket connected')
       set({ isConnected: true })
-      socket.emit('authenticate', { token })
-      // On a (re)connect, socket.io gives us a NEW underlying connection that is a member of NO
-      // rooms — even if we had joined one before the drop. Without this, a student whose socket
-      // briefly reconnects silently stops receiving room broadcasts (new_question, leaderboard…)
-      // until they manually refresh the page. Re-join the room we were in so delivery self-heals.
+      const currentToken = useAuthStore.getState().token || token
+      socket.emit('authenticate', { token: currentToken })
       const { joinedRoom } = get()
       if (joinedRoom?.roomCode) {
-        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId })
+        socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId, token: currentToken })
       }
     })
 
@@ -46,11 +43,14 @@ export const useSocketStore = create((set, get) => ({
     })
 
     socket.on('authenticated', (data) => {
-      if (!data.success) {
+      if (data.success) {
+        const { joinedRoom } = get()
+        if (joinedRoom?.roomCode) {
+          const currentToken = useAuthStore.getState().token || token
+          socket.emit('room:join', { roomCode: joinedRoom.roomCode, userId: joinedRoom.userId, token: currentToken })
+        }
+      } else {
         console.error('Socket authentication failed:', data.error)
-        // A token that expired mid-session fails socket re-auth too (server sends expired:true). Treat
-        // it like an HTTP 401 so the user is sent to re-login instead of sitting on a silently
-        // unauthenticated socket that still shows polls but can't submit answers.
         if (data.expired) {
           useAuthStore.getState().handleSessionExpired()
         }
@@ -109,7 +109,8 @@ export const useSocketStore = create((set, get) => ({
     // Remember the room so the socket auto-rejoins after a reconnect (see the 'connect' handler).
     set({ joinedRoom: { roomCode, userId } })
     if (socket) {
-      socket.emit('room:join', { roomCode, userId })
+      const token = useAuthStore.getState().token
+      socket.emit('room:join', { roomCode, userId, token })
     }
   },
 

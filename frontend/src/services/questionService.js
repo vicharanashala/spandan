@@ -31,10 +31,15 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
     body: JSON.stringify({ transcript, config }),
     signal
   })
-  const data = await res.json()
+  const isJson = res.headers.get('content-type')?.includes('application/json')
+  const data = isJson ? await res.json() : null
+
+  if (!res.ok) {
+    return { success: false, error: data?.error || `Server error: ${res.status}` }
+  }
 
   // Sync path (no Redis): questions returned directly.
-  if (!data.async || !data.jobId) return data
+  if (!data || !data.async || !data.jobId) return data
 
   // Async path: poll the job until done. Await each poll so only one request is in flight.
   const jobId = data.jobId
@@ -46,7 +51,11 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
     let s
     try {
       const sres = await fetch(`${API_URL}/questions/jobs/${jobId}`, { headers: authHeader, signal })
-      s = await sres.json()
+      const sIsJson = sres.headers.get('content-type')?.includes('application/json')
+      s = sIsJson ? await sres.json() : null
+      if (!sres.ok) {
+        return { success: false, error: s?.error || `Job check failed: ${sres.status}` }
+      }
     } catch (e) {
       if (signal?.aborted) throw e
       continue // transient network error — keep polling until the ceiling

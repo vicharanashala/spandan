@@ -144,13 +144,14 @@ export const useRoomStore = create((set, get) => ({
         }
       })
 
-      const data = await response.json()
+      const isJson = response.headers.get('content-type')?.includes('application/json')
+      const data = isJson ? await response.json() : null
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch room')
+        throw new Error(data?.error || `Server error: ${response.status}`)
       }
 
-      set({ currentRoom: data.room, isLoading: false })
+      set({ currentRoom: data?.room, isLoading: false })
       // Attach the seeded live participant count (see GET /rooms/:id) so the room page can show it
       // immediately on load; the room:joined/room:left socket events keep it updated afterwards.
       return { ...data.room, participants: data.participants }
@@ -180,7 +181,7 @@ export const useRoomStore = create((set, get) => ({
       }
 
       set({ currentRoom: data.room, isLoading: false })
-      return data.room
+      return { ...data.room, activeQuestion: data.activeQuestion }
     } catch (error) {
       set({ error: error.message, isLoading: false })
       throw error

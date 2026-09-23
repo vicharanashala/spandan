@@ -1,0 +1,18 @@
+{
+  "short_name": "Spandan",
+  "name": "Spandan - Poll Question Generator",
+  "icons": [
+    {
+      "src": "./spandan-icon.png",
+      "type": "image/png",
+      "sizes": "192x192 512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "./",
+  "scope": "./",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "display": "standalone",
+  "orientation": "any"
+}

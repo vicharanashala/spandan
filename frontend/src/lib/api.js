@@ -5,6 +5,7 @@ const getHeaders = () => {
   const { token } = useAuthStore.getState()
   return {
     'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
   }
 }
@@ -45,10 +46,11 @@ export const api = {
   },
 
   async handleResponse(response) {
-    const data = await response.json()
+    const isJson = response.headers.get('content-type')?.includes('application/json')
+    const data = isJson ? await response.json() : null
 
     if (!response.ok) {
-      throw new Error(data.error || data.message || 'Request failed')
+      throw new Error(data?.error || data?.message || `Request failed with status ${response.status}`)
     }
 
     return data
