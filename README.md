@@ -16,6 +16,7 @@ quizzes.
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
+- [Demo accounts](#demo-accounts)
 - [Configuration](#configuration)
 - [Running the optional services](#running-the-optional-services)
 - [Testing](#testing)
@@ -30,6 +31,15 @@ quizzes.
 
 - **Authentication** — email/password login with JWT, "Sign in with Google"
   (OAuth 2.0), email-OTP registration, and password reset by email.
+- **Teacher-access approvals** — new teacher accounts start `pending`; an admin
+  reviews and approves or rejects them (optionally with a reason) before the
+  teacher can sign in. Approved-once teachers are remembered.
+- **Admin desk** — admins see pending / approved / rejected teacher requests with
+  counts and can action them from the UI.
+- **Onboarding tours** — first-time teachers get a step-by-step guided tour of
+  the portal. Admins see the full 6-step tour (including the approvals desk);
+  regular teachers see the 5-step edition. The tour is generic and plays for any
+  new account until dismissed (`hasSeenOnboarding`).
 - **Rooms** — teachers create rooms; students join by code; owners manage the
   room lifecycle and the live question flow.
 - **Live polling** — multiple-choice and open-ended questions pushed to students
@@ -43,7 +53,7 @@ quizzes.
 - **Live results & leaderboard** — response counts stream in as students answer,
   and a ranked leaderboard updates per question segment.
 - **Roles** — Teacher, Student, and Admin (Admin approves teacher-access
-  requests).
+  requests and manages the rota).
 - **Research export** — a key-protected endpoint exports anonymised session data
   for research use.
 - **Theming & responsive UI** — dark/light themes; works across desktop and
@@ -150,12 +160,37 @@ From the repo root, start the frontend and backend together:
 npm run dev
 ```
 
-- Frontend (Vite dev server): **http://localhost:5173**
+- Frontend (Vite dev server): **http://localhost:5173/spandan/**
 - Backend API: **http://localhost:3001** (the Vite dev server proxies `/api` and
   `/socket.io` to it)
 
 That is enough to log in, create rooms, and run manual polls. Question
 generation and audio transcription need the optional services below.
+
+## Demo accounts
+
+Seed scripts create ready-to-use accounts (they connect to the Mongo URI from
+`backend/.env` or `mongodb://localhost:27017/spandan`):
+
+```bash
+node backend/scripts/seed_dev_teacher.js        # admin teacher (full 6-step tour)
+node backend/scripts/seed_dev_teacher_basic.js  # non-admin teacher (5-step tour)
+node backend/scripts/seed_dev_student.js        # student account
+```
+
+| Account | Email | Password | Notes |
+|---------|-------|----------|-------|
+| Admin teacher | `admin.teacher@example.com` | `Teacher@123` | `isAdmin: true`, full onboarding tour |
+| Demo teacher | `teacher.demo@example.com` | `Teacher@123` | `isAdmin: false`, shorter touring |
+| Student | see `seed_dev_student.js` | see script | plain student account |
+
+All seed scripts reset `hasSeenOnboarding` to `false`, so the onboarding tour
+replays on the next login. Admins are seeded directly — the app itself offers no
+admin signup; an existing admin must approve new teacher requests instead.
+
+For existing databases, `backend/scripts/migrate_teacher_approval.js` backfills
+`teacherApprovalStatus` on current teacher accounts and grants admin to founders —
+run it **off the live server** and review before migrating.
 
 ## Configuration
 
@@ -229,6 +264,9 @@ Production runs the built frontend and the API behind a reverse proxy:
 - Set `NODE_ENV=production` and provide production values for `JWT_SECRET`,
   `MONGODB_URI`, `CORS_ORIGINS`/`FRONTEND_URL`, an AI provider key, SMTP
   credentials, and `RESEARCH_API_KEY`.
+- First deploy on an existing database: run
+  `backend/scripts/migrate_teacher_approval.js` once to backfill teacher-approval
+  status before teacher login is gated.
 
 ## API overview
 
@@ -243,7 +281,7 @@ All routes are mounted under `/api`. High-level grouping:
 | `/api/transcription` | Proxy audio to the transcription service; status |
 | `/api/transcripts` | Store and fetch lecture transcript segments |
 | `/api/research` | Key-protected session export for research |
-| `/api/admin` | Review and approve/reject teacher-access requests |
+| `/api/admin` | Teacher-access requests: list by status, approve, reject (admin-only actions) |
 
 ## Project structure
 
@@ -251,13 +289,14 @@ All routes are mounted under `/api`. High-level grouping:
 spandan/
 ├── frontend/                 # React app (Vite)
 │   └── src/
-│       ├── components/        # UI components
+│       ├── components/        # UI components (incl. PortalTour onboarding tour)
 │       ├── pages/             # Route pages (auth, dashboard, rooms, admin, ...)
 │       ├── stores/            # Zustand stores
 │       ├── services/          # API + socket clients
 │       ├── hooks/  lib/        # Shared hooks and helpers
 │       └── __tests__/         # Frontend tests
 ├── backend/                  # Express API + Socket.IO
+│   ├── scripts/               # Demo account seeds + teacher-approval migration
 │   └── src/
 │       ├── index.js           # API server entry point
 │       ├── worker.js          # BullMQ generation worker
@@ -278,8 +317,12 @@ spandan/
 | Role | Capabilities |
 |------|-------------|
 | **Student** | Join rooms, answer live polls, view own history and results |
-| **Teacher** | Create/manage rooms, generate and approve questions, run polls, view results and leaderboard |
-| **Admin** | Everything a teacher can do, plus review and approve/reject teacher-access requests |
+| **Teacher** | Create/manage rooms, generate and approve questions, run polls, view results and leaderboard. Access requires admin approval (`teacherApprovalStatus: approved`) |
+| **Admin** | Everything a teacher can do, plus review and approve/reject teacher-access requests, see the approvals desk, and take the full onboarding tour |
+
+Teacher signup arrives `pending`; until an admin approves the account the teacher
+cannot sign in. Admins are provisioned directly via the seed scripts or the
+database (there is no self-service admin signup).
 
 ## Contributing
 
