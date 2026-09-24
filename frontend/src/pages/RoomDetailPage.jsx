@@ -1267,7 +1267,7 @@ function RoomDetailPage() {
           )}
 
           {/* Room Code Row */}
-          <div style={{
+          <div data-tour="room-code-row" style={{
             display: 'flex',
             alignItems: 'center',
             gap: '12px',
@@ -1450,6 +1450,7 @@ function RoomDetailPage() {
             {/* Settings Dropdown */}
             <div style={{ position: 'relative' }} ref={settingsRef}>
               <button
+                data-tour="room-settings-btn"
                 onClick={() => setShowSettings(true)}
                 style={{
                   padding: '8px 16px',
@@ -1655,6 +1656,7 @@ function RoomDetailPage() {
               <>
               {/* Mic Button */}
               <button
+                data-tour="room-mic-btn"
                 onClick={toggleRecording}
                 disabled={isEnded}
                 style={{
@@ -1758,7 +1760,7 @@ function RoomDetailPage() {
             </div>
 
             {/* Transcription Card */}
-            <div style={{
+            <div data-tour="room-transcript-card" style={{
               flex: isMobile ? '1 1 100%' : (isVideoMode ? '1 1 calc(40% - 10px)' : '1 1 calc(70% - 10px)'),
               minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
@@ -1855,7 +1857,7 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+            <div data-tour="room-questions" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <span style={{ fontSize: '20px' }}>📝</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
@@ -2002,7 +2004,7 @@ function RoomDetailPage() {
             </div>
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <div data-tour="room-leaderboard" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span style={{ fontSize: '20px' }}>🏆</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Leaderboard

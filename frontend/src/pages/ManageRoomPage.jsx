@@ -84,13 +84,13 @@ function ManageRoomPage() {
         </header>
 
         {/* Content */}
-        <div style={{
+        <div data-tour="manage-rooms-box" style={{
           flex: 1,
           padding: isMobile ? '16px' : '32px',
           boxSizing: 'border-box',
           maxWidth: '100%'
         }}>
-          <div style={{
+          <div data-tour="manage-section" style={{
             display: 'flex',
             alignItems: 'baseline',
             justifyContent: 'space-between',

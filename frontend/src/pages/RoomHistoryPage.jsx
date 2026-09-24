@@ -113,7 +113,7 @@ function RoomHistoryPage() {
             fontWeight: 600,
             color: 'var(--text-primary)',
             letterSpacing: '-0.01em'
-          }}>
+          }} data-tour="history-section">
             Ended Rooms
           </h2>
 
@@ -191,6 +191,7 @@ function RoomHistoryPage() {
                       <button
                         onClick={() => downloadCsv(room)}
                         disabled={downloadingId === room._id}
+                        data-tour="history-export"
                         title="Download complete results as CSV"
                         style={{
                           padding: '10px 14px',

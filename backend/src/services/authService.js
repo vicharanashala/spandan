@@ -118,7 +118,7 @@ export const updateProfile = async (userId, profileData) => {
   const allowedFields = [
     'name', 'profileImage', 'phone', 'bio', 'dateOfBirth', 'gender',
     'address', 'socialLinks', 'enrollmentNumber', 'class',
-    'department', 'employeeId', 'qualifications'
+    'department', 'employeeId', 'qualifications', 'hasSeenOnboarding'
   ]
 
   for (const field of allowedFields) {

@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
@@ -7,10 +6,9 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import useIsMobile from '../hooks/useIsMobile'
 import { adminApi } from '../lib/api'
 
-// Admin-only page to approve/reject teacher account requests. Uses the same page shell
-// (sidebar + header + content) as the other teacher pages so it looks native.
+// Approvals desk — visible and readable by every teacher (read-only); only admins can
+// approve/reject. Uses the same page shell as the other teacher pages so it looks native.
 export default function AdminPage() {
-  const navigate = useNavigate()
   const isMobile = useIsMobile()
   const { user } = useAuthStore()
 
@@ -20,10 +18,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState(null)
-
-  useEffect(() => {
-    if (user && !user.isAdmin) navigate('/teacher')
-  }, [user, navigate])
+  const isAdmin = user?.isAdmin === true
 
   const load = useCallback(async (status) => {
     setLoading(true); setError('')
@@ -96,7 +91,7 @@ export default function AdminPage() {
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', maxWidth: '100%', boxSizing: 'border-box' }}>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          <div data-tour="admin-tabs" style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
             {tabBtn('pending', 'Pending')}
             {tabBtn('approved', 'Approved')}
             {tabBtn('rejected', 'Rejected')}
@@ -109,7 +104,14 @@ export default function AdminPage() {
             }}>{error}</div>
           )}
 
-          <div style={{
+          {!isAdmin && (
+            <div style={{
+              background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)',
+              borderRadius: 'var(--radius-sm)', padding: '10px 16px', marginBottom: '16px', fontSize: '13px'
+            }}>You can view teacher requests here — only admins can approve or reject.</div>
+          )}
+
+          <div data-tour="admin-list" style={{
             background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
             borderRadius: 'var(--radius-md, 12px)', overflow: 'hidden'
           }}>
@@ -128,7 +130,7 @@ export default function AdminPage() {
                       <th style={th}>Email</th>
                       <th style={th}>Requested</th>
                       {tab === 'rejected' && <th style={th}>Reason</th>}
-                      {tab === 'pending' && <th style={{ ...th, textAlign: 'right' }}>Action</th>}
+                      {tab === 'pending' && isAdmin && <th style={{ ...th, textAlign: 'right' }}>Action</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -138,7 +140,7 @@ export default function AdminPage() {
                         <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.email}</td>
                         <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—'}</td>
                         {tab === 'rejected' && <td style={{ ...td, color: 'var(--text-secondary)' }}>{r.rejectionReason || '—'}</td>}
-                        {tab === 'pending' && (
+                        {tab === 'pending' && isAdmin && (
                           <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                             <button disabled={busyId === r._id} onClick={() => act(r._id, 'approve')} style={{
                               padding: '7px 16px', marginRight: '8px', borderRadius: 'var(--radius-sm)', border: 'none',

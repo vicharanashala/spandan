@@ -1,0 +1,392 @@
+diff --git a/backend/src/models/User.js b/backend/src/models/User.js
+index 5868188..2f98373 100644
+--- a/backend/src/models/User.js
++++ b/backend/src/models/User.js
+@@ -138,6 +138,14 @@ const userSchema = new mongoose.Schema({
+     type: Boolean,
+     default: true
+   },
++  // Drives the first-login graphical walkthrough on the student dashboard. Starts false for every
++  // new account (including Google/SSO sign-ups, since the schema default applies regardless of
++  // provisioning path) and flips to true once the student finishes or skips the tour, so it never
++  // reappears on later logins or other devices.
++  hasSeenOnboarding: {
++    type: Boolean,
++    default: false
++  },
+   lastLogin: {
+     type: Date,
+     default: null
+diff --git a/backend/src/services/authService.js b/backend/src/services/authService.js
+index 25b357d..ef40ec4 100644
+--- a/backend/src/services/authService.js
++++ b/backend/src/services/authService.js
+@@ -118,7 +118,7 @@ export const updateProfile = async (userId, profileData) => {
+   const allowedFields = [
+     'name', 'profileImage', 'phone', 'bio', 'dateOfBirth', 'gender',
+     'address', 'socialLinks', 'enrollmentNumber', 'class',
+-    'department', 'employeeId', 'qualifications'
++    'department', 'employeeId', 'qualifications', 'hasSeenOnboarding'
+   ]
+ 
+   for (const field of allowedFields) {
+diff --git a/frontend/src/components/OnboardingTour.jsx b/frontend/src/components/OnboardingTour.jsx
+new file mode 100644
+index 0000000..5b453ae
+--- /dev/null
++++ b/frontend/src/components/OnboardingTour.jsx
+@@ -0,0 +1,190 @@
++import React, { useState, useEffect, useCallback, useMemo } from 'react'
++
++// Generic first-login walkthrough: dims the screen, cuts a "spotlight" hole around a real UI
++// element, and shows a small card next to it explaining what it does. Steps are just data
++// (see StudentDashboard.jsx for a real usage example), so this component can be reused for any
++// future flow — it doesn't know anything about Spandan's domain.
++//
++// Each step: { target: '[data-tour="..."]' | null, title, description, placement? }
++//   - target null (or not found in the DOM) renders a centered welcome/closing card with no
++//     spotlight — used for the first and last steps, and as a graceful fallback if a target
++//     element isn't mounted (e.g. a sidebar item hidden on mobile, or an empty-state section).
++//   - placement: 'bottom' | 'top' | 'left' | 'right' (default: 'bottom')
++//
++// onFinish(reason) fires exactly once, with reason 'completed' or 'skipped', whether the user
++// clicks through every step, hits Skip, or closes with the corner ✕. The caller is responsible
++// for persisting that the tour was seen (see StudentDashboard.jsx).
++export default function OnboardingTour({ steps, onFinish }) {
++  const [stepIndex, setStepIndex] = useState(0)
++  const [rect, setRect] = useState(null)
++
++  const step = steps[stepIndex]
++  const isLast = stepIndex === steps.length - 1
++
++  const measure = useCallback(() => {
++    if (!step?.target) {
++      setRect(null)
++      return
++    }
++    const el = document.querySelector(step.target)
++    if (!el) {
++      // Target isn't on screen right now (different viewport, empty state, etc.) — don't get
++      // stuck spotlighting nothing. Skip forward past it automatically.
++      setStepIndex((i) => (i < steps.length - 1 ? i + 1 : i))
++      return
++    }
++    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
++    // Let the smooth scroll settle before measuring position.
++    window.setTimeout(() => {
++      const r = el.getBoundingClientRect()
++      setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
++    }, 260)
++  }, [step, steps.length])
++
++  useEffect(() => {
++    measure()
++    window.addEventListener('resize', measure)
++    window.addEventListener('scroll', measure, true)
++    return () => {
++      window.removeEventListener('resize', measure)
++      window.removeEventListener('scroll', measure, true)
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [stepIndex])
++
++  useEffect(() => {
++    const onKey = (e) => {
++      if (e.key === 'Escape') finish('skipped')
++      if (e.key === 'ArrowRight') next()
++      if (e.key === 'ArrowLeft') back()
++    }
++    window.addEventListener('keydown', onKey)
++    return () => window.removeEventListener('keydown', onKey)
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [stepIndex])
++
++  const finish = (reason) => onFinish?.(reason)
++  const next = () => (isLast ? finish('completed') : setStepIndex((i) => i + 1))
++  const back = () => setStepIndex((i) => Math.max(0, i - 1))
++
++  const cardStyle = useMemo(() => {
++    const base = {
++      position: 'fixed',
++      zIndex: 1001,
++      width: 'min(320px, calc(100vw - 32px))',
++      background: 'var(--bg-card)',
++      color: 'var(--text-primary)',
++      borderRadius: 'var(--radius-lg)',
++      boxShadow: 'var(--shadow-lg)',
++      border: '1px solid var(--border-color)',
++      padding: '20px',
++      boxSizing: 'border-box'
++    }
++    if (!rect) {
++      return { ...base, top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }
++    }
++    const placement = step.placement || 'bottom'
++    const gap = 16
++    const vw = window.innerWidth
++    const vh = window.innerHeight
++    const cardWidth = 320
++    const cardHeight = 200 // rough estimate for clamping; actual height can vary slightly
++
++    let top, left
++    if (placement === 'bottom') {
++      top = rect.top + rect.height + gap
++      left = rect.left + rect.width / 2 - cardWidth / 2
++    } else if (placement === 'top') {
++      top = rect.top - gap - cardHeight
++      left = rect.left + rect.width / 2 - cardWidth / 2
++    } else if (placement === 'left') {
++      top = rect.top + rect.height / 2 - cardHeight / 2
++      left = rect.left - gap - cardWidth
++    } else {
++      top = rect.top + rect.height / 2 - cardHeight / 2
++      left = rect.left + rect.width + gap
++    }
++    // Clamp on-screen with a small margin.
++    top = Math.max(12, Math.min(top, vh - 12))
++    left = Math.max(12, Math.min(left, vw - cardWidth - 12))
++
++    return { ...base, top: `${top}px`, left: `${left}px` }
++  }, [rect, step])
++
++  return (
++    <>
++      {/* Backdrop with a spotlight cutout around the target element. A giant box-shadow on a
++          transparent, rect-sized div fills the rest of the viewport with a dim overlay — the
++          simplest way to get a clean "hole" without SVG masks. Deliberately non-interactive
++          (pointer-events: none) so the page underneath stays usable — a student can follow along
++          and actually click the highlighted element while reading the card, rather than being
++          blocked by an inert dimmed layer. Dismissing only happens via the card's own buttons. */}
++      <div
++        style={{
++          position: 'fixed',
++          zIndex: 1000,
++          top: rect ? rect.top - 6 : '50%',
++          left: rect ? rect.left - 6 : '50%',
++          width: rect ? rect.width + 12 : 0,
++          height: rect ? rect.height + 12 : 0,
++          borderRadius: '12px',
++          boxShadow: '0 0 0 9999px rgba(15, 23, 42, 0.65)',
++          transition: 'top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease',
++          pointerEvents: 'none'
++        }}
++      />
++
++      <div style={cardStyle}>
++        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
++          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, letterSpacing: '-0.01em' }}>
++            {step.title}
++          </h3>
++          <button
++            onClick={() => finish('skipped')}
++            aria-label="Close tutorial"
++            style={{
++              background: 'transparent', border: 'none', cursor: 'pointer',
++              color: 'var(--text-secondary)', fontSize: '16px', lineHeight: 1, padding: '2px', flexShrink: 0
++            }}
++          >✕</button>
++        </div>
++
++        <p style={{ margin: '10px 0 18px', fontSize: '14px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
++          {step.description}
++        </p>
++
++        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
++          <div style={{ display: 'flex', gap: '5px' }}>
++            {steps.map((_, i) => (
++              <span key={i} style={{
++                width: '6px', height: '6px', borderRadius: '50%',
++                background: i === stepIndex ? 'var(--accent-gradient)' : 'var(--border-color)'
++              }} />
++            ))}
++          </div>
++
++          <div style={{ display: 'flex', gap: '8px' }}>
++            {stepIndex > 0 && (
++              <button
++                onClick={back}
++                style={{
++                  padding: '8px 14px', fontSize: '13px', fontWeight: 600,
++                  background: 'transparent', color: 'var(--text-secondary)',
++                  border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', cursor: 'pointer'
++                }}
++              >Back</button>
++            )}
++            <button
++              onClick={next}
++              style={{
++                padding: '8px 16px', fontSize: '13px', fontWeight: 600,
++                background: 'var(--accent-gradient)', color: '#fff',
++                border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer'
++              }}
++            >{isLast ? 'Get started' : 'Next'}</button>
++          </div>
++        </div>
++      </div>
++    </>
++  )
++}
+diff --git a/frontend/src/components/Sidebar.jsx b/frontend/src/components/Sidebar.jsx
+index 9b5173e..2bf029a 100644
+--- a/frontend/src/components/Sidebar.jsx
++++ b/frontend/src/components/Sidebar.jsx
+@@ -164,6 +164,7 @@ export default function Sidebar({ user }) {
+             return (
+               <button
+                 key={item.id}
++                data-tour={`nav-${item.id}`}
+                 onClick={() => navigate(item.path)}
+                 title={item.label}
+                 style={{
+diff --git a/frontend/src/pages/StudentDashboard.jsx b/frontend/src/pages/StudentDashboard.jsx
+index 4f00832..44471e6 100644
+--- a/frontend/src/pages/StudentDashboard.jsx
++++ b/frontend/src/pages/StudentDashboard.jsx
+@@ -6,13 +6,61 @@ import useRoomStore from '../stores/roomStore'
+ import Sidebar from '../components/Sidebar'
+ import ThemeToggle from '../components/ThemeToggle'
+ import ProfileDropdown from '../components/ProfileDropdown'
++import OnboardingTour from '../components/OnboardingTour'
+ import { API_URL } from '../config.js'
+ import useIsMobile from '../hooks/useIsMobile'
+ 
++// One-time walkthrough shown to a student the first time they land on the dashboard.
++// `target: null` steps render as a centered card (no spotlight) — used for the intro and outro.
++// Steps whose target isn't in the DOM (e.g. sidebar items hidden on mobile until the drawer is
++// opened) are skipped automatically by OnboardingTour, so this same list works on every viewport.
++const STUDENT_TOUR_STEPS = [
++  {
++    target: null,
++    title: 'Welcome to Spandan! 👋',
++    description: "Quick tour — this'll take 30 seconds and show you where everything is."
++  },
++  {
++    target: '[data-tour="quick-join-input"]',
++    title: 'Join a live session',
++    description: 'Your teacher will share a room code at the start of class. Type it here to jump in.',
++    placement: 'bottom'
++  },
++  {
++    target: '[data-tour="nav-join-room"]',
++    title: 'Or join from here',
++    description: 'This does the same thing as the box above — handy if you\'re on a different page.',
++    placement: 'right'
++  },
++  {
++    target: '[data-tour="stats-cards"]',
++    title: 'Track your progress',
++    description: 'Rooms joined, polls answered, polls missed, and your overall score — all in one glance.',
++    placement: 'bottom'
++  },
++  {
++    target: '[data-tour="nav-room-history"]',
++    title: 'Review past sessions',
++    description: 'See results and leaderboards from every room you\'ve joined before.',
++    placement: 'right'
++  },
++  {
++    target: '[data-tour="nav-manual"]',
++    title: 'Need help later?',
++    description: 'The manual page has a full written guide any time you need a refresher.',
++    placement: 'right'
++  },
++  {
++    target: null,
++    title: "You're all set! 🎉",
++    description: 'That\'s everything. Go ahead and join a room, or explore the dashboard on your own.'
++  }
++]
++
+ function StudentDashboard() {
+   const isMobile = useIsMobile()
+   const navigate = useNavigate()
+-  const { user, token } = useAuthStore()
++  const { user, token, updateUser } = useAuthStore()
+   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
+   const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
+   
+@@ -24,6 +72,7 @@ function StudentDashboard() {
+     pollsMissed: 0,
+     average: 0
+   })
++  const [showTour, setShowTour] = useState(false)
+ 
+   useEffect(() => {
+     if (token) {
+@@ -33,6 +82,32 @@ function StudentDashboard() {
+     }
+   }, [token])
+ 
++  // Fire the tour once per account: only for students, only if the backend flag hasn't been set
++  // yet. A short delay lets the sidebar/cards finish their initial layout so the spotlight
++  // measures real positions instead of a pre-render flash.
++  useEffect(() => {
++    if (user?.role === 'student' && user?.hasSeenOnboarding === false) {
++      const timer = setTimeout(() => setShowTour(true), 500)
++      return () => clearTimeout(timer)
++    }
++  }, [user?.role, user?.hasSeenOnboarding])
++
++  const handleTourFinish = async () => {
++    setShowTour(false)
++    // Optimistic local update so it can never reappear this session even if the request below
++    // fails; then persist server-side so it also stays gone on other devices/future logins.
++    updateUser({ ...user, hasSeenOnboarding: true })
++    try {
++      await fetch(`${API_URL}/auth/profile`, {
++        method: 'PUT',
++        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
++        body: JSON.stringify({ hasSeenOnboarding: true })
++      })
++    } catch (err) {
++      console.error('Failed to persist onboarding status:', err)
++    }
++  }
++
+   const fetchStudentStats = async () => {
+     try {
+       const res = await fetch(`${API_URL}/responses/stats/student/${user._id}`, {
+@@ -125,6 +200,15 @@ function StudentDashboard() {
+               </p>
+             </div>
+             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
++              <button
++                onClick={() => setShowTour(true)}
++                title="Replay the tutorial"
++                style={{
++                  width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center',
++                  background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
++                  borderRadius: 'var(--radius-sm)', color: 'white', cursor: 'pointer', fontSize: '15px'
++                }}
++              >❔</button>
+               <ThemeToggle />
+               <ProfileDropdown />
+             </div>
+@@ -139,7 +223,7 @@ function StudentDashboard() {
+           boxSizing: 'border-box'
+         }}>
+           {/* Stats Cards */}
+-          <div style={{
++          <div data-tour="stats-cards" style={{
+             display: 'grid',
+             gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
+             gap: isMobile ? '12px' : '20px',
+@@ -198,6 +282,7 @@ function StudentDashboard() {
+             }}>
+               <input
+                 type="text"
++                data-tour="quick-join-input"
+                 value={roomCode}
+                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                 placeholder="Enter room code..."
+@@ -311,6 +396,10 @@ function StudentDashboard() {
+           )}
+         </div>
+       </div>
++
++      {showTour && (
++        <OnboardingTour steps={STUDENT_TOUR_STEPS} onFinish={handleTourFinish} />
++      )}
+     </div>
+   )
+ }

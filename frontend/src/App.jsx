@@ -20,6 +20,7 @@ import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
 import { isTokenExpired } from './lib/jwt.js'
+import PortalTour from './components/PortalTour'
 
 function App() {
   const { isDark } = useThemeStore()
@@ -151,6 +152,7 @@ function App() {
           </ProtectedRoute>
         } />
       </Routes>
+      <PortalTour />
     </BrowserRouter>
   )
 }

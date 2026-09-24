@@ -171,7 +171,7 @@ export default function HelpPage() {
         {/* Content */}
         <main style={{ padding: isMobile ? '16px' : '28px 32px', boxSizing: 'border-box' }}>
           <div style={{ maxWidth: '860px' }}>
-            <p style={{ margin: '0 0 20px', fontSize: '15px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            <p data-tour="manual-intro" style={{ margin: '0 0 20px', fontSize: '15px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
               Spandan turns a class into a live, interactive session: the teacher runs a room, students
               join with a code, and everyone answers questions in real time. Here is how it works.
             </p>
@@ -188,6 +188,7 @@ export default function HelpPage() {
                   <h2 style={{ margin: 0 }}>
                     <button
                       type="button"
+                      data-tour={idx === 0 ? 'manual-section' : undefined}
                       onClick={() => toggle(idx)}
                       aria-expanded={isOpen}
                       style={{

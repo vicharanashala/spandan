@@ -29,9 +29,9 @@ export default function Sidebar({ user }) {
   const location = useLocation()
   const role = user?.role || 'student'
   const baseItems = menuItems[role] || menuItems.student
-  // Admins get an extra "Approvals" entry, placed just above "Manual".
+  // All teachers get an extra "Approvals" entry, placed just above "Manual" (not admin-only).
   let items = baseItems
-  if (user?.isAdmin) {
+  if (role === 'teacher') {
     const adminItem = { id: 'admin', label: 'Approvals', icon: '🛡️', path: '/admin' }
     const idx = baseItems.findIndex(i => i.id === 'manual')
     items = idx === -1
@@ -164,6 +164,7 @@ export default function Sidebar({ user }) {
             return (
               <button
                 key={item.id}
+                data-tour={`nav-${item.id}`}
                 onClick={() => navigate(item.path)}
                 title={item.label}
                 style={{

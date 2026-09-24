@@ -138,6 +138,14 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  // Drives the first-login graphical walkthrough on the student dashboard. Starts false for every
+  // new account (including Google/SSO sign-ups, since the schema default applies regardless of
+  // provisioning path) and flips to true once the student finishes or skips the tour, so it never
+  // reappears on later logins or other devices.
+  hasSeenOnboarding: {
+    type: Boolean,
+    default: false
+  },
   lastLogin: {
     type: Date,
     default: null

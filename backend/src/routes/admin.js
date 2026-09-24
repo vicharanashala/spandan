@@ -1,11 +1,12 @@
 import express from 'express'
 import User from '../models/User.js'
-import { authenticate, authorizeAdmin, clearUserCache } from '../middleware/auth.js'
+import { authenticate, authorize, authorizeAdmin, clearUserCache } from '../middleware/auth.js'
 
 const router = express.Router()
 
-// Every admin route requires a signed-in admin (isAdmin flag OR SPANDAN_ADMIN_EMAILS allowlist).
-router.use(authenticate, authorizeAdmin)
+// Any signed-in user must exist, but only teachers may view the approvals desk (read-only).
+router.use(authenticate)
+router.use(authorize('teacher'))
 
 const STATUSES = ['pending', 'approved', 'rejected']
 const SAFE_FIELDS = 'name email teacherApprovalStatus isActive createdAt approvedAt approvedBy rejectionReason'
@@ -27,8 +28,8 @@ router.get('/teacher-requests', async (req, res) => {
   }
 })
 
-// Approve a pending teacher: they can now sign in and use teacher features.
-router.post('/teacher-requests/:id/approve', async (req, res) => {
+// Approve a pending teacher: they can now sign in and use teacher features. Admin-only.
+router.post('/teacher-requests/:id/approve', authorizeAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
     if (!user || user.role !== 'teacher') return res.status(404).json({ error: 'Teacher account not found' })
@@ -47,8 +48,8 @@ router.post('/teacher-requests/:id/approve', async (req, res) => {
   }
 })
 
-// Reject a teacher request (optionally with a reason). They stay unable to sign in.
-router.post('/teacher-requests/:id/reject', async (req, res) => {
+// Reject a teacher request (optionally with a reason). They stay unable to sign in. Admin-only.
+router.post('/teacher-requests/:id/reject', authorizeAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
     if (!user || user.role !== 'teacher') return res.status(404).json({ error: 'Teacher account not found' })

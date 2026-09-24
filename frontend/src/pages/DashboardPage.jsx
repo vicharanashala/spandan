@@ -7,6 +7,7 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import { useTourStore } from '../stores/tourStore'
 import useIsMobile from '../hooks/useIsMobile'
 
 function DashboardPage() {
@@ -15,6 +16,7 @@ function DashboardPage() {
   const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
   const isMobile = useIsMobile()
+  const requestTour = useTourStore((s) => s.requestTour)
 
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
@@ -201,6 +203,15 @@ function DashboardPage() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+              <button
+                onClick={requestTour}
+                title="Replay the tutorial"
+                style={{
+                  width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: 'var(--radius-sm)', color: 'white', cursor: 'pointer', fontSize: '15px'
+                }}
+              >❔</button>
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -215,7 +226,7 @@ function DashboardPage() {
           boxSizing: 'border-box'
         }}>
           {/* Stats Cards */}
-          <div style={{
+          <div data-tour="teacher-stats" style={{
             display: 'grid',
             gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
             gap: isMobile ? '12px' : '20px',
@@ -273,6 +284,7 @@ function DashboardPage() {
             <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
               <input
                 type="text"
+                data-tour="create-room-input"
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
                 placeholder="Enter room name..."

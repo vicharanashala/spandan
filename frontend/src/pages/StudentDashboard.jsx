@@ -6,13 +6,76 @@ import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
+import OnboardingTour from '../components/OnboardingTour'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
+
+// One-time walkthrough shown to a student the first time they land on the dashboard.
+// `target: null` steps render as a centered card (no spotlight) — used for the intro and outro.
+// Steps whose target isn't in the DOM (e.g. sidebar items hidden on mobile until the drawer is
+// opened) are skipped automatically by OnboardingTour, so this same list works on every viewport.
+const STUDENT_TOUR_STEPS = [
+  {
+    target: null,
+    eyebrow: 'Interactive guide',
+    icon: 'sparkle',
+    title: 'Welcome to Spandan',
+    description: "Here's a 30-second guided tour so you know exactly where things live — and how to make the most of every session with your teacher."
+  },
+  {
+    target: '[data-tour="quick-join-input"]',
+    eyebrow: 'Live classes',
+    icon: 'zap',
+    title: 'Join a live session',
+    description: 'Your teacher shares a room code at the start of class. Type it here and you\'re in — polls, results and the leaderboard come alive instantly.',
+    placement: 'right'
+  },
+  {
+    target: '[data-tour="nav-join-room"]',
+    eyebrow: 'Quick access',
+    icon: 'grid',
+    title: 'Or join from anywhere',
+    description: 'This does the same as the box above — handy when you\'re already on another part of the dashboard. Everything is one click away.',
+    placement: 'right'
+  },
+  {
+    target: '[data-tour="stats-cards"]',
+    eyebrow: 'Your dashboard',
+    icon: 'chart',
+    title: 'Track your progress',
+    description: 'Rooms joined, polls answered, polls missed and your overall score — your entire classroom footprint at a glance, updated in real time.',
+    placement: 'bottom'
+  },
+  {
+    target: '[data-tour="nav-room-history"]',
+    eyebrow: 'Past sessions',
+    icon: 'history',
+    title: 'Review every session',
+    description: 'Revisit results, your answers and the leaderboard from any room you\'ve joined before. Perfect for spotting what to revise.',
+    placement: 'right'
+  },
+  {
+    target: '[data-tour="nav-manual"]',
+    eyebrow: 'Always available',
+    icon: 'help',
+    title: 'Stuck? There\'s a manual',
+    description: 'The help centre has a full written guide covering every feature — your go-to whenever you need a refresher mid-semester.',
+    placement: 'right'
+  },
+  {
+    target: null,
+    eyebrow: 'All set',
+    icon: 'trophy',
+    title: "You're ready to go",
+    description: 'That\'s everything. Join a room, answer a few polls, and watch your score climb the leaderboard. Enjoy the ride!',
+    cta: 'Start exploring'
+  }
+]
 
 function StudentDashboard() {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
-  const { user, token } = useAuthStore()
+  const { user, token, updateUser } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
   
@@ -24,6 +87,7 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+  const [showTour, setShowTour] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -32,6 +96,32 @@ function StudentDashboard() {
       fetchActiveRooms()
     }
   }, [token])
+
+  // Fire the tour once per account: only for students, only if the backend flag hasn't been set
+  // yet. A short delay lets the sidebar/cards finish their initial layout so the spotlight
+  // measures real positions instead of a pre-render flash.
+  useEffect(() => {
+    if (user?.role === 'student' && user?.hasSeenOnboarding === false) {
+      const timer = setTimeout(() => setShowTour(true), 500)
+      return () => clearTimeout(timer)
+    }
+  }, [user?.role, user?.hasSeenOnboarding])
+
+  const handleTourFinish = async () => {
+    setShowTour(false)
+    // Optimistic local update so it can never reappear this session even if the request below
+    // fails; then persist server-side so it also stays gone on other devices/future logins.
+    updateUser({ ...user, hasSeenOnboarding: true })
+    try {
+      await fetch(`${API_URL}/auth/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ hasSeenOnboarding: true })
+      })
+    } catch (err) {
+      console.error('Failed to persist onboarding status:', err)
+    }
+  }
 
   const fetchStudentStats = async () => {
     try {
@@ -125,6 +215,15 @@ function StudentDashboard() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+              <button
+                onClick={() => setShowTour(true)}
+                title="Replay the tutorial"
+                style={{
+                  width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: 'var(--radius-sm)', color: 'white', cursor: 'pointer', fontSize: '15px'
+                }}
+              >❔</button>
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -139,7 +238,7 @@ function StudentDashboard() {
           boxSizing: 'border-box'
         }}>
           {/* Stats Cards */}
-          <div style={{
+          <div data-tour="stats-cards" style={{
             display: 'grid',
             gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
             gap: isMobile ? '12px' : '20px',
@@ -198,6 +297,7 @@ function StudentDashboard() {
             }}>
               <input
                 type="text"
+                data-tour="quick-join-input"
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                 placeholder="Enter room code..."
@@ -311,6 +411,10 @@ function StudentDashboard() {
           )}
         </div>
       </div>
+
+      {showTour && (
+        <OnboardingTour steps={STUDENT_TOUR_STEPS} onFinish={handleTourFinish} />
+      )}
     </div>
   )
 }

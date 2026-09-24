@@ -171,6 +171,7 @@ function CreateRoomPage() {
               </label>
               <input
                 type="text"
+                data-tour="create-name-input"
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
                 placeholder="Enter room name..."
@@ -209,7 +210,7 @@ function CreateRoomPage() {
               }}>
                 Room Mode
               </label>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <div data-tour="create-mode-options" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {[
                   { key: 'normal', title: 'Normal', desc: 'Live mic + transcript' },
                   { key: 'video', title: 'Video', desc: 'YouTube video or live link' }
@@ -300,7 +301,8 @@ function CreateRoomPage() {
               flexDirection: isMobile ? 'column-reverse' : 'row'
             }}>
               <button
-                onClick={handleCreateRoom}
+              data-tour="create-submit-btn"
+              onClick={handleCreateRoom}
                 disabled={isDisabled}
                 style={{
                   padding: '11px 18px',
