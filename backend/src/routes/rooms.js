@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
+import { awardSectionChampion } from '../services/achievementEngine.js'
 
 const router = express.Router()
 
@@ -51,6 +52,30 @@ router.get('/', authenticate, async (req, res) => {
       res.status(403).json({ error: 'Only teachers can view room list' })
     }
   } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Leave an active room as a student. This REST endpoint is intentionally
+// idempotent so the UI can leave even if the socket is reconnecting.
+router.post('/:id/leave', authenticate, authorize('student'), async (req, res) => {
+  try {
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const room = await Room.findById(req.params.id).select('_id code').lean()
+    if (!room) return res.status(404).json({ error: 'Room not found' })
+
+    await RoomMember.deleteOne({ roomId: room._id, studentId: req.user._id })
+
+    const io = req.app.get('io')
+    if (io && room.code) {
+      const participants = await RoomMember.countDocuments({ roomId: room._id })
+      io.to(room.code).emit('room:left', { roomCode: room.code, participants })
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Failed to leave room:', error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -153,6 +178,10 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       // shared cache instead of each triggering full-room aggregations (the end-session stampede).
       // Fire-and-forget + no-op when Redis is off; never blocks or fails the room-end response.
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
+      // Award Section Champion after the room is ended, using the final settled room stats.
+      awardSectionChampion(room.code).then((result) => {
+        if (result?.badge) req.app.get('io')?.to(room.code).emit('badge-earned', { userId: result.userId, roomCode: room.code, badges: [result.badge] })
+      }).catch((e) => console.error('[rooms] section champion award failed:', e.message))
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })

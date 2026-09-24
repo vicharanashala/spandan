@@ -3,6 +3,10 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
 
 const menuItems = {
+  admin: [
+    { id: 'admin-dashboard', label: 'Dashboard', icon: '📊', path: '/admin' },
+    { id: 'teacher-approvals', label: 'Teacher Approvals', icon: '🛡️', path: '/admin/teacher-approvals' },
+  ],
   teacher: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/teacher' },
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
@@ -13,6 +17,7 @@ const menuItems = {
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
+    { id: 'achievements', label: 'Achievements', icon: '🏆', path: '/student/achievements' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },
   ]
@@ -27,17 +32,9 @@ const COLLAPSED_W = 76
 export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const role = user?.role || 'student'
+  const role = user?.isAdmin ? 'admin' : (user?.role || 'student')
   const baseItems = menuItems[role] || menuItems.student
-  // Admins get an extra "Approvals" entry, placed just above "Manual".
-  let items = baseItems
-  if (user?.isAdmin) {
-    const adminItem = { id: 'admin', label: 'Approvals', icon: '🛡️', path: '/admin' }
-    const idx = baseItems.findIndex(i => i.id === 'manual')
-    items = idx === -1
-      ? [...baseItems, adminItem]
-      : [...baseItems.slice(0, idx), adminItem, ...baseItems.slice(idx)]
-  }
+  const items = baseItems
 
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches)

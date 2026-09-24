@@ -19,6 +19,9 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
+import TeacherApprovalsPage from './pages/TeacherApprovalsPage'
+import AchievementsPage from './pages/AchievementsPage'
+import AchievementToast from './components/AchievementToast'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -65,6 +68,7 @@ function App() {
 
   return (
     <BrowserRouter basename="/spandan">
+      <AchievementToast />
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
@@ -109,15 +113,25 @@ function App() {
             <HelpPage />
           </ProtectedRoute>
         } />
-        {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
+        {/* Admin-only routes. isAdmin takes priority over the stored student/teacher role. */}
         <Route path="/admin" element={
-          <ProtectedRoute allowedRoles={['teacher']}>
+          <ProtectedRoute allowedRoles={['student', 'teacher']}>
             <AdminPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/teacher-approvals" element={
+          <ProtectedRoute allowedRoles={['student', 'teacher']}>
+            <TeacherApprovalsPage />
           </ProtectedRoute>
         } />
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/achievements" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <AchievementsPage />
           </ProtectedRoute>
         } />
         <Route path="/student/join-room" element={

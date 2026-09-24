@@ -6,6 +6,7 @@ import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { processAnswerAchievement } from '../services/achievementEngine.js'
 const router = express.Router()
 
 // How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
@@ -237,6 +238,28 @@ router.post('/', authorize('student'), async (req, res) => {
         }
         throw saveErr
       }
+    }
+
+    // Achievement processing is additive to Spandan's existing scoring. It runs only after
+    // the response has been accepted, and failures here never invalidate a successful answer.
+    let achievementResult = { stats: null, badges: [] }
+    try {
+      achievementResult = await processAnswerAchievement({
+        roomId,
+        userId: studentId,
+        isCorrect,
+        responseTime: respTime,
+        points
+      })
+      if (achievementResult.badges?.length && achievementResult.roomCode) {
+        req.app.get('io')?.to(achievementResult.roomCode).emit('badge-earned', {
+          userId: String(studentId),
+          roomCode: achievementResult.roomCode,
+          badges: achievementResult.badges
+        })
+      }
+    } catch (achievementError) {
+      console.error('Achievement processing error (answer remains successful):', achievementError)
     }
 
     // Live answer-counts update immediately (throttled) so the teacher's "X/total answered" badge

@@ -9,13 +9,29 @@ import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
 
+const fetchWithRetry = async (url, options, attempts = 4) => {
+  let lastError
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const response = await fetch(url, options)
+      if (response.status < 500 || attempt === attempts - 1) return response
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < attempts - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt))
+    }
+  }
+  throw lastError
+}
+
 function StudentDashboard() {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
-  
+
   const [roomCode, setRoomCode] = useState('')
   const [isJoining, setIsJoining] = useState(false)
   const [stats, setStats] = useState({
@@ -24,18 +40,20 @@ function StudentDashboard() {
     pollsMissed: 0,
     average: 0
   })
+  const [achievementProgress, setAchievementProgress] = useState({ earned: 0, total: 0, percent: 0 })
 
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchStudentStats()
+      fetchAchievementProgress()
       fetchActiveRooms()
     }
   }, [token])
 
   const fetchStudentStats = async () => {
     try {
-      const res = await fetch(`${API_URL}/responses/stats/student/${user._id}`, {
+      const res = await fetchWithRetry(`${API_URL}/responses/stats/student/${user._id}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -49,6 +67,19 @@ function StudentDashboard() {
       }
     } catch (err) {
       console.error('Failed to fetch student stats:', err)
+    }
+  }
+
+  const fetchAchievementProgress = async () => {
+    try {
+      const res = await fetchWithRetry(`${API_URL}/achievements/progress`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      setAchievementProgress(data)
+    } catch (err) {
+      console.error('Failed to fetch achievement progress:', err)
     }
   }
 
@@ -175,6 +206,146 @@ function StudentDashboard() {
                 <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>{card.label}</div>
               </div>
             ))}
+          </div>
+
+          {/* Achievement Progress */}
+          <div
+            style={{
+              position: 'relative',
+              overflow: 'hidden',
+              background: 'var(--bg-card)',
+              borderRadius: 'var(--radius-lg)',
+              padding: isMobile ? '20px' : '24px',
+              boxShadow: 'var(--shadow-md)',
+              border: '1px solid var(--border-color)',
+              marginBottom: isMobile ? '24px' : '32px'
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                right: -35,
+                top: -45,
+                width: 130,
+                height: 130,
+                borderRadius: '50%',
+                background: 'var(--accent-gradient)',
+                opacity: 0.07
+              }}
+            />
+
+            <div
+              style={{
+                position: 'relative',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 16,
+                marginBottom: 16,
+                flexWrap: 'wrap'
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8
+                  }}
+                >
+                  <span style={{ fontSize: 21 }}>🏆</span>
+
+                  <h2
+                    style={{
+                      margin: 0,
+                      fontSize: 18,
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    Achievement Progress
+                  </h2>
+                </div>
+
+                <p
+                  style={{
+                    margin: '5px 0 0 29px',
+                    color: 'var(--text-secondary)',
+                    fontSize: 12
+                  }}
+                >
+                  {achievementProgress.earned || 0} of{' '}
+                  {achievementProgress.total || 0} badges unlocked
+                </p>
+              </div>
+
+              <button
+                onClick={() => navigate('/student/achievements')}
+                style={{
+                  padding: '9px 14px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 10,
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  fontWeight: 650,
+                  fontSize: 12
+                }}
+              >
+                View achievements →
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginBottom: 7,
+                color: 'var(--text-secondary)',
+                fontSize: 11,
+                fontWeight: 650
+              }}
+            >
+              <span>Overall progress</span>
+              <span>{achievementProgress.percent || 0}%</span>
+            </div>
+
+            <div
+              style={{
+                height: 10,
+                borderRadius: 99,
+                background: 'var(--border-color)',
+                overflow: 'hidden'
+              }}
+            >
+              <div
+                style={{
+                  width: `${achievementProgress.percent || 0}%`,
+                  height: '100%',
+                  borderRadius: 99,
+                  background: 'var(--accent-gradient)',
+                  transition: 'width .5s ease'
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                marginTop: 12,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                color: 'var(--text-secondary)',
+                fontSize: 12
+              }}
+            >
+              <span>🚀</span>
+
+              <span>
+                {(achievementProgress.percent || 0) >= 100
+                  ? 'You unlocked everything!'
+                  : 'Keep answering polls to unlock your next badge.'}
+              </span>
+            </div>
           </div>
 
           {/* Quick Join Section */}

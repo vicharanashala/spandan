@@ -24,6 +24,8 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import achievementRoutes from './routes/achievements.js'
+import { ensureDefaultBadges, ensureAchievementIndexes } from './services/achievementSeed.js'
 
 // Import models for reference
 import './models/index.js'
@@ -388,6 +390,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/achievements', achievementRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -753,6 +756,20 @@ const PORT = process.env.PORT || 3001
 // Start server
 const startServer = async () => {
   await connectDB()
+  if (mongoose.connection.readyState === 1) {
+    try {
+      // Migrate/clean legacy achievement indexes BEFORE seeding the v2 badges.
+      // Older Spandan versions had a unique index on Badge.name, which would
+      // reject the new section+lifetime badges that intentionally share names.
+      await ensureAchievementIndexes()
+      await ensureDefaultBadges()
+      // Run once more so newly seeded badges and any newly created achievement
+      // rows are covered by the current indexes/migration rules.
+      await ensureAchievementIndexes()
+    } catch (error) {
+      console.error('Achievement seed/index migration error:', error.message)
+    }
+  }
   
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
