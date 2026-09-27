@@ -2,6 +2,8 @@ import express from 'express'
 import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { generateQuestions, AI_PROVIDERS } from '../services/questionService.js'
 import { getGenerationQueue } from '../services/generationQueue.js'
+import { resolveAdaptiveDifficulty } from '../services/adaptiveDifficultyService.js'
+import { setRoomDifficulty } from '../services/roomService.js'
 import { stripObject } from '../utils/sanitize.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 
@@ -30,11 +32,12 @@ router.get('/providers', (req, res) => {
 router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (req, res) => {
   try {
     const { transcript, config } = req.body
-    const { 
-      numQuestions = 2, 
+    const {
+      numQuestions = 2,
       difficulty = 'medium',
       provider = 'minimax',
-      questionTypeMix = null
+      questionTypeMix = null,
+      roomId = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -44,12 +47,46 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       })
     }
 
-    const jobConfig = { numQuestions, difficulty, provider, questionTypeMix }
+    let resolvedDifficulty = null
+    let adaptiveMeta = null
+    let effectiveDifficulty = difficulty
+    // The adaptive step is NOT persisted here. Persisting before generation makes it non-idempotent:
+    // generateQuestions() can fail (AI hiccup) and the client auto-retries, so each retry would re-read
+    // the already-stepped difficulty and step it AGAIN off the same batch. We defer the write until a
+    // batch is actually produced (below) so a failed/retried generate can't ratchet difficulty.
+    let persistDifficulty = null
+
+    if (roomId) {
+      const Room = (await import('../models/Room.js')).default
+      const room = await Room.findById(roomId)
+      if (!room) {
+        return res.status(404).json({ success: false, error: 'Room not found' })
+      }
+      if (room.teacher.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ success: false, error: 'Not authorized to generate questions for this room' })
+      }
+
+      if (room.settings?.adaptiveDifficulty) {
+        const baseDifficulty = room.settings.difficulty || 'medium'
+        const result = await resolveAdaptiveDifficulty(roomId, baseDifficulty)
+        effectiveDifficulty = result.difficulty
+        resolvedDifficulty = result.difficulty
+        adaptiveMeta = { sampleSize: result.sampleSize, correctnessPct: result.correctnessPct }
+        if (result.difficulty !== baseDifficulty) {
+          persistDifficulty = result.difficulty
+        }
+      }
+    }
+
+    const jobConfig = { numQuestions, difficulty: effectiveDifficulty, provider, questionTypeMix }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
-    // The client polls GET /questions/jobs/:jobId for the result.
+    // The client polls GET /questions/jobs/:jobId for the result. The out-of-process worker has no
+    // Mongo connection, so we persist the step here; BullMQ's internal retries reuse this job's data
+    // (they don't re-run resolveAdaptiveDifficulty), so they can't over-step.
     const queue = getGenerationQueue()
     if (queue) {
+      if (persistDifficulty) await setRoomDifficulty(roomId, persistDifficulty)
       const job = await queue.add(
         'generate',
         { transcript, config: jobConfig, requestedBy: String(req.user._id) },
@@ -60,14 +97,16 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
           removeOnFail: { age: 900 }
         }
       )
-      return res.status(202).json({ success: true, async: true, jobId: job.id })
+      return res.status(202).json({ success: true, async: true, jobId: job.id, resolvedDifficulty, adaptiveMeta })
     }
 
     // Sync fallback (no Redis): generate inline — today's behavior.
     console.log(`Generating ${numQuestions} questions with ${provider} (sync)...`)
     const questions = await generateQuestions(transcript, jobConfig)
     console.log(`Generated ${questions.length} questions successfully`)
-    res.json({ success: true, questions })
+    // Persist the adaptive step only now that a batch actually came back — see persistDifficulty above.
+    if (persistDifficulty) await setRoomDifficulty(roomId, persistDifficulty)
+    res.json({ success: true, questions, resolvedDifficulty, adaptiveMeta })
   } catch (error) {
     console.error('Question generation error:', error)
     res.status(500).json({

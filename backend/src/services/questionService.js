@@ -237,12 +237,15 @@ export function buildQuestionPrompt(transcript, questionTypes, difficulty) {
   }).join('\n')
 
   // Bloom emphasis follows the teacher-set difficulty (guides the model only; never saved/shown).
+  // Spelled out in concrete, observable terms (not just Bloom labels) because abstract taxonomy
+  // names alone don't reliably produce visibly different output from the model call to call,
+  // especially on short/simple source material — this gives it hard constraints to differentiate on.
   const diff = String(difficulty || 'medium').toLowerCase()
   const bloomEmphasis = diff === 'easy'
-    ? 'Since difficulty is EASY, lean toward the Understand and Apply levels — but still test genuine comprehension and simple inference, never rote recall.'
+    ? 'Since difficulty is EASY, lean toward the Understand and Apply levels. Concretely: the correct answer should follow from ONE direct fact or relationship stated in the content, with at most one small inferential step. Keep wording plain and short. Distractors should be recognizably off-topic or reversed, not razor-close.'
     : diff === 'hard'
-      ? 'Since difficulty is HARD, skew toward the Analyze and Evaluate levels — most questions should require multi-step reasoning or spotting a subtly flawed inference.'
-      : 'For MEDIUM difficulty, balance across Understand, Apply, Analyze and Evaluate, with a slight lean toward Analyze.'
+      ? 'Since difficulty is HARD, skew toward the Analyze and Evaluate levels. Concretely: require connecting TWO OR MORE facts/relationships from the content, or applying the underlying logic to a new scenario not literally stated. Distractors must be genuinely tempting — each one should be wrong for a subtle, specific reason a rushed reader would miss.'
+      : 'For MEDIUM difficulty, balance across Understand, Apply, Analyze and Evaluate, with a slight lean toward Analyze. Concretely: the correct answer should require connecting exactly one inference step beyond the literal text — harder than a direct lookup, but not requiring chaining multiple facts together.'
 
   return `You are an expert educational assessment designer. Using ONLY the session content below, write ${questionTypes.length} high-quality quiz questions that test understanding and inference — NOT recall.
 
@@ -504,7 +507,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-flash-latest') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
