@@ -1793,8 +1793,8 @@ function RoomDetailPage() {
                   {roomSettings.adaptiveDifficulty && adaptiveMeta && (
                     <div style={{ textAlign: 'right', fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>
                       {adaptiveMeta.sampleSize < 3
-                        ? `waiting for more responses (${adaptiveMeta.sampleSize}/3 needed to adapt)`
-                        : `last batch: ${adaptiveMeta.correctnessPct}% correct (${adaptiveMeta.sampleSize} responses)`}
+                        ? `waiting for more students (${adaptiveMeta.sampleSize}/3 needed to adapt)`
+                        : `last batch: ${adaptiveMeta.correctnessPct}% correct (${adaptiveMeta.sampleSize} students)`}
                     </div>
                   )}
                 </div>
