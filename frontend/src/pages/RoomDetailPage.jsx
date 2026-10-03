@@ -110,6 +110,25 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [supportRadar, setSupportRadar] = useState([])
+  const [supportRadarError, setSupportRadarError] = useState('')
+  const [nudgingStudentId, setNudgingStudentId] = useState(null)
+
+  const loadSupportRadar = useCallback(async (rid) => {
+    if (!rid || !token) return
+    try {
+      const response = await fetch(`${API_URL}/responses/struggle/${rid}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!response.ok) throw new Error('Failed to load support radar')
+      const data = await response.json()
+      setSupportRadar(data.students || [])
+      setSupportRadarError('')
+    } catch (err) {
+      console.error('Failed to load support radar:', err)
+      setSupportRadarError('Support radar unavailable')
+    }
+  }, [token])
 
   useEffect(() => {
     if (token) {
@@ -158,6 +177,21 @@ function RoomDetailPage() {
       socket.off('room:left', handleRoomLeft)
     }
   }, [socket])
+
+  useEffect(() => {
+    if (!socket || !room?._id) return
+    const refresh = () => loadSupportRadar(room._id)
+    const handleRadarChanged = (data) => {
+      if (String(data?.roomId) === String(room._id)) refresh()
+    }
+    socket.on('struggle:changed', handleRadarChanged)
+    socket.on('connect', refresh)
+    refresh()
+    return () => {
+      socket.off('struggle:changed', handleRadarChanged)
+      socket.off('connect', refresh)
+    }
+  }, [socket, room?._id, loadSupportRadar])
 
   // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
   // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
@@ -542,6 +576,28 @@ function RoomDetailPage() {
       navigate(`/teacher/room/${room._id}/results`)
     } catch (err) {
       setError(err.message)
+    }
+  }
+
+  const sendSupportNudge = async (studentId) => {
+    setNudgingStudentId(studentId)
+    try {
+      const response = await fetch(`${API_URL}/responses/struggle/${room._id}/nudge`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ studentId })
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to send encouragement')
+      }
+    } catch (err) {
+      window.alert(err.message)
+    } finally {
+      setNudgingStudentId(null)
     }
   }
 
@@ -1849,6 +1905,54 @@ function RoomDetailPage() {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Teacher-only, temporary support signals derived from persisted responses. */}
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            boxShadow: 'var(--shadow-md)',
+            padding: '20px',
+            marginBottom: '20px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>🆘</span>
+              <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Live Support Radar
+              </span>
+              {supportRadar.length > 0 && (
+                <span style={{ padding: '2px 8px', borderRadius: '10px', background: '#fef3c7', color: '#92400e', fontSize: '12px', fontWeight: '700' }}>
+                  {supportRadar.length}
+                </span>
+              )}
+            </div>
+            {supportRadarError ? (
+              <p style={{ margin: 0, color: '#dc2626', fontSize: '13px' }}>{supportRadarError}</p>
+            ) : supportRadar.length === 0 ? (
+              <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '13px' }}>
+                No students currently need support.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {supportRadar.map(student => {
+                  const tierColor = student.tier === 'Needs Help' ? '#dc2626' : student.tier === 'At Risk' ? '#d97706' : '#2563eb'
+                  return (
+                    <div key={student.studentId} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: 'var(--bg-primary)', borderRadius: '8px' }}>
+                      <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: '600' }}>{student.name}</span>
+                      <span style={{ color: tierColor, fontSize: '12px', fontWeight: '700', whiteSpace: 'nowrap' }}>{student.tier}</span>
+                      <button
+                        onClick={() => sendSupportNudge(student.studentId)}
+                        disabled={isEnded || nudgingStudentId === student.studentId}
+                        style={{ padding: '6px 10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-card)', color: 'var(--text-primary)', cursor: isEnded || nudgingStudentId === student.studentId ? 'not-allowed' : 'pointer', fontSize: '12px' }}
+                      >
+                        {nudgingStudentId === student.studentId ? 'Sending…' : 'Encourage'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}

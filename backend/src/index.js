@@ -148,6 +148,19 @@ async function broadcastCounts(roomId) {
   }
 }
 
+// Notify only the teacher who owns the room. The payload is an invalidation, not student data;
+// the teacher refetches through the ownership-checked REST endpoint.
+async function notifySupportRadarChanged(roomId) {
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const room = await Room.findById(roomId).select('teacher').lean()
+    const teacherId = room?.teacher?.toString()
+    if (teacherId) io.to('user:' + teacherId).emit('struggle:changed', { roomId: String(roomId) })
+  } catch (err) {
+    console.error('notifySupportRadarChanged error:', err.message)
+  }
+}
+
 async function scheduleCountsBroadcast(roomId) {
   const id = String(roomId)
   if (redis.enabled) {
@@ -305,6 +318,7 @@ async function getCachedStudentRank(roomId, studentId) {
 
 app.set('liveUpdates', {
   scheduleCounts: scheduleCountsBroadcast,
+  notifySupportRadarChanged,
   scheduleSegmentFold, // triggered by the REST POST /responses/leaderboard/:roomId/segment-done
   refreshLeaderboardNow,
   getRank: getCachedStudentRank
@@ -345,6 +359,13 @@ const responseLimiter = rateLimit({
   message: { error: 'Too many response submissions, please try again later' }
 })
 
+const supportRadarNudgeLimiter = rateLimit({
+  store: rlStore('rl:radar-nudge:'),
+  windowMs: 5000,
+  max: 1,
+  message: { error: 'Please wait before sending another nudge' }
+})
+
 const leaderboardLimiter = rateLimit({
   store: rlStore('rl:lb:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -374,6 +395,7 @@ app.use('/api/', apiLimiter)           // general /api/ routes
 app.use('/api/auth/', authLimiter)     // auth routes
 app.use('/api/auth/register/send-otp', otpLimiter)  // stricter cap on the email-sending step
 app.use('/api/responses/', responseLimiter)  // response submission routes
+app.use('/api/responses/struggle/:roomId/nudge', supportRadarNudgeLimiter)
 app.use('/api/responses/leaderboard/', leaderboardLimiter)  // leaderboard routes (high limit for live sessions)
 
 // Apply timeout middleware before routes
@@ -411,6 +433,11 @@ async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
   const u = await User.findById(decoded.userId).select('role').lean()
+  if (socket.data?.userId && String(socket.data.userId) !== String(decoded.userId)) {
+    for (const room of socket.rooms) {
+      if (room !== socket.id) socket.leave(room)
+    }
+  }
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
@@ -429,6 +456,9 @@ function socketTokenExpired(socket) {
 }
 
 function deauthenticateSocket(socket) {
+  for (const room of socket.rooms) {
+    if (room !== socket.id) socket.leave(room)
+  }
   socket.data.userId = null
   socket.data.role = null
   connectedUsers.delete(socket.id)
@@ -612,8 +642,6 @@ io.on('connection', (socket) => {
 
   // Leave room — identity from the authenticated socket.
   socket.on('room:leave', async ({ roomCode }) => {
-    const userId = socket.data?.userId
-    const role = socket.data?.role
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
@@ -624,9 +652,8 @@ io.on('connection', (socket) => {
 
       let participantCount = 0
       if (room) {
-        if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
-        }
+        // Socket disconnect/leave is temporary presence, not enrollment. Keep the membership so a
+        // reconnecting student remains authorized to answer and receive room state.
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
