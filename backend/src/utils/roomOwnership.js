@@ -14,3 +14,23 @@ export function checkRoomOwnership(room, userId) {
   }
   return { ok: true, status: 200 }
 }
+
+export function checkRoomEditor(room, userId) {
+  if (!room) return { ok: false, status: 404, error: 'Room not found' }
+  const uid = String(userId)
+  const teacherId = String(room.teacher?._id ?? room.teacher)
+  if (teacherId === uid) {
+    return { ok: true, status: 200 }
+  }
+  if (Array.isArray(room.coHosts)) {
+    const isCoHost = room.coHosts.some(ch => {
+      const chId = String(ch.userId?._id ?? ch.userId)
+      return chId === uid
+    })
+    if (isCoHost) {
+      return { ok: true, status: 200 }
+    }
+  }
+  return { ok: false, status: 403, error: 'Not authorized for this room' }
+}
+

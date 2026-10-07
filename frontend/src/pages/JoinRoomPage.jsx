@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
@@ -10,16 +10,22 @@ import useIsMobile from '../hooks/useIsMobile'
 
 function JoinRoomPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, token } = useAuthStore()
   const { joinRoom, leaveRoom } = useSocketStore()
-  const { joinRoomByCode, setAuthToken } = useRoomStore()
+  const { joinRoomByCode, joinCoHostRoom, fetchRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
+  const isTeacher = user?.role === 'teacher'
+  const isTeacherRoute = location.pathname.includes('/teacher/join-cohost')
+
   const [roomCode, setRoomCode] = useState('')
+  const [coHostCode, setCoHostCode] = useState('')
+  const [isCoHostJoin, setIsCoHostJoin] = useState(isTeacherRoute || isTeacher)
   const [isJoining, setIsJoining] = useState(false)
   const [error, setError] = useState('')
-  const [joinedRoom, setJoinedRoom] = useState(null)
   const [isFocused, setIsFocused] = useState(false)
+  const [isCoHostFocused, setIsCoHostFocused] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -33,29 +39,33 @@ function JoinRoomPage() {
       return
     }
 
+    if (isTeacher && isCoHostJoin && !coHostCode.trim()) {
+      setError('Please enter the 8-character Co-Host Join Code')
+      return
+    }
+
     setIsJoining(true)
     setError('')
 
     try {
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      setJoinedRoom(room)
-      joinRoom(room.code, user._id)
-      navigate(`/student/session/${room.code}`)
+      if (isTeacher && isCoHostJoin) {
+        // Synchronous REST join first to ensure room.coHosts is saved in Mongo before mounting RoomDetailPage
+        const room = await joinCoHostRoom(roomCode.trim().toUpperCase(), coHostCode.trim().toUpperCase())
+        joinRoom(room.code, user._id, coHostCode.trim().toUpperCase())
+        navigate(`/teacher/room/${room._id}`)
+      } else {
+        const room = await joinRoomByCode(roomCode.trim().toUpperCase())
+        joinRoom(room.code, user._id)
+        navigate(`/student/session/${room.code}`)
+      }
     } catch (err) {
-      setError(err.message || 'Failed to join room. Please check the code and try again.')
+      setError(err.message || 'Failed to join room. Please check the codes and try again.')
     } finally {
       setIsJoining(false)
     }
   }
 
-  const handleLeaveRoom = () => {
-    if (joinedRoom) {
-      leaveRoom(joinedRoom.code, user._id)
-      setJoinedRoom(null)
-    }
-  }
-
-  const isDisabled = isJoining || roomCode.length < 6
+  const isDisabled = isJoining || roomCode.length < 6 || (isTeacher && isCoHostJoin && coHostCode.length < 8)
 
   return (
     <div style={{
@@ -98,14 +108,16 @@ function JoinRoomPage() {
                 fontWeight: 700,
                 letterSpacing: '-0.02em'
               }}>
-                Join a Room
+                {isTeacher && isCoHostJoin ? 'Join as Co-Host' : 'Join a Room'}
               </h1>
               <p style={{
                 margin: '4px 0 0',
                 opacity: 0.9,
                 fontSize: isMobile ? '13px' : '14px'
               }}>
-                Enter the code shared by your teacher
+                {isTeacher && isCoHostJoin
+                  ? 'Enter the room code and 8-character co-host join code shared by the host teacher'
+                  : 'Enter the code shared by your teacher'}
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -147,7 +159,7 @@ function JoinRoomPage() {
               marginBottom: '20px',
               boxShadow: '0 2px 10px rgba(30,64,175,.25)'
             }}>
-              🔑
+              🤝
             </div>
 
             <h2 style={{
@@ -157,7 +169,7 @@ function JoinRoomPage() {
               letterSpacing: '-0.01em',
               color: 'var(--text-primary)'
             }}>
-              Enter Room Code
+              {isTeacher && isCoHostJoin ? 'Co-Host Join Details' : 'Enter Room Code'}
             </h2>
             <p style={{
               margin: '0 0 24px',
@@ -165,7 +177,9 @@ function JoinRoomPage() {
               fontSize: '14px',
               lineHeight: 1.5
             }}>
-              Ask your teacher for the 6-digit code to join their room
+              {isTeacher && isCoHostJoin
+                ? 'Provide the 6-character room code and the 8-character active co-host code'
+                : 'Ask your teacher for the 6-character code to join their room'}
             </p>
 
             {error && (
@@ -183,7 +197,10 @@ function JoinRoomPage() {
               </div>
             )}
 
-            <div style={{ marginBottom: '24px' }}>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                Room Code (6 characters)
+              </label>
               <input
                 type="text"
                 value={roomCode}
@@ -194,12 +211,12 @@ function JoinRoomPage() {
                 maxLength={6}
                 style={{
                   width: '100%',
-                  padding: isMobile ? '16px 12px' : '20px 16px',
+                  padding: isMobile ? '14px 12px' : '16px 14px',
                   border: `2px solid ${isFocused ? 'var(--accent)' : 'var(--border-color)'}`,
                   borderRadius: 'var(--radius)',
-                  fontSize: isMobile ? '24px' : '30px',
+                  fontSize: isMobile ? '20px' : '24px',
                   fontWeight: 700,
-                  letterSpacing: isMobile ? '6px' : '10px',
+                  letterSpacing: isMobile ? '4px' : '6px',
                   textAlign: 'center',
                   outline: 'none',
                   background: 'var(--input-bg)',
@@ -210,6 +227,39 @@ function JoinRoomPage() {
                 }}
               />
             </div>
+
+            {isTeacher && isCoHostJoin && (
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  Co-Host Join Code (8 characters)
+                </label>
+                <input
+                  type="text"
+                  value={coHostCode}
+                  onChange={(e) => setCoHostCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  onFocus={() => setIsCoHostFocused(true)}
+                  onBlur={() => setIsCoHostFocused(false)}
+                  placeholder="XXXXXXXX"
+                  maxLength={8}
+                  style={{
+                    width: '100%',
+                    padding: isMobile ? '14px 12px' : '16px 14px',
+                    border: `2px solid ${isCoHostFocused ? 'var(--accent)' : 'var(--border-color)'}`,
+                    borderRadius: 'var(--radius)',
+                    fontSize: isMobile ? '18px' : '22px',
+                    fontWeight: 700,
+                    letterSpacing: isMobile ? '3px' : '4px',
+                    textAlign: 'center',
+                    outline: 'none',
+                    background: 'var(--input-bg)',
+                    color: 'var(--text-primary)',
+                    boxSizing: 'border-box',
+                    boxShadow: isCoHostFocused ? '0 0 0 4px rgba(59,130,246,0.15)' : 'none',
+                    transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
+                  }}
+                />
+              </div>
+            )}
 
             <button
               onClick={handleJoinRoom}
@@ -228,7 +278,7 @@ function JoinRoomPage() {
                 transition: 'transform 0.1s ease, box-shadow 0.15s ease'
               }}
             >
-              {isJoining ? 'Joining...' : 'Join Room'}
+              {isJoining ? 'Joining...' : (isTeacher && isCoHostJoin ? 'Join as Co-Host' : 'Join Room')}
             </button>
           </div>
         </div>
