@@ -18,6 +18,7 @@ function StudentDashboard() {
   
   const [roomCode, setRoomCode] = useState('')
   const [isJoining, setIsJoining] = useState(false)
+  const [joinError, setJoinError] = useState('')
   const [stats, setStats] = useState({
     totalRooms: 0,
     pollsTaken: 0,
@@ -53,17 +54,27 @@ function StudentDashboard() {
   }
 
   const handleJoinRoom = async () => {
-    if (!roomCode.trim()) return
+    const normalizedCode = roomCode.trim().toUpperCase()
+    setJoinError('')
+    if (!normalizedCode) {
+      setJoinError('Please enter the 6-character room code.')
+      return
+    }
+    if (normalizedCode.length !== 6) {
+      setJoinError('Room codes are exactly 6 characters.')
+      return
+    }
     setIsJoining(true)
     try {
       // First validate the room exists via API
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      // Then join via socket
+      const room = await joinRoomByCode(normalizedCode)
+      // The session page also verifies the socket connection and will re-join once the
+      // authenticated socket is ready. Emitting here makes the normal case instantaneous.
       joinRoom(room.code, user._id)
-      // Then navigate to session
       navigate(`/student/session/${room.code}`)
     } catch (err) {
       console.error('Failed to join room:', err)
+      setJoinError(err.message || 'Unable to join this room. Check the code and try again.')
     } finally {
       setIsJoining(false)
     }
@@ -177,6 +188,40 @@ function StudentDashboard() {
             ))}
           </div>
 
+          {/* Performance Journey entry point */}
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: 'var(--radius-lg)',
+            padding: isMobile ? '20px' : '24px',
+            boxShadow: 'var(--shadow-md)',
+            border: '1px solid var(--border-color)',
+            marginBottom: isMobile ? '24px' : '32px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '20px',
+            flexWrap: 'wrap',
+            boxSizing: 'border-box'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', minWidth: 0 }}>
+              <div style={{
+                width: '48px', height: '48px', borderRadius: '14px', display: 'grid', placeItems: 'center',
+                background: 'rgba(59,130,246,0.12)', fontSize: '23px', flexShrink: 0
+              }}>📈</div>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>Performance Journey</h2>
+                <p style={{ margin: '5px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>Track your accuracy, scores, rank, questions and progress across completed sessions.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/student/performance')}
+              style={{
+                padding: '11px 18px', background: 'var(--accent-gradient)', color: '#fff', border: 'none', borderRadius: 'var(--radius)',
+                fontSize: '14px', fontWeight: '700', cursor: 'pointer', whiteSpace: 'nowrap'
+              }}
+            >View Journey →</button>
+          </div>
+
           {/* Quick Join Section */}
           <div style={{
             background: 'var(--bg-card)',
@@ -187,9 +232,19 @@ function StudentDashboard() {
             marginBottom: isMobile ? '24px' : '32px',
             boxSizing: 'border-box'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-              Quick Join
-            </h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>Quick Join</h2>
+              <button
+                onClick={() => navigate('/student/join-room')}
+                style={{ border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--accent)', borderRadius: 10, padding: '8px 11px', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}
+              >Open Join Room page →</button>
+            </div>
+
+            {joinError && (
+              <div style={{ marginBottom: 14, padding: '11px 13px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)', color: '#b91c1c', fontSize: 13, lineHeight: 1.4 }}>
+                {joinError}
+              </div>
+            )}
 
             <div style={{
               display: 'flex',
@@ -199,9 +254,10 @@ function StudentDashboard() {
               <input
                 type="text"
                 value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="Enter room code..."
-                maxLength={8}
+                onChange={(e) => { setJoinError(''); setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleJoinRoom() }}
+                placeholder="Enter 6-character room code..."
+                maxLength={6}
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -220,16 +276,16 @@ function StudentDashboard() {
 
               <button
                 onClick={handleJoinRoom}
-                disabled={isJoining || !roomCode.trim()}
+                disabled={isJoining || roomCode.trim().length !== 6}
                 style={{
                   padding: '11px 24px',
-                  background: (isJoining || !roomCode.trim()) ? 'var(--border-color)' : 'var(--accent-gradient)',
-                  color: (isJoining || !roomCode.trim()) ? 'var(--text-secondary)' : '#fff',
+                  background: (isJoining || roomCode.trim().length !== 6) ? 'var(--border-color)' : 'var(--accent-gradient)',
+                  color: (isJoining || roomCode.trim().length !== 6) ? 'var(--text-secondary)' : '#fff',
                   border: 'none',
                   borderRadius: 'var(--radius)',
                   fontSize: '15px',
                   fontWeight: '600',
-                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer',
+                  cursor: (isJoining || roomCode.trim().length !== 6) ? 'not-allowed' : 'pointer',
                   whiteSpace: 'nowrap',
                   transition: 'transform 0.15s ease, box-shadow 0.15s ease'
                 }}

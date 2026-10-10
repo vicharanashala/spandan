@@ -9,6 +9,7 @@ import AuthCallback from './pages/AuthCallback'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
 import StudentDashboard from './pages/StudentDashboard'
+import StudentPerformancePage from './pages/StudentPerformancePage'
 import RoomDetailPage from './pages/RoomDetailPage'
 import StudentRoomPage from './pages/StudentRoomPage'
 import CreateRoomPage from './pages/CreateRoomPage'
@@ -118,6 +119,11 @@ function App() {
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/performance" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <StudentPerformancePage />
           </ProtectedRoute>
         } />
         <Route path="/student/join-room" element={

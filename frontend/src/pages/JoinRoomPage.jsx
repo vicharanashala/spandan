@@ -165,7 +165,7 @@ function JoinRoomPage() {
               fontSize: '14px',
               lineHeight: 1.5
             }}>
-              Ask your teacher for the 6-digit code to join their room
+              Ask your teacher for the 6-character code to join their room
             </p>
 
             {error && (
@@ -187,7 +187,8 @@ function JoinRoomPage() {
               <input
                 type="text"
                 value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                onChange={(e) => { setError(''); setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)) }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !isDisabled) handleJoinRoom() }}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
                 placeholder="XXXXXX"

@@ -6,6 +6,7 @@ import { computeRankedIncremental } from '../services/leaderboardCache.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { debug } from '../utils/debug.js'
+import { computeRanked } from '../services/leaderboardAgg.js'
 const router = express.Router()
 
 // How many ranks are shown PUBLICLY to a student (the rest see only their own row). Must match the
@@ -410,6 +411,304 @@ router.get('/stats/student/:studentId', async (req, res) => {
 })
 
 // GET /api/responses/stats/room/:roomId - Get room stats for teacher
+
+// GET /api/responses/performance/student/:studentId - Student performance journey
+// Aggregates completed-session history into one student-scoped payload. Students can only view
+// themselves; teachers retain the same room-membership access semantics as the existing student stats.
+router.get('/performance/student/:studentId', async (req, res) => {
+  try {
+    const Response = (await import('../models/Response.js')).default
+    const Question = (await import('../models/Question.js')).default
+    const Room = (await import('../models/Room.js')).default
+    const RoomMember = (await import('../models/RoomMember.js')).default
+    const mongoose = (await import('mongoose')).default
+
+    const { studentId } = req.params
+    const currentUser = req.user
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ error: 'Invalid studentId' })
+    }
+
+    const isSelf = currentUser._id.toString() === studentId
+    if (currentUser.role === 'student' && !isSelf) {
+      return res.status(403).json({ error: 'Not authorized to view other students\' performance' })
+    }
+
+    const studentObjectId = new mongoose.Types.ObjectId(studentId)
+
+    // Keep teacher access aligned with /stats/student/:studentId: the teacher must share at least
+    // one room with the student. The actual journey still only includes completed rooms.
+    if (currentUser.role === 'teacher') {
+      const [studentRoomIds, teacherRoomIds] = await Promise.all([
+        RoomMember.distinct('roomId', { studentId: studentObjectId }),
+        Room.distinct('_id', { teacher: currentUser._id })
+      ])
+      const teacherRoomSet = new Set(teacherRoomIds.map(id => id.toString()))
+      const hasAccess = studentRoomIds.some(id => teacherRoomSet.has(id.toString()))
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'Not authorized to view this student\'s performance' })
+      }
+    }
+
+    // The journey is intentionally based only on completed rooms. Membership is the attendance
+    // source of truth; a response without membership is still included defensively so historical
+    // data is not silently lost.
+    const [memberships, respondedRoomIds] = await Promise.all([
+      RoomMember.find({ studentId: studentObjectId }).select('roomId joinedAt').lean(),
+      Response.distinct('roomId', { studentId: studentObjectId })
+    ])
+
+    const attendanceByRoom = new Map(
+      memberships.map(m => [m.roomId.toString(), { attended: true, joinedAt: m.joinedAt }])
+    )
+    const candidateRoomIds = [...new Set([
+      ...memberships.map(m => m.roomId.toString()),
+      ...respondedRoomIds.map(id => id.toString())
+    ])]
+
+    if (!candidateRoomIds.length) {
+      return res.json({
+        success: true,
+        summary: {
+          totalSessions: 0,
+          averageScore: 0,
+          overallAccuracy: 0,
+          averageRank: null,
+          currentRank: null,
+          totalQuestions: 0,
+          attemptedQuestions: 0,
+          missedQuestions: 0,
+          correctAnswers: 0,
+          incorrectAnswers: 0,
+          bestPerformance: null,
+          weakestPerformance: null,
+          recentComparison: null
+        },
+        history: [],
+        trends: { score: [], accuracy: [], rank: [] }
+      })
+    }
+
+    const roomObjectIds = candidateRoomIds
+      .filter(id => mongoose.Types.ObjectId.isValid(id))
+      .map(id => new mongoose.Types.ObjectId(id))
+
+    const completedRooms = await Room.find({
+      _id: { $in: roomObjectIds },
+      endedAt: { $ne: null }
+    }).select('_id name code createdAt updatedAt endedAt').sort({ endedAt: 1 }).lean()
+
+    if (!completedRooms.length) {
+      return res.json({
+        success: true,
+        summary: {
+          totalSessions: 0,
+          averageScore: 0,
+          overallAccuracy: 0,
+          averageRank: null,
+          currentRank: null,
+          totalQuestions: 0,
+          attemptedQuestions: 0,
+          missedQuestions: 0,
+          correctAnswers: 0,
+          incorrectAnswers: 0,
+          bestPerformance: null,
+          weakestPerformance: null,
+          recentComparison: null
+        },
+        history: [],
+        trends: { score: [], accuracy: [], rank: [] }
+      })
+    }
+
+    const completedRoomIds = completedRooms.map(r => r._id)
+    const roomKey = (id) => id.toString()
+
+    // Approved questions are the launched/graded question set for the student journey. Group their
+    // count and point capacity once for every completed room; no N+1 room/question queries.
+    const questionTotals = await Question.aggregate([
+      { $match: { roomId: { $in: completedRoomIds }, status: 'approved' } },
+      { $group: {
+        _id: '$roomId',
+        totalQuestions: { $sum: 1 },
+        possiblePoints: { $sum: { $ifNull: ['$points', 100] } }
+      } }
+    ])
+    const questionTotalsByRoom = new Map(
+      questionTotals.map(q => [roomKey(q._id), {
+        totalQuestions: q.totalQuestions || 0,
+        possiblePoints: q.possiblePoints || 0
+      }])
+    )
+
+    // Student responses per room: one grouped aggregation across the whole journey.
+    const studentStats = await Response.aggregate([
+      { $match: { studentId: studentObjectId, roomId: { $in: completedRoomIds } } },
+      { $group: {
+        _id: '$roomId',
+        attempted: { $sum: 1 },
+        correct: { $sum: { $cond: ['$isCorrect', 1, 0] } },
+        points: { $sum: { $ifNull: ['$points', 0] } }
+      } }
+    ])
+    const studentStatsByRoom = new Map(
+      studentStats.map(s => [roomKey(s._id), s])
+    )
+
+    // Build room-level leaderboard aggregates once. This mirrors the existing leaderboard's total-
+    // points ranking rule while avoiding a leaderboard request for every historical room.
+    const rankedRows = await Response.aggregate([
+      { $match: { roomId: { $in: completedRoomIds } } },
+      { $group: {
+        _id: { roomId: '$roomId', studentId: '$studentId' },
+        totalPoints: { $sum: { $ifNull: ['$points', 0] } }
+      } },
+      { $sort: { '_id.roomId': 1, totalPoints: -1, '_id.studentId': 1 } }
+    ])
+
+    const rankByRoomStudent = new Map()
+    const participantCountByRoom = new Map()
+    let activeRoom = null
+    let rank = 0
+    for (const row of rankedRows) {
+      const rid = roomKey(row._id.roomId)
+      if (rid !== activeRoom) {
+        activeRoom = rid
+        rank = 0
+        participantCountByRoom.set(rid, 0)
+      }
+      rank += 1
+      participantCountByRoom.set(rid, rank)
+      rankByRoomStudent.set(`${rid}:${row._id.studentId.toString()}`, rank)
+    }
+
+    const history = completedRooms.map(room => {
+      const rid = roomKey(room._id)
+      const q = questionTotalsByRoom.get(rid) || { totalQuestions: 0, possiblePoints: 0 }
+      const s = studentStatsByRoom.get(rid) || { attempted: 0, correct: 0, points: 0 }
+      const attempted = s.attempted || 0
+      const totalQuestions = q.totalQuestions || 0
+      const missed = Math.max(0, totalQuestions - attempted)
+      const incorrect = Math.max(0, attempted - (s.correct || 0))
+      const score = q.possiblePoints > 0 ? Math.round((s.points / q.possiblePoints) * 100) : 0
+      const accuracy = attempted > 0 ? Math.round(((s.correct || 0) / attempted) * 100) : 0
+      const rankValue = rankByRoomStudent.get(`${rid}:${studentId}`) ?? null
+      const participantCount = participantCountByRoom.get(rid) || 0
+      const attended = attendanceByRoom.has(rid)
+
+      return {
+        roomId: rid,
+        name: room.name || 'Untitled session',
+        code: room.code || null,
+        date: room.endedAt || room.updatedAt || room.createdAt,
+        attended,
+        score,
+        accuracy,
+        rank: rankValue,
+        participantCount,
+        totalQuestions,
+        attemptedQuestions: attempted,
+        missedQuestions: missed,
+        correctAnswers: s.correct || 0,
+        incorrectAnswers: incorrect,
+        pointsEarned: s.points || 0,
+        possiblePoints: q.possiblePoints || 0
+      }
+    })
+
+    const attendedHistory = history.filter(item => item.attended)
+    const rankedHistory = attendedHistory.filter(item => item.rank != null)
+
+    const totalSessions = attendedHistory.length
+    const totalQuestions = attendedHistory.reduce((sum, s) => sum + s.totalQuestions, 0)
+    const attemptedQuestions = attendedHistory.reduce((sum, s) => sum + s.attemptedQuestions, 0)
+    const missedQuestions = attendedHistory.reduce((sum, s) => sum + s.missedQuestions, 0)
+    const correctAnswers = attendedHistory.reduce((sum, s) => sum + s.correctAnswers, 0)
+    const incorrectAnswers = attendedHistory.reduce((sum, s) => sum + s.incorrectAnswers, 0)
+    const overallAccuracy = attemptedQuestions > 0
+      ? Math.round((correctAnswers / attemptedQuestions) * 100)
+      : 0
+    const averageScore = totalSessions > 0
+      ? Math.round(attendedHistory.reduce((sum, s) => sum + s.score, 0) / totalSessions)
+      : 0
+    const averageRank = rankedHistory.length > 0
+      ? Math.round((rankedHistory.reduce((sum, s) => sum + s.rank, 0) / rankedHistory.length) * 10) / 10
+      : null
+    const current = attendedHistory[attendedHistory.length - 1] || null
+    const previous = attendedHistory[attendedHistory.length - 2] || null
+
+    const best = attendedHistory.length
+      ? attendedHistory.reduce((bestItem, item) => item.score > bestItem.score ? item : bestItem)
+      : null
+    const weakest = attendedHistory.length
+      ? attendedHistory.reduce((weakItem, item) => item.score < weakItem.score ? item : weakItem)
+      : null
+
+    const summary = {
+      totalSessions,
+      averageScore,
+      overallAccuracy,
+      averageRank,
+      currentRank: current?.rank ?? null,
+      totalQuestions,
+      attemptedQuestions,
+      missedQuestions,
+      correctAnswers,
+      incorrectAnswers,
+      bestPerformance: best ? {
+        roomId: best.roomId,
+        name: best.name,
+        score: best.score,
+        accuracy: best.accuracy,
+        rank: best.rank
+      } : null,
+      weakestPerformance: weakest ? {
+        roomId: weakest.roomId,
+        name: weakest.name,
+        score: weakest.score,
+        accuracy: weakest.accuracy,
+        rank: weakest.rank
+      } : null,
+      recentComparison: current ? {
+        current: {
+          roomId: current.roomId,
+          name: current.name,
+          score: current.score,
+          accuracy: current.accuracy,
+          rank: current.rank
+        },
+        previous: previous ? {
+          roomId: previous.roomId,
+          name: previous.name,
+          score: previous.score,
+          accuracy: previous.accuracy,
+          rank: previous.rank
+        } : null,
+        scoreChange: previous ? current.score - previous.score : null,
+        accuracyChange: previous ? current.accuracy - previous.accuracy : null,
+        rankChange: previous && current.rank != null && previous.rank != null
+          ? previous.rank - current.rank
+          : null
+      } : null
+    }
+
+    res.json({
+      success: true,
+      summary,
+      history,
+      trends: {
+        score: attendedHistory.map(s => ({ date: s.date, value: s.score, name: s.name })),
+        accuracy: attendedHistory.map(s => ({ date: s.date, value: s.accuracy, name: s.name })),
+        rank: rankedHistory.map(s => ({ date: s.date, value: s.rank, name: s.name }))
+      }
+    })
+  } catch (error) {
+    console.error('Error fetching student performance journey:', error)
+    res.status(500).json({ success: false, error: 'Failed to fetch student performance' })
+  }
+})
+
 router.get('/stats/room/:roomId', async (req, res) => {
   try {
     const Response = (await import('../models/Response.js')).default
@@ -737,12 +1036,12 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     const ended = !!room?.endedAt
     let leaderboard = await resultsSnapshot.getLeaderboard(roomId, { ended })
 
-    if (!leaderboard) {
+    if (!leaderboard  || leaderboard.length === 0) {
       // Live room: serve the CACHED per-segment board (read-only, NO fold), so the board is stable
       // within a segment and changes only when a segment fold runs. The cache advances via the
       // per-segment trigger POST /leaderboard/:roomId/segment-done — not on this read. (Ended rooms
       // are served from the snapshot above; room end does a full recompute.)
-      leaderboard = (await computeRankedIncremental(roomId, { fold: false })).full
+      leaderboard = (await computeRanked(roomId)).full
     }
 
     // Anonymous-leaderboard settings (see anonymizeLeaderboard.js for the rule). Read from the room

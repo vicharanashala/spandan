@@ -13,7 +13,8 @@ const menuItems = {
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
-    { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
+    { id: 'performance', label: 'Performance Journey', icon: '📈', path: '/student/performance' },
+    //{ id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },
   ]
 }

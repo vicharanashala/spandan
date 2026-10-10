@@ -251,7 +251,7 @@ function RoomResultsPage() {
         }}>
           {/* Back Button */}
           <button
-            onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
+            onClick={() => navigate('/student/performance')}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
