@@ -19,6 +19,8 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
+import TeacherSummariesPage from './pages/TeacherSummariesPage'
+import StudentSummariesPage from './pages/StudentSummariesPage'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -115,6 +117,11 @@ function App() {
             <AdminPage />
           </ProtectedRoute>
         } />
+        <Route path="/teacher/summaries" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <TeacherSummariesPage />
+          </ProtectedRoute>
+        } />
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
@@ -148,6 +155,11 @@ function App() {
         <Route path="/student/session/:roomCode" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentRoomPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/summaries" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <StudentSummariesPage />
           </ProtectedRoute>
         } />
       </Routes>

@@ -88,4 +88,14 @@ export const questionApi = {
   getResults: (id) => api.get(`/questions/${id}/results`)
 }
 
+export const summaryApi = {
+  listMine: () => api.get('/summaries'),
+  listPublished: () => api.get('/summaries/published'),
+  get: (id) => api.get(`/summaries/${id}`),
+  create: (data) => api.post('/summaries', data),
+  publish: (id, published) => api.put(`/summaries/${id}/publish`, { published }),
+  remove: (id) => api.delete(`/summaries/${id}`),
+  askQuestion: (id, question, provider) => api.post(`/summaries/${id}/ask`, { question, provider })
+}
+
 export default api
