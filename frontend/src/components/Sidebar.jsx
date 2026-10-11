@@ -5,6 +5,7 @@ import SpandanIcon from './SpandanIcon'
 const menuItems = {
   teacher: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/teacher' },
+    { id: 'classes', label: 'My Classes', icon: '🏫', path: '/teacher/classes' },
     { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
@@ -12,6 +13,7 @@ const menuItems = {
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
+    { id: 'classes', label: 'My Classes', icon: '🏫', path: '/student/classes' },
     { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
     { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },

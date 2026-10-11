@@ -19,6 +19,8 @@ import RoomResultsPage from './pages/RoomResultsPage'
 import ProfilePage from './pages/ProfilePage'
 import HelpPage from './pages/HelpPage'
 import AdminPage from './pages/AdminPage'
+import ClassesPage from './pages/ClassesPage'               // ← added
+import ClassDetailPage from './pages/ClassDetailPage'       // ← added
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -26,10 +28,6 @@ function App() {
   const { token, isAuthenticated } = useAuthStore()
   const { connect, disconnect } = useSocketStore()
 
-  // On load, if the persisted token is already expired (e.g. the app was opened from a bookmark with a
-  // cached session), drop it immediately so the user lands on the login screen with a clear message
-  // instead of a logged-in-looking UI that only fails when they try to answer. This backs up the
-  // onRehydrateStorage check in authStore for any timing edge.
   useEffect(() => {
     const { token: t } = useAuthStore.getState()
     if (t && isTokenExpired(t)) {
@@ -37,7 +35,6 @@ function App() {
     }
   }, [])
 
-  // Connect socket when user is authenticated with valid token
   useEffect(() => {
     if (token && isAuthenticated) {
       console.log('App: connecting socket with token')
@@ -48,7 +45,6 @@ function App() {
     }
   }, [token, isAuthenticated, connect, disconnect])
 
-  // Cleanup socket on unmount
   useEffect(() => {
     return () => {
       disconnect()
@@ -69,6 +65,8 @@ function App() {
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+
+        {/* ==================== TEACHER ROUTES ==================== */}
         <Route path="/teacher" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <DashboardPage />
@@ -109,12 +107,24 @@ function App() {
             <HelpPage />
           </ProtectedRoute>
         } />
-        {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
+        {/* NEW – Classes for teacher */}
+        <Route path="/teacher/classes" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <ClassesPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/classes/:id" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <ClassDetailPage />
+          </ProtectedRoute>
+        } />
         <Route path="/admin" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <AdminPage />
           </ProtectedRoute>
         } />
+
+        {/* ==================== STUDENT ROUTES ==================== */}
         <Route path="/student" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentDashboard />
@@ -148,6 +158,17 @@ function App() {
         <Route path="/student/session/:roomCode" element={
           <ProtectedRoute allowedRoles={['student']}>
             <StudentRoomPage />
+          </ProtectedRoute>
+        } />
+        {/* NEW – Classes for student */}
+        <Route path="/student/classes" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <ClassesPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/student/classes/:id" element={
+          <ProtectedRoute allowedRoles={['student']}>
+            <ClassDetailPage />
           </ProtectedRoute>
         } />
       </Routes>

@@ -5,11 +5,12 @@ import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
 
-export const createRoom = async (name, teacherId, settings = {}) => {
+export const createRoom = async (name, teacherId, settings = {}, classId = null) => {
   const room = new Room({
     name,
     teacher: teacherId,
-    settings
+    settings,
+    classId
   })
 
   await room.save()

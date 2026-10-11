@@ -88,4 +88,13 @@ export const questionApi = {
   getResults: (id) => api.get(`/questions/${id}/results`)
 }
 
+export const classApi = {
+  create: (name, settings) => api.post('/classes', { name, settings }),
+  getAll: () => api.get('/classes'),
+  getById: (id) => api.get(`/classes/${id}`),
+  joinByCode: (code) => api.post('/classes/join', { code }),
+  createSession: (id, data) => api.post(`/classes/${id}/sessions`, data || {}),
+  getStats: (id) => api.get(`/classes/${id}/stats`)
+}
+
 export default api

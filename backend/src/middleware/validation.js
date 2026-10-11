@@ -80,6 +80,43 @@ export const submitResponseSchema = z.object({
   responseTime: z.number().min(0)
 })
 
+// Class validation schemas
+export const createClassSchema = z.object({
+  name: z.string().min(1, 'Class name is required').max(200, 'Class name cannot exceed 200 characters'),
+  settings: z.object({
+    allowLateJoin: z.boolean().optional(),
+    showResultsImmediately: z.boolean().optional(),
+    mode: z.enum(['normal', 'video']).optional(),
+    timeToAnswer: z.number().min(5).max(300).optional(),
+    points: z.number().min(10).max(1000).optional(),
+    segmentTime: z.number().min(1).max(60).optional(),
+    questionsPerSegment: z.number().min(1).max(10).optional(),
+    difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
+    questionProvider: z.enum(['minimax', 'openai', 'anthropic', 'google']).optional()
+  }).optional()
+})
+
+export const joinClassSchema = z.object({
+  code: z.string().min(1, 'Class code is required').max(10)
+})
+
+export const createClassSessionSchema = z.object({
+  name: z.string().max(200).optional(),
+  settings: z.object({
+    allowLateJoin: z.boolean().optional(),
+    showResultsImmediately: z.boolean().optional(),
+    requireCorrectAnswer: z.boolean().optional(),
+    mode: z.enum(['normal', 'video']).optional(),
+    videoUrl: z.string().max(500).optional(),
+    timeToAnswer: z.number().min(5).max(300).optional(),
+    points: z.number().min(10).max(1000).optional(),
+    segmentTime: z.number().min(1).max(60).optional(),
+    questionsPerSegment: z.number().min(1).max(10).optional(),
+    difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
+    questionProvider: z.enum(['minimax', 'openai', 'anthropic', 'google']).optional()
+  }).optional()
+}).optional()
+
 // Middleware factory
 export const validate = (schema) => {
   return (req, res, next) => {

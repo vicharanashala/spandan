@@ -251,7 +251,15 @@ function RoomResultsPage() {
         }}>
           {/* Back Button */}
           <button
-            onClick={() => navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)}
+            onClick={() => {
+              if (room?.classId) {
+                // Came from a Class session → go back to that Class
+                navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/classes/${room.classId}`)
+              } else {
+                // Normal room → go to room history
+                navigate(`/${user?.role === 'teacher' ? 'teacher' : 'student'}/room-history`)
+              }
+            }}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
