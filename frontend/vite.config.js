@@ -29,9 +29,28 @@ export default defineConfig(({ mode }) => {
           target: 'http://localhost:3001',
           changeOrigin: true
         },
+        '/spandan/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/spandan\/api/, '/api')
+        },
         '/socket.io': {
           target: 'http://localhost:3001',
           ws: true
+        },
+        '/spandan/socket.io': {
+          target: 'http://localhost:3001',
+          ws: true,
+          rewrite: (path) => path.replace(/^\/spandan\/socket.io/, '/socket.io')
+        },
+        '/uploads': {
+          target: 'http://localhost:3001',
+          changeOrigin: true
+        },
+        '/spandan/uploads': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/spandan\/uploads/, '/uploads')
         }
       }
     }

@@ -13,6 +13,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import LiveChat from '../components/LiveChat'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
@@ -2000,17 +2001,30 @@ function RoomDetailPage() {
               </div>
             )}
             </div>
-            {/* Leaderboard - flexible width */}
-            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Leaderboard
-                </span>
+            {/* Right Column: Live Chat + Leaderboard */}
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(35% - 10px)', display: 'flex', flexDirection: 'column', gap: '20px', minWidth: isMobile ? 0 : '280px', maxWidth: '100%' }}>
+              {/* Live Chat */}
+              <div style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', overflow: 'hidden' }}>
+                <LiveChat
+                  roomId={room?._id}
+                  roomCode={room?.code}
+                  isTeacher={true}
+                  isCoHost={false}
+                />
               </div>
-              <ErrorBoundary message="Leaderboard unavailable">
-                <Leaderboard roomId={room?._id} token={token} socket={socket} />
-              </ErrorBoundary>
+
+              {/* Leaderboard */}
+              <div style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '20px' }}>🏆</span>
+                  <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Leaderboard
+                  </span>
+                </div>
+                <ErrorBoundary message="Leaderboard unavailable">
+                  <Leaderboard roomId={room?._id} token={token} socket={socket} />
+                </ErrorBoundary>
+              </div>
             </div>
           </div>
         </div>

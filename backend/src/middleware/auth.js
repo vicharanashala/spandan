@@ -22,15 +22,20 @@ export const clearUserCache = () => userCache.clear()
 export const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization
+    let token = null
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1]
+    } else if (req.query && typeof req.query.token === 'string' && req.query.token.trim()) {
+      token = req.query.token.trim()
+    }
+
+    if (!token) {
       return res.status(401).json({
         error: 'Authentication required',
         message: 'Please provide a valid token'
       })
     }
-
-    const token = authHeader.split(' ')[1]
 
     const decoded = jwt.verify(token, JWT_SECRET)
 

@@ -7,6 +7,7 @@ import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
+import path from 'path'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { RedisStore } from 'rate-limit-redis'
 import { initRedis } from './config/redis.js'
@@ -24,6 +25,8 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import chatRoutes from './routes/chat.js'
+import { startBroadcastLoop } from './services/chatService.js'
 
 // Import models for reference
 import './models/index.js'
@@ -364,9 +367,24 @@ const otpLimiter = rateLimit({
 })
 
 // Middleware
-app.use(helmet())
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}))
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true)
+    if (CORS_ORIGINS.includes(origin)) return callback(null, true)
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true)
+    }
+    if (process.env.FRONTEND_URL) {
+      try {
+        const parsed = new URL(process.env.FRONTEND_URL)
+        if (parsed.origin === origin) return callback(null, true)
+      } catch {}
+    }
+    callback(null, true)
+  },
   credentials: true
 }))
 app.use(express.json({ limit: '10mb' }))
@@ -388,6 +406,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/chat', chatRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -410,9 +429,10 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role name').lean()
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
+  socket.data.userName = u?.name || 'User'
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
   connectedUsers.set(socket.id, decoded.userId)
   return socket.data
@@ -458,7 +478,24 @@ async function verifyRoomOwner(socket, roomCode) {
   try {
     const Room = (await import('./models/Room.js')).default
     const room = await Room.findByCode(roomCode)
-    return (room && room.teacher.toString() === String(socket.data.userId)) ? room : null
+    return (room && String(room.teacher?._id ?? room.teacher) === String(socket.data.userId)) ? room : null
+  } catch {
+    return null
+  }
+}
+
+// Room editor guard (Owner OR Co-Host) for shared permissions (chat toggle, etc.)
+async function verifyRoomEditor(socket, roomCode) {
+  if (!socket.data?.userId || !roomCode) return null
+  try {
+    const Room = (await import('./models/Room.js')).default
+    const room = await Room.findByCode(roomCode)
+    if (!room) return null
+    const uid = String(socket.data.userId)
+    const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+    // Co-host bypass is currently inert because Room.coHosts doesn't exist on main yet — this will activate automatically once feat/co-host merges, no code change needed here.
+    const isCoHost = Array.isArray(room.coHosts) && room.coHosts.some(ch => String(ch.userId?._id ?? ch.userId) === uid)
+    return (isOwner || isCoHost) ? room : null
   } catch {
     return null
   }
@@ -704,6 +741,111 @@ io.on('connection', (socket) => {
     socket.to(data.roomCode).emit('video:resume')
   })
 
+  // Live Chat: Toggle enabled/disabled state (Host or Co-Host only)
+  socket.on('chat:toggle', async ({ roomCode, enabled }) => {
+    const room = await verifyRoomEditor(socket, roomCode)
+    if (!room) {
+      socket.emit('chat:error', { error: 'Not authorized to toggle chat' })
+      return
+    }
+    const isEnabled = Boolean(enabled)
+    const { setChatEnabled } = await import('./services/chatService.js')
+    await setChatEnabled(room._id, isEnabled)
+    io.to(roomCode).emit(isEnabled ? 'chat_enabled' : 'chat_disabled')
+    io.to(roomCode).emit('chat:status', { roomId: room._id, enabled: isEnabled })
+  })
+
+  // Live Chat: Send message (with optional file attachment & replyTo)
+  socket.on('chat:send', async ({ roomCode, text, attachment, replyTo }) => {
+    const userId = socket.data?.userId
+    if (!userId || !roomCode) return
+    const trimmedText = typeof text === 'string' ? text.trim() : ''
+    const hasAttachment = attachment && typeof attachment.url === 'string' && attachment.url.trim()
+
+    if (!trimmedText && !hasAttachment) {
+      socket.emit('chat:error', { error: 'Message or attachment is required' })
+      return
+    }
+    if (trimmedText.length > 1000) {
+      socket.emit('chat:error', { error: 'Message must not exceed 1000 characters' })
+      return
+    }
+
+    try {
+      const Room = (await import('./models/Room.js')).default
+      const room = await Room.findByCode(roomCode)
+      if (!room) {
+        socket.emit('chat:error', { error: 'Room not found' })
+        return
+      }
+
+      if (room.endedAt) {
+        socket.emit('chat:error', { error: 'Room has ended' })
+        return
+      }
+
+      const uid = String(userId)
+      const isOwner = String(room.teacher?._id ?? room.teacher) === uid
+      // Co-host bypass is currently inert because Room.coHosts doesn't exist on main yet — this will activate automatically once feat/co-host merges, no code change needed here.
+      const isCoHost = Array.isArray(room.coHosts) && room.coHosts.some(ch => String(ch.userId?._id ?? ch.userId) === uid)
+      const isPrivileged = isOwner || isCoHost
+      const senderRole = isOwner ? 'teacher' : (isCoHost ? 'cohost' : 'student')
+
+      const { getChatEnabled, checkAndApplyCooldown, bufferChatMessage, enqueueBroadcast } = await import('./services/chatService.js')
+
+      // Students must adhere to enable/disable flag and 10s cooldown
+      if (!isPrivileged) {
+        const chatEnabled = await getChatEnabled(room._id)
+        if (!chatEnabled) {
+          socket.emit('chat:error', { error: 'Chat is currently disabled' })
+          return
+        }
+
+        const cooldownResult = await checkAndApplyCooldown(room._id, userId, 10)
+        if (!cooldownResult.allowed) {
+          socket.emit('chat:error', {
+            error: `Please wait ${cooldownResult.retryAfter}s before sending another message`,
+            retryAfter: cooldownResult.retryAfter
+          })
+          return
+        }
+      }
+
+      const hasReply = replyTo && (replyTo.messageId || replyTo.text || replyTo.senderName)
+
+      const msg = {
+        _id: new mongoose.Types.ObjectId(),
+        roomId: room._id,
+        senderId: userId,
+        senderRole,
+        senderName: socket.data?.userName || 'User',
+        text: trimmedText,
+        attachment: hasAttachment ? {
+          url: attachment.url,
+          storageName: attachment.storageName || (attachment.url ? path.basename(attachment.url.split('?')[0]) : null),
+          fileType: attachment.fileType || 'file',
+          fileName: attachment.fileName || 'file',
+          fileSize: attachment.fileSize || 0
+        } : null,
+        replyTo: hasReply ? {
+          messageId: replyTo.messageId || null,
+          senderName: replyTo.senderName || 'User',
+          senderRole: replyTo.senderRole || 'student',
+          text: (replyTo.text || '').slice(0, 200),
+          hasAttachment: Boolean(replyTo.hasAttachment)
+        } : null,
+        createdAt: new Date()
+      }
+
+      await bufferChatMessage(room._id, msg)
+      enqueueBroadcast(roomCode, msg)
+      socket.emit('chat:sent', { messageId: msg._id })
+    } catch (error) {
+      console.error('Error in chat:send:', error)
+      socket.emit('chat:error', { error: 'Failed to send message' })
+    }
+  })
+
   socket.on('disconnect', () => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
@@ -753,6 +895,7 @@ const PORT = process.env.PORT || 3001
 // Start server
 const startServer = async () => {
   await connectDB()
+  startBroadcastLoop(io)
   
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)

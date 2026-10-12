@@ -25,6 +25,7 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.3.4",
+    "multer": "^2.3.0",
     "nodemailer": "^8.0.7",
     "rate-limit-redis": "^4.3.1",
     "redis": "^4.7.1",
