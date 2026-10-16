@@ -1,11 +1,89 @@
 import express from 'express'
 import User from '../models/User.js'
+import Room from '../models/Room.js'
+import Question from '../models/Question.js'
+import Response from '../models/Response.js'
 import { authenticate, authorizeAdmin, clearUserCache } from '../middleware/auth.js'
 
 const router = express.Router()
 
 // Every admin route requires a signed-in admin (isAdmin flag OR SPANDAN_ADMIN_EMAILS allowlist).
 router.use(authenticate, authorizeAdmin)
+
+// Platform overview statistics for the Admin role (closes #145)
+router.get('/stats', async (req, res) => {
+  try {
+    const [
+      totalTeachers,
+      pendingTeachers,
+      approvedTeachers,
+      rejectedTeachers,
+      totalStudents,
+      totalRooms,
+      activeRoomsCount,
+      totalQuestions,
+      totalResponses,
+      recentActiveRooms,
+      dailySignups
+    ] = await Promise.all([
+      User.countDocuments({ role: 'teacher' }),
+      User.countDocuments({ role: 'teacher', teacherApprovalStatus: 'pending' }),
+      User.countDocuments({ role: 'teacher', teacherApprovalStatus: 'approved' }),
+      User.countDocuments({ role: 'teacher', teacherApprovalStatus: 'rejected' }),
+      User.countDocuments({ role: 'student' }),
+      Room.countDocuments({}),
+      Room.countDocuments({ isActive: true, endedAt: null }),
+      Question.countDocuments({}),
+      Response.countDocuments({}),
+      Room.find({ isActive: true, endedAt: null })
+        .populate('teacher', 'name email')
+        .select('name code settings.mode createdAt teacher')
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
+      User.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+          }
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            count: { $sum: 1 },
+            teachers: { $sum: { $cond: [{ $eq: ['$role', 'teacher'] }, 1, 0] } },
+            students: { $sum: { $cond: [{ $eq: ['$role', 'student'] }, 1, 0] } }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ])
+    ])
+
+    res.json({
+      teachers: {
+        total: totalTeachers,
+        pending: pendingTeachers,
+        approved: approvedTeachers,
+        rejected: rejectedTeachers
+      },
+      students: {
+        total: totalStudents
+      },
+      rooms: {
+        total: totalRooms,
+        active: activeRoomsCount,
+        recentActive: recentActiveRooms
+      },
+      engagement: {
+        totalQuestions,
+        totalResponses
+      },
+      dailySignups
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
 
 const STATUSES = ['pending', 'approved', 'rejected']
 const SAFE_FIELDS = 'name email teacherApprovalStatus isActive createdAt approvedAt approvedBy rejectionReason'

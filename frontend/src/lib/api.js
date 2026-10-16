@@ -62,6 +62,7 @@ export const authApi = {
 }
 
 export const adminApi = {
+  getStats: () => api.get('/admin/stats'),
   listTeacherRequests: (status = 'pending') => api.get(`/admin/teacher-requests?status=${status}`),
   approve: (id) => api.post(`/admin/teacher-requests/${id}/approve`, {}),
   reject: (id, reason = '') => api.post(`/admin/teacher-requests/${id}/reject`, { reason })
