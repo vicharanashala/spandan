@@ -11,6 +11,8 @@ import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import SoundToggle from '../components/SoundToggle'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
+import SoundAlertToggle from '../components/SoundAlertToggle'
+import { soundNotificationService } from '../services/soundNotificationService'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
@@ -116,6 +118,10 @@ function StudentRoomPage() {
         setTimeLeft(data.question.timeToAnswer)
       }
       
+      soundNotificationService.playChime()
+      soundNotificationService.vibrate()
+      soundNotificationService.startTitleFlash(data.timer || data.question?.timeToAnswer || 30)
+      
       // Clear any existing timer
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current)
@@ -146,6 +152,8 @@ function StudentRoomPage() {
         timerIntervalRef.current = null
       }
       
+      soundNotificationService.stopTitleFlash()
+      
       // Only fetch if room and user are available
       if (room?._id && user?._id) {
         fetchPastResponses(room._id, user._id)
@@ -166,6 +174,10 @@ function StudentRoomPage() {
       setSelectedOptions([])
       setSubmitted(false)
       setTimeLeft(question.timeToAnswer || 30)
+      
+      soundNotificationService.playChime()
+      soundNotificationService.vibrate()
+      soundNotificationService.startTitleFlash(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
@@ -236,6 +248,7 @@ function StudentRoomPage() {
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
+      soundNotificationService.stopTitleFlash()
     }
   }, [socket, navigate, room?._id])
 
@@ -318,6 +331,7 @@ function StudentRoomPage() {
     // even though the network POST itself is deferred by a small random delay.
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    soundNotificationService.stopTitleFlash()
 
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
     // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
@@ -489,6 +503,7 @@ function StudentRoomPage() {
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <HelpButton />
               <ThemeToggle />
+              <SoundAlertToggle />
               <ProfileDropdown />
             </div>
           </div>
