@@ -5,6 +5,7 @@ import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
+import HelpButton from '../components/HelpButton'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
@@ -20,6 +21,8 @@ function StudentDashboard() {
   const [isJoining, setIsJoining] = useState(false)
   const [stats, setStats] = useState({
     totalRooms: 0,
+    roomsAttended: 0,
+    roomsMissed: 0,
     pollsTaken: 0,
     pollsMissed: 0,
     average: 0
@@ -42,6 +45,8 @@ function StudentDashboard() {
       if (data.stats) {
         setStats({
           totalRooms: data.stats.totalRooms || 0,
+          roomsAttended: data.stats.roomsAttended || 0,
+          roomsMissed: data.stats.roomsMissed || 0,
           pollsTaken: data.stats.pollsTaken || 0,
           pollsMissed: data.stats.pollsMissed || 0,
           average: data.stats.average || 0
@@ -71,6 +76,8 @@ function StudentDashboard() {
 
   const statCards = [
     { icon: '📚', value: stats.totalRooms, label: 'Total Rooms', tint: '#3b82f6' },
+    { icon: '🏫', value: stats.roomsAttended, label: 'Rooms Attended', tint: '#06b6d4' },
+    { icon: '🚪', value: stats.roomsMissed, label: 'Rooms Missed', tint: '#f97316' },
     { icon: '✅', value: stats.pollsTaken, label: 'Polls Taken', tint: '#10b981' },
     { icon: '❌', value: stats.pollsMissed, label: 'Polls Missed', tint: '#ef4444' },
     { icon: '📈', value: `${stats.average}%`, label: 'Earned Points %', tint: '#8b5cf6' }
@@ -125,6 +132,7 @@ function StudentDashboard() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+              <HelpButton />
               <ThemeToggle />
               <ProfileDropdown />
             </div>
@@ -141,7 +149,7 @@ function StudentDashboard() {
           {/* Stats Cards */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
+            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(200px, 1fr))',
             gap: isMobile ? '12px' : '20px',
             marginBottom: isMobile ? '24px' : '32px'
           }}>
@@ -178,7 +186,7 @@ function StudentDashboard() {
           </div>
 
           {/* Quick Join Section */}
-          <div style={{
+          <div data-tour="quick-join" style={{
             background: 'var(--bg-card)',
             borderRadius: 'var(--radius-lg)',
             padding: isMobile ? '20px' : '24px',
