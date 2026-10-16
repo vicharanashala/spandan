@@ -14,6 +14,9 @@ import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
 import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
+import { enqueueResponse } from '../lib/offlineQueue.js'
+import useOfflineSync from '../hooks/useOfflineSync.js'
+import NetworkSyncHUD from '../components/NetworkSyncHUD.jsx'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
 // ends, all students receive room:ended at once; without a spread they'd all hit the results
@@ -35,6 +38,7 @@ function StudentRoomPage() {
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
+  const [submissionState, setSubmissionState] = useState('none') // 'none' | 'submitted' | 'queued'
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
@@ -43,6 +47,30 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+
+  const {
+    isOnline,
+    pendingCount,
+    isSyncing,
+    lastSyncResult,
+    refreshCount,
+    triggerSync
+  } = useOfflineSync({
+    token,
+    roomId: room?._id,
+    onSyncSuccess: (item) => {
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
+      }
+      if (
+        currentQuestion &&
+        (String(currentQuestion._id) === String(item.questionId) ||
+          String(currentQuestion.question?._id) === String(item.questionId))
+      ) {
+        setSubmissionState('submitted')
+      }
+    }
+  })
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -110,6 +138,7 @@ function StudentRoomPage() {
       setCurrentQuestion(data)
       setSelectedOptions([])
       setSubmitted(false)
+      setSubmissionState('none')
       setTimeLeft(data.timer || 30)
       
       if (data.question && data.question.timeToAnswer) {
@@ -152,6 +181,7 @@ function StudentRoomPage() {
       }
       setResults(data?.results || null)
       setCurrentQuestion(null)
+      setSubmissionState('none')
     }
 
     const handleNewQuestion = (question) => {
@@ -165,6 +195,7 @@ function StudentRoomPage() {
       setCurrentQuestion(question)
       setSelectedOptions([])
       setSubmitted(false)
+      setSubmissionState('none')
       setTimeLeft(question.timeToAnswer || 30)
       
       timerIntervalRef.current = setInterval(() => {
@@ -314,15 +345,27 @@ function StudentRoomPage() {
     const roomId = room?._id
     const studentId = user?._id
 
-    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
-    // even though the network POST itself is deferred by a small random delay.
+    // Lock the UI immediately so the student sees their answer registered and cannot double-submit
     setSubmitted(true)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
 
+    // Pre-flight check: if browser is offline, instantly enqueue into the offline vault
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      console.log('[StudentRoom] Device offline, saving response to local vault')
+      await enqueueResponse({
+        roomId,
+        questionId,
+        studentId,
+        selectedOptions,
+        responseTime
+      })
+      setSubmissionState('queued')
+      refreshCount()
+      return
+    }
+
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
-    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
-    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
-    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
+    // not all hit POST /responses in the same instant.
     const jitterMs = Math.floor(Math.random() * 2000)
 
     console.log('[StudentRoom] Submitting answer:', {
@@ -347,14 +390,25 @@ function StudentRoomPage() {
           responseTime
         })
       })
-      const saveData = await saveResponse.json()
-      console.log('[StudentRoom] Response saved:', saveData)
 
-      // Phase 1: the server emits the throttled leaderboard/answer-count updates itself from this
-      // authenticated POST — the client no longer emits points:update / response:submit. The
-      // leaderboard (incl. this student's own row) refreshes once per segment, not per submit.
+      if (!saveResponse.ok && saveResponse.status !== 409) {
+        throw new Error(`HTTP ${saveResponse.status}`)
+      }
+
+      setSubmissionState('submitted')
+      const saveData = await saveResponse.json().catch(() => ({}))
+      console.log('[StudentRoom] Response saved:', saveData)
     } catch (err) {
-      console.error('Failed to save response:', err)
+      console.warn('[StudentRoom] Network error during submission, enqueuing to offline vault:', err)
+      await enqueueResponse({
+        roomId,
+        questionId,
+        studentId,
+        selectedOptions,
+        responseTime
+      })
+      setSubmissionState('queued')
+      refreshCount()
     }
 
     if (roomId && studentId) {
@@ -510,6 +564,15 @@ function StudentRoomPage() {
               <button onClick={dismissHint} aria-label="Dismiss hint" style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '16px', cursor: 'pointer', padding: '4px' }}>✕</button>
             </div>
           )}
+
+          {/* Network Resilience & Sync HUD */}
+          <NetworkSyncHUD
+            isOnline={isOnline}
+            pendingCount={pendingCount}
+            isSyncing={isSyncing}
+            lastSyncResult={lastSyncResult}
+            onManualSync={triggerSync}
+          />
 
           {/* Connection Status */}
           <div data-tour="status-row" style={{
@@ -736,12 +799,17 @@ function StudentRoomPage() {
                 <div style={{
                   textAlign: 'center',
                   padding: '20px',
-                  background: 'rgba(255,255,255,0.1)',
+                  background: submissionState === 'queued' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255,255,255,0.1)',
+                  border: submissionState === 'queued' ? '1px solid rgba(245, 158, 11, 0.6)' : 'none',
                   borderRadius: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                  <p style={{ fontSize: '18px', fontWeight: '600', color: submissionState === 'queued' ? '#fef08a' : 'white' }}>
+                    {submissionState === 'queued' ? '⚡ Saved in Offline Vault' : '✓ Answer Submitted'}
+                  </p>
                   <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
-                    Waiting for next question...
+                    {submissionState === 'queued'
+                      ? 'Connection dropped. Your answer & timing are safely stored locally and will auto-sync with the leaderboard!'
+                      : 'Waiting for next question...'}
                   </p>
                 </div>
               ) : (
