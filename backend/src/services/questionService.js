@@ -396,15 +396,23 @@ export function parseOptions(options, type) {
 }
 
 // MiniMax API call
+// NOTE: if MINIMAX_API_KEY is a samagama.in gateway key (not a direct MiniMax key), it must be
+// called through samagama's own OpenAI-compatible proxy endpoint, not api.minimax.io directly —
+// hitting api.minimax.io with a gateway key returns an empty "login fail" response. Point this at
+// whichever endpoint your key actually belongs to, and use the exact model string your gateway
+// listed under "API Keys" (e.g. samagama.in shows it as "MiniMaxAI/MiniMax-M2.7", not "MiniMax-M2.7").
+const MINIMAX_ENDPOINT = process.env.MINIMAX_ENDPOINT || 'https://api.minimax.io/v1/text/chatcompletion_v2'
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.7'
+
 async function generateWithMiniMax(prompt) {
-  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+  const response = await fetch(MINIMAX_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.minimaxApiKey}`
     },
     body: JSON.stringify({
-      model: 'MiniMax-M2.7',
+      model: MINIMAX_MODEL,
       messages: [
         {
           role: 'user',
@@ -412,7 +420,10 @@ async function generateWithMiniMax(prompt) {
         }
       ],
       temperature: 0.7,
-      max_tokens: 8000
+      // MiniMax-M2.7 is a reasoning model: chain-of-thought + final JSON answer share this budget.
+      // 8000 was enough for the answer alone but hit the cap (finish=length, 0 content chars) once
+      // reasoning ran long. Raised well above reasoning+answer needs.
+      max_tokens: 16000
     })
   })
 
@@ -425,7 +436,9 @@ async function generateWithMiniMax(prompt) {
   const data = await response.json()
   const choice = data.choices?.[0]
   const content = choice?.message?.content || ''
-  const reasoning = choice?.message?.reasoning_content || ''
+  // MiniMax's actual field for the reasoning-model's chain-of-thought is `reasoning` (confirmed from
+  // the raw response body), not `reasoning_content` as originally assumed — check both defensively.
+  const reasoning = choice?.message?.reasoning_content || choice?.message?.reasoning || ''
   const finish = choice?.finish_reason
   const usage = data.usage || {}
   console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
@@ -434,8 +447,12 @@ async function generateWithMiniMax(prompt) {
   // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
   const text = content || reasoning
   if (!text) {
-    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+    // Guard: JSON.stringify(undefined) returns undefined (not a string), so calling .slice() on it
+    // used to crash here — masking the real "why is MiniMax returning nothing" diagnostic with an
+    // unrelated TypeError. Fall back to a plain string describing what we got instead.
+    const choiceDump = choice !== undefined ? JSON.stringify(choice).slice(0, 1500) : '(no choices[0] at all — check data.choices / full response below)'
+    console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish + ' raw choice: ' + choiceDump)
+    console.error('[gen:minimax] full response body: ' + JSON.stringify(data).slice(0, 2000))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
@@ -504,7 +521,10 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+// google-2.0-flash was retired; "gemini-flash-latest" is Google's rolling alias for the current
+// recommended Flash model, so this stays valid across future Google model retirements without
+// needing another code change. Override with GOOGLE_MODEL in .env if you want a pinned version.
+async function generateWithGoogle(prompt, model = process.env.GOOGLE_MODEL || 'gemini-flash-latest') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -536,9 +556,94 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
+// Map of provider key -> its generateWithX call function, so a review pass can dispatch to
+// whichever provider it picks without a switch statement duplicated in two places.
+const PROVIDER_CALLERS = {
+  minimax: generateWithMiniMax,
+  openai: generateWithOpenAI,
+  anthropic: generateWithAnthropic,
+  google: generateWithGoogle
+}
+
+// Which providers currently have an API key configured (same check AI_PROVIDERS uses), in a fixed
+// preference order. Used to pick a REVIEWER for the second pass.
+function enabledProviders() {
+  return Object.entries(AI_PROVIDERS).filter(([, p]) => p.enabled).map(([key]) => key)
+}
+
+// Pick which provider should REVIEW a batch of questions generated by `generatedByProvider`.
+// Prefers a DIFFERENT enabled provider — a model rarely catches its own mistakes, so a second,
+// different model is a genuine second opinion. Falls back to the same provider (still worthwhile:
+// it can catch issues a fresh, uncommitted read surfaces even from the same model) if no other
+// provider is configured. Returns null only if no provider at all is enabled (caller must handle).
+export function pickReviewerProvider(generatedByProvider) {
+  const enabled = enabledProviders()
+  if (enabled.length === 0) return null
+  const alternative = enabled.find(p => p !== generatedByProvider)
+  return alternative || generatedByProvider
+}
+
+// Build the prompt for the second-pass review. Reuses the exact JSON schema from the generation
+// prompt so the same parseQuestions() can parse the reviewed output.
+function buildReviewPrompt(questions, transcript, difficulty) {
+  return `You are a strict quality reviewer for an educational quiz. Below is a JSON array of quiz questions generated from a session transcript, plus the transcript itself. Check EACH question for:
+- Ambiguity: could a reasonable student argue for more than one option?
+- Correctness: is the marked correct answer actually correct given the transcript, with no other option also arguably correct?
+- Distractor quality: are the wrong options genuinely plausible misconceptions, not obviously wrong or near-duplicates of each other?
+- Recall vs. reasoning: does the question test real understanding rather than a verbatim lookup?
+- Self-containment: does the question stand alone (never referencing "the source", "the speaker", "the transcript", etc.)?
+- Difficulty match: does it fit the requested ${String(difficulty || 'medium').toUpperCase()} difficulty?
+
+If a question already meets all of the above, keep it UNCHANGED. If it has a fixable issue, rewrite ONLY that question (question text, options, and/or explanation) to fix it while preserving its type and general topic. If a question is unsalvageable (e.g. no correct-per-transcript answer exists), replace it with a new question of the same type that IS well-supported by the transcript.
+
+Return exactly the same number of questions, in the same order, in the same JSON schema you were given — respond ONLY with valid JSON, no markdown or extra text:
+{
+  "questions": [
+    { "type": "MCQ", "question": "...", "options": [ { "text": "...", "isCorrect": true }, ... ], "explanation": "..." }
+  ]
+}
+
+TRANSCRIPT (for fact-checking only — do not quote it or reference it in question wording):
+${transcript}
+
+QUESTIONS TO REVIEW:
+${JSON.stringify(questions.map(q => ({ type: q.type, question: q.question, options: q.options, explanation: q.explanation })), null, 2)}`
+}
+
+// Second-pass review: re-checks a generated batch for ambiguity, wrong/arguable correct answers,
+// weak distractors, and recall-only phrasing, fixing or replacing questions as needed. Best-effort —
+// on any failure (no provider available, API error, unparsable response) it falls back to the
+// original, unreviewed batch rather than failing the whole generation.
+export async function reviewQuestions(questions, transcript, { difficulty = 'medium', generatedByProvider = 'minimax' } = {}) {
+  if (!Array.isArray(questions) || questions.length === 0) return questions
+
+  const reviewerProvider = pickReviewerProvider(generatedByProvider)
+  const caller = reviewerProvider && PROVIDER_CALLERS[reviewerProvider]
+  if (!caller) {
+    console.warn('[gen:review] no provider available for review pass — skipping, returning pass-1 questions as-is')
+    return questions
+  }
+
+  try {
+    const prompt = buildReviewPrompt(questions, transcript, difficulty)
+    console.log(`[gen:review] reviewing ${questions.length} questions with ${reviewerProvider} (generated by ${generatedByProvider})...`)
+    const responseText = await caller(prompt)
+    const reviewed = parseQuestions(responseText, questions.map(q => q.type))
+    if (reviewed.length !== questions.length) {
+      console.warn(`[gen:review] reviewer returned ${reviewed.length} questions, expected ${questions.length} — keeping pass-1 questions`)
+      return questions
+    }
+    console.log(`[gen:review] review pass complete (${reviewerProvider})`)
+    return reviewed
+  } catch (err) {
+    console.error('[gen:review] review pass failed, falling back to unreviewed questions:', err.message)
+    return questions
+  }
+}
+
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null, twoPass = false } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
@@ -579,9 +684,12 @@ export async function generateQuestions(transcript, cfg) {
   const questions = parseQuestions(responseText, questionTypes)
   if (questions.length === 0) {
     console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
-  } else {
-    console.log(`Generated ${questions.length} questions successfully`)
+    return questions
   }
+  console.log(`Generated ${questions.length} questions successfully`)
 
-  return questions
+  // Second layer: optional quality-review pass (see reviewQuestions above). Off by default since it
+  // roughly doubles generation latency/cost (a second LLM call); the teacher opts in via room settings.
+  if (!twoPass) return questions
+  return reviewQuestions(questions, transcript, { difficulty, generatedByProvider: provider })
 }
