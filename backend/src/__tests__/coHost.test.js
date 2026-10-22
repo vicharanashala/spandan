@@ -70,16 +70,13 @@ describe('Co-Host Authorization & Logic Tests', () => {
         const editorAuth = checkRoomEditor(room, userId)
         if (!editorAuth.ok) return editorAuth
 
-        const isEndingRoom = body.isActive === false || body.endedAt !== undefined
-        const isCoHostConfigChange = (
-          body.maxCoHosts !== undefined ||
-          body.coHostCode !== undefined ||
-          body.coHostCodeExpiresAt !== undefined ||
-          body.coHosts !== undefined
-        )
-
-        if (isEndingRoom || isCoHostConfigChange) {
-          return checkRoomOwnership(room, userId)
+        const isOwner = checkRoomOwnership(room, userId).ok
+        if (!isOwner) {
+          const allowedKeys = ['settings']
+          const disallowed = Object.keys(body).filter(key => !allowedKeys.includes(key))
+          if (disallowed.length > 0) {
+            return { ok: false, status: 403, error: 'Only the room owner can modify room configuration or end the room' }
+          }
         }
         return { ok: true, status: 200 }
       }
@@ -90,6 +87,16 @@ describe('Co-Host Authorization & Logic Tests', () => {
       // Co-host attempting to set maxCoHosts: REJECTED with 403
       expect(authorizeRoomUpdate(mockRoom, coHostId, { maxCoHosts: 5 }).ok).toBe(false)
       expect(authorizeRoomUpdate(mockRoom, coHostId, { maxCoHosts: 5 }).status).toBe(403)
+
+      // Co-host attempting to inject coHosts or coHostCode: REJECTED with 403
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { coHostCode: 'HACKCODE' }).ok).toBe(false)
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { coHostCode: 'HACKCODE' }).status).toBe(403)
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { coHosts: [] }).ok).toBe(false)
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { coHosts: [] }).status).toBe(403)
+
+      // Co-host attempting to reassign teacher: REJECTED with 403
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { teacher: coHostId }).ok).toBe(false)
+      expect(authorizeRoomUpdate(mockRoom, coHostId, { teacher: coHostId }).status).toBe(403)
 
       // Co-host attempting to end room (isActive: false): REJECTED with 403
       expect(authorizeRoomUpdate(mockRoom, coHostId, { isActive: false }).ok).toBe(false)

@@ -80,7 +80,7 @@ function AuthCallback() {
   }
 
   const brandGradient = isDark
-    ? 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%)'
+    ? 'linear-gradient(135deg, #040d20 0%, #082049 60%, #0d2d63 100%)'
     : 'var(--accent-gradient)'
 
   return (

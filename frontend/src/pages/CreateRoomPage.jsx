@@ -4,9 +4,13 @@ import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
 import useIsMobile from '../hooks/useIsMobile'
+import { PageHeader, pageWash, inputStyle, primaryButton, ghostButton, toneText } from '../components/AppUI'
+import { SectionHeader, cardStyle } from '../components/InsightUI'
+import { Check, Clapperboard, FileText, Lightbulb, Mic, Plus } from 'lucide-react'
+import { Ico, renderIcon } from '../components/icons'
+
+const label = { display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }
 
 function CreateRoomPage() {
   const navigate = useNavigate()
@@ -70,269 +74,127 @@ function CreateRoomPage() {
       <Sidebar user={user} />
 
       {/* Main Content */}
-      <div style={{
-        flex: 1,
-        minWidth: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        marginLeft: 'var(--sidebar-width, 240px)'
-      }}>
-        {/* Header */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '28px 32px',
-          paddingLeft: isMobile ? '64px' : '32px'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '12px',
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{
-                margin: 0,
-                fontSize: isMobile ? '20px' : '25px',
-                fontWeight: 700,
-                letterSpacing: '-0.02em'
-              }}>
-                Create New Room
-              </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Create a new room for your students
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)' }}>
+        <PageHeader isMobile={isMobile} icon={Plus} title="Create New Room" subtitle="Create a new room for your students" />
 
         {/* Content */}
-        <div style={{
-          flex: 1,
-          padding: isMobile ? '16px' : '32px',
-          boxSizing: 'border-box',
-          maxWidth: '100%'
-        }}>
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: 'var(--radius-lg)',
-            padding: isMobile ? '20px' : '24px',
-            boxShadow: 'var(--shadow-md)',
-            border: '1px solid var(--border-color)',
-            maxWidth: '600px',
-            width: '100%',
-            boxSizing: 'border-box'
-          }}>
-            <h2 style={{
-              margin: '0 0 4px',
-              fontSize: isMobile ? '17px' : '19px',
-              fontWeight: 700,
-              letterSpacing: '-0.01em',
-              color: 'var(--text-primary)'
-            }}>
-              Room Details
-            </h2>
-            <p style={{
-              margin: '0 0 24px',
-              fontSize: '13px',
-              color: 'var(--text-secondary)'
-            }}>
-              Give your room a clear name so students can find it easily.
-            </p>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 36px', boxSizing: 'border-box', maxWidth: '100%', background: pageWash }}>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1.45fr) minmax(300px, 1fr)', gap: '24px', alignItems: 'start', maxWidth: 1240 }}>
+            {/* ---- left: the form ---- */}
+            <div className="insight-card" style={{ ...cardStyle(isMobile), marginBottom: 0 }}>
+              <SectionHeader icon={FileText} title="Room details" hint="Give your room a clear name so students can find it easily, then choose how you will teach." />
 
-            {error && (
-              <div style={{
-                background: '#fef2f2',
-                border: '1px solid #fecaca',
-                borderRadius: 'var(--radius-sm)',
-                padding: '12px 14px',
-                marginBottom: '16px',
-                color: '#dc2626',
-                fontSize: '14px'
-              }}>
-                {error}
-              </div>
-            )}
+              {error && (
+                <div role="alert" style={{ background: 'var(--tint-danger-bg)', border: '1px solid var(--tint-danger-border)', borderRadius: '12px', padding: '12px 14px', marginBottom: '16px', color: 'var(--tint-danger-fg)', fontSize: '14px' }}>
+                  {error}
+                </div>
+              )}
 
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{
-                display: 'block',
-                fontSize: '13px',
-                fontWeight: 500,
-                color: 'var(--text-secondary)',
-                marginBottom: '8px'
-              }}>
-                Room Name
-              </label>
-              <input
-                type="text"
-                value={roomName}
-                onChange={(e) => setRoomName(e.target.value)}
-                placeholder="Enter room name..."
-                onFocus={(e) => {
-                  e.target.style.borderColor = 'var(--accent)'
-                  e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,.15)'
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = 'var(--border-color)'
-                  e.target.style.boxShadow = 'none'
-                }}
-                style={{
-                  width: '100%',
-                  padding: '11px 14px',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '14px',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                  background: 'var(--input-bg)',
-                  color: 'var(--text-primary)',
-                  transition: 'border-color .15s ease, box-shadow .15s ease'
-                }}
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
-              />
-            </div>
-
-            {/* Room Mode */}
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{
-                display: 'block',
-                fontSize: '13px',
-                fontWeight: 500,
-                color: 'var(--text-secondary)',
-                marginBottom: '8px'
-              }}>
-                Room Mode
-              </label>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                {[
-                  { key: 'normal', title: 'Normal', desc: 'Live mic + transcript' },
-                  { key: 'video', title: 'Video', desc: 'YouTube video or live link' }
-                ].map((opt) => {
-                  const active = mode === opt.key
-                  return (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setMode(opt.key)}
-                      style={{
-                        flex: 1,
-                        minWidth: '160px',
-                        textAlign: 'left',
-                        padding: '12px 14px',
-                        cursor: 'pointer',
-                        borderRadius: 'var(--radius)',
-                        border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
-                        background: active ? 'rgba(59,130,246,.08)' : 'var(--input-bg)',
-                        color: 'var(--text-primary)'
-                      }}
-                    >
-                      <div style={{ fontSize: '14px', fontWeight: 600 }}>{opt.title}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                        {opt.desc}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Video URL (video mode only) */}
-            {mode === 'video' && (
-              <div style={{ marginBottom: '24px' }}>
-                <label style={{
-                  display: 'block',
-                  fontSize: '13px',
-                  fontWeight: 500,
-                  color: 'var(--text-secondary)',
-                  marginBottom: '8px'
-                }}>
-                  YouTube Video or Live URL
-                </label>
+              <div data-tour="room-name" style={{ marginBottom: '24px' }}>
+                <label htmlFor="room-name" style={label}>Room name</label>
                 <input
+                  id="room-name"
                   type="text"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=..."
-                  style={{
-                    width: '100%',
-                    padding: '11px 14px',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: 'var(--radius)',
-                    fontSize: '14px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                    background: 'var(--input-bg)',
-                    color: 'var(--text-primary)'
-                  }}
+                  className="app-input"
+                  value={roomName}
+                  onChange={(e) => setRoomName(e.target.value)}
+                  placeholder="e.g. DBMS Lecture 12"
+                  maxLength={200}
+                  style={inputStyle({ fontSize: 16, padding: '14px 16px' })}
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
                 />
-                {videoUrl.trim() && !isValidYouTube(videoUrl) && (
-                  <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '6px' }}>
-                    Enter a valid YouTube link (youtube.com/watch, /live, or youtu.be).
-                  </div>
-                )}
-                {!isChromium && (
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#b45309',
-                    background: '#fffbeb',
-                    border: '1px solid #fde68a',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '10px 12px',
-                    marginTop: '10px'
-                  }}>
-                    Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio for
-                    transcription. Please open Spandan in Chrome or Edge before starting a video room.
-                  </div>
-                )}
               </div>
-            )}
 
-            <div style={{
-              display: 'flex',
-              gap: '12px',
-              flexWrap: 'wrap',
-              flexDirection: isMobile ? 'column-reverse' : 'row'
-            }}>
-              <button
-                onClick={handleCreateRoom}
-                disabled={isDisabled}
-                style={{
-                  padding: '11px 18px',
-                  background: isDisabled ? '#9ca3af' : 'var(--accent-gradient)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  boxShadow: isDisabled ? 'none' : '0 2px 10px rgba(30,64,175,.25)',
-                  cursor: isDisabled ? 'not-allowed' : 'pointer',
-                  width: isMobile ? '100%' : 'auto'
-                }}
-              >
-                {isCreating ? 'Creating...' : 'Create Room'}
-              </button>
-              <button
-                onClick={() => navigate('/teacher')}
-                style={{
-                  padding: '11px 18px',
-                  background: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  width: isMobile ? '100%' : 'auto'
-                }}
-              >
-                Cancel
-              </button>
+              {/* Room mode: two large cards that say what each mode needs */}
+              <div data-tour="room-mode" style={{ marginBottom: '22px' }}>
+                <span style={label}>How will you teach?</span>
+                <div role="radiogroup" aria-label="Room mode" style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14 }}>
+                  {[
+                    { key: 'normal', icon: Mic, title: 'Normal', desc: 'Teach live; Spandan listens through your microphone.', tint: 'var(--accent)', needs: ['A microphone', 'Works in any browser'] },
+                    { key: 'video', icon: Clapperboard, title: 'Video', desc: 'Play a YouTube video or live stream for the class.', tint: '#db2777', needs: ['A YouTube link', 'Chrome or Edge'] }
+                  ].map((opt) => {
+                    const on = mode === opt.key
+                    return (
+                      <button key={opt.key} type="button" role="radio" aria-checked={on} onClick={() => setMode(opt.key)} className="app-choice" style={{
+                        position: 'relative', textAlign: 'left', padding: '16px 16px 14px', borderRadius: 16, cursor: 'pointer', color: 'var(--text-primary)',
+                        border: on ? `2px solid ${opt.tint}` : '1px solid var(--border-color)',
+                        background: on ? `color-mix(in srgb, ${opt.tint} 8%, var(--bg-card))` : 'var(--input-bg)',
+                        boxShadow: on ? `0 8px 22px color-mix(in srgb, ${opt.tint} 18%, transparent)` : 'none'
+                      }}>
+                        <span aria-hidden="true" style={{ position: 'absolute', top: 12, right: 12, width: 20, height: 20, borderRadius: '50%', border: `2px solid ${on ? opt.tint : 'var(--border-color)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {on && <span style={{ width: 10, height: 10, borderRadius: '50%', background: opt.tint }} />}
+                        </span>
+                        <span aria-hidden="true" style={{ width: 46, height: 46, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 23, color: toneText(opt.tint), background: `linear-gradient(135deg, color-mix(in srgb, ${opt.tint} 10%, transparent), color-mix(in srgb, ${opt.tint} 26%, transparent))` }}>{renderIcon(opt.icon, 23)}</span>
+                        <span style={{ display: 'block', fontSize: 16, fontWeight: 750, marginTop: 10 }}>{opt.title}</span>
+                        <span style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginTop: 3, lineHeight: 1.45 }}>{opt.desc}</span>
+                        <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                          {opt.needs.map((n) => <span key={n} style={{ fontSize: 11.5, fontWeight: 650, padding: '3px 9px', borderRadius: 999, color: on ? toneText(opt.tint) : 'var(--text-secondary)', background: on ? `color-mix(in srgb, ${opt.tint} 12%, transparent)` : 'color-mix(in srgb, var(--text-secondary) 10%, transparent)' }}><Ico as={Check} /> {n}</span>)}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Video URL (video mode only) */}
+              {mode === 'video' && (
+                <div style={{ marginBottom: '22px' }}>
+                  <label htmlFor="video-url" style={label}>YouTube video or live URL</label>
+                  <input
+                    id="video-url"
+                    type="text"
+                    className="app-input"
+                    value={videoUrl}
+                    onChange={(e) => setVideoUrl(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    style={inputStyle()}
+                  />
+                  {videoUrl.trim() && !isValidYouTube(videoUrl) && (
+                    <div style={{ fontSize: '12px', color: 'var(--tint-danger-fg)', marginTop: '6px' }}>
+                      Enter a valid YouTube link (youtube.com/watch, /live, or youtu.be).
+                    </div>
+                  )}
+                  {!isChromium && (
+                    <div style={{ fontSize: '12px', color: 'var(--tint-warn-fg)', background: 'var(--tint-warn-bg)', border: '1px solid var(--tint-warn-border)', borderRadius: '12px', padding: '10px 12px', marginTop: '10px' }}>
+                      Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio for
+                      transcription. Please open Spandan in Chrome or Edge before starting a video room.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', flexDirection: isMobile ? 'column-reverse' : 'row', paddingTop: 18, borderTop: '1px solid var(--border-color)' }}>
+                <button data-tour="create-button" onClick={handleCreateRoom} disabled={isDisabled} style={primaryButton(isDisabled, { width: isMobile ? '100%' : 'auto', padding: '13px 24px', fontSize: 15 })}>
+                  {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
+                </button>
+                <button onClick={() => navigate('/teacher')} style={ghostButton({ padding: '13px 20px', fontSize: '14px', width: isMobile ? '100%' : 'auto' })}>
+                  Cancel
+                </button>
+                {!isMobile && <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--text-secondary)' }}>You can change the settings later in the room.</span>}
+              </div>
+            </div>
+
+            {/* ---- right: how it works ---- */}
+            <div style={{ display: 'grid', gap: 20 }}>
+              <div className="insight-card" style={{ ...cardStyle(isMobile), marginBottom: 0 }}>
+                <SectionHeader icon={Lightbulb} tint="#f59e0b" title="How it works" />
+                <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 14 }}>
+                  {[
+                    ['Create the room', 'You get a short code to share with the class.'],
+                    ['Start teaching', mode === 'video' ? "Play the video; Spandan listens to its audio and drafts questions." : 'Spandan listens to your lecture and drafts questions from what you said.'],
+                    ['Approve and launch', 'Review each batch, then launch polls; students answer live.'],
+                    ['See the results', 'When you end the room, everyone gets their results page.'],
+                  ].map(([t, d], i) => (
+                    <li key={t} style={{ display: 'flex', gap: 12 }}>
+                      <span aria-hidden="true" style={{ width: 26, height: 26, flexShrink: 0, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 800, color: '#fff', background: 'var(--accent-gradient)' }}>{i + 1}</span>
+                      <span>
+                        <span style={{ display: 'block', fontSize: 14, fontWeight: 650, color: 'var(--text-primary)' }}>{t}</span>
+                        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 2, lineHeight: 1.45 }}>{d}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             </div>
           </div>
         </div>

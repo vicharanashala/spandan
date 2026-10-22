@@ -1,3 +1,7 @@
+// LEGACY — not part of the running stack. Nothing references this file: production
+// serves the built frontend through nginx and runs `backend/src/index.js` under pm2,
+// and no npm script, workflow or nginx config points here. Kept for reference only.
+
 const express = require('express');
 const { createServer } = require('http');
 const http = require('http');

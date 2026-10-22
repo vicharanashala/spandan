@@ -1,4 +1,6 @@
 import React, { useState } from 'react'
+import { FileText, X, Check, ListChecks, Timer, Star, Target, Hash, Hourglass, Sparkles } from 'lucide-react'
+import { Ico } from './icons'
 
 function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGenerating = false, initialText = '' }) {
   // Seed from initialText so a retry after a failed generation reopens with the text intact. The
@@ -30,7 +32,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
     const mix = roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
     return (
       <>
-        <span style={{ color: '#3b82f6', fontWeight: '600' }}>MCQ: {mix.MCQ}%</span>
+        <span style={{ color: 'var(--accent)', fontWeight: '600' }}>MCQ: {mix.MCQ}%</span>
         <span style={{ color: '#6b7280' }}> | </span>
         <span style={{ color: '#10b981', fontWeight: '600' }}>TF: {mix.TF}%</span>
         <span style={{ color: '#6b7280' }}> | </span>
@@ -72,7 +74,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
           borderBottom: '1px solid var(--border-color)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '24px' }}>📝</span>
+            <span style={{ fontSize: '24px', display: 'inline-flex', color: 'var(--accent)' }}><FileText size={24} aria-hidden="true" /></span>
             <div>
               <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Generate Questions from Text
@@ -91,8 +93,9 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
               cursor: 'pointer',
               color: 'var(--text-secondary)'
             }}
+            aria-label="Close"
           >
-            ✕
+            <Ico as={X} />
           </button>
         </div>
 
@@ -130,7 +133,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
             fontSize: '11px',
             color: text.length < 50 ? '#ef4444' : '#10b981'
           }}>
-            {text.length} characters {text.length < 50 ? '(minimum 50 required)' : '✓'}
+            {text.length} characters {text.length < 50 ? '(minimum 50 required)' : <Ico as={Check} aria-label="enough text" />}
           </p>
         </div>
 
@@ -161,7 +164,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
                 transition: 'all 0.2s ease'
               }}
             >
-              ✓ True/False Only
+              <Ico as={Check} /> True/False Only
             </button>
             <button
               onClick={() => setMode('MIXED')}
@@ -169,16 +172,16 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
                 flex: 1,
                 padding: '10px 16px',
                 borderRadius: '10px',
-                border: mode === 'MIXED' ? '2px solid #3b82f6' : '2px solid var(--border-color)',
-                background: mode === 'MIXED' ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
-                color: mode === 'MIXED' ? '#3b82f6' : 'var(--text-secondary)',
+                border: mode === 'MIXED' ? '2px solid var(--accent)' : '2px solid var(--border-color)',
+                background: mode === 'MIXED' ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
+                color: mode === 'MIXED' ? 'var(--accent)' : 'var(--text-secondary)',
                 fontSize: '13px',
                 fontWeight: '600',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease'
               }}
             >
-              📋 Mixed (MCQ + TF + MSQ)
+              <Ico as={ListChecks} /> Mixed (MCQ + TF + MSQ)
             </button>
           </div>
         </div>
@@ -207,28 +210,28 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
             gap: '12px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '14px' }}>⏱️</span>
+              <span style={{ fontSize: '14px', display: 'inline-flex', color: 'var(--text-secondary)' }}><Timer size={15} aria-hidden="true" /></span>
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>TTA:</span>
               <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 {roomSettings.timeToAnswer || 30}s
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '14px' }}>📊</span>
+              <span style={{ fontSize: '14px', display: 'inline-flex', color: 'var(--text-secondary)' }}><Star size={15} aria-hidden="true" /></span>
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Points:</span>
               <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 {roomSettings.points || 100}
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '14px' }}>🎯</span>
+              <span style={{ fontSize: '14px', display: 'inline-flex', color: 'var(--text-secondary)' }}><Target size={15} aria-hidden="true" /></span>
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Difficulty:</span>
               <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', textTransform: 'capitalize' }}>
                 {roomSettings.difficulty || 'medium'}
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '14px' }}>📋</span>
+              <span style={{ fontSize: '14px', display: 'inline-flex', color: 'var(--text-secondary)' }}><Hash size={15} aria-hidden="true" /></span>
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Count:</span>
               <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 {roomSettings.questionsPerSegment || 2} questions
@@ -261,7 +264,7 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
             borderRadius: '12px',
             border: 'none',
             background: text.trim().length >= 50 && !isGenerating
-              ? 'linear-gradient(135deg, #3b82f6, #1e40af)'
+              ? 'var(--accent-gradient)'
               : 'var(--border-color)',
             color: text.trim().length >= 50 && !isGenerating ? 'white' : 'var(--text-secondary)',
             fontSize: '14px',
@@ -277,12 +280,12 @@ function TextToQuestionsPopup({ isOpen, onClose, onGenerate, roomSettings, isGen
         >
           {isGenerating ? (
             <>
-              <span>⏳</span>
+              <Hourglass size={18} aria-hidden="true" />
               <span>Generating Questions...</span>
             </>
           ) : (
             <>
-              <span>✨</span>
+              <Sparkles size={18} aria-hidden="true" />
               <span>Generate Questions</span>
             </>
           )}

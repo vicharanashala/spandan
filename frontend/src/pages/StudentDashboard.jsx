@@ -4,13 +4,16 @@ import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
 import useIsMobile from '../hooks/useIsMobile'
+import useNow from '../hooks/useNow'
+import { PageHeader, pageWash, greeting, dateLabel, LiveClock, inputStyle, primaryButton, RoomCard, Pill, EmptyState } from '../components/AppUI'
+import { StatTile, TileGrid, SectionLabel, SectionHeader, cardStyle } from '../components/InsightUI'
+import { CircleCheck, Clapperboard, GraduationCap, Library, Link as LinkIcon, Mic, SkipForward, Telescope, TrendingUp } from 'lucide-react'
 
 function StudentDashboard() {
   const isMobile = useIsMobile()
+  const now = useNow()
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
@@ -69,12 +72,9 @@ function StudentDashboard() {
     }
   }
 
-  const statCards = [
-    { icon: '📚', value: stats.totalRooms, label: 'Total Rooms', tint: '#3b82f6' },
-    { icon: '✅', value: stats.pollsTaken, label: 'Polls Taken', tint: '#10b981' },
-    { icon: '❌', value: stats.pollsMissed, label: 'Polls Missed', tint: '#ef4444' },
-    { icon: '📈', value: `${stats.average}%`, label: 'Earned Points %', tint: '#8b5cf6' }
-  ]
+  const totalPolls = stats.pollsTaken + stats.pollsMissed
+  const firstName = (user?.name || 'Student').split(' ')[0]
+  const joinDisabled = isJoining || !roomCode.trim()
 
   return (
     <div style={{
@@ -96,218 +96,67 @@ function StudentDashboard() {
         marginLeft: 'var(--sidebar-width, 240px)',
         transition: 'margin-left 0.2s ease'
       }}>
-        {/* Header - Blue gradient bar */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '28px 32px',
-          paddingLeft: isMobile ? '64px' : '32px',
-          boxShadow: 'var(--shadow-md)'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '12px',
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{
-                margin: 0,
-                fontSize: isMobile ? '20px' : '26px',
-                fontWeight: '700',
-                letterSpacing: '-0.02em'
-              }}>
-                Welcome, {user?.name || 'Student'}!
-              </h1>
-              <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Join rooms and participate in polls
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={GraduationCap} eyebrow={<>{dateLabel(now)} · <LiveClock /></>}
+          title={`${greeting(now)}, ${firstName}!`} subtitle="Join rooms and participate in polls" />
 
         {/* Dashboard content */}
-        <div style={{
-          flex: 1,
-          padding: isMobile ? '16px' : '32px',
-          maxWidth: '100%',
-          boxSizing: 'border-box'
-        }}>
-          {/* Stats Cards */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
-            gap: isMobile ? '12px' : '20px',
-            marginBottom: isMobile ? '24px' : '32px'
-          }}>
-            {statCards.map((card) => (
-              <div key={card.label} style={{
-                background: 'var(--bg-card)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '24px',
-                boxShadow: 'var(--shadow-md)',
-                border: '1px solid var(--border-color)',
-                minWidth: 0,
-                boxSizing: 'border-box'
-              }}>
-                <div style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: '48px',
-                  height: '48px',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '24px',
-                  marginBottom: '12px',
-                  background: `${card.tint}1a`
-                }}>{card.icon}</div>
-                <div style={{
-                  fontSize: isMobile ? '26px' : '30px',
-                  fontWeight: '700',
-                  color: 'var(--text-primary)',
-                  letterSpacing: '-0.02em'
-                }}>{card.value}</div>
-                <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginTop: '4px' }}>{card.label}</div>
-              </div>
-            ))}
-          </div>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 32px', maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>
+          <SectionLabel>Your progress</SectionLabel>
+          <TileGrid isMobile={isMobile} cols={4} tour="stats">
+            {[
+              { icon: Library, label: 'Rooms joined', value: stats.totalRooms, sub: 'sessions attended', tint: 'var(--accent)' },
+              { icon: CircleCheck, label: 'Polls taken', value: stats.pollsTaken, sub: totalPolls ? `of ${totalPolls} polls` : 'answered so far', tint: '#10b981', progress: totalPolls ? (stats.pollsTaken / totalPolls) * 100 : undefined },
+              { icon: SkipForward, label: 'Polls missed', value: stats.pollsMissed, sub: stats.pollsMissed ? 'not answered in time' : 'none missed', tint: '#ef4444' },
+              { icon: TrendingUp, label: 'Earned points', value: `${stats.average}%`, sub: 'of the points available', tint: '#8b5cf6', progress: stats.average },
+            ].map(t => <StatTile key={t.label} {...t} isMobile={isMobile} />)}
+          </TileGrid>
 
-          {/* Quick Join Section */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: 'var(--radius-lg)',
-            padding: isMobile ? '20px' : '24px',
-            boxShadow: 'var(--shadow-md)',
-            border: '1px solid var(--border-color)',
-            marginBottom: isMobile ? '24px' : '32px',
-            boxSizing: 'border-box'
+          {/* Quick Join */}
+          <SectionLabel>Join a session</SectionLabel>
+          <div data-tour="quick-join" className="insight-card" style={{
+            ...cardStyle(isMobile),
+            background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--bg-card)) 0%, color-mix(in srgb, #8b5cf6 7%, var(--bg-card)) 100%)',
+            border: '1px solid color-mix(in srgb, var(--accent) 22%, var(--border-color))'
           }}>
-            <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-              Quick Join
-            </h2>
-
-            <div style={{
-              display: 'flex',
-              gap: '12px',
-              flexDirection: isMobile ? 'column' : 'row'
-            }}>
+            <SectionHeader icon={LinkIcon} title="Quick Join" hint="Enter the room code your teacher shared to join the live session." />
+            <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
               <input
                 type="text"
+                className="app-input"
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="Enter room code..."
+                onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
+                placeholder="ROOM CODE"
+                aria-label="Room code"
                 maxLength={8}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: '12px 16px',
-                  border: '2px solid var(--border-color)',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '15px',
-                  outline: 'none',
-                  background: 'var(--input-bg)',
-                  color: 'var(--text-primary)',
-                  letterSpacing: '2px',
-                  fontWeight: '600',
-                  boxSizing: 'border-box'
-                }}
+                style={inputStyle({ flex: 1, fontSize: '18px', fontWeight: 700, letterSpacing: '0.3em', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', padding: '13px 16px', textAlign: isMobile ? 'center' : 'left' })}
               />
-
-              <button
-                onClick={handleJoinRoom}
-                disabled={isJoining || !roomCode.trim()}
-                style={{
-                  padding: '11px 24px',
-                  background: (isJoining || !roomCode.trim()) ? 'var(--border-color)' : 'var(--accent-gradient)',
-                  color: (isJoining || !roomCode.trim()) ? 'var(--text-secondary)' : '#fff',
-                  border: 'none',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '15px',
-                  fontWeight: '600',
-                  cursor: (isJoining || !roomCode.trim()) ? 'not-allowed' : 'pointer',
-                  whiteSpace: 'nowrap',
-                  transition: 'transform 0.15s ease, box-shadow 0.15s ease'
-                }}
-              >
-                {isJoining ? 'Joining...' : 'Join Room'}
+              <button onClick={handleJoinRoom} disabled={joinDisabled} style={primaryButton(joinDisabled, { padding: '13px 26px', fontSize: '15px' })}>
+                {isJoining ? 'Joining…' : 'Join Room →'}
               </button>
             </div>
           </div>
 
           {/* Active Joined Rooms Section */}
-          {activeRooms.length > 0 && (
-            <>
-              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-                🟢 Previously Joined Active Rooms
-              </h2>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: '16px',
-                marginBottom: isMobile ? '24px' : '32px'
-              }}>
-                {activeRooms.map((room) => (
-                  <div
-                    key={room._id}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'translateY(-2px)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'translateY(0)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                    }}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-color)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      minWidth: 0,
-                      boxSizing: 'border-box',
-                      transition: 'transform 0.15s ease, box-shadow 0.15s ease'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions • {room.settings?.timeToAnswer || 30}s per question
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/student/session/${room.code}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '11px 18px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '14px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'transform 0.15s ease'
-                      }}
-                    >
-                      🔄 Rejoin Room →
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
+          <SectionLabel>{`Your active rooms${activeRooms.length ? ` · ${activeRooms.length}` : ''}`}</SectionLabel>
+          {activeRooms.length > 0 ? (
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px', marginBottom: isMobile ? '24px' : '32px' }}>
+              {activeRooms.map((room) => (
+                <RoomCard
+                  key={room._id}
+                  icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
+                  tint={room.settings?.mode === 'video' ? '#ec4899' : 'var(--accent)'}
+                  title={room.name}
+                  code={room.code}
+                  status={<span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}><Pill tone="#10b981" dot>Live</Pill>{room.settings?.mode === 'video' && <Pill tone="#ec4899">Video</Pill>}</span>}
+                  meta={[`${room.questionCount || 0} questions`, `${room.settings?.timeToAnswer || 30}s each`]}
+                  actionLabel="Rejoin room →"
+                  onAction={() => navigate(`/student/session/${room.code}`)}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Telescope} title="No active rooms right now" description="When your teacher starts a session, enter its code above. Rooms you join stay here while they are live." />
           )}
         </div>
       </div>

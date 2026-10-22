@@ -4,13 +4,16 @@ import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
+import { PageHeader } from '../components/AppUI'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
+import SoundToggle from '../components/SoundToggle'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
+import { Bell, Check, CircleCheck, Clapperboard, ClipboardList, Hourglass, Lightbulb, Mic, TriangleAlert, Trophy, X } from 'lucide-react'
+import { Ico } from '../components/icons'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
 // ends, all students receive room:ended at once; without a spread they'd all hit the results
@@ -52,6 +55,18 @@ function StudentRoomPage() {
   // True while the teacher's question-approval popup is open. The student video stays paused for the
   // WHOLE popup window (across every question the teacher launches from it), not just per-question.
   const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
+  // True when a "question time" chime could not play because the browser has not seen a user gesture on
+  // this page yet (e.g. after a reload). Shows a one-tap "Enable sound" button; cleared once sound works.
+  const [soundBlocked, setSoundBlocked] = useState(false)
+  // One-time hint for new students (per device). Dismissed with ✕; never shown again on this browser.
+  const [showHint, setShowHint] = useState(() => { try { return localStorage.getItem('spandan.studentHintSeen') !== '1' } catch (e) { return true } })
+  const dismissHint = () => { setShowHint(false); try { localStorage.setItem('spandan.studentHintSeen', '1') } catch (e) { /* ignore */ } }
+  useEffect(() => { installUnlockOnInteraction() }, [])
+  const enableSound = async () => {
+    await unlockAudio()
+    const r = await playStudentQuestion()
+    if (r !== 'blocked') setSoundBlocked(false)
+  }
 
   useEffect(() => {
     if (!isVideoMode) return
@@ -187,6 +202,11 @@ function StudentRoomPage() {
 
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
+    // Teacher's GENERATED batch arrived (once per segment / Paste & Generate; never for Create Q).
+    const handleQuestionsReady = async () => {
+      const r = await playStudentQuestion()
+      if (r === 'blocked') setSoundBlocked(true)
+    }
 
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
@@ -194,6 +214,7 @@ function StudentRoomPage() {
     socket.on('video:progress', handleVideoProgress)
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
+    socket.on('questions:ready', handleQuestionsReady)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -212,6 +233,7 @@ function StudentRoomPage() {
       socket.off('video:progress', handleVideoProgress)
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
+      socket.off('questions:ready', handleQuestionsReady)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
@@ -363,7 +385,7 @@ function StudentRoomPage() {
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -398,7 +420,7 @@ function StudentRoomPage() {
               style={{
                 marginTop: '16px',
                 padding: '12px 24px',
-                background: '#3b82f6',
+                background: 'var(--accent-solid)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '10px',
@@ -428,7 +450,7 @@ function StudentRoomPage() {
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -453,29 +475,27 @@ function StudentRoomPage() {
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
-        {/* Header */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '24px 32px',
-          paddingLeft: isMobile ? '64px' : '32px'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={room.settings?.mode === 'video' ? Clapperboard : Mic} eyebrow="Live session" title={room.name} subtitle={<>Code <strong style={{ letterSpacing: '0.1em' }}>{room.code}</strong></>} />
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+          {showHint && (
+            <div role="note" style={{
+              background: 'var(--bg-card)', border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderLeft: '4px solid var(--accent)',
+              borderRadius: '12px', padding: '12px 16px', marginBottom: '16px',
+              display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--text-primary)', fontSize: '14px'
+            }}>
+              <span aria-hidden="true" style={{ fontSize: '18px', display: 'inline-flex', color: '#f59e0b' }}><Lightbulb size={18} /></span>
+              <span style={{ flex: 1 }}>
+                When your teacher's questions are ready you will hear a chime, and each question takes over this screen until its timer ends.
+                Answer quickly — points reward speed. Tap the ⓘ button in the header for the full guide.
+              </span>
+              <button onClick={dismissHint} aria-label="Dismiss hint" style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '16px', cursor: 'pointer', padding: '4px', display: 'inline-flex' }}><X size={16} aria-hidden="true" /></button>
+            </div>
+          )}
+
           {/* Connection Status */}
-          <div style={{
+          <div data-tour="status-row" style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
             padding: '16px 24px',
@@ -497,6 +517,27 @@ function StudentRoomPage() {
                 {isConnected ? 'Connected' : 'Reconnecting...'}
               </span>
             </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {/* Sound on/off for the question-time chime (per device) */}
+            <SoundToggle />
+            {soundBlocked && (
+              <button
+                onClick={enableSound}
+                title="Your browser blocked the chime until you interact with the page — tap once to enable it"
+                style={{
+                  padding: '8px 14px',
+                  background: '#f59e0b',
+                  color: '#111827',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                <Ico as={Bell} /> Enable sound
+              </button>
+            )}
             <button
               onClick={leaveSession}
               disabled={hasAnsweredPoll}
@@ -515,6 +556,7 @@ function StudentRoomPage() {
             >
               Leave
             </button>
+            </div>
           </div>
 
           {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
@@ -648,7 +690,7 @@ function StudentRoomPage() {
                           fontSize: '14px',
                           flexShrink: 0
                         }}>
-                          {isSelected ? '✓' : ''}
+                          {isSelected ? <Check size={14} strokeWidth={3} aria-hidden="true" /> : ''}
                         </span>
                       )}
                       <span style={{
@@ -680,7 +722,7 @@ function StudentRoomPage() {
                   background: 'rgba(255,255,255,0.1)',
                   borderRadius: '12px'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
+                  <p style={{ fontSize: '18px', fontWeight: '600' }}><Ico as={CircleCheck} /> Answer Submitted</p>
                   <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
                     Waiting for next question...
                   </p>
@@ -713,7 +755,7 @@ function StudentRoomPage() {
           <div style={{ display: currentQuestion ? 'none' : 'flex', flexDirection: 'column', gap: '24px' }}>
               {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
               {!isVideoMode && (
-              <div style={{
+              <div data-tour="question-area" style={{
                 background: 'var(--bg-card)',
                 borderRadius: 'var(--radius-lg)',
                 padding: isMobile ? '32px 20px' : '48px',
@@ -724,15 +766,16 @@ function StudentRoomPage() {
                 <div style={{
                   width: '80px',
                   height: '80px',
-                  background: '#eff6ff',
+                  background: 'var(--tint-info-bg)',
                   borderRadius: '50%',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   margin: '0 auto 24px',
-                  fontSize: '40px'
+                  fontSize: '40px',
+                  color: 'var(--accent)'
                 }}>
-                  ⏳
+                  <Hourglass size={38} aria-hidden="true" />
                 </div>
                 <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
                   Waiting for Next Question
@@ -746,9 +789,9 @@ function StudentRoomPage() {
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+                <div data-tour="past-questions" style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
+                    <Ico as={ClipboardList} style={{ color: 'var(--accent)' }} /> Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
                 {pastResponses.length === 0 ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
@@ -770,8 +813,8 @@ function StudentRoomPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <span style={{
                               padding: '2px 10px',
-                              background: q.answered ? '#d1fae5' : (q.resultPending ? '#eff6ff' : '#fee2e2'),
-                              color: q.answered ? '#059669' : (q.resultPending ? '#3b82f6' : '#dc2626'),
+                              background: q.answered ? 'var(--tint-success-bg)' : (q.resultPending ? 'var(--tint-info-bg)' : 'var(--tint-danger-bg)'),
+                              color: q.answered ? 'var(--tint-success-fg)' : (q.resultPending ? 'var(--tint-info-fg)' : 'var(--tint-danger-fg)'),
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -780,8 +823,8 @@ function StudentRoomPage() {
                             </span>
                             <span style={{
                               padding: '2px 10px',
-                              background: '#eff6ff',
-                              color: '#3b82f6',
+                              background: 'var(--tint-info-bg)',
+                              color: 'var(--tint-info-fg)',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -790,8 +833,8 @@ function StudentRoomPage() {
                             </span>
                             <span style={{
                               padding: '2px 10px',
-                              background: '#fef3c7',
-                              color: '#d97706',
+                              background: 'var(--tint-warn-bg)',
+                              color: 'var(--tint-warn-fg)',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -803,25 +846,25 @@ function StudentRoomPage() {
                           {q.resultPending && q.answered && (
                             <span style={{
                               padding: '4px 12px',
-                              background: '#3b82f6',
+                              background: 'var(--accent-solid)',
                               color: 'white',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ⏳ Answer submitted
+                              <Ico as={Hourglass} /> Answer submitted
                             </span>
                           )}
                           {!q.resultPending && q.answered && q.isCorrect && (
                             <span style={{
                               padding: '4px 12px',
-                              background: '#10b981',
+                              background: 'var(--success-solid)',
                               color: 'white',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ✓ Correct (+{q.pointsEarned || 0})
+                              <Ico as={Check} /> Correct (+{q.pointsEarned || 0})
                             </span>
                           )}
                           {!q.resultPending && q.answered && !q.isCorrect && (
@@ -833,7 +876,7 @@ function StudentRoomPage() {
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ✗ Incorrect (+{q.pointsEarned || 0})
+                              <Ico as={X} /> Incorrect (+{q.pointsEarned || 0})
                             </span>
                           )}
                         </div>
@@ -861,31 +904,30 @@ function StudentRoomPage() {
                               // Live poll: NEVER reveal the correct option. Only mark what the student
                               // picked, in blue — the correct/incorrect result comes after it closes.
                               if (q.answered && isSelected) {
-                                bgColor = '#eff6ff'
-                                borderColor = '#3b82f6'
-                                letterBg = '#3b82f6'
-                                // The highlight bg is a fixed light pastel, so text must be a dark
-                                // accent (not var(--text-primary), which is white in dark mode and
-                                // would wash out over the pastel). Mirrors the teacher side.
-                                textColor = '#1e40af'
+                                bgColor = 'var(--tint-info-bg)'
+                                borderColor = 'var(--tint-info-border)'
+                                letterBg = 'var(--accent)'
+                                // Theme-aware tint + matching text (pale + dark text in light mode,
+                                // translucent + light text in dark mode).
+                                textColor = 'var(--tint-info-fg)'
                                 label = ' (Your answer)'
                               }
                             } else if (q.answered && isSelected && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
+                              bgColor = 'var(--tint-success-bg)'
+                              borderColor = 'var(--tint-success-border)'
                               letterBg = '#059669'
-                              textColor = '#065f46'
+                              textColor = 'var(--tint-success-fg)'
                               label = ' (Your correct answer)'
                             } else if (q.answered && isSelected && !isCorrect) {
-                              bgColor = '#fee2e2'
-                              borderColor = '#dc2626'
-                              textColor = '#991b1b'
+                              bgColor = 'var(--tint-danger-bg)'
+                              borderColor = 'var(--tint-danger-border)'
+                              textColor = 'var(--tint-danger-fg)'
                               label = ' (Your wrong answer)'
                             } else if (!q.answered && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
+                              bgColor = 'var(--tint-success-bg)'
+                              borderColor = 'var(--tint-success-border)'
                               letterBg = '#059669'
-                              textColor = '#065f46'
+                              textColor = 'var(--tint-success-fg)'
                               label = ' (Correct answer)'
                             } else if (isCorrect) {
                               letterBg = '#059669'
@@ -931,13 +973,13 @@ function StudentRoomPage() {
                         
                         {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
                         {q.resultPending && (
-                          <p style={{ fontSize: '13px', color: '#3b82f6', margin: 0, fontStyle: 'italic' }}>
-                            ⏳ Result will be shown once this poll closes
+                          <p style={{ fontSize: '13px', color: 'var(--accent)', margin: 0, fontStyle: 'italic' }}>
+                            <Ico as={Hourglass} /> Result will be shown once this poll closes
                           </p>
                         )}
                         {!q.resultPending && !q.answered && (
-                          <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
-                            ⚠️ You did not answer this question
+                          <p style={{ fontSize: '13px', color: 'var(--tint-danger-fg)', margin: 0, fontStyle: 'italic' }}>
+                            <Ico as={TriangleAlert} /> You did not answer this question
                           </p>
                         )}
                       </div>
@@ -950,9 +992,9 @@ function StudentRoomPage() {
                 )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div data-tour="leaderboard" style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    🏆 Leaderboard
+                    <Ico as={Trophy} style={{ color: '#f59e0b' }} /> Leaderboard
                   </h3>
                   <ErrorBoundary message="Leaderboard unavailable">
                     <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} />

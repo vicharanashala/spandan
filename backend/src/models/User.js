@@ -58,6 +58,10 @@ const userSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
   },
+  // Guided-tour completion, keyed by tour id (content/tours.js: 'dashboard', 'console', 's-session', …),
+  // for teachers and students. Set when a tour finishes or is skipped, so it never auto-runs again on
+  // any device. Replay is always possible from the ⓘ help popup.
+  tourSeen: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   // Grants access to the admin approval page and endpoints. Set only via the migration
   // script or another admin; never client-settable.
   isAdmin: {

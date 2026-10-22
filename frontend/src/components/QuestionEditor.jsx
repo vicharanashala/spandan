@@ -1,4 +1,5 @@
 import React from 'react'
+import { Check } from 'lucide-react'
 
 // Inline editor for a single generated question. Used inside both review popups (Paste & Generate
 // and the automatic pipeline) so a teacher can fix the question text, the option texts, and — most
@@ -84,7 +85,7 @@ function QuestionEditor({ question, onChange }) {
                 fontWeight: 700
               }}
             >
-              {option.isCorrect ? '✓' : String.fromCharCode(65 + idx)}
+              {option.isCorrect ? <Check size={15} strokeWidth={3} aria-label="Correct" /> : String.fromCharCode(65 + idx)}
             </button>
 
             {isTF ? (

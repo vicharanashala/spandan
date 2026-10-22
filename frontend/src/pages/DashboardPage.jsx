@@ -5,9 +5,12 @@ import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
 import useIsMobile from '../hooks/useIsMobile'
+import useNow from '../hooks/useNow'
+import { PageHeader, pageWash, greeting, dateLabel, LiveClock, inputStyle, primaryButton, ChoiceCard, RoomCard, Pill, EmptyState } from '../components/AppUI'
+import { StatTile, TileGrid, SectionLabel, SectionHeader, cardStyle } from '../components/InsightUI'
+import { ChartColumn, CircleDot, Clapperboard, Hand, Inbox, Library, MessageSquare, Mic, Plus, Users } from 'lucide-react'
+import { Ico } from '../components/icons'
 
 function DashboardPage() {
   const navigate = useNavigate()
@@ -15,6 +18,7 @@ function DashboardPage() {
   const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, joinCoHostRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
   const isMobile = useIsMobile()
+  const now = useNow()
 
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
@@ -147,7 +151,7 @@ function DashboardPage() {
             width: '48px',
             height: '48px',
             border: '4px solid var(--border-color)',
-            borderTopColor: '#3b82f6',
+            borderTopColor: 'var(--accent)',
             borderRadius: '50%',
             animation: 'spin 1s linear infinite',
             margin: '0 auto 16px'
@@ -158,14 +162,9 @@ function DashboardPage() {
     )
   }
 
-  const statCards = [
-    { icon: '📚', value: stats.totalRooms, label: 'Total Rooms' },
-    { icon: '✅', value: stats.activeRooms, label: 'Active Rooms' },
-    { icon: '📊', value: stats.totalPolls, label: 'Total Polls' },
-    { icon: '💬', value: stats.totalResponses, label: 'Total Responses' }
-  ]
-
   const disabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
+  const activeRooms = (rooms || []).filter(r => !r.endedAt)
+  const firstName = (user?.name || 'Teacher').split(' ')[0]
 
   return (
     <div style={{
@@ -189,395 +188,170 @@ function DashboardPage() {
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>
-        {/* Header - Blue gradient bar */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '24px 32px',
-          paddingLeft: isMobile ? '64px' : '32px',
-          boxSizing: 'border-box'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '12px',
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{
-                margin: 0,
-                fontSize: isMobile ? '20px' : '26px',
-                fontWeight: 700,
-                letterSpacing: '-0.02em'
-              }}>
-                Welcome back, {user?.name || 'Teacher'}!
-              </h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Manage your rooms and questions
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={Hand} eyebrow={<>{dateLabel(now)} · <LiveClock /></>}
+          title={`${greeting(now)}, ${firstName}!`} subtitle="Manage your rooms and questions" />
 
         {/* Dashboard content */}
-        <div style={{
-          flex: 1,
-          padding: isMobile ? '16px' : '32px',
-          maxWidth: '100%',
-          boxSizing: 'border-box'
-        }}>
-          {/* Stats Cards */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit,minmax(220px, 1fr))',
-            gap: isMobile ? '12px' : '20px',
-            marginBottom: isMobile ? '24px' : '32px'
-          }}>
-            {statCards.map((card) => (
-              <div key={card.label} style={{
-                background: 'var(--bg-card)',
-                borderRadius: 'var(--radius-lg)',
-                padding: isMobile ? '18px' : '24px',
-                boxShadow: 'var(--shadow-md)',
-                border: '1px solid var(--border-color)',
-                minWidth: 0,
-                boxSizing: 'border-box'
-              }}>
-                <div style={{
-                  width: '44px',
-                  height: '44px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '22px',
-                  borderRadius: 'var(--radius)',
-                  background: 'rgba(59, 130, 246, 0.12)',
-                  marginBottom: '14px'
-                }}>{card.icon}</div>
-                <div style={{
-                  fontSize: isMobile ? '26px' : '30px',
-                  fontWeight: 700,
-                  color: 'var(--text-primary)',
-                  letterSpacing: '-0.02em',
-                  lineHeight: 1.1
-                }}>{card.value}</div>
-                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '6px' }}>{card.label}</div>
-              </div>
-            ))}
-          </div>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 32px', maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>
+          <SectionLabel>Overview</SectionLabel>
+          <TileGrid isMobile={isMobile} cols={4} tour="stats">
+            {[
+              { icon: Library, label: 'Total rooms', value: stats.totalRooms, sub: `${stats.totalRooms - stats.activeRooms} ended`, tint: 'var(--accent)' },
+              { icon: CircleDot, label: 'Active rooms', value: stats.activeRooms, sub: stats.activeRooms ? 'open right now' : 'none open', tint: '#10b981' },
+              { icon: ChartColumn, label: 'Total polls', value: stats.totalPolls, sub: stats.totalRooms ? `${Math.round(stats.totalPolls / stats.totalRooms * 10) / 10} per room` : 'across all rooms', tint: '#8b5cf6' },
+              { icon: MessageSquare, label: 'Total responses', value: stats.totalResponses.toLocaleString(), sub: stats.totalPolls ? `${Math.round(stats.totalResponses / stats.totalPolls)} per poll` : 'student answers', tint: '#0ea5e9' },
+            ].map(t => <StatTile key={t.label} {...t} isMobile={isMobile} />)}
+          </TileGrid>
 
           {/* Create Room Section */}
-          <div style={{
-            background: 'var(--bg-card)',
-            borderRadius: 'var(--radius-lg)',
-            padding: isMobile ? '20px' : '24px',
-            boxShadow: 'var(--shadow-md)',
-            border: '1px solid var(--border-color)',
-            marginBottom: '24px',
-            maxWidth: '100%',
-            boxSizing: 'border-box'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                Create New Room
-              </h2>
+          <SectionLabel>Start a session</SectionLabel>
+          <div data-tour="create-room" className="insight-card" style={cardStyle(isMobile)}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+              <SectionHeader icon={Plus} title="Create New Room" hint="Give it a name and pick how you will teach. Students join with the room code." />
               <button
                 onClick={() => navigate('/teacher/join-cohost')}
                 style={{
-                  padding: '8px 16px',
+                  padding: '8px 14px',
                   background: 'var(--nav-hover)',
                   color: 'var(--accent)',
                   border: '1px solid var(--accent)',
-                  borderRadius: 'var(--radius)',
+                  borderRadius: 12,
                   fontSize: '13px',
                   fontWeight: 600,
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px'
+                  gap: 6
                 }}
               >
-                🤝 Join Room as Co-Host
+                <Ico as={Users} /> Join Room as Co-Host
               </button>
             </div>
-
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
-              <input
-                type="text"
-                value={roomName}
-                onChange={(e) => setRoomName(e.target.value)}
-                placeholder="Enter room name..."
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: '12px 16px',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '14px',
-                  outline: 'none',
-                  background: 'var(--input-bg)',
-                  color: 'var(--text-primary)',
-                  boxSizing: 'border-box'
-                }}
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
-              />
-
-              <button
-                onClick={handleCreateRoom}
-                disabled={disabled}
-                style={{
-                  padding: '11px 18px',
-                  background: disabled ? '#9ca3af' : 'var(--accent-gradient)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 'var(--radius)',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                  boxShadow: disabled ? 'none' : '0 2px 10px rgba(30,64,175,.25)',
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                {isCreating ? 'Creating...' : 'Create Room'}
-              </button>
-            </div>
-
-            {/* Room mode */}
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-              {[
-                { key: 'normal', title: 'Normal', desc: 'Live mic + transcript' },
-                { key: 'video', title: 'Video', desc: 'YouTube video or live link' }
-              ].map((opt) => {
-                const active = mode === opt.key
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => setMode(opt.key)}
-                    style={{
-                      flex: 1,
-                      minWidth: '150px',
-                      textAlign: 'left',
-                      padding: '10px 12px',
-                      cursor: 'pointer',
-                      borderRadius: 'var(--radius)',
-                      border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
-                      background: active ? 'rgba(59,130,246,.08)' : 'var(--input-bg)',
-                      color: 'var(--text-primary)'
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 600 }}>{opt.title}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                      {opt.desc}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Video URL (video mode only) */}
-            {mode === 'video' && (
-              <div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
                 <input
                   type="text"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                  placeholder="YouTube video or live URL..."
+                  className="app-input"
+                  value={roomName}
+                  onChange={(e) => setRoomName(e.target.value)}
+                  placeholder="Room name, e.g. DBMS Lecture 12"
+                  aria-label="Room name"
+                  style={inputStyle({ flex: 1 })}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
-                  style={{
-                    width: '100%',
-                    padding: '12px 16px',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: 'var(--radius)',
-                    fontSize: '14px',
-                    outline: 'none',
-                    background: 'var(--input-bg)',
-                    color: 'var(--text-primary)',
-                    boxSizing: 'border-box'
-                  }}
                 />
-                {videoUrl.trim() && !isValidYouTube(videoUrl) && (
-                  <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '6px' }}>
-                    Enter a valid YouTube link (youtube.com/watch, /live, or youtu.be).
-                  </div>
-                )}
-                {!isChromium && (
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#b45309',
-                    background: '#fffbeb',
-                    border: '1px solid #fde68a',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '10px 12px',
-                    marginTop: '10px'
-                  }}>
-                    Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio.
-                    Please open Spandan in Chrome or Edge before starting a video room.
-                  </div>
+                {!isMobile && (
+                  <button onClick={handleCreateRoom} disabled={disabled} style={primaryButton(disabled)}>
+                    {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
+                  </button>
                 )}
               </div>
-            )}
+
+              {/* Room mode */}
+              <div role="radiogroup" aria-label="Room mode" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                {[
+                  { key: 'normal', icon: Mic, title: 'Normal', desc: 'Live mic + transcript', tint: 'var(--accent)' },
+                  { key: 'video', icon: Clapperboard, title: 'Video', desc: 'YouTube video or live link', tint: '#ec4899' }
+                ].map((opt) => (
+                  <ChoiceCard key={opt.key} icon={opt.icon} title={opt.title} description={opt.desc} tint={opt.tint} active={mode === opt.key} onClick={() => setMode(opt.key)} />
+                ))}
+              </div>
+
+              {/* Video URL (video mode only) */}
+              {mode === 'video' && (
+                <div>
+                  <input
+                    type="text"
+                    className="app-input"
+                    value={videoUrl}
+                    onChange={(e) => setVideoUrl(e.target.value)}
+                    placeholder="YouTube video or live URL…"
+                    aria-label="YouTube video or live URL"
+                    onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+                    style={inputStyle()}
+                  />
+                  {videoUrl.trim() && !isValidYouTube(videoUrl) && (
+                    <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '6px' }}>
+                      Enter a valid YouTube link (youtube.com/watch, /live, or youtu.be).
+                    </div>
+                  )}
+                  {!isChromium && (
+                    <div style={{
+                      fontSize: '12px',
+                      color: '#b45309',
+                      background: '#fffbeb',
+                      border: '1px solid #fde68a',
+                      borderRadius: '12px',
+                      padding: '10px 12px',
+                      marginTop: '10px'
+                    }}>
+                      Video Mode needs Google Chrome or Microsoft Edge to capture the video's audio.
+                      Please open Spandan in Chrome or Edge before starting a video room.
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* phones: the button comes below the Normal / Video selector, at full width */}
+              {isMobile && (
+                <button onClick={handleCreateRoom} disabled={disabled} style={primaryButton(disabled, { width: '100%' })}>
+                  {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
+                </button>
+              )}
             </div>
           </div>
 
           {/* Active Co-Host Rooms Section */}
           {coHostActiveRooms && coHostActiveRooms.length > 0 && (
             <div style={{ marginBottom: '32px' }}>
-              <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>🔄</span> Rejoin as Co-Host
-              </h2>
+              <SectionLabel>{`Rooms you are co-hosting · ${coHostActiveRooms.length}`}</SectionLabel>
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(270px, 1fr))',
                 gap: '16px'
               }}>
                 {coHostActiveRooms.map((room) => (
-                  <div
+                  <RoomCard
                     key={room._id}
-                    onClick={() => navigate(`/teacher/room/${room._id}`)}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '2px solid var(--accent)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      cursor: 'pointer',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'inline-block', padding: '2px 8px', background: 'rgba(59,130,246,0.15)', color: 'var(--accent)', borderRadius: '12px', fontSize: '11px', fontWeight: 700, marginBottom: '8px' }}>
-                        CO-HOST
-                      </div>
-                      <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Host: {room.teacher?.name || 'Teacher'}
-                      </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/teacher/room/${room._id}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Rejoin Room →
-                    </button>
-                  </div>
+                    icon={Users}
+                    tint="var(--accent)"
+                    title={room.name}
+                    code={room.code}
+                    status={<Pill tone="var(--accent)">Co-Host</Pill>}
+                    meta={[`Host: ${room.teacher?.name || 'Teacher'}`]}
+                    actionLabel="Rejoin Room →"
+                    onOpen={() => navigate(`/teacher/room/${room._id}`)}
+                    onAction={() => navigate(`/teacher/room/${room._id}`)}
+                  />
                 ))}
               </div>
             </div>
           )}
 
           {/* Active Rooms List */}
-          <h2 style={{ margin: '0 0 20px', fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            My Active Rooms
-          </h2>
-
-            {isLoading ? (
-              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
-                Loading rooms...
-              </div>
-            ) : rooms && rooms.filter(r => !r.endedAt).length > 0 ? (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
-                gap: '16px'
-              }}>
-                {rooms.filter(r => !r.endedAt).map((room) => (
-                  <div
-                    key={room._id}
-                    onClick={() => navigate(`/teacher/room/${room._id}`)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'translateY(-2px)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'translateY(0)'
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                    }}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '20px',
-                      background: 'var(--bg-card)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-color)',
-                      boxShadow: 'var(--shadow-md)',
-                      minHeight: '140px',
-                      minWidth: 0,
-                      cursor: 'pointer',
-                      transition: 'transform 0.18s ease, box-shadow 0.18s ease',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px', letterSpacing: '-0.01em' }}>
-                        {room.name}
-                      </h3>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        Code: <strong style={{ color: 'var(--accent)', letterSpacing: '1px' }}>{room.code}</strong>
-                      </p>
-                      <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {room.questionCount || 0} questions
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => navigate(`/teacher/room/${room._id}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        boxShadow: '0 2px 10px rgba(30,64,175,.25)'
-                      }}
-                    >
-                      Manage →
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                textAlign: 'center',
-                padding: '48px 24px',
-                color: 'var(--text-secondary)',
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-lg)',
-                boxShadow: 'var(--shadow-md)'
-              }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
-                <p style={{ margin: 0 }}>No rooms yet. Create your first room above!</p>
-              </div>
-            )}
+          <div data-tour="active-rooms">
+            <SectionLabel>{`My active rooms${activeRooms.length ? ` · ${activeRooms.length}` : ''}`}</SectionLabel>
+          </div>
+          {isLoading ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>Loading rooms…</div>
+          ) : activeRooms.length > 0 ? (
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(270px, 1fr))', gap: '16px' }}>
+              {activeRooms.map((room) => (
+                <RoomCard
+                  key={room._id}
+                  icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
+                  tint={room.settings?.mode === 'video' ? '#ec4899' : 'var(--accent)'}
+                  title={room.name}
+                  code={room.code}
+                  status={<span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}><Pill tone="#10b981" dot>Active</Pill>{room.settings?.mode === 'video' && <Pill tone="#ec4899">Video</Pill>}</span>}
+                  meta={[`${room.questionCount || 0} question${room.questionCount === 1 ? '' : 's'}`]}
+                  actionLabel="Manage →"
+                  onOpen={() => navigate(`/teacher/room/${room._id}`)}
+                  onAction={() => navigate(`/teacher/room/${room._id}`)}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Inbox} title="No active rooms" description="Create your first room above. It will appear here while it is open." />
+          )}
         </div>
       </div>
     </div>

@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
+import { PageHeader, pageWash, primaryButton, ghostButton } from '../components/AppUI'
+import { SectionHeader } from '../components/InsightUI'
 import PasswordInput from '../components/PasswordInput'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { ArrowLeft, Backpack, Cake, Camera, Check, Circle, FileText, GraduationCap, IdCard, Landmark, Link as LinkIcon, Lock as LockIcon, Mail, MapPin, Pencil, Phone as PhoneIcon, School, ScrollText, ShieldCheck, User, UserRound, VenusAndMars, X } from 'lucide-react'
+import { GithubLogo, Ico, LinkedinLogo, XLogo, renderIcon } from '../components/icons'
 
 function ProfilePage() {
   const navigate = useNavigate()
@@ -221,17 +223,17 @@ function ProfilePage() {
   const cardStyle = {
     background: 'var(--bg-card)',
     border: '1px solid var(--border-color)',
-    borderRadius: 'var(--radius-lg)',
-    boxShadow: 'var(--shadow-md)',
+    borderRadius: '20px',
+    boxShadow: '0 1px 2px rgba(16,24,40,0.04), 0 8px 24px rgba(16,24,40,0.06)',
     overflow: 'hidden'
   }
   const inputStyle = {
     width: '100%',
     boxSizing: 'border-box',
-    padding: '11px 14px',
+    padding: '12px 14px',
     fontSize: '14px',
     border: '1px solid var(--border-color)',
-    borderRadius: 'var(--radius)',
+    borderRadius: '12px',
     background: 'var(--input-bg)',
     color: 'var(--text-primary)',
     outline: 'none'
@@ -262,7 +264,7 @@ function ProfilePage() {
     color: '#fff',
     border: 'none',
     borderRadius: 'var(--radius)',
-    boxShadow: disabled ? 'none' : '0 2px 10px rgba(30,64,175,.25)',
+    boxShadow: disabled ? 'none' : '0 2px 10px rgba(8,32,73,.25)',
     cursor: disabled ? 'not-allowed' : 'pointer'
   })
   const secondaryBtnStyle = {
@@ -295,528 +297,296 @@ function ProfilePage() {
     )
   }
 
+  // ---- view helpers ----
+  const softCard = { ...cardStyle, padding: isMobile ? '18px' : '22px 24px' }
+  const notAdded = <span style={{ color: 'var(--text-secondary)', fontWeight: 500, fontStyle: 'italic' }}>Not added</span>
+  const Field = ({ icon, label, value, span }) => (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', gridColumn: span && !isMobile ? 'span 2' : 'auto', minWidth: 0 }}>
+      <span aria-hidden="true" style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 9%, transparent)' }}>{renderIcon(icon, 16)}</span>
+      <div style={{ minWidth: 0 }}>
+        <p style={{ ...fieldLabelView, textTransform: 'uppercase' }}>{label}</p>
+        <p style={fieldValueView}>{value || notAdded}</p>
+      </div>
+    </div>
+  )
+  const fieldGrid = { display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '18px 24px' }
+  const roleLabel = user?.role === 'teacher' ? 'Teacher details' : 'Student details'
+  const hasAddress = Object.values(formData.address || {}).some(Boolean)
+  const hasSocial = Object.values(formData.socialLinks || {}).some(Boolean)
+
+  // live password checklist (same rules the server enforces; the server stays the authority)
+  const pw = passwordData.newPassword
+  const rules = [
+    ['At least 8 characters', pw.length >= 8],
+    ['An uppercase letter', /[A-Z]/.test(pw)],
+    ['A lowercase letter', /[a-z]/.test(pw)],
+    ['A digit', /\d/.test(pw)],
+    ['A special character', /[^A-Za-z0-9]/.test(pw)],
+  ]
+  const passed = rules.filter(([, ok]) => ok).length
+  const strength = !pw ? null : passed <= 2 ? ['Weak', '#ef4444'] : passed <= 4 ? ['Fair', '#f59e0b'] : ['Strong', '#10b981']
+  const matches = passwordData.confirmPassword && passwordData.confirmPassword === pw
+
+  // Cover card: gradient band + overlapping avatar (editable in edit mode)
+  const avatarSize = isMobile ? 84 : 104
+  const ProfileCover = ({ editable }) => (
+    <div style={{ ...cardStyle, marginBottom: 20 }}>
+      <div style={{ position: 'relative', height: isMobile ? 84 : 110, background: 'var(--header-bg)', overflow: 'hidden' }}>
+        <span aria-hidden="true" style={{ position: 'absolute', width: 320, height: 320, right: -80, top: -180, borderRadius: '50%', background: 'radial-gradient(circle, rgba(255,255,255,0.18), rgba(255,255,255,0) 70%)' }} />
+        <span aria-hidden="true" style={{ position: 'absolute', width: 220, height: 220, left: '35%', bottom: -150, borderRadius: '50%', background: 'radial-gradient(circle, rgba(255,255,255,0.10), rgba(255,255,255,0) 70%)' }} />
+      </div>
+      <div style={{ padding: isMobile ? '0 18px 18px' : '0 26px 22px', display: 'flex', alignItems: isMobile ? 'flex-start' : 'flex-end', gap: isMobile ? 12 : 20, flexDirection: isMobile ? 'column' : 'row' }}>
+        <div style={{ position: 'relative', marginTop: -avatarSize / 2, flexShrink: 0 }}>
+          <div
+            onClick={editable ? () => fileInputRef.current?.click() : undefined}
+            role={editable ? 'button' : undefined}
+            aria-label={editable ? 'Change profile photo' : undefined}
+            style={{
+              width: avatarSize, height: avatarSize, borderRadius: '50%', overflow: 'hidden', cursor: editable ? 'pointer' : 'default',
+              background: formData.profileImage ? 'var(--bg-card)' : 'var(--accent-gradient)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '4px solid var(--bg-card)', boxShadow: '0 8px 20px rgba(16,24,40,0.18)'
+            }}
+          >
+            {formData.profileImage
+              ? <img src={formData.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              : <span style={{ fontSize: avatarSize * 0.4, color: 'white', fontWeight: 800 }}>{formData.name?.charAt(0)?.toUpperCase() || 'U'}</span>}
+          </div>
+          {editable && (
+            <>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
+              <span aria-hidden="true" onClick={() => fileInputRef.current?.click()} style={{
+                position: 'absolute', bottom: 4, right: 4, width: 30, height: 30, borderRadius: '50%', cursor: 'pointer', fontSize: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-card)', border: '1px solid var(--border-color)', boxShadow: '0 2px 6px rgba(16,24,40,0.15)', color: 'var(--text-primary)'
+              }}><Camera size={15} /></span>
+            </>
+          )}
+        </div>
+        <div style={{ flex: 1, minWidth: 0, paddingTop: isMobile ? 0 : 12 }}>
+          <h2 style={{ margin: 0, fontSize: isMobile ? 20 : 24, fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', wordBreak: 'break-word' }}>{editable ? (formData.name || user?.name) : user?.name}</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+            <span style={{ padding: '2px 10px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, textTransform: 'capitalize', color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)' }}>{user?.role}</span>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)', wordBreak: 'break-all' }}><Ico as={Mail} /> {user?.email}</span>
+          </div>
+        </div>
+        {!editable && (
+          <button data-tour="edit-profile" onClick={() => setIsEditing(true)} style={primaryButton(false, { padding: '10px 18px', alignSelf: isMobile ? 'stretch' : 'auto' })}>
+            <Ico as={Pencil} /> Edit Profile
+          </button>
+        )}
+      </div>
+    </div>
+  )
+
+  const L = ({ children, htmlFor }) => <label htmlFor={htmlFor} style={labelStyle}>{children}</label>
+  const inp = (extra = {}) => ({ ...inputStyle, ...extra })
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' }}>
       <Sidebar user={user} />
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)' }}>
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px 16px 64px' : '20px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ margin: 0, fontSize: isMobile ? '22px' : '26px', fontWeight: '700', letterSpacing: '-0.02em' }}>Profile</h1>
-              <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.85 }}>Manage your account details</p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
+        <PageHeader isMobile={isMobile} icon={User} title="Profile" subtitle="Manage your account details" />
+
+        <div style={{ flex: 1, padding: contentPad, maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>
+          {/* Back arrow + tabs on one line */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
+            <button onClick={() => navigate(roleDashboard)} aria-label="Back to dashboard" title="Back to dashboard" style={{
+              width: 44, height: 44, flexShrink: 0, borderRadius: 14, border: '1px solid var(--border-color)', background: 'var(--bg-card)',
+              color: 'var(--text-primary)', fontSize: 18, fontWeight: 700, cursor: 'pointer', boxShadow: '0 1px 2px rgba(16,24,40,0.06)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
+            }}><ArrowLeft size={18} aria-hidden="true" /></button>
+            <div role="tablist" aria-label="Profile sections" style={{ display: 'inline-flex', gap: 4, padding: 4, borderRadius: 14, background: 'color-mix(in srgb, var(--text-secondary) 10%, var(--bg-card))', border: '1px solid var(--border-color)' }}>
+              {[['profile', User, 'My Profile'], ['password', LockIcon, 'Change Password']].map(([key, TabIcon, text]) => {
+                const on = activeTab === key
+                return (
+                  <button key={key} role="tab" aria-selected={on} onClick={() => { setActiveTab(key); setIsEditing(false) }} style={{
+                    padding: isMobile ? '8px 12px' : '9px 18px', fontSize: isMobile ? '13px' : '14px', fontWeight: on ? 700 : 600, border: 'none', borderRadius: 11, cursor: 'pointer', whiteSpace: 'nowrap',
+                    background: on ? 'var(--bg-card)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text-secondary)',
+                    boxShadow: on ? '0 1px 2px rgba(16,24,40,0.06), 0 4px 10px rgba(16,24,40,0.06)' : 'none'
+                  }}><Ico as={TabIcon} /> {text}</button>
+                )
+              })}
             </div>
           </div>
-        </header>
-
-        <div style={{ flex: 1, padding: contentPad, maxWidth: '100%', boxSizing: 'border-box' }}>
-          {/* Tabs */}
-          <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '2px solid var(--border-color)', paddingBottom: '0', flexWrap: 'wrap' }}>
-            <button
-              onClick={() => { setActiveTab('profile'); setIsEditing(false) }}
-              style={{
-                padding: '12px 24px',
-                fontSize: '14px',
-                fontWeight: '600',
-                background: activeTab === 'profile' ? 'var(--accent-gradient)' : 'transparent',
-                color: activeTab === 'profile' ? 'white' : 'var(--text-secondary)',
-                border: 'none',
-                borderBottom: activeTab === 'profile' ? '3px solid var(--accent)' : '3px solid transparent',
-                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
-                cursor: 'pointer'
-              }}
-            >
-              My Profile
-            </button>
-            <button
-              onClick={() => { setActiveTab('password'); setIsEditing(false) }}
-              style={{
-                padding: '12px 24px',
-                fontSize: '14px',
-                fontWeight: '600',
-                background: activeTab === 'password' ? 'var(--accent-gradient)' : 'transparent',
-                color: activeTab === 'password' ? 'white' : 'var(--text-secondary)',
-                border: 'none',
-                borderBottom: activeTab === 'password' ? '3px solid var(--accent)' : '3px solid transparent',
-                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
-                cursor: 'pointer'
-              }}
-            >
-              Change Password
-            </button>
-          </div>
-
-          {/* Back Button */}
-          <button
-            onClick={() => navigate(roleDashboard)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '11px 18px',
-              background: 'var(--bg-card)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: 'var(--radius)',
-              boxShadow: 'var(--shadow-sm)',
-              fontSize: '14px',
-              fontWeight: '600',
-              cursor: 'pointer',
-              marginBottom: '24px'
-            }}
-          >
-            ← Back to Dashboard
-          </button>
 
           {activeTab === 'password' ? (
-            <div style={{
-              ...cardStyle,
-              padding: isMobile ? '20px' : '24px',
-              maxWidth: '500px'
-            }}>
-              <h2 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px', letterSpacing: '-0.01em' }}>
-                Change Password
-              </h2>
-              <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '24px' }}>
-                Enter your current password and a new password.
-              </p>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 560px) minmax(240px, 320px)', gap: 20, alignItems: 'start' }}>
+              <div data-tour="change-password" style={softCard}>
+                <SectionHeader icon={LockIcon} title="Change Password" hint="Enter your current password, then choose a new one." />
+                {passwordError && <div role="alert" style={errorBanner}>{passwordError}</div>}
+                {passwordSuccess && <div role="status" style={successBanner}>{passwordSuccess}</div>}
 
-              {passwordError && (
-                <div style={errorBanner}>
-                  {passwordError}
-                </div>
-              )}
-              {passwordSuccess && (
-                <div style={successBanner}>
-                  {passwordSuccess}
-                </div>
-              )}
+                <form onSubmit={handlePasswordSubmit} style={{ display: 'grid', gap: '18px' }}>
+                  <div>
+                    <L>Current Password</L>
+                    <PasswordInput value={passwordData.oldPassword} onChange={(e) => setPasswordData(p => ({ ...p, oldPassword: e.target.value }))} placeholder="Enter current password" />
+                  </div>
+                  <div>
+                    <L>New Password</L>
+                    <PasswordInput value={passwordData.newPassword} onChange={(e) => setPasswordData(p => ({ ...p, newPassword: e.target.value }))} placeholder="Enter new password" />
+                    {strength && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ display: 'flex', gap: 4 }} aria-hidden="true">
+                          {rules.map((_, i) => <span key={i} style={{ flex: 1, height: 5, borderRadius: 5, background: i < passed ? strength[1] : 'var(--border-color)' }} />)}
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: strength[1], marginTop: 6 }}>Strength: {strength[0]}</div>
+                      </div>
+                    )}
+                    <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '4px 12px' }}>
+                      {rules.map(([t, ok]) => (
+                        <li key={t} style={{ fontSize: 12.5, color: ok ? '#10b981' : 'var(--text-secondary)', fontWeight: ok ? 600 : 500 }}>{ok ? <Ico as={Check} /> : <Ico as={Circle} size="0.8em" />} {t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <L>Confirm New Password</L>
+                    <PasswordInput value={passwordData.confirmPassword} onChange={(e) => setPasswordData(p => ({ ...p, confirmPassword: e.target.value }))} placeholder="Confirm new password" />
+                    {passwordData.confirmPassword && (
+                      <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 6, color: matches ? '#10b981' : '#ef4444' }}>{matches ? <><Ico as={Check} /> Passwords match</> : <><Ico as={X} /> Passwords do not match yet</>}</div>
+                    )}
+                  </div>
+                  <button type="submit" disabled={isPasswordLoading} style={primaryButton(isPasswordLoading, { width: '100%', padding: '13px', fontSize: '15px' })}>
+                    {isPasswordLoading ? 'Updating…' : 'Update Password'}
+                  </button>
+                </form>
+              </div>
 
-              <form onSubmit={handlePasswordSubmit} style={{ display: 'grid', gap: '20px' }}>
-                <div>
-                  <label style={labelStyle}>
-                    Current Password
-                  </label>
-                  <PasswordInput
-                    value={passwordData.oldPassword}
-                    onChange={(e) => setPasswordData(p => ({ ...p, oldPassword: e.target.value }))}
-                    placeholder="Enter current password"
-                  />
-                </div>
-                <div>
-                  <label style={labelStyle}>
-                    New Password
-                  </label>
-                  <PasswordInput
-                    value={passwordData.newPassword}
-                    onChange={(e) => setPasswordData(p => ({ ...p, newPassword: e.target.value }))}
-                    placeholder="Enter new password"
-                  />
-                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px' }}>
-                    Min 8 chars with 1 uppercase, 1 lowercase, 1 digit, 1 special character
-                  </p>
-                </div>
-                <div>
-                  <label style={labelStyle}>
-                    Confirm New Password
-                  </label>
-                  <PasswordInput
-                    value={passwordData.confirmPassword}
-                    onChange={(e) => setPasswordData(p => ({ ...p, confirmPassword: e.target.value }))}
-                    placeholder="Confirm new password"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={isPasswordLoading}
-                  style={{ ...primaryBtnStyle(isPasswordLoading), width: '100%', padding: '13px', fontSize: '15px' }}
-                >
-                  {isPasswordLoading ? 'Updating...' : 'Update Password'}
-                </button>
-              </form>
+              <div style={softCard}>
+                <SectionHeader icon={ShieldCheck} tint="#10b981" title="Keep your account safe" />
+                <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 10, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  <li>Use a password you don't use on other sites.</li>
+                  <li>A short sentence with a number and a symbol is easy to remember and hard to guess.</li>
+                  <li>After you change it you will be signed out on this device; sign in again with the new password.</li>
+                </ul>
+              </div>
             </div>
           ) : (
             <>
-              {success && (
-                <div style={successBanner}>
-                  {success}
-                </div>
-              )}
-              {error && (
-                <div style={errorBanner}>
-                  {error}
-                </div>
-              )}
+              {success && <div role="status" style={successBanner}>{success}</div>}
+              {error && <div role="alert" style={errorBanner}>{error}</div>}
 
               {isEditing ? (
                 <form onSubmit={handleSubmit}>
-                  <div style={cardStyle}>
-                    <div style={{
-                      background: 'var(--accent-gradient)',
-                      padding: isMobile ? '24px 20px' : '30px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: isMobile ? '16px' : '24px',
-                      flexWrap: 'wrap'
-                    }}>
-                      <div style={{ position: 'relative' }}>
-                        <div
-                          onClick={() => fileInputRef.current?.click()}
-                          style={{
-                            width: '100px',
-                            height: '100px',
-                            borderRadius: '50%',
-                            background: formData.profileImage ? 'transparent' : 'rgba(255,255,255,0.2)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            border: '4px solid white',
-                            overflow: 'hidden',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          {formData.profileImage ? (
-                            <img src={formData.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          ) : (
-                            <span style={{ fontSize: '40px', color: 'white', fontWeight: '700' }}>
-                              {formData.name?.charAt(0)?.toUpperCase() || 'U'}
-                            </span>
-                          )}
-                        </div>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          accept="image/*"
-                          onChange={handleImageUpload}
-                          style={{ display: 'none' }}
-                        />
-                        <div style={{
-                          position: 'absolute',
-                          bottom: '0',
-                          right: '0',
-                          background: 'white',
-                          borderRadius: '50%',
-                          width: '28px',
-                          height: '28px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                          fontSize: '14px'
-                        }}>
-                          📷
-                        </div>
-                      </div>
-                      <div style={{ color: 'white' }}>
-                        <h2 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>{formData.name}</h2>
-                        <p style={{ margin: '4px 0 0', fontSize: '14px', opacity: 0.85, textTransform: 'capitalize' }}>{user?.role}</p>
-                      </div>
-                    </div>
-
-                    <div style={{ padding: isMobile ? '20px' : '32px', display: 'grid', gap: '20px' }}>
-                      <div style={twoCol}>
-                        <div>
-                          <label style={labelStyle}>Full Name</label>
-                          <input type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} style={inputStyle} />
+                  <ProfileCover editable />
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 20, alignItems: 'start' }}>
+                    <div style={softCard}>
+                      <SectionHeader icon={UserRound} title="Personal information" />
+                      <div style={{ display: 'grid', gap: 16 }}>
+                        <div><L htmlFor="pf-name">Full Name</L><input id="pf-name" className="app-input" type="text" value={formData.name} onChange={(e) => handleChange('name', e.target.value)} style={inp()} /></div>
+                        <div style={twoCol}>
+                          <div><L htmlFor="pf-phone">Phone</L><input id="pf-phone" className="app-input" type="text" value={formData.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="+91 98765 43210" style={inp()} /></div>
+                          <div><L htmlFor="pf-dob">Date of Birth</L><input id="pf-dob" className="app-input" type="date" value={formData.dateOfBirth} onChange={(e) => handleChange('dateOfBirth', e.target.value)} style={inp()} /></div>
                         </div>
                         <div>
-                          <label style={labelStyle}>Phone</label>
-                          <input type="text" value={formData.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="+91 98765 43210" style={inputStyle} />
-                        </div>
-                      </div>
-
-                      <div style={twoCol}>
-                        <div>
-                          <label style={labelStyle}>Date of Birth</label>
-                          <input type="date" value={formData.dateOfBirth} onChange={(e) => handleChange('dateOfBirth', e.target.value)} style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>Gender</label>
-                          <select value={formData.gender} onChange={(e) => handleChange('gender', e.target.value)} style={inputStyle}>
-                            <option value="">Select</option>
-                            <option value="male">Male</option>
-                            <option value="female">Female</option>
-                            <option value="other">Other</option>
+                          <L htmlFor="pf-gender">Gender</L>
+                          <select id="pf-gender" className="app-input" value={formData.gender} onChange={(e) => handleChange('gender', e.target.value)} style={inp()}>
+                            <option value="">Select</option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option>
                           </select>
                         </div>
+                        <div><L htmlFor="pf-bio">Bio</L><textarea id="pf-bio" className="app-input" value={formData.bio} onChange={(e) => handleChange('bio', e.target.value)} placeholder="Tell us about yourself..." rows={3} style={inp({ resize: 'vertical' })} /></div>
                       </div>
-
-                      <div>
-                        <label style={labelStyle}>Bio</label>
-                        <textarea value={formData.bio} onChange={(e) => handleChange('bio', e.target.value)} placeholder="Tell us about yourself..." rows={3} style={{ ...inputStyle, resize: 'vertical' }} />
-                      </div>
-
-                      <p style={sectionHeadingStyle}>
-                        Address
-                      </p>
-                      <div style={twoCol}>
-                        <div>
-                          <label style={labelStyle}>Street</label>
-                          <input type="text" value={formData.address.street} onChange={(e) => handleChange('address.street', e.target.value)} placeholder="123 Main Street" style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>City</label>
-                          <input type="text" value={formData.address.city} onChange={(e) => handleChange('address.city', e.target.value)} placeholder="Mumbai" style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>State</label>
-                          <input type="text" value={formData.address.state} onChange={(e) => handleChange('address.state', e.target.value)} placeholder="Maharashtra" style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>ZIP Code</label>
-                          <input type="text" value={formData.address.zipCode} onChange={(e) => handleChange('address.zipCode', e.target.value)} placeholder="400001" style={inputStyle} />
-                        </div>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Country</label>
-                        <input type="text" value={formData.address.country} onChange={(e) => handleChange('address.country', e.target.value)} placeholder="India" style={inputStyle} />
-                      </div>
-
-                      <p style={sectionHeadingStyle}>
-                        Social Links
-                      </p>
-                      <div style={threeCol}>
-                        <div>
-                          <label style={labelStyle}>Twitter / X</label>
-                          <input type="text" value={formData.socialLinks.twitter} onChange={(e) => handleChange('socialLinks.twitter', e.target.value)} placeholder="@username" style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>LinkedIn</label>
-                          <input type="text" value={formData.socialLinks.linkedin} onChange={(e) => handleChange('socialLinks.linkedin', e.target.value)} placeholder="linkedin.com/in/username" style={inputStyle} />
-                        </div>
-                        <div>
-                          <label style={labelStyle}>GitHub</label>
-                          <input type="text" value={formData.socialLinks.github} onChange={(e) => handleChange('socialLinks.github', e.target.value)} placeholder="github.com/username" style={inputStyle} />
-                        </div>
-                      </div>
-
-                      {user?.role === 'student' && (
-                        <>
-                          <p style={sectionHeadingStyle}>
-                            Student Details
-                          </p>
-                          <div style={twoCol}>
-                            <div>
-                              <label style={labelStyle}>Enrollment Number</label>
-                              <input type="text" value={formData.enrollmentNumber} onChange={(e) => handleChange('enrollmentNumber', e.target.value)} placeholder="2021BCS001" style={inputStyle} />
-                            </div>
-                            <div>
-                              <label style={labelStyle}>Class / Section</label>
-                              <input type="text" value={formData.class} onChange={(e) => handleChange('class', e.target.value)} placeholder="BCS - A" style={inputStyle} />
-                            </div>
-                          </div>
-                        </>
-                      )}
-
-                      {user?.role === 'teacher' && (
-                        <>
-                          <p style={sectionHeadingStyle}>
-                            Teacher Details
-                          </p>
-                          <div style={twoCol}>
-                            <div>
-                              <label style={labelStyle}>Employee ID</label>
-                              <input type="text" value={formData.employeeId} onChange={(e) => handleChange('employeeId', e.target.value)} placeholder="EMP001" style={inputStyle} />
-                            </div>
-                            <div>
-                              <label style={labelStyle}>Department</label>
-                              <input type="text" value={formData.department} onChange={(e) => handleChange('department', e.target.value)} placeholder="Computer Science" style={inputStyle} />
-                            </div>
-                          </div>
-                          <div>
-                            <label style={labelStyle}>Qualifications</label>
-                            <input type="text" value={formData.qualifications} onChange={(e) => handleChange('qualifications', e.target.value)} placeholder="Ph.D., M.Tech" style={inputStyle} />
-                          </div>
-                        </>
-                      )}
                     </div>
 
-                    <div style={{ padding: isMobile ? '16px 20px' : '20px 32px', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                      <button type="button" onClick={handleCancel} style={secondaryBtnStyle}>
-                        Cancel
-                      </button>
-                      <button type="submit" disabled={isSaving} style={primaryBtnStyle(isSaving)}>
-                        {isSaving ? 'Saving...' : 'Save Changes'}
-                      </button>
+                    <div style={{ display: 'grid', gap: 20 }}>
+                      <div style={softCard}>
+                        <SectionHeader icon={user?.role === 'teacher' ? GraduationCap : Backpack} title={roleLabel} />
+                        {user?.role === 'student' ? (
+                          <div style={twoCol}>
+                            <div><L htmlFor="pf-enr">Enrollment Number</L><input id="pf-enr" className="app-input" type="text" value={formData.enrollmentNumber} onChange={(e) => handleChange('enrollmentNumber', e.target.value)} placeholder="2021BCS001" style={inp()} /></div>
+                            <div><L htmlFor="pf-class">Class / Section</L><input id="pf-class" className="app-input" type="text" value={formData.class} onChange={(e) => handleChange('class', e.target.value)} placeholder="BCS - A" style={inp()} /></div>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'grid', gap: 16 }}>
+                            <div style={twoCol}>
+                              <div><L htmlFor="pf-emp">Employee ID</L><input id="pf-emp" className="app-input" type="text" value={formData.employeeId} onChange={(e) => handleChange('employeeId', e.target.value)} placeholder="EMP001" style={inp()} /></div>
+                              <div><L htmlFor="pf-dept">Department</L><input id="pf-dept" className="app-input" type="text" value={formData.department} onChange={(e) => handleChange('department', e.target.value)} placeholder="Computer Science" style={inp()} /></div>
+                            </div>
+                            <div><L htmlFor="pf-qual">Qualifications</L><input id="pf-qual" className="app-input" type="text" value={formData.qualifications} onChange={(e) => handleChange('qualifications', e.target.value)} placeholder="Ph.D., M.Tech" style={inp()} /></div>
+                          </div>
+                        )}
+                      </div>
+                      <div style={softCard}>
+                        <SectionHeader icon={LinkIcon} title="Social links" />
+                        <div style={{ display: 'grid', gap: 14 }}>
+                          <div><L htmlFor="pf-tw">Twitter / X</L><input id="pf-tw" className="app-input" type="text" value={formData.socialLinks.twitter} onChange={(e) => handleChange('socialLinks.twitter', e.target.value)} placeholder="@username" style={inp()} /></div>
+                          <div><L htmlFor="pf-li">LinkedIn</L><input id="pf-li" className="app-input" type="text" value={formData.socialLinks.linkedin} onChange={(e) => handleChange('socialLinks.linkedin', e.target.value)} placeholder="linkedin.com/in/username" style={inp()} /></div>
+                          <div><L htmlFor="pf-gh">GitHub</L><input id="pf-gh" className="app-input" type="text" value={formData.socialLinks.github} onChange={(e) => handleChange('socialLinks.github', e.target.value)} placeholder="github.com/username" style={inp()} /></div>
+                        </div>
+                      </div>
                     </div>
+
+                    <div style={{ ...softCard, gridColumn: isMobile ? 'auto' : 'span 2' }}>
+                      <SectionHeader icon={MapPin} title="Address" />
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr 1fr', gap: 16 }}>
+                        <div><L htmlFor="pf-st">Street</L><input id="pf-st" className="app-input" type="text" value={formData.address.street} onChange={(e) => handleChange('address.street', e.target.value)} placeholder="123 Main Street" style={inp()} /></div>
+                        <div><L htmlFor="pf-city">City</L><input id="pf-city" className="app-input" type="text" value={formData.address.city} onChange={(e) => handleChange('address.city', e.target.value)} placeholder="Mumbai" style={inp()} /></div>
+                        <div><L htmlFor="pf-state">State</L><input id="pf-state" className="app-input" type="text" value={formData.address.state} onChange={(e) => handleChange('address.state', e.target.value)} placeholder="Maharashtra" style={inp()} /></div>
+                        <div><L htmlFor="pf-zip">ZIP Code</L><input id="pf-zip" className="app-input" type="text" value={formData.address.zipCode} onChange={(e) => handleChange('address.zipCode', e.target.value)} placeholder="400001" style={inp()} /></div>
+                        <div><L htmlFor="pf-country">Country</L><input id="pf-country" className="app-input" type="text" value={formData.address.country} onChange={(e) => handleChange('address.country', e.target.value)} placeholder="India" style={inp()} /></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* actions */}
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 20, flexDirection: isMobile ? 'column-reverse' : 'row' }}>
+                    <button type="button" onClick={handleCancel} style={ghostButton({ padding: '12px 20px', fontSize: 14 })}>Cancel</button>
+                    <button type="submit" disabled={isSaving} style={primaryButton(isSaving)}>{isSaving ? 'Saving…' : 'Save Changes'}</button>
                   </div>
                 </form>
               ) : (
-                <div style={cardStyle}>
-                  <div style={{
-                    background: 'var(--accent-gradient)',
-                    padding: isMobile ? '24px 20px' : '30px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: isMobile ? '16px' : '24px',
-                    flexWrap: 'wrap'
-                  }}>
-                    <div style={{
-                      width: isMobile ? '76px' : '100px',
-                      height: isMobile ? '76px' : '100px',
-                      flexShrink: 0,
-                      borderRadius: '50%',
-                      background: formData.profileImage ? 'transparent' : 'rgba(255,255,255,0.2)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      border: '4px solid white',
-                      overflow: 'hidden'
-                    }}>
-                      {formData.profileImage ? (
-                        <img src={formData.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      ) : (
-                        <span style={{ fontSize: isMobile ? '32px' : '40px', color: 'white', fontWeight: '700' }}>
-                          {formData.name?.charAt(0)?.toUpperCase() || 'U'}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ color: 'white', minWidth: 0 }}>
-                      <h2 style={{ margin: 0, fontSize: isMobile ? '20px' : '24px', fontWeight: '700', letterSpacing: '-0.01em', wordBreak: 'break-word' }}>{user?.name}</h2>
-                      <p style={{ margin: '4px 0 0', fontSize: '14px', opacity: 0.85, textTransform: 'capitalize' }}>{user?.role}</p>
-                      <p style={{ margin: '2px 0 0', fontSize: '12px', opacity: 0.7, wordBreak: 'break-word' }}>{user?.email}</p>
-                    </div>
-                    <button
-                      onClick={() => setIsEditing(true)}
-                      style={{
-                        marginLeft: isMobile ? 0 : 'auto',
-                        padding: '10px 20px',
-                        background: 'white',
-                        color: 'var(--accent-strong)',
-                        border: 'none',
-                        borderRadius: 'var(--radius)',
-                        boxShadow: '0 2px 8px rgba(0,0,0,.15)',
-                        fontSize: '14px',
-                        fontWeight: '600',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Edit Profile
-                    </button>
-                  </div>
-
-                  <div style={{ padding: isMobile ? '20px' : '32px' }}>
-                    <div style={twoColView}>
-                      <div>
-                        <p style={fieldLabelView}>PHONE</p>
-                        <p style={fieldValueView}>{formData.phone || '—'}</p>
-                      </div>
-                      <div>
-                        <p style={fieldLabelView}>GENDER</p>
-                        <p style={{ ...fieldValueView, textTransform: 'capitalize' }}>{formData.gender || '—'}</p>
-                      </div>
-                      <div>
-                        <p style={fieldLabelView}>DATE OF BIRTH</p>
-                        <p style={fieldValueView}>{formData.dateOfBirth ? new Date(formData.dateOfBirth).toLocaleDateString('en-IN') : '—'}</p>
-                      </div>
-                      <div>
-                        <p style={fieldLabelView}>BIO</p>
-                        <p style={fieldValueView}>{formData.bio || '—'}</p>
+                <>
+                  <ProfileCover />
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 20, alignItems: 'start' }}>
+                    <div style={softCard}>
+                      <SectionHeader icon={UserRound} title="Personal information" />
+                      <div style={fieldGrid}>
+                        <Field icon={PhoneIcon} label="Phone" value={formData.phone} />
+                        <Field icon={VenusAndMars} label="Gender" value={formData.gender && <span style={{ textTransform: 'capitalize' }}>{formData.gender}</span>} />
+                        <Field icon={Cake} label="Date of birth" value={formData.dateOfBirth ? new Date(formData.dateOfBirth).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''} />
+                        <Field icon={FileText} label="Bio" value={formData.bio} span />
                       </div>
                     </div>
-
-                    {formData.address?.street && (
-                      <>
-                        <p style={sectionHeadingStyle}>
-                          Address
+                    <div style={softCard}>
+                      <SectionHeader icon={user?.role === 'teacher' ? GraduationCap : Backpack} title={roleLabel} />
+                      <div style={fieldGrid}>
+                        {user?.role === 'student' ? (
+                          <>
+                            <Field icon={IdCard} label="Enrollment number" value={formData.enrollmentNumber} />
+                            <Field icon={School} label="Class / section" value={formData.class} />
+                          </>
+                        ) : (
+                          <>
+                            <Field icon={IdCard} label="Employee ID" value={formData.employeeId} />
+                            <Field icon={Landmark} label="Department" value={formData.department} />
+                            <Field icon={ScrollText} label="Qualifications" value={formData.qualifications} span />
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {hasAddress && (
+                      <div style={softCard}>
+                        <SectionHeader icon={MapPin} title="Address" />
+                        <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                          {[formData.address.street, [formData.address.city, formData.address.state].filter(Boolean).join(', '), [formData.address.zipCode, formData.address.country].filter(Boolean).join(' · ')].filter(Boolean).map((line, i) => <span key={i} style={{ display: 'block' }}>{line}</span>)}
                         </p>
-                        <div style={{ ...twoColView, marginTop: '12px' }}>
-                          <div>
-                            <p style={fieldLabelView}>STREET</p>
-                            <p style={fieldValueView}>{formData.address.street || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>CITY</p>
-                            <p style={fieldValueView}>{formData.address.city || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>STATE</p>
-                            <p style={fieldValueView}>{formData.address.state || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>ZIP CODE</p>
-                            <p style={fieldValueView}>{formData.address.zipCode || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>COUNTRY</p>
-                            <p style={fieldValueView}>{formData.address.country || '—'}</p>
-                          </div>
-                        </div>
-                      </>
+                      </div>
                     )}
-
-                    {(formData.socialLinks?.twitter || formData.socialLinks?.linkedin || formData.socialLinks?.github) && (
-                      <>
-                        <p style={sectionHeadingStyle}>
-                          Social Links
-                        </p>
-                        <div style={{ ...threeColView, marginTop: '12px' }}>
-                          {formData.socialLinks?.twitter && (
-                            <div>
-                              <p style={fieldLabelView}>TWITTER</p>
-                              <p style={fieldValueView}>𝕏 {formData.socialLinks.twitter}</p>
-                            </div>
-                          )}
-                          {formData.socialLinks?.linkedin && (
-                            <div>
-                              <p style={fieldLabelView}>LINKEDIN</p>
-                              <p style={fieldValueView}>{formData.socialLinks.linkedin}</p>
-                            </div>
-                          )}
-                          {formData.socialLinks?.github && (
-                            <div>
-                              <p style={fieldLabelView}>GITHUB</p>
-                              <p style={fieldValueView}>{formData.socialLinks.github}</p>
-                            </div>
-                          )}
+                    {hasSocial && (
+                      <div style={softCard}>
+                        <SectionHeader icon={LinkIcon} title="Social links" />
+                        <div style={{ display: 'grid', gap: 14 }}>
+                          {formData.socialLinks.twitter && <Field icon={<XLogo size={16} aria-hidden="true" style={{ color: 'var(--text-primary)' }} />} label="Twitter / X" value={formData.socialLinks.twitter} />}
+                          {formData.socialLinks.linkedin && <Field icon={<LinkedinLogo size={16} aria-hidden="true" style={{ color: 'color-mix(in srgb, #0A66C2, white var(--tone-lift))' }} />} label="LinkedIn" value={formData.socialLinks.linkedin} />}
+                          {formData.socialLinks.github && <Field icon={<GithubLogo size={16} aria-hidden="true" style={{ color: 'var(--text-primary)' }} />} label="GitHub" value={formData.socialLinks.github} />}
                         </div>
-                      </>
+                      </div>
                     )}
-
-                    {user?.role === 'student' && (
-                      <>
-                        <p style={sectionHeadingStyle}>
-                          Student Details
-                        </p>
-                        <div style={{ ...twoColView, marginTop: '12px', marginBottom: 0 }}>
-                          <div>
-                            <p style={fieldLabelView}>ENROLLMENT NUMBER</p>
-                            <p style={fieldValueView}>{formData.enrollmentNumber || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>CLASS / SECTION</p>
-                            <p style={fieldValueView}>{formData.class || '—'}</p>
-                          </div>
-                        </div>
-                      </>
-                    )}
-
-                    {user?.role === 'teacher' && (
-                      <>
-                        <p style={sectionHeadingStyle}>
-                          Teacher Details
-                        </p>
-                        <div style={{ ...twoColView, marginTop: '12px', marginBottom: 0 }}>
-                          <div>
-                            <p style={fieldLabelView}>EMPLOYEE ID</p>
-                            <p style={fieldValueView}>{formData.employeeId || '—'}</p>
-                          </div>
-                          <div>
-                            <p style={fieldLabelView}>DEPARTMENT</p>
-                            <p style={fieldValueView}>{formData.department || '—'}</p>
-                          </div>
-                          <div style={{ gridColumn: isMobile ? 'auto' : 'span 2' }}>
-                            <p style={fieldLabelView}>QUALIFICATIONS</p>
-                            <p style={fieldValueView}>{formData.qualifications || '—'}</p>
-                          </div>
-                        </div>
-                      </>
+                    {!hasAddress && !hasSocial && (
+                      <div style={{ ...softCard, gridColumn: isMobile ? 'auto' : 'span 2', textAlign: 'center', borderStyle: 'dashed', boxShadow: 'none' }}>
+                        <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-secondary)' }}>Add your address and social links with <strong>Edit Profile</strong>.</p>
+                      </div>
                     )}
                   </div>
-                </div>
+                </>
               )}
             </>
           )}

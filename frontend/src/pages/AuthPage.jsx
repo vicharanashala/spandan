@@ -5,9 +5,12 @@ import SpandanIcon from '../components/SpandanIcon'
 import useSocketStore from '../stores/socketStore'
 import PasswordInput from '../components/PasswordInput'
 import ThemeToggle from '../components/ThemeToggle'
+import HelpButton from '../components/HelpButton'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { ArrowLeft, ChartColumn, Check, GraduationCap, Lock as LockIcon, Mic, Moon, Presentation, Sun, Target, Zap } from 'lucide-react'
+import { Ico, renderIcon } from '../components/icons'
 
 // Password requirements for registration
 const PASSWORD_REQUIREMENTS = [
@@ -215,9 +218,10 @@ function AuthPage() {
 
   // Full-page brand gradient — theme-aware, so the ENTIRE auth page is one blue wash
   // (deep navy in dark mode). Both the branding column and the form card sit on top of it.
+  // Logo navy (#082049) family: deep navy → a brighter navy-blue; darker still in dark mode.
   const brandGradient = isDark
-    ? 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%)'
-    : 'var(--accent-gradient)'
+    ? 'linear-gradient(135deg, #040d20 0%, #082049 60%, #0d2d63 100%)'
+    : 'linear-gradient(135deg, #082049 0%, #0f3170 55%, #1d4a97 100%)'
 
   // Shared input styles (token-driven), with accent focus/blur handlers
   const inputStyle = {
@@ -225,7 +229,7 @@ function AuthPage() {
     padding: '11px 14px',
     fontSize: '15px',
     border: '1px solid var(--border-color)',
-    borderRadius: 'var(--radius)',
+    borderRadius: '12px',
     outline: 'none',
     background: 'var(--input-bg)',
     color: 'var(--text-primary)',
@@ -234,7 +238,7 @@ function AuthPage() {
   }
   const handleInputFocus = (e) => {
     e.target.style.borderColor = 'var(--accent)'
-    e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.15)'
+    e.target.style.boxShadow = '0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent)'
   }
   const handleInputBlur = (e) => {
     e.target.style.borderColor = 'var(--border-color)'
@@ -257,12 +261,21 @@ function AuthPage() {
     background: 'var(--accent-gradient)',
     color: '#fff',
     border: 'none',
-    borderRadius: 'var(--radius)',
+    borderRadius: '12px',
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.7 : 1,
-    boxShadow: '0 2px 10px rgba(30,64,175,.25)',
+    boxShadow: '0 8px 20px rgba(8,32,73,.28)',
     transition: 'all 0.2s'
   })
+
+  const showModeSwitch = !showForgotPassword && !otpSent
+  const switchTo = (login) => {
+    if (login === isLogin) return
+    setIsLogin(login)
+    setValidationError('')
+    setFormData(login ? { name: '', confirmPassword: '' } : { ...formData, confirmPassword: '' })
+  }
+  const glass = { background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.22)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)' }
 
   return (
     <div style={{
@@ -274,44 +287,18 @@ function AuthPage() {
       overflowX: 'hidden',
       transition: 'background 0.4s ease'
     }}>
-      {/* Centered brand watermark — spans the whole page, behind all content */}
-      <div style={{
-        position: 'absolute',
-        inset: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        pointerEvents: 'none',
-        userSelect: 'none',
-        overflow: 'hidden',
-        zIndex: 0
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{
-            fontSize: 'clamp(80px, 14vw, 200px)',
-            fontWeight: '800',
-            color: 'rgba(255,255,255,0.08)',
-            whiteSpace: 'nowrap',
-            letterSpacing: '-4px',
-            transform: 'rotate(-12deg)'
-          }}>
-            SPANDAN
-          </div>
-          <div style={{
-            fontSize: 'clamp(60px, 11vw, 150px)',
-            fontWeight: '700',
-            color: 'rgba(255,255,255,0.06)',
-            whiteSpace: 'nowrap',
-            transform: 'rotate(-10deg)',
-            marginTop: '-8px'
-          }}>
-            स्पंदन
-          </div>
-        </div>
+      {/* Soft light blobs + a faint dot grid behind everything */}
+      <div aria-hidden="true" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
+        <span style={{ position: 'absolute', width: 620, height: 620, left: -180, top: -240, borderRadius: '50%', background: 'radial-gradient(circle, rgba(255,255,255,0.16), rgba(255,255,255,0) 68%)' }} />
+        <span style={{ position: 'absolute', width: 520, height: 520, right: -160, bottom: -220, borderRadius: '50%', background: 'radial-gradient(circle, rgba(96,165,250,0.28), rgba(96,165,250,0) 68%)' }} />
+        {/* the brand wordmark, large and faint behind everything */}
+        <span style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%) rotate(-10deg)', fontSize: 'clamp(140px, 24vw, 360px)', fontWeight: 800, lineHeight: 1, whiteSpace: 'nowrap', color: 'rgba(255,255,255,0.055)', fontFamily: '"Noto Sans Devanagari", "Segoe UI", sans-serif', userSelect: 'none' }}>स्पंदन</span>
+        <span style={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(rgba(255,255,255,0.10) 1px, transparent 1px)', backgroundSize: '26px 26px', maskImage: 'linear-gradient(180deg, rgba(0,0,0,0.9), rgba(0,0,0,0.2))', WebkitMaskImage: 'linear-gradient(180deg, rgba(0,0,0,0.9), rgba(0,0,0,0.2))' }} />
       </div>
       {/* Theme toggle - top right (available on all layouts) */}
       <button
         onClick={toggleTheme}
+        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         style={{
           position: 'absolute',
           top: '20px',
@@ -319,7 +306,7 @@ function AuthPage() {
           zIndex: 5,
           background: 'var(--bg-card)',
           border: '1px solid var(--border-color)',
-          borderRadius: 'var(--radius)',
+          borderRadius: '12px',
           padding: '9px 14px',
           fontSize: '18px',
           cursor: 'pointer',
@@ -331,102 +318,83 @@ function AuthPage() {
           transition: 'all 0.2s'
         }}
       >
-        {isDark ? '☀️' : '🌙'}
+        {isDark ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
         <span style={{ fontSize: '13px', fontWeight: '600' }}>{isDark ? 'Light' : 'Dark'}</span>
       </button>
 
+      {/* ⓘ help: how to register and sign in (opens the guest guide) */}
+      <HelpButton style={{
+        position: 'absolute', top: '20px', right: '120px', zIndex: 5,
+        background: 'var(--bg-card)', borderRadius: '12px', padding: '9px 14px', boxShadow: 'var(--shadow-sm)'
+      }} />
+
       {/* Left side - Branding (desktop only) */}
       {!isMobile && (
-        <div style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '60px',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          {/* Icon and brand */}
-          <div style={{
-            width: '96px',
-            height: '96px',
-            background: 'rgba(255,255,255,0.15)',
-            border: '1px solid rgba(255,255,255,0.25)',
-            borderRadius: 'var(--radius-lg)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: '24px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
-            position: 'relative',
-            zIndex: 1
-          }}>
-            <SpandanIcon size={50} />
-          </div>
-          <h1 style={{
-            fontSize: '48px',
-            fontWeight: '800',
-            color: 'white',
-            marginBottom: '16px',
-            textShadow: '0 4px 30px rgba(0,0,0,0.2)',
-            position: 'relative',
-            zIndex: 1
-          }}>
-            Spandan
-          </h1>
-          <p style={{
-            fontSize: '18px',
-            color: 'rgba(255,255,255,0.85)',
-            textAlign: 'center',
-            maxWidth: '400px',
-            lineHeight: '1.6',
-            position: 'relative',
-            zIndex: 1
-          }}>
-            Empowering educators and students with intelligent poll questions, real-time responses, and beautiful analytics.
-          </p>
-
-          {/* Features */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '16px',
-            marginTop: '48px',
-            maxWidth: '420px',
-            position: 'relative',
-            zIndex: 1
-          }}>
-            {[
-              { icon: '⚡', text: 'AI-Powered Questions' },
-              { icon: '📊', text: 'Live Analytics' },
-              { icon: '🎯', text: 'Multiple Question Types' },
-              { icon: '🔒', text: 'Secure & Private' }
-            ].map((f, i) => (
-              <div key={i} style={{
-                background: 'rgba(255,255,255,0.12)',
-                backdropFilter: 'blur(10px)',
-                border: '1px solid rgba(255,255,255,0.18)',
-                borderRadius: 'var(--radius)',
-                padding: '14px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                color: 'white',
-                fontSize: '14px',
-                fontWeight: '500'
-              }}>
-                <span style={{ fontSize: '20px' }}>{f.icon}</span>
-                {f.text}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '64px 56px 64px 72px', position: 'relative', zIndex: 1, color: 'white', minWidth: 0 }}>
+          <div style={{ maxWidth: 560 }}>
+            {/* brand row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 34 }}>
+              <div style={{ width: 58, height: 58, borderRadius: 18, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.25)', boxShadow: '0 14px 40px rgba(0,0,0,0.30)' }}>
+                <SpandanIcon size={32} />
               </div>
-            ))}
+              <div>
+                <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.1 }}>Spandan</div>
+                <div style={{ fontSize: 13, opacity: 0.8 }}>स्पंदन · live classroom polls</div>
+              </div>
+            </div>
+
+            <h1 style={{ fontSize: 'clamp(34px, 3.4vw, 50px)', fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.08, margin: '0 0 16px', textShadow: '0 4px 30px rgba(0,0,0,0.15)' }}>
+              Turn every lecture into a{' '}
+              <span style={{ background: 'linear-gradient(90deg, #fde68a, #fbcfe8)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>live conversation</span>.
+            </h1>
+            <p style={{ fontSize: 17, lineHeight: 1.6, opacity: 0.88, margin: '0 0 30px', maxWidth: 480 }}>
+              Empowering educators and students with intelligent poll questions, real-time responses, and beautiful analytics.
+            </p>
+
+            {/* how it works + a sample poll card */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 18, alignItems: 'stretch' }}>
+              <ol style={{ ...glass, listStyle: 'none', margin: 0, padding: '18px 18px', borderRadius: 18, display: 'grid', gap: 14 }}>
+                {[[Mic, 'Teach as usual', 'Spandan listens to your lecture.'], [Zap, 'Questions appear', 'Polls drafted from what you just said.'], [ChartColumn, 'Students answer live', 'Results the moment the class ends.']].map(([icon, t, d]) => (
+                  <li key={t} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                    <span aria-hidden="true" style={{ width: 32, height: 32, flexShrink: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, background: 'rgba(255,255,255,0.18)' }}>{renderIcon(icon, 17)}</span>
+                    <span>
+                      <span style={{ display: 'block', fontSize: 14, fontWeight: 700 }}>{t}</span>
+                      <span style={{ display: 'block', fontSize: 12.5, opacity: 0.8, marginTop: 1 }}>{d}</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <div aria-hidden="true" style={{ background: 'rgba(255,255,255,0.96)', color: '#0f172a', borderRadius: 18, padding: '16px 16px 14px', boxShadow: '0 24px 60px rgba(0,0,0,0.28)', transform: 'rotate(1.5deg)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', color: 'var(--accent)' }}>LIVE POLL · Q3</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: '#10b981' }}><span className="app-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981' }} /> 0:14</span>
+                </div>
+                <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.35, marginBottom: 12 }}>Which normal form removes transitive dependencies?</div>
+                {[['A', '2NF', 12, false], ['B', '3NF', 71, true], ['C', 'BCNF', 17, false]].map(([l, t, pct, ok]) => (
+                  <div key={l} style={{ marginBottom: 7 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 600, marginBottom: 3 }}><span>{l}. {t}{ok ? <> <Ico as={Check} /></> : ''}</span><span style={{ color: '#64748b' }}>{pct}%</span></div>
+                    <div style={{ height: 7, borderRadius: 7, background: '#e2e8f0', overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', borderRadius: 7, background: ok ? 'linear-gradient(90deg,#10b981,#34d399)' : '#94a3b8' }} /></div>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>118 of 126 students answered</div>
+              </div>
+            </div>
+
+            {/* features */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 26 }}>
+              {[[Zap, 'AI-Powered Questions'], [ChartColumn, 'Live Analytics'], [Target, 'Multiple Question Types'], [LockIcon, 'Secure & Private']].map(([icon, text]) => (
+                <span key={text} style={{ ...glass, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 999, fontSize: 13, fontWeight: 600 }}>
+                  <span aria-hidden="true" style={{ display: 'inline-flex' }}>{renderIcon(icon, 16)}</span>{text}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {/* Right side - Auth Form */}
       <div style={{
-        width: isMobile ? '100%' : '520px',
+        width: isMobile ? '100%' : '540px',
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
@@ -435,40 +403,61 @@ function AuthPage() {
         // Extra top padding reserves space for the absolute theme toggle, so the taller
         // registration card starts below it instead of overlapping; tall forms push the
         // page height and scroll (root is overflowX-only) rather than clipping.
-        padding: isMobile ? '76px 16px 24px' : '96px 40px 48px',
+        padding: isMobile ? '76px 16px 24px' : '96px 48px 48px 24px',
         boxSizing: 'border-box',
         position: 'relative',
         zIndex: 1
       }}>
+        {/* phones: compact brand above the card (the branding column is desktop-only) */}
+        {isMobile && (
+          <div style={{ textAlign: 'center', color: 'white', marginBottom: 18 }}>
+            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em' }}>Spandan</div>
+            <div style={{ fontSize: 13, opacity: 0.85 }}>Turn every lecture into a live conversation</div>
+          </div>
+        )}
         <div style={{
           background: 'var(--bg-card)',
-          borderRadius: 'var(--radius-lg)',
-          padding: isMobile ? '20px' : '32px',
+          borderRadius: '24px',
+          padding: isMobile ? '22px 20px' : '32px',
           width: '100%',
-          maxWidth: isMobile ? 'calc(100% - 16px)' : '420px',
-          boxShadow: 'var(--shadow-lg)',
+          maxWidth: isMobile ? 'calc(100% - 8px)' : '430px',
+          boxShadow: '0 30px 80px rgba(15,23,42,0.35), 0 2px 6px rgba(15,23,42,0.08)',
           border: '1px solid var(--border-color)',
           boxSizing: 'border-box',
           animation: 'fadeInUp 0.4s ease-out'
         }}>
+          {/* Sign in / Sign up switch */}
+          {showModeSwitch && (
+            <div role="tablist" aria-label="Sign in or sign up" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, padding: 4, marginBottom: 24, borderRadius: 14, background: 'color-mix(in srgb, var(--text-secondary) 10%, var(--bg-card))', border: '1px solid var(--border-color)' }}>
+              {[[true, 'Sign in'], [false, 'Sign up']].map(([login, text]) => {
+                const on = isLogin === login
+                return (
+                  <button key={text} type="button" role="tab" aria-selected={on} onClick={() => switchTo(login)} style={{
+                    padding: '10px 12px', fontSize: 14, fontWeight: on ? 700 : 600, border: 'none', borderRadius: 11, cursor: 'pointer',
+                    background: on ? 'var(--bg-card)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text-secondary)',
+                    boxShadow: on ? '0 1px 2px rgba(16,24,40,0.06), 0 4px 10px rgba(16,24,40,0.08)' : 'none'
+                  }}>{text}</button>
+                )
+              })}
+            </div>
+          )}
+
           {/* Logo and Title */}
-          <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '26px' }}>
             <div style={{
-              width: '64px',
-              height: '64px',
-              background: 'var(--accent-gradient)',
-              borderRadius: 'var(--radius-lg)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 16px',
-              boxShadow: '0 8px 24px rgba(30,64,175,0.30)'
+              width: '60px',
+              height: '60px',
+              borderRadius: '18px',
+              overflow: 'hidden',
+              margin: '0 auto 14px',
+              boxShadow: '0 10px 24px rgba(8,32,73,0.35)'
             }}>
-              <SpandanIcon size={34} />
+              <SpandanIcon size={32} />
             </div>
             <h1 style={{
-              fontSize: isMobile ? '24px' : '28px',
-              fontWeight: '700',
+              fontSize: isMobile ? '24px' : '27px',
+              fontWeight: '800',
+              letterSpacing: '-0.02em',
               color: 'var(--text-primary)',
               marginBottom: '6px'
             }}>
@@ -636,7 +625,7 @@ function AuthPage() {
                   onClick={handleBackToForm}
                   style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
                 >
-                  ← Change details
+                  <Ico as={ArrowLeft} /> Change details
                 </button>
               </div>
             </form>
@@ -728,12 +717,12 @@ function AuthPage() {
                           : 'transparent',
                         color: formData.role === 'student' ? 'white' : 'var(--text-secondary)',
                         border: `1px solid ${formData.role === 'student' ? 'transparent' : 'var(--border-color)'}`,
-                        borderRadius: 'var(--radius)',
+                        borderRadius: '12px',
                         cursor: 'pointer',
                         transition: 'all 0.2s'
                       }}
                     >
-                      🎓 Learn
+                      <Ico as={GraduationCap} /> Learn
                     </button>
                     <button
                       type="button"
@@ -747,12 +736,12 @@ function AuthPage() {
                           : 'transparent',
                         color: formData.role === 'teacher' ? 'white' : 'var(--text-secondary)',
                         border: `1px solid ${formData.role === 'teacher' ? 'transparent' : 'var(--border-color)'}`,
-                        borderRadius: 'var(--radius)',
+                        borderRadius: '12px',
                         cursor: 'pointer',
                         transition: 'all 0.2s'
                       }}
                     >
-                      👨‍🏫 Teach
+                      <Ico as={Presentation} /> Teach
                     </button>
                   </div>
                 </div>
@@ -786,7 +775,7 @@ function AuthPage() {
                   background: 'var(--input-bg)',
                   color: 'var(--text-primary)',
                   border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius)',
+                  borderRadius: '12px',
                   cursor: isLoading ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',

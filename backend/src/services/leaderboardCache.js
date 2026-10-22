@@ -17,7 +17,7 @@
 // as a best-effort optimisation; it is never required for correctness.
 
 import mongoose from 'mongoose'
-import { isRedisEnabled, getRedisClient } from '../config/redis.js'
+import { isRedisReady, getRedisClient } from '../config/redis.js'
 
 let ResponseModel = null
 let UserModel = null
@@ -47,7 +47,7 @@ const copyTotals = (src) => new Map([...src].map(([k, v]) => [k, { points: v.poi
 
 // Read the cached {totals, done} as a fresh COPY (never hand back the live object).
 async function readCache(id) {
-  if (isRedisEnabled()) {
+  if (isRedisReady()) {
     try {
       const raw = await getRedisClient().get(kCache(id))
       if (!raw) return { totals: new Map(), done: new Set() }
@@ -66,7 +66,7 @@ async function readCache(id) {
 }
 
 async function writeCache(id, totals, done) {
-  if (isRedisEnabled()) {
+  if (isRedisReady()) {
     try {
       const o = { totals: {}, done: [...done] }
       for (const [sid, v] of totals) o.totals[sid] = [v.points, v.correct, v.answered]
@@ -81,14 +81,14 @@ async function writeCache(id, totals, done) {
 // are edited after the fact).
 export async function invalidateLeaderboardCache(roomId) {
   const id = String(roomId)
-  if (isRedisEnabled()) { try { await getRedisClient().del(kCache(id)) } catch (e) { /* non-fatal */ } }
+  if (isRedisReady()) { try { await getRedisClient().del(kCache(id)) } catch (e) { /* non-fatal */ } }
   else memo.delete(id)
 }
 
 // Best-effort cross-instance serialisation of a fold. Not required for correctness (copy-on-write +
 // last-write-wins handle races); it just avoids two instances doing redundant work at once.
 async function withLock(id, fn) {
-  if (!isRedisEnabled()) return fn()
+  if (!isRedisReady()) return fn()
   const client = getRedisClient()
   const lk = kLock(id)
   for (let i = 0; i < 20; i++) {

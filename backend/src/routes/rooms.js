@@ -2,10 +2,10 @@ import express from 'express'
 import { createRoom, getRoomById, getRoomByCode, getRoomsByTeacher, getRoomsByStudent, getActiveRoomsByStudent, updateRoom, deleteRoom } from '../services/roomService.js'
 import { authenticate } from '../middleware/auth.js'
 import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
-import { validate, createRoomSchema } from '../middleware/validation.js'
+import { validate, createRoomSchema, roomUpdateSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
+import { prewarmInsights } from '../services/insightsCache.js'
 import { checkRoomOwnership, checkRoomEditor } from '../utils/roomOwnership.js'
-
 
 const router = express.Router()
 
@@ -235,7 +235,7 @@ router.get('/student/active', authenticate, authorize('student'), async (req, re
 })
 
 // Update room
-router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, validate(roomUpdateSchema), async (req, res) => {
   try {
     const room = await getRoomById(req.params.id)
     
@@ -244,23 +244,25 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       return res.status(editorAuth.status).json({ error: editorAuth.error })
     }
 
-    // Owner-only operations check:
-    // - Ending room (isActive = false or setting endedAt)
-    // - Managing co-host configuration (maxCoHosts, coHostCode, coHostCodeExpiresAt, coHosts)
-    const isEndingRoom = req.body.isActive === false || req.body.endedAt !== undefined
-    const isCoHostConfigChange = (
-      req.body.maxCoHosts !== undefined ||
-      req.body.coHostCode !== undefined ||
-      req.body.coHostCodeExpiresAt !== undefined ||
-      req.body.coHosts !== undefined
-    )
+    const isOwner = checkRoomOwnership(room, req.user._id).ok
 
-    if (isEndingRoom || isCoHostConfigChange) {
-      const ownerAuth = checkRoomOwnership(room, req.user._id)
-      if (!ownerAuth.ok) {
-        return res.status(ownerAuth.status).json({ error: ownerAuth.error })
+    // Co-host (non-owner) restrictions:
+    // Co-hosts are strictly allowed ONLY shared-tier settings ({ settings }).
+    // Any owner-only fields (isActive, endedAt, maxCoHosts, teacher, name, code, etc.) return 403.
+    if (!isOwner) {
+      const allowedKeys = ['settings']
+      const disallowed = Object.keys(req.body).filter(key => !allowedKeys.includes(key))
+      if (disallowed.length > 0) {
+        return res.status(403).json({ error: 'Only the room owner can modify room configuration or end the room' })
       }
     }
+
+    // Server-managed fields must NEVER be mutated via PUT /:id, even by the host.
+    delete req.body.coHosts
+    delete req.body.coHostCode
+    delete req.body.coHostCodeExpiresAt
+    delete req.body.teacher
+    delete req.body.code
 
     if (req.body.maxCoHosts !== undefined) {
       const currentCoHostsCount = Array.isArray(room.coHosts) ? room.coHosts.length : 0
@@ -287,6 +289,7 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, a
       io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)
       rebuildSnapshot(room._id).catch((e) => console.error('[rooms] snapshot pre-warm failed:', e.message))
+      prewarmInsights(room._id).catch((e) => console.error('[rooms] insights pre-warm failed:', e.message))
     }
     
     res.json({ message: 'Room updated successfully', room: updatedRoom })
@@ -314,4 +317,4 @@ router.delete('/:id', authenticate, authorize('teacher'), requireApprovedTeacher
   }
 })
 
-export default router
+export default router

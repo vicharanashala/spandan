@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import useAuthStore from '../stores/authStore'
 import { useNavigate } from 'react-router-dom'
+import { User, LogOut } from 'lucide-react'
 
 export default function ProfileDropdown() {
   const { user, logout } = useAuthStore()
@@ -38,7 +39,7 @@ export default function ProfileDropdown() {
           width: '36px',
           height: '36px',
           borderRadius: '50%',
-          background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
+          background: user?.profileImage ? 'transparent' : 'var(--accent-gradient)',
           border: '2px solid white',
           cursor: 'pointer',
           display: 'flex',
@@ -103,7 +104,7 @@ export default function ProfileDropdown() {
             onMouseOver={(e) => e.currentTarget.style.background = 'var(--nav-hover)'}
             onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
           >
-            👤 Profile
+            <User size={16} aria-hidden="true" /> Profile
           </button>
           
           <button
@@ -124,7 +125,7 @@ export default function ProfileDropdown() {
             onMouseOver={(e) => e.currentTarget.style.background = 'var(--nav-hover)'}
             onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
           >
-            🚪 Logout
+            <LogOut size={16} aria-hidden="true" /> Logout
           </button>
         </div>
       )}

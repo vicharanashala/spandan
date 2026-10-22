@@ -28,7 +28,7 @@ function ProtectedRoute({ children, allowedRoles }) {
           width: '40px',
           height: '40px',
           border: '3px solid var(--border-color)',
-          borderTopColor: '#3b82f6',
+          borderTopColor: 'var(--accent)',
           borderRadius: '50%',
           animation: 'spin 1s linear infinite'
         }} />

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import QuestionEditor from './QuestionEditor'
+import { FileText, Timer, Check, Pencil, X, ClipboardCheck, SkipForward, Play } from 'lucide-react'
+import { Ico } from './icons'
 
 function TextQuestionApprovalPopup({
   questions,
@@ -155,7 +157,7 @@ function TextQuestionApprovalPopup({
             style={{
               marginTop: '16px',
               padding: '10px 24px',
-              background: '#3b82f6',
+              background: 'var(--accent-solid)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
@@ -207,7 +209,7 @@ function TextQuestionApprovalPopup({
           borderBottom: '1px solid var(--border-color)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '24px' }}>📝</span>
+            <span style={{ fontSize: '24px', display: 'inline-flex', color: 'var(--accent)' }}><FileText size={24} aria-hidden="true" /></span>
             <div>
               <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Generated Questions Review
@@ -235,7 +237,7 @@ function TextQuestionApprovalPopup({
                   fontWeight: '700',
                   animation: timeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
                 }}>
-                  ⏱️ {timeLeft}s
+                  <Ico as={Timer} /> {timeLeft}s
                 </span>
                 {timeLeft <= 5 && (
                   <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
@@ -258,16 +260,16 @@ function TextQuestionApprovalPopup({
                   cursor: 'pointer'
                 }}
               >
-                {isEditing ? '✓ Done' : '✏️ Edit'}
+                {isEditing ? <><Ico as={Check} /> Done</> : <><Ico as={Pencil} /> Edit</>}
               </button>
             )}
             <span style={{
               padding: '6px 12px',
-              background: 'rgba(59, 130, 246, 0.1)',
+              background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
               borderRadius: '20px',
               fontSize: '13px',
               fontWeight: '600',
-              color: '#3b82f6'
+              color: 'var(--accent)'
             }}>
               {currentIndex + 1} / {pendingQuestions.length}
             </span>
@@ -293,12 +295,12 @@ function TextQuestionApprovalPopup({
               fontSize: '11px',
               fontWeight: '600',
               background: currentQuestion.type === 'MCQ' 
-                ? 'rgba(59, 130, 246, 0.15)' 
+                ? 'color-mix(in srgb, var(--accent) 15%, transparent)' 
                 : currentQuestion.type === 'TF'
                   ? 'rgba(16, 185, 129, 0.15)'
                   : 'rgba(139, 92, 246, 0.15)',
               color: currentQuestion.type === 'MCQ' 
-                ? '#3b82f6' 
+                ? 'var(--accent)' 
                 : currentQuestion.type === 'TF'
                   ? '#10b981'
                   : '#8b5cf6'
@@ -387,7 +389,7 @@ function TextQuestionApprovalPopup({
                       fontSize: '16px',
                       color: '#10b981'
                     }}>
-                      ✓
+                      <Ico as={Check} aria-label="Correct" />
                     </span>
                   )}
                 </div>
@@ -407,7 +409,7 @@ function TextQuestionApprovalPopup({
               padding: '14px',
               borderRadius: '12px',
               border: 'none',
-              background: 'linear-gradient(135deg, #3b82f6, #1e40af)',
+              background: 'var(--accent-gradient)',
               color: 'white',
               fontSize: '14px',
               fontWeight: '600',
@@ -418,7 +420,7 @@ function TextQuestionApprovalPopup({
               gap: '8px'
             }}
           >
-            {isLastQuestion ? '📋 Finish' : '⏭️ Next Question'}
+            {isLastQuestion ? <><Ico as={ClipboardCheck} /> Finish</> : <><Ico as={SkipForward} /> Next Question</>}
           </button>
         ) : (
           // Timer not started - show Approve and Reject
@@ -441,7 +443,7 @@ function TextQuestionApprovalPopup({
                 gap: '8px'
               }}
             >
-              ✕ Reject
+              <Ico as={X} /> Reject
             </button>
             <button
               onClick={launchQuestion}
@@ -461,7 +463,7 @@ function TextQuestionApprovalPopup({
                 gap: '8px'
               }}
             >
-              ▶ Launch to Class
+              <Ico as={Play} /> Launch to Class
             </button>
           </div>
         )}

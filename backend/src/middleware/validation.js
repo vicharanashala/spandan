@@ -44,23 +44,39 @@ export const createRoomSchema = z.object({
 })
 
 // Settings validation schema for room settings update
+// Room settings as saved from the Settings dialog (PUT /rooms/:id with { settings }). Ranges mirror
+// the dialog's own clamps (RoomSettingsModal.jsx) so a value the UI lets a teacher pick is never
+// rejected here; the schema exists to stop out-of-range values arriving by any other path.
 export const roomSettingsSchema = z.object({
   allowLateJoin: z.boolean().optional(),
   showResultsImmediately: z.boolean().optional(),
   requireCorrectAnswer: z.boolean().optional(),
   mode: z.enum(['normal', 'video']).optional(),
   videoUrl: z.string().max(500).optional(),
-  timeToAnswer: z.number().min(5).max(300).optional(),
-  points: z.number().min(10).max(1000).optional(),
-  segmentTime: z.number().min(1).max(60).optional(),
-  questionsPerSegment: z.number().min(1).max(10).optional(),
+  timeToAnswer: z.number().int().min(0).max(300).optional(),       // seconds; dialog 0-300
+  points: z.number().int().min(1).max(500).optional(),             // dialog 1-500
+  segmentTime: z.number().int().min(1).max(15).optional(),         // whole minutes; dialog 1-15
+  questionsPerSegment: z.number().int().min(1).max(10).optional(), // dialog 1-10
   difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
   questionProvider: z.enum(['minimax', 'openai', 'anthropic', 'google']).optional(),
   questionTypeMix: z.object({
-    MCQ: z.number().min(0).max(100).optional(),
-    TF: z.number().min(0).max(100).optional(),
-    MSQ: z.number().min(0).max(100).optional()
-  }).optional()
+    MCQ: z.number().int().min(0).max(100).optional(),
+    TF: z.number().int().min(0).max(100).optional(),
+    MSQ: z.number().int().min(0).max(100).optional()
+  }).optional(),
+  anonymousLeaderboard: z.boolean().optional(),
+  anonymityPercent: z.number().int().min(0).max(100).optional(),   // dialog 0-100
+  revealBottomToStudents: z.boolean().optional()
+})
+
+// Body of PUT /rooms/:id. The same route saves settings ({ settings }), edits the video link
+// ({ settings: { ...all, mode, videoUrl } }) and ends the room ({ isActive: false, endedAt }).
+// Only known fields are checked; the route still applies req.body as before.
+export const roomUpdateSchema = z.object({
+  settings: roomSettingsSchema.optional(),
+  isActive: z.boolean().optional(),
+  endedAt: z.union([z.string().datetime(), z.date(), z.null()]).optional(),
+  maxCoHosts: z.number().int().min(0).max(20).optional()
 })
 
 // Question validation schemas

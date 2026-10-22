@@ -1,6 +1,7 @@
 import React from 'react'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
+import { X } from 'lucide-react'
 import useSocketStore from '../stores/socketStore'
 import { useNavigate } from 'react-router-dom'
 
@@ -16,7 +17,7 @@ export function Header({ title, subtitle }) {
 
   return (
     <header style={{
-      background: 'linear-gradient(to right, #1e40af, #1e3a8a)',
+      background: 'var(--header-bg)',
       color: 'white',
       padding: '16px 32px',
       display: 'flex',
@@ -107,7 +108,7 @@ export function FeatureCard({ icon, title, description }) {
       <div style={{
         width: '64px',
         height: '64px',
-        background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
+        background: 'var(--accent-gradient)',
         borderRadius: '16px',
         display: 'flex',
         alignItems: 'center',
@@ -141,8 +142,8 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
         background: 'white'
       }}
       onMouseOver={(e) => {
-        e.currentTarget.style.borderColor = '#3b82f6'
-        e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.15)'
+        e.currentTarget.style.borderColor = 'var(--accent)'
+        e.currentTarget.style.boxShadow = '0 4px 12px color-mix(in srgb, var(--accent) 15%, transparent)'
       }}
       onMouseOut={(e) => {
         e.currentTarget.style.borderColor = '#e5e7eb'
@@ -154,7 +155,7 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
           {room.name}
         </h4>
         <p style={{ fontSize: '14px', color: '#6b7280' }}>
-          Code: <strong style={{ color: '#1e40af' }}>{room.code}</strong> • 
+          Code: <strong style={{ color: 'var(--accent)' }}>{room.code}</strong> • 
           <span style={{ color: room.isActive ? '#10b981' : '#6b7280' }}>
             {room.isActive ? ' Active' : ' Inactive'}
           </span>
@@ -180,7 +181,7 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
           style={{
             padding: '8px 16px',
             background: '#eff6ff',
-            color: '#1e40af',
+            color: 'var(--accent)',
             border: '1px solid #bfdbfe',
             borderRadius: '8px',
             cursor: 'pointer',
@@ -211,10 +212,10 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
 export function Button({ children, variant = 'primary', size = 'md', disabled, onClick, style = {} }) {
   const variants = {
     primary: {
-      background: disabled ? '#9ca3af' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
+      background: disabled ? '#9ca3af' : 'var(--accent-gradient)',
       color: 'white',
       border: 'none',
-      boxShadow: '0 4px 15px rgba(30, 64, 175, 0.3)'
+      boxShadow: '0 4px 15px rgba(8,32,73,0.3)'
     },
     secondary: {
       background: '#f3f4f6',
@@ -302,7 +303,7 @@ export function Input({ label, placeholder, value, onChange, type = 'text', erro
           background: 'white',
           ...style
         }}
-        onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+        onFocus={(e) => e.target.style.borderColor = 'var(--accent)'}
         onBlur={(e) => e.target.style.borderColor = error ? '#fecaca' : '#e5e7eb'}
       />
       {error && (
@@ -346,10 +347,12 @@ export function Modal({ isOpen, onClose, title, children }) {
               border: 'none',
               fontSize: '24px',
               color: '#9ca3af',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              display: 'inline-flex'
             }}
+            aria-label="Close"
           >
-            ✕
+            <X size={22} aria-hidden="true" />
           </button>
         </div>
         {children}
@@ -381,7 +384,7 @@ export function LoadingSpinner({ message = 'Loading...' }) {
         width: '48px',
         height: '48px',
         border: '4px solid #e5e7eb',
-        borderTopColor: '#3b82f6',
+        borderTopColor: 'var(--accent)',
         borderRadius: '50%',
         animation: 'spin 1s linear infinite'
       }}></div>
@@ -392,7 +395,7 @@ export function LoadingSpinner({ message = 'Loading...' }) {
 
 export function Alert({ type = 'info', message }) {
   const styles = {
-    info: { background: '#eff6ff', border: '#bfdbfe', color: '#1e40af' },
+    info: { background: '#eff6ff', border: '#bfdbfe', color: 'var(--accent)' },
     success: { background: '#ecfdf5', border: '#6ee7b7', color: '#059669' },
     error: { background: '#fef2f2', border: '#fecaca', color: '#dc2626' },
     warning: { background: '#fffbeb', border: '#fcd34d', color: '#d97706' }

@@ -1,21 +1,21 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
+import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, Users } from 'lucide-react'
+import { renderIcon } from './icons'
 
 const menuItems = {
   teacher: [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/teacher' },
-    { id: 'create-room', label: 'Create Room', icon: '➕', path: '/teacher/create-room' },
-    { id: 'join-cohost', label: 'Join Co-Host Room', icon: '🤝', path: '/teacher/join-cohost' },
-    { id: 'manage-room', label: 'Manage Room', icon: '⚙️', path: '/teacher/manage-room' },
-    { id: 'room-history', label: 'Room History', icon: '📜', path: '/teacher/room-history' },
-    { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/teacher/help' },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/teacher' },
+    { id: 'create-room', label: 'Create Room', icon: Plus, path: '/teacher/create-room' },
+    { id: 'join-cohost', label: 'Join Co-Host Room', icon: Users, path: '/teacher/join-cohost' },
+    { id: 'manage-room', label: 'Manage Room', icon: Settings, path: '/teacher/manage-room' },
+    { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/teacher/room-history' },
   ],
   student: [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊', path: '/student' },
-    { id: 'join-room', label: 'Join Room', icon: '🔗', path: '/student/join-room' },
-    { id: 'room-history', label: 'Room History', icon: '📜', path: '/student/room-history' },
-    { id: 'manual', label: 'Manual', icon: 'ℹ️', path: '/student/help' },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/student' },
+    { id: 'join-room', label: 'Join Room', icon: LinkIcon, path: '/student/join-room' },
+    { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/student/room-history' },
   ]
 }
 
@@ -30,14 +30,11 @@ export default function Sidebar({ user }) {
   const location = useLocation()
   const role = user?.role || 'student'
   const baseItems = menuItems[role] || menuItems.student
-  // Admins get an extra "Approvals" entry, placed just above "Manual".
+  // Admins get an extra "Approvals" entry at the end. (The old "Manual" entry is gone: help now
+  // lives in the ⓘ drawer in every page header.)
   let items = baseItems
   if (user?.isAdmin) {
-    const adminItem = { id: 'admin', label: 'Approvals', icon: '🛡️', path: '/admin' }
-    const idx = baseItems.findIndex(i => i.id === 'manual')
-    items = idx === -1
-      ? [...baseItems, adminItem]
-      : [...baseItems.slice(0, idx), adminItem, ...baseItems.slice(idx)]
+    items = [...baseItems, { id: 'admin', label: 'Approvals', icon: ShieldCheck, path: '/admin' }]
   }
 
   const [isMobile, setIsMobile] = useState(() =>
@@ -72,16 +69,17 @@ export default function Sidebar({ user }) {
     <button
       onClick={onClick}
       aria-label={label}
+      title={label}
+      className="sb-icon-btn"
       style={{
-        width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '8px',
-        color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '15px', flexShrink: 0,
-        transition: 'all 0.15s ease'
+        width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '9px',
+        color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', flexShrink: 0
       }}
-      onMouseOver={(e) => { e.currentTarget.style.background = 'var(--nav-hover)'; e.currentTarget.style.color = 'var(--text-primary)' }}
-      onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}
     >{children}</button>
   )
+
+  const profilePath = role === 'teacher' ? '/teacher/profile' : '/student/profile'
 
   return (
     <>
@@ -93,27 +91,27 @@ export default function Sidebar({ user }) {
           style={{
             position: 'fixed', top: '14px', left: '14px', zIndex: 60,
             width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'linear-gradient(135deg, #1e40af, #3b82f6)', color: 'white',
-            border: 'none', borderRadius: '12px', cursor: 'pointer', fontSize: '18px',
-            boxShadow: '0 4px 14px rgba(30,64,175,0.35)'
+            background: 'var(--accent-gradient)', color: 'white',
+            border: 'none', borderRadius: '13px', cursor: 'pointer', fontSize: '18px',
+            boxShadow: '0 6px 16px rgba(8,32,73,0.35)'
           }}
-        >☰</button>
+        ><Menu size={20} aria-hidden="true" /></button>
       )}
 
       {/* Backdrop — mobile drawer open */}
       {isMobile && mobileOpen && (
         <div
           onClick={() => setMobileOpen(false)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 55, backdropFilter: 'blur(1px)' }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 55, backdropFilter: 'blur(2px)' }}
         />
       )}
 
       {/* Sidebar (rail on desktop, drawer on mobile) */}
-      <aside style={{
+      <aside aria-label="Main navigation" style={{
         position: 'fixed', left: 0, top: 0, bottom: 0,
         width: `${railWidth}px`,
-        background: 'var(--sidebar-bg)',
-        boxShadow: 'var(--sidebar-shadow)',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--sidebar-bg)) 0%, var(--sidebar-bg) 38%)',
+        boxShadow: isMobile ? '0 20px 50px rgba(15,23,42,0.35)' : 'var(--sidebar-shadow)',
         borderRight: '1px solid var(--border-color)',
         display: 'flex', flexDirection: 'column',
         zIndex: 56,
@@ -121,44 +119,52 @@ export default function Sidebar({ user }) {
         transition: 'transform 0.25s ease, width 0.2s ease',
         overflow: 'hidden'
       }}>
-        {/* Logo + toggle */}
+        {/* Brand + collapse */}
         <div style={{
-          padding: showLabels ? '18px 16px' : '18px 0',
+          padding: showLabels ? '18px 14px 14px 16px' : '18px 0 12px',
           display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'space-between' : 'center',
-          gap: '10px', borderBottom: '1px solid var(--border-color)', minHeight: '64px', boxSizing: 'border-box'
+          gap: '10px', minHeight: '68px', boxSizing: 'border-box'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-            <div style={{
-              width: '40px', height: '40px', background: 'linear-gradient(135deg, #1e40af, #3b82f6)',
-              borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '20px', flexShrink: 0, boxShadow: '0 2px 8px rgba(30,64,175,0.3)'
-            }}>
-              <SpandanIcon />
-            </div>
+            {/* Desktop: the logo IS the collapse / expand toggle (no separate « » buttons). Phones keep ☰ / ✕. */}
+            {isMobile ? (
+              <div style={{ width: '42px', height: '42px', borderRadius: '13px', overflow: 'hidden', flexShrink: 0, boxShadow: '0 6px 14px rgba(8,32,73,0.30)' }}>
+                <SpandanIcon />
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => persistCollapsed(!collapsed)}
+                aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                aria-expanded={!collapsed}
+                title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                className="sb-logo-toggle"
+                style={{
+                  position: 'relative', width: '42px', height: '42px', padding: 0, border: 'none', cursor: 'pointer',
+                  borderRadius: '13px', overflow: 'hidden', flexShrink: 0, background: 'transparent',
+                  boxShadow: '0 6px 14px rgba(8,32,73,0.30)'
+                }}
+              >
+                <SpandanIcon />
+              </button>
+            )}
             {showLabels && (
               <div style={{ minWidth: 0 }}>
-                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>Spandan</h2>
-                <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role} Portal</p>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1.1 }}>Spandan</h2>
+                <span style={{
+                  display: 'inline-block', marginTop: 4, padding: '1px 8px', borderRadius: 999, fontSize: '10.5px', fontWeight: 700,
+                  letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--accent)',
+                  background: 'color-mix(in srgb, var(--accent) 12%, transparent)'
+                }}>{role}</span>
               </div>
             )}
           </div>
-          {/* Desktop collapse toggle / Mobile close */}
-          {showLabels && (
-            isMobile
-              ? iconBtn(() => setMobileOpen(false), 'Close menu', '✕')
-              : iconBtn(() => persistCollapsed(true), 'Collapse sidebar', '«')
-          )}
+          {isMobile && iconBtn(() => setMobileOpen(false), 'Close menu', <X size={16} aria-hidden="true" />)}
         </div>
 
-        {/* Expand button when collapsed (desktop) */}
-        {!showLabels && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0 0' }}>
-            {iconBtn(() => persistCollapsed(false), 'Expand sidebar', '»')}
-          </div>
-        )}
-
         {/* Navigation */}
-        <nav style={{ flex: 1, padding: showLabels ? '14px 12px' : '10px 0', overflowY: 'auto' }}>
+        <nav data-tour="sidebar" style={{ flex: 1, padding: showLabels ? '6px 12px' : '4px 0', overflowY: 'auto' }}>
+          {showLabels && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', opacity: 0.75, padding: '8px 12px 8px' }}>Menu</div>}
           {items.map((item) => {
             const isActive = location.pathname === item.path ||
               (item.id === 'dashboard' && (location.pathname === '/teacher' || location.pathname === '/student'))
@@ -167,49 +173,63 @@ export default function Sidebar({ user }) {
                 key={item.id}
                 onClick={() => navigate(item.path)}
                 title={item.label}
+                aria-current={isActive ? 'page' : undefined}
+                className={`sb-item${isActive ? ' sb-item--active' : ''}`}
                 style={{
+                  position: 'relative',
                   width: showLabels ? '100%' : '48px',
                   height: showLabels ? 'auto' : '48px',
                   margin: showLabels ? '0 0 4px' : '0 auto 6px',
                   display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center',
-                  gap: '12px', padding: showLabels ? '11px 14px' : '0',
-                  background: isActive ? 'linear-gradient(135deg, #1e40af, #3b82f6)' : 'transparent',
-                  border: 'none', borderRadius: '10px', cursor: 'pointer',
-                  color: isActive ? 'white' : 'var(--text-secondary)',
-                  fontSize: '14px', fontWeight: isActive ? 600 : 500, textAlign: 'left',
-                  boxShadow: isActive ? '0 2px 10px rgba(30,64,175,0.28)' : 'none',
-                  transition: 'all 0.15s ease'
+                  gap: '12px', padding: showLabels ? '8px 10px' : '0',
+                  background: isActive ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                  border: 'none', borderRadius: '12px', cursor: 'pointer',
+                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontSize: '14px', fontWeight: isActive ? 700 : 550, textAlign: 'left'
                 }}
-                onMouseOver={(e) => { if (!isActive) { e.currentTarget.style.background = 'var(--nav-hover)'; e.currentTarget.style.color = 'var(--text-primary)' } }}
-                onMouseOut={(e) => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' } }}
               >
-                <span style={{ fontSize: '18px', width: '24px', textAlign: 'center', flexShrink: 0 }}>{item.icon}</span>
+                {isActive && showLabels && <span aria-hidden="true" style={{ position: 'absolute', left: -12, top: 8, bottom: 8, width: 4, borderRadius: '0 4px 4px 0', background: 'var(--accent)' }} />}
+                <span aria-hidden="true" style={{
+                  width: 32, height: 32, flexShrink: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                  background: isActive ? 'var(--bg-card)' : 'color-mix(in srgb, var(--text-secondary) 8%, transparent)',
+                  boxShadow: isActive ? '0 2px 6px rgba(16,24,40,0.10)' : 'none'
+                }}>{renderIcon(item.icon, 18)}</span>
                 {showLabels && <span style={{ whiteSpace: 'nowrap' }}>{item.label}</span>}
               </button>
             )
           })}
         </nav>
 
-        {/* User section */}
-        <div style={{ padding: showLabels ? '14px 16px' : '14px 0', borderTop: '1px solid var(--border-color)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center', gap: '10px' }}>
+        {/* User card → profile */}
+        <div style={{ padding: showLabels ? '12px' : '12px 0', borderTop: '1px solid var(--border-color)' }}>
+          <button
+            onClick={() => navigate(profilePath)}
+            title="Your profile"
+            className="sb-item"
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center', gap: '10px',
+              padding: showLabels ? '8px 10px' : '4px 0', border: showLabels ? '1px solid var(--border-color)' : 'none', borderRadius: '14px',
+              background: showLabels ? 'var(--bg-card)' : 'transparent', cursor: 'pointer', textAlign: 'left'
+            }}
+          >
             <div style={{
-              width: '38px', height: '38px',
-              background: user?.profileImage ? 'transparent' : 'linear-gradient(135deg, #1e40af, #3b82f6)',
+              width: '36px', height: '36px', position: 'relative',
+              background: user?.profileImage ? 'transparent' : 'var(--accent-gradient)',
               borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', fontSize: '14px', fontWeight: 600, flexShrink: 0, overflow: 'hidden'
+              color: 'white', fontSize: '14px', fontWeight: 700, flexShrink: 0, overflow: 'hidden'
             }}>
               {user?.profileImage
-                ? <img src={user.profileImage} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ? <img src={user.profileImage} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 : (user?.name?.charAt(0)?.toUpperCase() || 'U')}
             </div>
             {showLabels && (
-              <div style={{ overflow: 'hidden' }}>
-                <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</p>
-                <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{role}</p>
+              <div style={{ overflow: 'hidden', flex: 1, minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</p>
+                <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email || role}</p>
               </div>
             )}
-          </div>
+            {showLabels && <span aria-hidden="true" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>›</span>}
+          </button>
         </div>
       </aside>
     </>
