@@ -36,6 +36,20 @@ describe('PUT /rooms/:id body (roomUpdateSchema)', () => {
     expect(ok({ settings: { ...fullSettings, somethingNew: 1 }, extra: true })).toBe(true)
   })
 
+  it('ignores coHosts and coHostCode in roomUpdateSchema (client cannot mutate co-host internals)', () => {
+    const payload = {
+      settings: fullSettings,
+      coHostCode: 'CH123456',
+      coHosts: [{ userId: '123' }],
+      maxCoHosts: 4
+    }
+    const parsed = roomUpdateSchema.parse(payload)
+    expect(parsed.coHostCode).toBeUndefined()
+    expect(parsed.coHosts).toBeUndefined()
+    expect(parsed.maxCoHosts).toBe(4)
+    expect(ok(payload)).toBe(true)
+  })
+
   describe('segmentTime', () => {
     it.each([1, 2, 7, 15])('accepts %i', (v) => expect(ok({ settings: { segmentTime: v } })).toBe(true))
     it.each([0, 16, 30, 60])('rejects %i (out of 1-15)', (v) => {

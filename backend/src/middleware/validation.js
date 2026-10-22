@@ -75,7 +75,8 @@ export const roomSettingsSchema = z.object({
 export const roomUpdateSchema = z.object({
   settings: roomSettingsSchema.optional(),
   isActive: z.boolean().optional(),
-  endedAt: z.union([z.string().datetime(), z.date(), z.null()]).optional()
+  endedAt: z.union([z.string().datetime(), z.date(), z.null()]).optional(),
+  maxCoHosts: z.number().int().min(0).max(20).optional()
 })
 
 // Question validation schemas

@@ -3,8 +3,8 @@ import QuestionEditor from './QuestionEditor'
 import { FileText, Timer, Check, Pencil, X } from 'lucide-react'
 import { Ico } from './icons'
 
-function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
-  const [currentIndex, setCurrentIndex] = useState(0)
+function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete, batchLauncher = null, currentUserId = null, popupIndex = 0, onNavIndexChange = null }) {
+  const [currentIndex, setCurrentIndex] = useState(popupIndex || 0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [timeLeft, setTimeLeft] = useState(30)
@@ -14,10 +14,18 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
+  const isLockedByOther = !!(batchLauncher?.userId && String(batchLauncher.userId) !== String(currentUserId))
+
   useEffect(() => {
     setPendingQuestions(questions || [])
-    setCurrentIndex(0)
+    setCurrentIndex(popupIndex || 0)
   }, [questions])
+
+  useEffect(() => {
+    if (typeof popupIndex === 'number' && popupIndex >= 0 && popupIndex !== currentIndex) {
+      setCurrentIndex(popupIndex)
+    }
+  }, [popupIndex])
 
   // Leave edit mode whenever we move to a different question.
   useEffect(() => { setIsEditing(false) }, [currentIndex])
@@ -78,6 +86,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   }
 
   const handleReject = () => {
+    if (isLockedByOther) return
     stopTimer() // Stop timer when rejecting
     const current = pendingQuestions[currentIndex]
     onReject(current)
@@ -87,7 +96,9 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const moveToNext = () => {
     stopTimer() // Stop timer when moving to next
     if (currentIndex < pendingQuestions.length - 1) {
-      setCurrentIndex(prev => prev + 1)
+      const nextIdx = currentIndex + 1
+      setCurrentIndex(nextIdx)
+      if (onNavIndexChange) onNavIndexChange(nextIdx)
     } else {
       // All questions processed - call onComplete instead of just onClose
       if (onComplete) {
@@ -100,8 +111,10 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
   // Skip to a question (from navigation pills) - stops current timer
   const skipToQuestion = (index) => {
+    if (isLockedByOther) return
     stopTimer()
     setCurrentIndex(index)
+    if (onNavIndexChange) onNavIndexChange(index)
   }
 
   if (pendingQuestions.length === 0) {
@@ -249,6 +262,29 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
             </button>
           ))}
         </div>
+
+        {/* Launcher Lock Status Banner */}
+        {batchLauncher && (
+          <div style={{
+            padding: '10px 16px',
+            borderRadius: '12px',
+            background: isLockedByOther ? 'rgba(234, 179, 8, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+            border: `1px solid ${isLockedByOther ? '#eab308' : '#10b981'}`,
+            color: isLockedByOther ? '#a16207' : '#065f46',
+            fontSize: '13px',
+            fontWeight: '600',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            {isLockedByOther ? (
+              <>🔒 <span><strong>{batchLauncher.roleLabel} ({batchLauncher.name})</strong> has started launching this question set. Other editors cannot launch remaining questions.</span></>
+            ) : (
+              <>🚀 <span><strong>You ({batchLauncher.roleLabel})</strong> are controlling this question batch.</span></>
+            )}
+          </div>
+        )}
 
         {/* Current Question Card — editable when the teacher taps Edit, read-only otherwise */}
         {isEditing ? (
@@ -400,43 +436,51 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
             <>
               <button
                 onClick={handleReject}
+                disabled={isLockedByOther}
                 style={{
                   flex: 1,
                   padding: '14px',
                   borderRadius: '12px',
-                  border: '2px solid #ef4444',
+                  border: isLockedByOther ? '2px solid #9ca3af' : '2px solid #ef4444',
                   background: 'transparent',
-                  color: '#ef4444',
+                  color: isLockedByOther ? '#9ca3af' : '#ef4444',
                   fontSize: '14px',
                   fontWeight: '600',
-                  cursor: 'pointer',
+                  cursor: isLockedByOther ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: '8px'
+                  gap: '8px',
+                  opacity: isLockedByOther ? 0.6 : 1
                 }}
               >
                 <Ico as={X} /> Reject
               </button>
               <button
                 onClick={handleApprove}
+                disabled={isLockedByOther}
                 style={{
                   flex: 1,
                   padding: '14px',
                   borderRadius: '12px',
                   border: 'none',
-                  background: 'linear-gradient(135deg, #10b981, #059669)',
+                  background: isLockedByOther ? '#9ca3af' : 'linear-gradient(135deg, #10b981, #059669)',
                   color: 'white',
                   fontSize: '14px',
                   fontWeight: '600',
-                  cursor: 'pointer',
+                  cursor: isLockedByOther ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: '8px'
+                  gap: '8px',
+                  opacity: isLockedByOther ? 0.7 : 1
                 }}
               >
-                <Ico as={Check} /> Approve & Launch
+                {isLockedByOther ? `🔒 Managed by ${batchLauncher?.name || 'Another Teacher'}` : (
+                  <>
+                    <Ico as={Check} /> Approve & Launch
+                  </>
+                )}
               </button>
             </>
           )}

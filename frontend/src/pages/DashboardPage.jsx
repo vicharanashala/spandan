@@ -9,13 +9,13 @@ import useIsMobile from '../hooks/useIsMobile'
 import useNow from '../hooks/useNow'
 import { PageHeader, pageWash, greeting, dateLabel, LiveClock, inputStyle, primaryButton, ChoiceCard, RoomCard, Pill, EmptyState } from '../components/AppUI'
 import { StatTile, TileGrid, SectionLabel, SectionHeader, cardStyle } from '../components/InsightUI'
-import { ChartColumn, CircleDot, Clapperboard, Hand, Inbox, Library, MessageSquare, Mic, Plus } from 'lucide-react'
+import { ChartColumn, CircleDot, Clapperboard, Hand, Inbox, Library, MessageSquare, Mic, Plus, Users } from 'lucide-react'
 import { Ico } from '../components/icons'
 
 function DashboardPage() {
   const navigate = useNavigate()
   const { user, token, isAuthenticated } = useAuthStore()
-  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, setAuthToken } = useRoomStore()
+  const { rooms, currentRoom, isLoading, error, fetchRooms, createRoom, joinCoHostRoom, setAuthToken } = useRoomStore()
   const { isConnected } = useSocketStore()
   const isMobile = useIsMobile()
   const now = useNow()
@@ -37,15 +37,32 @@ function DashboardPage() {
     totalResponses: 0
   })
 
+  const [coHostActiveRooms, setCoHostActiveRooms] = useState([])
+
   // Initial setup
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchRooms()
       fetchTeacherStats()
+      fetchCoHostActiveRooms()
     }
     setChecked(true)
   }, [token])
+
+  const fetchCoHostActiveRooms = async () => {
+    try {
+      const res = await fetch(`${API_URL}/rooms/teacher/cohost/active`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCoHostActiveRooms(data.rooms || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch co-host active rooms:', err)
+    }
+  }
 
   const fetchTeacherStats = async () => {
     try {
@@ -189,7 +206,27 @@ function DashboardPage() {
           {/* Create Room Section */}
           <SectionLabel>Start a session</SectionLabel>
           <div data-tour="create-room" className="insight-card" style={cardStyle(isMobile)}>
-            <SectionHeader icon={Plus} title="Create New Room" hint="Give it a name and pick how you will teach. Students join with the room code." />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+              <SectionHeader icon={Plus} title="Create New Room" hint="Give it a name and pick how you will teach. Students join with the room code." />
+              <button
+                onClick={() => navigate('/teacher/join-cohost')}
+                style={{
+                  padding: '8px 14px',
+                  background: 'var(--nav-hover)',
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 12,
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6
+                }}
+              >
+                <Ico as={Users} /> Join Room as Co-Host
+              </button>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
                 <input
@@ -261,6 +298,33 @@ function DashboardPage() {
               )}
             </div>
           </div>
+
+          {/* Active Co-Host Rooms Section */}
+          {coHostActiveRooms && coHostActiveRooms.length > 0 && (
+            <div style={{ marginBottom: '32px' }}>
+              <SectionLabel>{`Rooms you are co-hosting · ${coHostActiveRooms.length}`}</SectionLabel>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(270px, 1fr))',
+                gap: '16px'
+              }}>
+                {coHostActiveRooms.map((room) => (
+                  <RoomCard
+                    key={room._id}
+                    icon={Users}
+                    tint="var(--accent)"
+                    title={room.name}
+                    code={room.code}
+                    status={<Pill tone="var(--accent)">Co-Host</Pill>}
+                    meta={[`Host: ${room.teacher?.name || 'Teacher'}`]}
+                    actionLabel="Rejoin Room →"
+                    onOpen={() => navigate(`/teacher/room/${room._id}`)}
+                    onAction={() => navigate(`/teacher/room/${room._id}`)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Active Rooms List */}
           <div data-tour="active-rooms">

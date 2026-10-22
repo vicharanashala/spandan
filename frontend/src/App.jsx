@@ -111,6 +111,11 @@ function App() {
         {/* The old sidebar "Manual" pages are gone (help now lives in the ⓘ popup); keep bookmarks working. */}
         <Route path="/teacher/help" element={<Navigate to="/teacher" replace />} />
         <Route path="/student/help" element={<Navigate to="/student" replace />} />
+        <Route path="/teacher/join-cohost" element={
+          <ProtectedRoute allowedRoles={['teacher']}>
+            <JoinRoomPage />
+          </ProtectedRoute>
+        } />
         {/* Admin-only: teacher approval page. Guarded to teachers here and to isAdmin inside the page + API. */}
         <Route path="/admin" element={
           <ProtectedRoute allowedRoles={['teacher']}>

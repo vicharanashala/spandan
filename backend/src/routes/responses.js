@@ -4,8 +4,8 @@ import { isBatchEnabled, bufferResponse } from '../services/responseBuffer.js'
 import * as resultsSnapshot from '../services/resultsSnapshot.js'
 import { PICKS_EXPR, buildQuestionStats } from '../services/questionStats.js'
 import { computeRankedIncremental } from '../services/leaderboardCache.js'
+import { checkRoomOwnership, checkRoomEditor } from '../utils/roomOwnership.js'
 import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderboard.js'
-import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { computeInsights } from '../services/insightsService.js'
 import { getInsightsBody, roomVersion } from '../services/insightsCache.js'
 import { debug } from '../utils/debug.js'
@@ -289,8 +289,8 @@ router.get('/', async (req, res) => {
       return res.status(404).json({ error: 'Room not found' })
     }
 
-    // Check access: teacher owns room OR student is a member
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    // Check access: teacher (owner or co-host) OR student is a member
+    const isTeacher = checkRoomEditor(room, currentUser._id).ok
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
     
     // If student is querying a different student's data, deny
@@ -350,7 +350,7 @@ router.get('/stats/student/:studentId', async (req, res) => {
     const currentUser = req.user
 
     // Students can only view their own stats
-    // Teachers can view stats for students in their rooms
+    // Teachers can view stats for students in their rooms (owned or co-hosted)
     const isSelf = currentUser._id.toString() === studentId
     
     if (currentUser.role === 'student' && !isSelf) {
@@ -358,9 +358,14 @@ router.get('/stats/student/:studentId', async (req, res) => {
     }
     
     if (currentUser.role === 'teacher') {
-      // Verify the student is in one of the teacher's rooms
+      // Verify the student is in one of the teacher's rooms (owner or co-host)
       const studentRoomMember = await RoomMember.find({ studentId })
-      const teacherRooms = await Room.find({ teacher: currentUser._id })
+      const teacherRooms = await Room.find({
+        $or: [
+          { teacher: currentUser._id },
+          { 'coHosts.userId': currentUser._id }
+        ]
+      })
       const teacherRoomIds = teacherRooms.map(r => r._id.toString())
       const hasAccess = studentRoomMember.some(m => teacherRoomIds.includes(m.roomId.toString()))
       
@@ -423,15 +428,11 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const { roomId } = req.params
     const currentUser = req.user
 
-    // Get room and verify teacher ownership
+    // Get room and verify teacher editor access (owner or co-host)
     const room = await Room.findById(roomId)
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' })
-    }
-
-    // Only the room owner (teacher) can view detailed stats
-    if (room.teacher.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to view this room\'s stats' })
+    const editorAuth = checkRoomEditor(room, currentUser._id)
+    if (!editorAuth.ok) {
+      return res.status(editorAuth.status).json({ error: editorAuth.error })
     }
 
     // Ended rooms serve stats from the shared snapshot (built once at room end). A miss (live room,
@@ -502,17 +503,17 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     const { roomId, studentId } = req.params
     const currentUser = req.user
 
-    // Teachers can view any student's responses for their own room
+    // Teachers (owner or co-host) can view any student's responses for their room
     // Students can only view their own responses
     const room = await Room.findById(roomId)
     if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
     
-    const isTeacher = room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = checkRoomEditor(room, currentUser._id).ok
     const isSelf = currentUser._id.toString() === studentId
     
-    // Allow if teacher owns room OR if student is viewing their own data
+    // Allow if teacher (owner or co-host) OR if student is viewing their own data
     if (!isTeacher && !isSelf) {
       return res.status(403).json({ error: 'Not authorized to view this student\'s responses' })
     }
@@ -643,12 +644,11 @@ router.get('/counts/:roomId', async (req, res) => {
     const Room = (await import('../models/Room.js')).default
     const { roomId } = req.params
 
-    // Authorization: only the room's OWNING teacher may read per-question counts. This endpoint is
-    // used only by the teacher's room view; students receive live counts over the socket instead.
+    // Authorization: room owner OR co-host may read per-question counts.
     const room = await Room.findById(roomId)
-    const ownership = checkRoomOwnership(room, req.user._id)
-    if (!ownership.ok) {
-      return res.status(ownership.status).json({ error: ownership.error })
+    const editorAuth = checkRoomEditor(room, req.user._id)
+    if (!editorAuth.ok) {
+      return res.status(editorAuth.status).json({ error: editorAuth.error })
     }
 
     const toObjectId = (id) => {
@@ -717,7 +717,7 @@ router.get('/insights/:roomId', async (req, res) => {
     // ended (the payload carries every correct option and explanation, so it must never be readable
     // while a poll could still be live). Anyone else → 403. authenticate() already runs for every
     // /api/responses route (mounted in index.js) and rejects unapproved teachers.
-    const isTeacher = req.user.role === 'teacher' && checkRoomOwnership(room, req.user._id).ok
+    const isTeacher = req.user.role === 'teacher' && checkRoomEditor(room, req.user._id).ok
     if (!isTeacher) {
       if (req.user.role !== 'student') return res.status(403).json({ error: 'Not authorized to view this room' })
       const member = await RoomMember.findOne({ roomId, studentId: req.user._id }).lean()
@@ -753,7 +753,7 @@ router.get('/insights/:roomId', async (req, res) => {
 })
 
 // GET /api/responses/leaderboard/:roomId - Get ranked leaderboard for a room
-// Authorization: teacher (owner's room) sees full, students (joined room) see top 3 only
+// Authorization: teacher (owner or co-host) sees full, students (joined room) see top 3 only
 router.get('/leaderboard/:roomId', async (req, res) => {
   try {
     const Room = (await import('../models/Room.js')).default
@@ -761,9 +761,9 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     const { roomId } = req.params
     const currentUser = req.user
 
-    // Check if teacher owns the room
+    // Check if teacher (owner or co-host) edits the room
     const room = await Room.findById(roomId)
-    const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
+    const isTeacher = checkRoomEditor(room, currentUser._id).ok
     
     // Check if student is a member of the room
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
@@ -857,9 +857,9 @@ router.get('/room/:roomId/export', async (req, res) => {
     const currentUser = req.user
 
     const room = await Room.findById(roomId).lean()
-    if (!room) return res.status(404).json({ error: 'Room not found' })
-    if (room.teacher.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized to export this room' })
+    const editorAuth = checkRoomEditor(room, currentUser._id)
+    if (!editorAuth.ok) {
+      return res.status(editorAuth.status).json({ error: editorAuth.error })
     }
 
     const { leaderboard, byStudent, stats } = await resultsSnapshot.buildSnapshot(roomId)

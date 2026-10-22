@@ -423,6 +423,10 @@ async function generateWithMiniMax(prompt) {
   }
 
   const data = await response.json()
+  if (data.base_resp && data.base_resp.status_code && data.base_resp.status_code !== 0) {
+    throw new Error(`MiniMax API error (${data.base_resp.status_code}): ${data.base_resp.status_msg || 'Unknown error'}`)
+  }
+
   const choice = data.choices?.[0]
   const content = choice?.message?.content || ''
   const reasoning = choice?.message?.reasoning_content || ''
@@ -431,11 +435,14 @@ async function generateWithMiniMax(prompt) {
   console.log(`[gen:minimax] finish=${finish} contentLen=${content.length} reasoningLen=${reasoning.length} completion_tokens=${usage.completion_tokens ?? '?'} reasoning_tokens=${usage.completion_tokens_details?.reasoning_tokens ?? '?'} prompt_tokens=${usage.prompt_tokens ?? '?'}`)
   // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
   // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
-  // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  // recoverable answer isn't lost. If BOTH are empty, log the full response so it's diagnosable.
   const text = content || reasoning
   if (!text) {
+    const rawChoiceStr = JSON.stringify(choice || null)
+    const rawDataStr = JSON.stringify(data || null)
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + rawChoiceStr.slice(0, 1500) + ' raw data: ' + rawDataStr.slice(0, 1500))
+    throw new Error(`MiniMax API returned an empty response or invalid format (finish: ${finish || 'none'})`)
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
@@ -504,7 +511,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-2.5-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -556,8 +563,17 @@ export async function generateQuestions(transcript, cfg) {
 
   switch (provider) {
     case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
+      try {
+        if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+        responseText = await generateWithMiniMax(prompt)
+      } catch (err) {
+        if (config.googleApiKey) {
+          console.warn(`[gen] MiniMax failed (${err.message}) — falling back to Google Gemini...`)
+          responseText = await generateWithGoogle(prompt)
+        } else {
+          throw err
+        }
+      }
       break
     case 'openai':
       if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
@@ -579,9 +595,9 @@ export async function generateQuestions(transcript, cfg) {
   const questions = parseQuestions(responseText, questionTypes)
   if (questions.length === 0) {
     console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
-  } else {
-    console.log(`Generated ${questions.length} questions successfully`)
+    throw new Error(`Failed to parse valid questions from ${provider} response. Please try generating again or select another AI provider.`)
   }
 
+  console.log(`Generated ${questions.length} questions successfully`)
   return questions
 }

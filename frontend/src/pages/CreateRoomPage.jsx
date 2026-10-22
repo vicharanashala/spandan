@@ -15,7 +15,7 @@ const label = { display: 'block', fontSize: '13px', fontWeight: 600, color: 'var
 function CreateRoomPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
-  const { createRoom, setAuthToken } = useRoomStore()
+  const { createRoom, joinCoHostRoom, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
   const [roomName, setRoomName] = useState('')
