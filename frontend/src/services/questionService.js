@@ -51,7 +51,13 @@ export const requestQuestionGeneration = async (transcript, config, opts = {}) =
       if (signal?.aborted) throw e
       continue // transient network error — keep polling until the ceiling
     }
-    if (s.status === 'completed') return { success: true, questions: s.questions || [] }
+    if (s.status === 'completed') {
+      // Compare-mode jobs resolve to {pairs}; normal jobs resolve to {questions}. Forward
+      // whichever shape the server actually sent instead of forcing a `questions` key onto both.
+      return s.pairs
+        ? { success: true, pairs: s.pairs, providerA: s.providerA, providerB: s.providerB }
+        : { success: true, questions: s.questions || [] }
+    }
     if (s.status === 'failed') return { success: false, error: s.error || 'Generation failed' }
     // 'processing' / transient 'not_found' — keep polling
   }

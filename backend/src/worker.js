@@ -5,7 +5,7 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 import { Worker } from 'bullmq'
-import { generateQuestions } from './services/questionService.js'
+import { generateQuestions, generateQuestionsCompare } from './services/questionService.js'
 import { GENERATION_QUEUE, makeBullConnection } from './services/generationQueue.js'
 
 const REDIS_URL = process.env.REDIS_URL
@@ -21,14 +21,22 @@ const worker = new Worker(
   GENERATION_QUEUE,
   async (job) => {
     const { transcript, config } = job.data
+    // Compare-mode jobs carry providerA/providerB instead of a single `provider` (see
+    // routes/questions.js) and resolve to a {pairs} object instead of a flat questions array.
+    if (job.data?.compare) {
+      return generateQuestionsCompare(transcript, config || {})
+    }
     const questions = await generateQuestions(transcript, config || {})
     return questions
   },
   { connection: makeBullConnection(), concurrency }
 )
 
-worker.on('completed', (job) =>
-  console.log(`[worker] job ${job.id} done — ${Array.isArray(job.returnvalue) ? job.returnvalue.length : 0} questions`))
+worker.on('completed', (job) => {
+  const rv = job.returnvalue
+  const count = Array.isArray(rv) ? rv.length : (rv?.pairs ? rv.pairs.length : 0)
+  console.log(`[worker] job ${job.id} done — ${count} ${Array.isArray(rv) ? 'questions' : 'pairs'}`)
+})
 worker.on('failed', (job, err) => console.error(`[worker] job ${job?.id} failed:`, err?.message))
 worker.on('error', (err) => console.error('[worker] error:', err?.message))
 
