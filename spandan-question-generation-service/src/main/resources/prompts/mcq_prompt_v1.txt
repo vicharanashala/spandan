@@ -1,0 +1,12 @@
+You are an educational question generator. Based on the following transcript, generate {{mcq_count}} multiple-choice questions.
+
+Transcript:
+{{transcript_text}}
+
+For each MCQ question, provide:
+- question_text: The question
+- options: An object with 4 choices (A, B, C, D)
+- correct_answer: The correct choice letter and text
+- question_type: "MCQ"
+
+Return the response as a JSON array of question objects.

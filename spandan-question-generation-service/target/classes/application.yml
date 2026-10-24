@@ -1,0 +1,73 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: question-generation-service
+  datasource:
+    url: ${QG_DB_URL:jdbc:postgresql://localhost:5432/question_generation_db}
+    username: ${QG_DB_USER:postgres}
+    password: ${QG_DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: question-generation-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.spandan.*
+        spring.json.value.default.type: java.lang.Object
+      enable-auto-commit: false
+      auto-offset-reset: latest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    listener:
+      ack-mode: manual
+      concurrency: 3
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 4
+
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
+
+transcription:
+  service:
+    url: ${TRANSCRIPTION_SERVICE_URL:http://localhost:8085}
+
+question-generation:
+  provider:
+    primary: ${QG_AI_PROVIDER_PRIMARY:openai}
+    fallback: ${QG_AI_PROVIDER_FALLBACK:}
+  max-attempts: ${QG_MAX_ATTEMPTS:3}
+  generation-timeout-minutes: ${QG_GENERATION_TIMEOUT_MINUTES:10}
+  generation-model: ${QG_GENERATION_MODEL:gpt-4}
+  generation-version: ${QG_GENERATION_VERSION:mcq_prompt_v1}
+  lock-ttl-seconds: 300
+  lock-renewal-interval-seconds: 60
+  expiry-sweep-interval-ms: 900000
+  expiry-hours: 50

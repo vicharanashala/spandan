@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.spandan.notification.application.ChannelRouterTest
+-------------------------------------------------------------------------------
+Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.618 s -- in com.spandan.notification.application.ChannelRouterTest

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package spandan.recording;
+
+option java_package = "com.spandan.recording.infrastructure.grpc";
+option java_multiple_files = true;
+
+service TranscriptIngestion {
+  rpc StreamTranscript(stream TranscriptSegmentRequest) returns (stream TranscriptIngestionAck);
+}
+
+message TranscriptSegmentRequest {
+  string stream_id = 1;
+  string session_id = 2;
+  uint32 sequence_number = 3;
+  string text = 4;
+  double confidence = 5;
+  bool is_final = 6;
+  uint64 offset_ms = 7;
+  uint64 duration_ms = 8;
+  int64 timestamp = 9;
+}
+
+message TranscriptIngestionAck {
+  string stream_id = 1;
+  uint32 last_received_sequence = 2;
+  bool accepted = 3;
+  string error_message = 4;
+}

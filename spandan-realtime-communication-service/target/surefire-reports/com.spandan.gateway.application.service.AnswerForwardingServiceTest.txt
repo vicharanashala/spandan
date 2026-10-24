@@ -1,0 +1,38 @@
+-------------------------------------------------------------------------------
+Test set: com.spandan.gateway.application.service.AnswerForwardingServiceTest
+-------------------------------------------------------------------------------
+Tests run: 3, Failures: 2, Errors: 1, Skipped: 0, Time elapsed: 4.157 s <<< FAILURE! -- in com.spandan.gateway.application.service.AnswerForwardingServiceTest
+com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldForwardAnswerSuccessfully -- Time elapsed: 3.982 s <<< ERROR!
+org.mockito.exceptions.misusing.UnnecessaryStubbingException: 
+
+Unnecessary stubbings detected.
+Clean & maintainable test code requires zero unnecessary code.
+Following stubbings are unnecessary (click to navigate to relevant line of code):
+  1. -> at com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldForwardAnswerSuccessfully(AnswerForwardingServiceTest.java:32)
+Please remove unnecessary stubbings or use 'lenient' strictness. More info: javadoc for UnnecessaryStubbingException class.
+	at org.mockito.junit.jupiter.MockitoExtension.afterEach(MockitoExtension.java:192)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldThrowWhenResponseServiceUnreachable -- Time elapsed: 0.044 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: Expected com.spandan.gateway.domain.exception.GatewayException to be thrown, but nothing was thrown.
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:152)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:73)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:35)
+	at org.junit.jupiter.api.Assertions.assertThrows(Assertions.java:3115)
+	at com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldThrowWhenResponseServiceUnreachable(AnswerForwardingServiceTest.java:51)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
+com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldThrowOnNonSuccessStatus -- Time elapsed: 0.007 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: Expected com.spandan.gateway.domain.exception.GatewayException to be thrown, but nothing was thrown.
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:152)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:73)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:35)
+	at org.junit.jupiter.api.Assertions.assertThrows(Assertions.java:3115)
+	at com.spandan.gateway.application.service.AnswerForwardingServiceTest.shouldThrowOnNonSuccessStatus(AnswerForwardingServiceTest.java:65)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+

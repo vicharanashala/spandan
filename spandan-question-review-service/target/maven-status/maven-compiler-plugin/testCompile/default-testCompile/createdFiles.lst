@@ -1,0 +1,3 @@
+com\spandan\review\application\ReviewOrchestratorTest.class
+com\spandan\review\application\ReviewStateMachineTest.class
+com\spandan\review\application\ReviewEventHandlerTest.class

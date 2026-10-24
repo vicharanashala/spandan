@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Structured JSON logging for production.
+
+  Console output is plain for local dev (k8s profile uses JSON, see <springProfile> below).
+  The K8s profile appends a separate JSON appender that emits one line per log record.
+-->
+<configuration>
+
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="spandan-api-gateway"/>
+    <springProperty scope="context" name="logLevel" source="logging.level.com.spandan.gateway" defaultValue="INFO"/>
+
+    <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                </timestamp>
+                <pattern>
+                    <pattern>
+                        {
+                          "service": "${appName}",
+                          "level": "%level",
+                          "logger": "%logger",
+                          "thread": "%thread",
+                          "message": "%message"
+                        }
+                    </pattern>
+                </pattern>
+                <mdc/>
+                <stackTrace/>
+            </providers>
+        </encoder>
+    </appender>
+
+    <!-- Default: plain console. The k8s profile switches to JSON. -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+
+    <logger name="com.spandan.gateway" level="${logLevel}"/>
+    <logger name="org.springframework.cloud.gateway" level="WARN"/>
+    <logger name="reactor.netty" level="INFO"/>
+    <logger name="io.netty" level="INFO"/>
+
+    <springProfile name="k8s">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="dev">
+        <root level="DEBUG">
+            <appender-ref ref="CONSOLE_PLAIN"/>
+        </root>
+    </springProfile>
+
+</configuration>

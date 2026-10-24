@@ -1,0 +1,39 @@
+-------------------------------------------------------------------------------
+Test set: com.spandan.gateway.application.service.WebSocketHandshakeServiceTest
+-------------------------------------------------------------------------------
+Tests run: 3, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 0.235 s <<< FAILURE! -- in com.spandan.gateway.application.service.WebSocketHandshakeServiceTest
+com.spandan.gateway.application.service.WebSocketHandshakeServiceTest.shouldValidateTokenSuccessfully -- Time elapsed: 0.208 s <<< ERROR!
+com.spandan.gateway.domain.exception.GatewayException: 
+Auth service unreachable: 
+Strict stubbing argument mismatch. Please check:
+ - this invocation of 'exchange' method:
+    restTemplate.exchange(
+    "http://localhost:8081/api/v1/auth/validate?token=valid-token",
+    POST,
+    <{token=valid-token},[Content-Type:"application/json"]>,
+    interface java.util.Map
+);
+    -> at com.spandan.gateway.application.service.WebSocketHandshakeService.validateToken(WebSocketHandshakeService.java:29)
+ - has following stubbing(s) with different arguments:
+    1. restTemplate.exchange(
+    null,
+    null,
+    null,
+    null
+);
+      -> at com.spandan.gateway.application.service.WebSocketHandshakeServiceTest.shouldValidateTokenSuccessfully(WebSocketHandshakeServiceTest.java:35)
+Typically, stubbing argument mismatch indicates user mistake when writing tests.
+Mockito fails early so that you can debug potential problem easily.
+However, there are legit scenarios when this exception generates false negative signal:
+  - stubbing the same method multiple times using 'given().will()' or 'when().then()' API
+    Please use 'will().given()' or 'doReturn().when()' API for stubbing.
+  - stubbed method is intentionally invoked with different arguments by code under test
+    Please use default or 'silent' JUnit Rule (equivalent of Strictness.LENIENT).
+For more information see javadoc for PotentialStubbingProblem class.
+	at com.spandan.gateway.domain.exception.GatewayException.serviceUnavailable(GatewayException.java:22)
+	at com.spandan.gateway.application.service.WebSocketHandshakeService.validateToken(WebSocketHandshakeService.java:40)
+	at com.spandan.gateway.application.service.WebSocketHandshakeServiceTest.shouldValidateTokenSuccessfully(WebSocketHandshakeServiceTest.java:42)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+
