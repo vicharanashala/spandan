@@ -10,6 +10,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import SoundToggle from '../components/SoundToggle'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
+import { useIntegrityMonitor } from '../hooks/useIntegrityMonitor'
 import { API_URL } from '../config.js'
 import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
 import { Bell, Check, CircleCheck, Clapperboard, ClipboardList, Hourglass, Lightbulb, Mic, TriangleAlert, Trophy, X } from 'lucide-react'
@@ -43,6 +44,21 @@ function StudentRoomPage() {
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+
+
+  // ── Integrity monitoring ────────────────────────────────────────────────
+  // Active only while a question is live. Logs tab switches, window blurs,
+  // fullscreen exits, and paste events to /api/integrity-events and emits
+  // a real-time socket alert to the teacher.
+  // needsFullscreen: true when the browser prompt overlay should be shown.
+  // enterFullscreen: must be called from a click handler (browser requirement).
+  const { needsFullscreen, enterFullscreen } = useIntegrityMonitor({
+    roomId:     room?._id,
+    questionId: currentQuestion?._id ?? currentQuestion?.question?._id ?? null,
+    token,
+    enabled:    !!currentQuestion   // active for full question duration, even after submitting
+  })
+  // ────────────────────────────────────────────────────────────────────────
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -89,6 +105,7 @@ function StudentRoomPage() {
       p.playVideo?.()
     }
   }, [teacherVideoPaused, currentQuestion, isVideoMode, isLiveStream])
+
 
   useEffect(() => {
     if (!token || !socket) return
@@ -1003,6 +1020,48 @@ function StudentRoomPage() {
             </div>
         </div>
       </div>
+      {/* ── Fullscreen prompt overlay ──────────────────────────────────────
+          Shown when a question is live and the browser isn't in fullscreen.
+          The student MUST click the button — that click is the user gesture
+          required by the browser's requestFullscreen() security policy.    */}
+      {needsFullscreen && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 99998,
+          background: 'rgba(0,0,0,0.85)',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: '20px'
+        }}>
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #7c3aed',
+            borderRadius: '16px', padding: '40px 48px',
+            textAlign: 'center', maxWidth: '420px', boxShadow: '0 8px 40px rgba(124,58,237,0.4)'
+          }}>
+            <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔒</div>
+            <h2 style={{ color: '#fff', fontSize: '22px', fontWeight: 700, marginBottom: '10px' }}>
+              Fullscreen Required
+            </h2>
+            <p style={{ color: '#a0aec0', fontSize: '14px', marginBottom: '28px', lineHeight: 1.6 }}>
+              This quiz must be taken in fullscreen mode.<br />
+              Tab switches, window changes, and exits will be recorded.
+            </p>
+            <button
+              onClick={enterFullscreen}
+              style={{
+                background: '#7c3aed', color: '#fff',
+                border: 'none', borderRadius: '10px',
+                padding: '14px 36px', fontSize: '16px', fontWeight: 700,
+                cursor: 'pointer', width: '100%',
+                transition: 'background 0.2s'
+              }}
+              onMouseOver={e => e.target.style.background = '#6d28d9'}
+              onMouseOut={e => e.target.style.background = '#7c3aed'}
+            >
+              Enter Fullscreen →
+            </button>
+          </div>
+        </div>
+      )}
+      {/* ──────────────────────────────────────────────────────────────── */}
     </div>
   )
 }
