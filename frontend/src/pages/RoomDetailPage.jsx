@@ -110,7 +110,8 @@ function RoomDetailPage() {
     questionProvider: 'minimax',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
-    points: 100
+    points: 100,
+    twoPassGeneration: false
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
@@ -414,7 +415,8 @@ function RoomDetailPage() {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 }
+        questionTypeMix: roomSettings.questionTypeMix || { MCQ: 0, TF: 100, MSQ: 0 },
+        twoPass: !!roomSettings.twoPassGeneration
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
@@ -450,7 +452,8 @@ function RoomDetailPage() {
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
-        questionTypeMix: typeMix
+        questionTypeMix: typeMix,
+        twoPass: !!roomSettings.twoPassGeneration
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingFromText(false)
