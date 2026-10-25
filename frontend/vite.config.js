@@ -32,6 +32,13 @@ export default defineConfig(({ mode }) => {
         '/socket.io': {
           target: 'http://localhost:3001',
           ws: true
+        },
+        // The client always connects on /spandan/socket.io (stores/socketStore.js); in production nginx
+        // strips the prefix. Do the same here, or local dev never connects and polls never reach students.
+        '/spandan/socket.io': {
+          target: 'http://localhost:3001',
+          ws: true,
+          rewrite: (path) => path.replace(/^\/spandan/, '')
         }
       }
     }

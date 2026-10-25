@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { PenLine, Timer, X, Check, Rocket } from 'lucide-react'
 import { Ico } from './icons'
 
-function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
+// defaultTimeToAnswer / defaultPoints: the room's settings, so Create Q starts from what the teacher configured.
+function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ', defaultTimeToAnswer = 30, defaultPoints = 100 }) {
   const [questionType, setQuestionType] = useState(defaultType)
   const [question, setQuestion] = useState('')
   const [options, setOptions] = useState([
@@ -11,8 +12,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     { text: '', isCorrect: false },
     { text: '', isCorrect: false }
   ])
-  const [timeToAnswer, setTimeToAnswer] = useState(30)
-  const [points, setPoints] = useState(100)
+  const [timeToAnswer, setTimeToAnswer] = useState(defaultTimeToAnswer)
+  const [points, setPoints] = useState(defaultPoints)
 
   // Launched state - once teacher launches, show timer mode
   const [isLaunched, setIsLaunched] = useState(false)
@@ -145,8 +146,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
       { text: '', isCorrect: false },
       { text: '', isCorrect: false }
     ])
-    setTimeToAnswer(30)
-    setPoints(100)
+    setTimeToAnswer(defaultTimeToAnswer)
+    setPoints(defaultPoints)
     onClose()
   }
 

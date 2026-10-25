@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import useIsMobile from '../hooks/useIsMobile'
 import { PageHeader, pageWash, inputStyle, primaryButton } from '../components/AppUI'
+import { cleanRoomCode, readInviteCode } from '../lib/inviteLink'
 import { KeyRound, Link as LinkIcon } from 'lucide-react'
 
 function JoinRoomPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { user, token } = useAuthStore()
   const { joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
-  const [roomCode, setRoomCode] = useState('')
+  // Prefilled when the student arrives via a teacher's invite link (?code=ABC123)
+  const [roomCode, setRoomCode] = useState(() => readInviteCode(searchParams.toString()))
   const [isJoining, setIsJoining] = useState(false)
   const [error, setError] = useState('')
   const [joinedRoom, setJoinedRoom] = useState(null)
@@ -95,7 +98,7 @@ function JoinRoomPage() {
                   type="text"
                   className="app-input"
                   value={roomCode}
-                  onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  onChange={(e) => setRoomCode(cleanRoomCode(e.target.value))}
                   onFocus={() => setIsFocused(true)}
                   onBlur={() => setIsFocused(false)}
                   onKeyDown={(e) => e.key === 'Enter' && !isDisabled && handleJoinRoom()}

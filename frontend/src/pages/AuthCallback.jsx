@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
+import { redirectAfterLogin } from '../lib/postLoginRedirect'
 import useThemeStore from '../stores/themeStore'
 
 // Landing route for the Google OAuth redirect. The backend redirects here with a URL fragment that
@@ -54,7 +55,7 @@ function AuthCallback() {
     }
     if (token) {
       completeGoogleLogin(token)
-        .then((user) => navigate(user?.role === 'teacher' ? '/teacher' : '/student', { replace: true }))
+        .then((user) => navigate(redirectAfterLogin(user?.role), { replace: true }))
         .catch((e) => { setState('error'); setMessage(e.message || 'Sign-in could not be completed') })
       return
     }
@@ -73,7 +74,7 @@ function AuthCallback() {
           setMessage('Your teacher account has been created and is pending admin approval. You can sign in once an administrator approves it.')
           return
         }
-        navigate(result?.user?.role === 'teacher' ? '/teacher' : '/student', { replace: true })
+        navigate(redirectAfterLogin(result?.user?.role), { replace: true })
       })
       .catch((e) => { setState('error'); setMessage(e.message || 'Sign-up could not be completed') })
       .finally(() => setSubmitting(false))

@@ -1,11 +1,20 @@
 import React, { useEffect, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
+import { rememberRedirect, clearRedirect } from '../lib/postLoginRedirect'
 
 function ProtectedRoute({ children, allowedRoles }) {
   const { token, user, isAuthenticated } = useAuthStore()
+  const location = useLocation()
   const [ hydrated, setHydrated ] = useState(false)
-  
+  const signedIn = !!token && isAuthenticated
+  const allowed = !allowedRoles || !user || allowedRoles.includes(user.role)
+
+  // A logged-out visitor's target page is saved below; once a protected page renders, it has been used.
+  useEffect(() => {
+    if (hydrated && signedIn && allowed) clearRedirect()
+  }, [hydrated, signedIn, allowed])
+
   // Wait for Zustand persistence to rehydrate
   useEffect(() => {
     // Zustand with persist sets a rehydrate key
@@ -36,13 +45,14 @@ function ProtectedRoute({ children, allowedRoles }) {
     )
   }
   
-  // Not authenticated - redirect to login
-  if (!token || !isAuthenticated) {
+  // Not authenticated - remember the page (e.g. an invite link) and redirect to login
+  if (!signedIn) {
+    rememberRedirect(location.pathname + location.search)
     return <Navigate to="/" replace />
   }
-  
+
   // Check role if specified
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
+  if (!allowed) {
     return <Navigate to="/" replace />
   }
   

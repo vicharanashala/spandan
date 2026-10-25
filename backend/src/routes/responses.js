@@ -8,6 +8,7 @@ import { anonymizeBoard, buildStudentBoard } from '../services/anonymizeLeaderbo
 import { checkRoomOwnership } from '../utils/roomOwnership.js'
 import { computeInsights } from '../services/insightsService.js'
 import { getInsightsBody, roomVersion } from '../services/insightsCache.js'
+import { earnedPercent } from '../services/studentStats.js'
 import { debug } from '../utils/debug.js'
 const router = express.Router()
 
@@ -384,10 +385,10 @@ router.get('/stats/student/:studentId', async (req, res) => {
     // Total responses (polls taken)
     const pollsTaken = await Response.countDocuments({ studentId })
 
-    // Get all responses for average calculation
-    const responses = await Response.find({ studentId })
-    const totalPoints = responses.reduce((sum, r) => sum + r.points, 0)
-    const average = pollsTaken > 0 ? Math.round((totalPoints / (pollsTaken * 100)) * 100) : 0
+    // Earned points as a share of what the answered polls were worth (each question's own points)
+    const responses = await Response.find({ studentId }).select('questionId points').lean()
+    const answeredQuestions = await Question.find({ _id: { $in: responses.map(r => r.questionId) } }).select('points').lean()
+    const average = earnedPercent(responses, new Map(answeredQuestions.map(q => [String(q._id), q.points])))
 
     // Count launched polls: questions with 'approved' status (approved & launched to students)
     // Use existingRoomIds (rooms that still exist) to count polls across the student's rooms.

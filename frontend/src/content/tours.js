@@ -48,7 +48,7 @@ export const TOURS = {
     role: 'teacher', path: /^\/teacher\/room\/[^/]+\/?$/,
     steps: [
       { target: 'room-code', title: 'Share the code',
-        body: 'Students join with this code (Copy puts it on your clipboard). The Participants box next to it counts who is in the room right now.' },
+        body: 'Students join with this code (Copy puts it on your clipboard; Link copies an invite link that opens Join Room with the code filled in). The Participants box next to it counts who is in the room right now.' },
       { target: 'settings', title: 'Set up the session first',
         body: 'Segment time, questions per segment, difficulty, question-type mix, time to answer, points and the anonymous leaderboard all live here. Adjust them before you start recording.' },
       { target: 'start-capture', title: 'Start teaching',

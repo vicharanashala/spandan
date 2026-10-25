@@ -22,7 +22,8 @@ import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
-import { ArrowLeft, Check, Clapperboard, Copy, FileText, Hourglass, LoaderCircle, Mic as MicIcon, PenLine, RefreshCw, Settings, Timer, Trophy, Users, X } from 'lucide-react'
+import { buildInviteLink } from '../lib/inviteLink'
+import { ArrowLeft, Check, Clapperboard, Copy, FileText, Hourglass, Link as LinkIcon, LoaderCircle, Mic as MicIcon, PenLine, RefreshCw, Settings, Timer, Trophy, Users, X } from 'lucide-react'
 import { Ico } from '../components/icons'
 
 function RoomDetailPage() {
@@ -42,6 +43,7 @@ function RoomDetailPage() {
   const [isRoomJoined, setIsRoomJoined] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
@@ -553,6 +555,12 @@ function RoomDetailPage() {
     navigator.clipboard.writeText(room.code)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const copyInviteLink = () => {
+    navigator.clipboard.writeText(buildInviteLink(room.code))
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 2000)
   }
 
   // Process transcription queue in order
@@ -1307,17 +1315,30 @@ function RoomDetailPage() {
               <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor, letterSpacing: '4px' }}>
                 {room.code}
               </span>
-              <button onClick={copyRoomCode} disabled={isEnded} style={{
-                padding: '4px 12px',
-                background: isEnded ? '#9ca3af' : (copied ? '#10b981' : 'var(--accent-solid)'),
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                fontSize: '12px',
-                cursor: isEnded ? 'not-allowed' : 'pointer'
-              }}>
-                {copied ? <><Ico as={Check} /> Copied</> : <><Ico as={Copy} /> Copy</>}
-              </button>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button onClick={copyRoomCode} disabled={isEnded} style={{
+                  padding: '4px 12px',
+                  background: isEnded ? '#9ca3af' : (copied ? '#10b981' : 'var(--accent-solid)'),
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  cursor: isEnded ? 'not-allowed' : 'pointer'
+                }}>
+                  {copied ? <><Ico as={Check} /> Copied</> : <><Ico as={Copy} /> Copy</>}
+                </button>
+                <button onClick={copyInviteLink} disabled={isEnded} title="Copy a link that opens Join Room with this code filled in" style={{
+                  padding: '4px 12px',
+                  background: isEnded ? '#9ca3af' : (linkCopied ? '#10b981' : 'var(--accent-solid)'),
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  cursor: isEnded ? 'not-allowed' : 'pointer'
+                }}>
+                  {linkCopied ? <><Ico as={Check} /> Copied</> : <><Ico as={LinkIcon} /> Link</>}
+                </button>
+              </div>
             </div>
 
             {/* Live participant count — seeded on load, kept current by room:joined / room:left */}
@@ -2079,6 +2100,8 @@ function RoomDetailPage() {
           isOpen={showCreateQuestion}
           onClose={() => setShowCreateQuestion(false)}
           onLaunch={handleCreateQuestion}
+          defaultTimeToAnswer={roomSettings.timeToAnswer || 30}
+          defaultPoints={roomSettings.points || 100}
         />
       )}
 

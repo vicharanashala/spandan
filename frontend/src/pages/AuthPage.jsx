@@ -9,6 +9,7 @@ import HelpButton from '../components/HelpButton'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { redirectAfterLogin } from '../lib/postLoginRedirect'
 import { ArrowLeft, ChartColumn, Check, GraduationCap, Lock as LockIcon, Mic, Moon, Presentation, Sun, Target, Zap } from 'lucide-react'
 import { Ico, renderIcon } from '../components/icons'
 
@@ -82,7 +83,7 @@ function AuthPage() {
 
   useEffect(() => {
     if (isAuthenticated && token) {
-      navigate(user?.role === 'teacher' ? '/teacher' : '/student')
+      navigate(redirectAfterLogin(user?.role))
     }
   }, [isAuthenticated, token, navigate, user])
 
@@ -114,11 +115,7 @@ function AuthPage() {
       try {
         const data = await login(formData.email, formData.password)
         // Navigate based on actual role from backend response, not local user state
-        if (data.user?.role === 'teacher') {
-          navigate('/teacher')
-        } else {
-          navigate('/student')
-        }
+        navigate(redirectAfterLogin(data.user?.role))
       } catch (err) {
         setValidationError(err.message || 'Login failed')
       }
@@ -155,7 +152,7 @@ function AuthPage() {
         setPendingMsg(data.message || 'Your teacher account is pending admin approval. You can sign in once an administrator approves it.')
         return
       }
-      navigate(data.user?.role === 'teacher' ? '/teacher' : '/student')
+      navigate(redirectAfterLogin(data.user?.role))
     } catch (err) {
       setValidationError(err.message || 'Registration failed')
     }
