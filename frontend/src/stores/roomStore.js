@@ -160,6 +160,11 @@ export const useRoomStore = create((set, get) => ({
     }
   },
 
+  // Enriched join. The API now returns the room PLUS the waiting-room decision:
+  //   { room, admitted, waitingRoom, watchOnly, admissionStatus, attendanceStatus, lateMinutes,
+  //     waitingRoomEnabled, policy, notification, attendance }
+  // Callers must read `result.room` (previously this resolved to the bare room). `waitingRoom` is
+  // true whenever the student is not yet a live participant (still waiting, or rejected).
   joinRoomByCode: async (code) => {
     const { authToken } = get()
     if (!authToken) throw new Error('Not authenticated')
@@ -180,11 +185,61 @@ export const useRoomStore = create((set, get) => ({
       }
 
       set({ currentRoom: data.room, isLoading: false })
-      return data.room
+      return {
+        room: data.room,
+        admitted: data.admitted !== false,
+        waitingRoom: !!data.waitingRoom,
+        watchOnly: !!data.watchOnly,
+        admissionStatus: data.admissionStatus || 'admitted',
+        attendanceStatus: data.attendanceStatus || 'on_time',
+        lateMinutes: data.lateMinutes || 0,
+        waitingRoomEnabled: !!data.waitingRoomEnabled,
+        policy: data.policy || 'automatic',
+        notification: data.notification || '',
+        attendance: data.attendance || null
+      }
     } catch (error) {
       set({ error: error.message, isLoading: false })
       throw error
     }
+  },
+
+  // Teacher: current waiting list for a room (used to seed the console lobby panel on load).
+  fetchWaitingList: async (roomId) => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+    const response = await fetch(`${API_URL}/rooms/${roomId}/waiting`, {
+      headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' }
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch waiting list')
+    return data
+  },
+
+  // Teacher: admit/reject a waiting student over REST (the socket path is the live fallback).
+  decideWaiting: async (roomId, studentId, action, reason = '') => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+    const response = await fetch(`${API_URL}/rooms/${roomId}/waiting/${studentId}/${action}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || `Failed to ${action} student`)
+    return data
+  },
+
+  // Student: attendance summary (streak, counters, recent rows) for the dashboard card.
+  fetchAttendanceSummary: async () => {
+    const { authToken } = get()
+    if (!authToken) throw new Error('Not authenticated')
+    const response = await fetch(`${API_URL}/rooms/student/attendance`, {
+      headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' }
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch attendance')
+    return data.attendance || null
   },
 
   updateRoom: async (roomId, updates) => {

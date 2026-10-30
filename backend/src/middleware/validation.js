@@ -36,6 +36,19 @@ export const verifyRegistrationSchema = registerSchema.extend({
 })
 
 // Room validation schemas
+// Waiting-room settings, shared by create + update paths (single source of ranges). Values mirror
+// the clamps in RoomSettingsModal.jsx.
+const waitingRoomFields = {
+  waitingRoomEnabled: z.boolean().optional(),
+  waitingRoomPolicy: z.enum(['automatic', 'manual']).optional(),
+  waitingRoomChime: z.boolean().optional(),
+  scheduledStartAt: z.union([z.string().datetime(), z.date(), z.null()]).optional(),
+  // Fractional minutes are allowed so the UI can offer a seconds mode (e.g. 30s = 0.5).
+  graceMinutes: z.number().min(0).max(120).optional(),              // dialog 0-120
+  lateWindowMinutes: z.number().min(0).max(240).optional(),         // dialog 0-240
+  latePenaltySp: z.number().int().min(0).max(1000).optional()       // dialog 0-1000
+}
+
 export const createRoomSchema = z.object({
   name: z.string().min(1, 'Room name is required').max(200),
   settings: z.object({
@@ -43,7 +56,8 @@ export const createRoomSchema = z.object({
     showResultsImmediately: z.boolean().optional(),
     requireCorrectAnswer: z.boolean().optional(),
     mode: z.enum(['normal', 'video']).optional(),
-    videoUrl: z.string().max(500).optional()
+    videoUrl: z.string().max(500).optional(),
+    ...waitingRoomFields
   }).optional()
 })
 
@@ -70,7 +84,20 @@ export const roomSettingsSchema = z.object({
   }).optional(),
   anonymousLeaderboard: z.boolean().optional(),
   anonymityPercent: z.number().int().min(0).max(100).optional(),   // dialog 0-100
-  revealBottomToStudents: z.boolean().optional()
+  revealBottomToStudents: z.boolean().optional(),
+  // Waiting room / attendance (ranges mirror RoomSettingsModal.jsx).
+  waitingRoomEnabled: z.boolean().optional(),
+  waitingRoomPolicy: z.enum(['automatic', 'manual']).optional(),
+  waitingRoomChime: z.boolean().optional(),
+  scheduledStartAt: z.union([z.string().datetime(), z.date(), z.null()]).optional(),
+  graceMinutes: z.number().min(0).max(120).optional(),             // dialog 0-120 (fractional = seconds)
+  lateWindowMinutes: z.number().min(0).max(240).optional(),        // dialog 0-240 (fractional = seconds)
+  latePenaltySp: z.number().int().min(0).max(1000).optional()      // dialog 0-1000
+})
+
+// Body of POST /rooms/:id/waiting/:studentId/admit|reject. Optional free-text reason for reject.
+export const waitingDecisionSchema = z.object({
+  reason: z.string().max(500).optional()
 })
 
 // Body of PUT /rooms/:id. The same route saves settings ({ settings }), edits the video link

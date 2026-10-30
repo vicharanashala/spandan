@@ -37,10 +37,12 @@ function JoinRoomPage() {
     setError('')
 
     try {
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
-      setJoinedRoom(room)
-      joinRoom(room.code, user._id)
-      navigate(`/student/session/${room.code}`)
+      const result = await joinRoomByCode(roomCode.trim().toUpperCase())
+      setJoinedRoom(result.room)
+      joinRoom(result.room.code, user._id)
+      // The session page itself renders the waiting lobby when admission hasn't happened yet, so we
+      // always navigate there; `result.admitted` tells it to show watch-only mode immediately.
+      navigate(`/student/session/${result.room.code}`)
     } catch (err) {
       setError(err.message || 'Failed to join room. Please check the code and try again.')
     } finally {

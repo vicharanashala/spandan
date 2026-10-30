@@ -18,7 +18,7 @@ import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript, getTranscripts } from '../services/transcriptService'
 import { lastSegmentInData, segmentToStart } from '../lib/segments'
-import { installUnlockOnInteraction } from '../lib/sounds'
+import { installUnlockOnInteraction, playWaitingChime } from '../lib/sounds'
 import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -31,7 +31,7 @@ function RoomDetailPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
-  const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const { getRoom, updateRoom, setAuthToken, fetchWaitingList, decideWaiting } = useRoomStore()
   const { isDark } = useThemeStore()
   const isMobile = useIsMobile()
   // Room code + participant count use a deep blue on light, but that reads too dark on the dark card;
@@ -119,6 +119,17 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  // Waiting room (manual policy): students awaiting admit/reject + their live count.
+  const [waitingStudents, setWaitingStudents] = useState([])
+  const [waitingCount, setWaitingCount] = useState(0)
+  const [decidingId, setDecidingId] = useState(null)
+  const [lobbyError, setLobbyError] = useState('')
+  // Mirror of the room's chime preference for the socket handler (the listener is registered once,
+  // so it reads this ref instead of capturing a stale settings object).
+  const waitingChimeRef = useRef(true)
+  useEffect(() => {
+    waitingChimeRef.current = roomSettings?.waitingRoomChime !== false
+  }, [roomSettings?.waitingRoomChime])
 
   useEffect(() => {
     if (token) {
@@ -153,18 +164,51 @@ function RoomDetailPage() {
       console.log('Teacher joined room successfully')
       setIsRoomJoined(true)
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      // Seed the lobby list (the join event only carries counts).
+      loadWaiting()
     }
 
     const handleRoomLeft = (data) => {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
 
+    // Live lobby counts (participants + waiting) broadcast to the participants channel.
+    const handleLobby = (data) => {
+      if (data?.participants !== undefined) setTotalParticipants(data.participants)
+      if (data?.waiting !== undefined) {
+        setWaitingCount(data.waiting)
+        // The count changed → refresh the names (someone new is waiting or a decision landed).
+        loadWaiting()
+      }
+    }
+
+    const handleWaitingList = (data) => {
+      if (Array.isArray(data?.waiting)) setWaitingStudents(data.waiting)
+      if (data?.waitingCount !== undefined) setWaitingCount(data.waitingCount)
+      else if (Array.isArray(data?.waiting)) setWaitingCount(data.waiting.length)
+      if (data?.participants !== undefined) setTotalParticipants(data.participants)
+    }
+
+    // A student just entered the waiting room. Play the quiet chime (unless this room turned it off
+    // in settings) and refresh the lobby names. The device-level mute is handled inside sounds.js.
+    const handleWaitingNew = (data) => {
+      if (waitingChimeRef.current) playWaitingChime()
+      if (data?.waiting !== undefined) setWaitingCount(data.waiting)
+      loadWaiting()
+    }
+
     socket.on('room:joined', handleRoomJoined)
     socket.on('room:left', handleRoomLeft)
+    socket.on('room:lobby', handleLobby)
+    socket.on('waiting:list', handleWaitingList)
+    socket.on('waiting:new', handleWaitingNew)
 
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
+      socket.off('room:lobby', handleLobby)
+      socket.off('waiting:list', handleWaitingList)
+      socket.off('waiting:new', handleWaitingNew)
     }
   }, [socket])
 
@@ -495,6 +539,34 @@ function RoomDetailPage() {
     }
   }
 
+  // Teacher lobby: pull the current waiting list. Safe to call repeatedly (idempotent read).
+  const loadWaiting = async () => {
+    try {
+      const data = await fetchWaitingList(roomId)
+      setWaitingStudents(Array.isArray(data?.waiting) ? data.waiting : [])
+      setWaitingCount(Number(data?.waitingCount ?? (data?.waiting?.length || 0)))
+    } catch (err) {
+      // A student who isn't the owner can't read the lobby; the teacher view is the only caller.
+      console.error('Failed to load waiting list:', err)
+    }
+  }
+
+  const handleWaitingDecision = async (studentId, action) => {
+    setLobbyError('')
+    setDecidingId(studentId)
+    try {
+      await decideWaiting(roomId, studentId, action)
+      // Optimistic removal; the server's room:lobby broadcast reconciles the counts.
+      setWaitingStudents(prev => prev.filter(s => s.studentId !== studentId))
+      setWaitingCount(prev => Math.max(0, prev - 1))
+      loadWaiting()
+    } catch (err) {
+      setLobbyError(err.message || `Failed to ${action} student`)
+    } finally {
+      setDecidingId(null)
+    }
+  }
+
   const loadRoom = async () => {
     setIsLoading(true)
     try {
@@ -511,6 +583,8 @@ function RoomDetailPage() {
       }
       // Load questions for this room from database
       loadQuestions(roomId)
+      // Seed the waiting-room lobby (manual policy) so the panel is populated on load.
+      loadWaiting()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -1350,6 +1424,19 @@ function RoomDetailPage() {
               </span>
             </div>
 
+            {/* Waiting-room count — only meaningful when the lobby is enabled. */}
+            {roomSettings?.waitingRoomEnabled && (
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: '4px', padding: '8px 20px', border: '2px solid var(--border-color)', borderRadius: '10px'
+              }}>
+                <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor }}>{waitingCount}</span>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
+                  <Ico as={Hourglass} /> Waiting
+                </span>
+              </div>
+            )}
+
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
             {/* Segment Timer Display */}
@@ -1526,6 +1613,73 @@ function RoomDetailPage() {
               </button>
             )}
           </div>
+
+          {/* Waiting Room lobby (manual policy): admit/reject each waiting student. */}
+          {roomSettings?.waitingRoomEnabled && roomSettings?.waitingRoomPolicy === 'manual' && (
+            <div style={{
+              background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)', padding: '18px 20px', marginBottom: '20px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: waitingStudents.length ? 14 : 0 }}>
+                <span style={{ display: 'inline-flex', color: 'var(--accent)' }}><Hourglass size={18} /></span>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 650, color: 'var(--text-primary)' }}>
+                  Waiting Room {waitingStudents.length > 0 && `(${waitingStudents.length})`}
+                </h3>
+                <button onClick={loadWaiting} style={{
+                  marginLeft: 'auto', padding: '5px 12px', background: 'transparent', color: 'var(--accent)',
+                  border: '1px solid var(--accent)', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer'
+                }}>
+                  Refresh
+                </button>
+              </div>
+              {lobbyError && (
+                <p role="alert" style={{ margin: '0 0 12px', fontSize: 13, color: '#dc2626' }}>{lobbyError}</p>
+              )}
+              {waitingStudents.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-secondary)' }}>
+                  No students waiting. Students who join will appear here for you to admit.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {waitingStudents.map((s) => (
+                    <div key={s.studentId} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                      padding: '10px 12px', background: 'var(--bg-primary)', borderRadius: 10, border: '1px solid var(--border-color)'
+                    }}>
+                      <div style={{ flex: 1, minWidth: 140 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{s.name || 'Student'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                          {s.enrollmentNumber || s.email || '—'}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleWaitingDecision(s.studentId, 'admit')}
+                        disabled={decidingId === s.studentId}
+                        style={{
+                          padding: '7px 16px', background: 'var(--success-solid)', color: 'white', border: 'none',
+                          borderRadius: 7, fontSize: 13, fontWeight: 600,
+                          cursor: decidingId === s.studentId ? 'not-allowed' : 'pointer', opacity: decidingId === s.studentId ? 0.6 : 1
+                        }}
+                      >
+                        Admit
+                      </button>
+                      <button
+                        onClick={() => handleWaitingDecision(s.studentId, 'reject')}
+                        disabled={decidingId === s.studentId}
+                        style={{
+                          padding: '7px 16px', background: 'transparent', color: '#dc2626', border: '1px solid #dc2626',
+                          borderRadius: 7, fontSize: 13, fontWeight: 600,
+                          cursor: decidingId === s.studentId ? 'not-allowed' : 'pointer', opacity: decidingId === s.studentId ? 0.6 : 1
+                        }}
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '470px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>

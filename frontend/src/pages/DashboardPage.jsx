@@ -147,7 +147,7 @@ function DashboardPage() {
 
   const disabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
   const activeRooms = (rooms || []).filter(r => !r.endedAt)
-  const firstName = (user?.name || 'Teacher').split(' ')[0]
+  const displayName = user?.name?.trim() || 'Teacher'
 
   return (
     <div style={{
@@ -172,7 +172,7 @@ function DashboardPage() {
         boxSizing: 'border-box'
       }}>
         <PageHeader isMobile={isMobile} icon={Hand} eyebrow={<>{dateLabel(now)} · <LiveClock /></>}
-          title={`${greeting(now)}, ${firstName}!`} subtitle="Manage your rooms and questions" />
+          title={`${greeting(now)}, ${displayName}!`} subtitle="Manage your rooms and questions" />
 
         {/* Dashboard content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 32px', maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>

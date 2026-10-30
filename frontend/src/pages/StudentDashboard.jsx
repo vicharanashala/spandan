@@ -9,7 +9,8 @@ import useIsMobile from '../hooks/useIsMobile'
 import useNow from '../hooks/useNow'
 import { PageHeader, pageWash, greeting, dateLabel, LiveClock, inputStyle, primaryButton, RoomCard, Pill, EmptyState } from '../components/AppUI'
 import { StatTile, TileGrid, SectionLabel, SectionHeader, cardStyle } from '../components/InsightUI'
-import { CircleCheck, Clapperboard, GraduationCap, Library, Link as LinkIcon, Mic, SkipForward, Telescope, TrendingUp } from 'lucide-react'
+import AttendanceStreakCard from '../components/AttendanceStreakCard'
+import { CircleCheck, Clapperboard, GraduationCap, Library, Link as LinkIcon, Mic, ShieldCheck, SkipForward, Telescope, TrendingUp } from 'lucide-react'
 
 function StudentDashboard() {
   const isMobile = useIsMobile()
@@ -17,10 +18,12 @@ function StudentDashboard() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
-  const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms } = useRoomStore()
+  const { activeRooms, joinRoomByCode, setAuthToken, fetchActiveRooms, fetchAttendanceSummary } = useRoomStore()
   
   const [roomCode, setRoomCode] = useState('')
   const [isJoining, setIsJoining] = useState(false)
+  const [attendance, setAttendance] = useState(null)
+  const [statsReady, setStatsReady] = useState(false)
   const [stats, setStats] = useState({
     totalRooms: 0,
     pollsTaken: 0,
@@ -33,6 +36,33 @@ function StudentDashboard() {
       setAuthToken(token)
       fetchStudentStats()
       fetchActiveRooms()
+    }
+  }, [token])
+
+  // Live late streak: refresh when the tab regains focus and every 30s while visible, so a late
+  // join in another tab/room is reflected without needing a full page reload.
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const summary = await fetchAttendanceSummary()
+        if (!cancelled) setAttendance(summary)
+      } catch (err) {
+        // The card is supplementary; a transient API failure should not break the dashboard.
+        console.error('Failed to fetch attendance summary:', err)
+      }
+    }
+    load()
+    const refresh = () => { if (document.visibilityState !== 'hidden') load() }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    const timer = setInterval(refresh, 30000)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+      clearInterval(timer)
     }
   }, [token])
 
@@ -49,6 +79,7 @@ function StudentDashboard() {
           pollsMissed: data.stats.pollsMissed || 0,
           average: data.stats.average || 0
         })
+        setStatsReady(true)
       }
     } catch (err) {
       console.error('Failed to fetch student stats:', err)
@@ -59,11 +90,12 @@ function StudentDashboard() {
     if (!roomCode.trim()) return
     setIsJoining(true)
     try {
-      // First validate the room exists via API
-      const room = await joinRoomByCode(roomCode.trim().toUpperCase())
+      // First validate the room exists via API (returns the enriched join payload).
+      const result = await joinRoomByCode(roomCode.trim().toUpperCase())
+      const room = result.room
       // Then join via socket
       joinRoom(room.code, user._id)
-      // Then navigate to session
+      // Then navigate to session (the page shows the waiting lobby if we are not admitted yet)
       navigate(`/student/session/${room.code}`)
     } catch (err) {
       console.error('Failed to join room:', err)
@@ -73,7 +105,9 @@ function StudentDashboard() {
   }
 
   const totalPolls = stats.pollsTaken + stats.pollsMissed
-  const firstName = (user?.name || 'Student').split(' ')[0]
+  // Show the FULL name (e.g. "Student 1"), not just the first word — otherwise every demo account
+  // reads "Student" and you can't tell which student's dashboard is open. Email adds a second cue.
+  const displayName = user?.name || 'Student'
   const joinDisabled = isJoining || !roomCode.trim()
 
   return (
@@ -97,19 +131,32 @@ function StudentDashboard() {
         transition: 'margin-left 0.2s ease'
       }}>
         <PageHeader isMobile={isMobile} icon={GraduationCap} eyebrow={<>{dateLabel(now)} · <LiveClock /></>}
-          title={`${greeting(now)}, ${firstName}!`} subtitle="Join rooms and participate in polls" />
+          title={`${greeting(now)}, ${displayName}!`}
+          subtitle={user?.email ? `${user.email} · Join rooms and participate in polls` : 'Join rooms and participate in polls'} />
 
         {/* Dashboard content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 32px', maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>
           <SectionLabel>Your progress</SectionLabel>
           <TileGrid isMobile={isMobile} cols={4} tour="stats">
             {[
-              { icon: Library, label: 'Rooms joined', value: stats.totalRooms, sub: 'sessions attended', tint: 'var(--accent)' },
-              { icon: CircleCheck, label: 'Polls taken', value: stats.pollsTaken, sub: totalPolls ? `of ${totalPolls} polls` : 'answered so far', tint: '#10b981', progress: totalPolls ? (stats.pollsTaken / totalPolls) * 100 : undefined },
-              { icon: SkipForward, label: 'Polls missed', value: stats.pollsMissed, sub: stats.pollsMissed ? 'not answered in time' : 'none missed', tint: '#ef4444' },
-              { icon: TrendingUp, label: 'Earned points', value: `${stats.average}%`, sub: 'of the points available', tint: '#8b5cf6', progress: stats.average },
+              { icon: Library, label: 'Rooms joined', value: statsReady ? stats.totalRooms : '—', sub: 'sessions attended', tint: 'var(--accent)' },
+              { icon: CircleCheck, label: 'Polls taken', value: statsReady ? stats.pollsTaken : '—', sub: totalPolls ? `of ${totalPolls} polls` : 'answered so far', tint: '#10b981', progress: statsReady && totalPolls ? (stats.pollsTaken / totalPolls) * 100 : undefined },
+              { icon: SkipForward, label: 'Polls missed', value: statsReady ? stats.pollsMissed : '—', sub: stats.pollsMissed ? 'not answered in time' : 'none missed', tint: '#ef4444' },
+              { icon: TrendingUp, label: 'Earned points', value: statsReady ? `${stats.average}%` : '—', sub: 'of the points available', tint: '#8b5cf6', progress: statsReady ? stats.average : undefined },
             ].map(t => <StatTile key={t.label} {...t} isMobile={isMobile} />)}
           </TileGrid>
+
+          {/* Live late-arrival streak (0-3) and the strike consequence */}
+          <SectionLabel>Attendance</SectionLabel>
+          {attendance ? (
+            <AttendanceStreakCard attendance={attendance} isMobile={isMobile} />
+          ) : (
+            // Placeholder while the summary loads: without it the card would briefly show zeros
+            // and a misleading "Local data" badge.
+            <div className="insight-card" style={cardStyle(isMobile)} aria-busy="true">
+              <SectionHeader icon={ShieldCheck} title="Late streak" hint="Loading your standing…" />
+            </div>
+          )}
 
           {/* Quick Join */}
           <SectionLabel>Join a session</SectionLabel>

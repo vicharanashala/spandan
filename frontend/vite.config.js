@@ -27,7 +27,18 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: 'http://localhost:3001',
-          changeOrigin: true
+          changeOrigin: true,
+          // While the API restarts (node --watch) the proxy's default error response is an EMPTY 500,
+          // so the client's response.json() throws "Unexpected end of JSON input". Send real JSON
+          // instead so the UI shows a useful "API unavailable" message. Vite registers its own error
+          // handler AFTER this one, and its handler skips responses we've already written.
+          configure: (proxy) => {
+            proxy.on('error', (err, req, res) => {
+              if (!res || res.headersSent || res.writableEnded || typeof res.writeHead !== 'function') return
+              res.writeHead(502, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: 'API server is unavailable. Please retry in a moment.' }))
+            })
+          }
         },
         '/socket.io': {
           target: 'http://localhost:3001',

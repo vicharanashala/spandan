@@ -27,21 +27,36 @@ router.use(authenticate)
 // Membership: cache ONLY confirmed memberships (never negatives) and always fall through to the DB
 // on a miss — so a student who just joined is never wrongly rejected. Short TTL bounds staleness
 // (a student who left still passes for up to TTL, which is benign).
+//
+// Waiting room: the cache stores ADMISSION too, because a waiting/rejected member must NOT be able
+// to submit a response (they are only subscribed to the viewers channel). The value is
+// 'admitted' | 'blocked'. Admission changes (admit/reject/room end) call invalidateMemberCache so a
+// decision takes effect on the very next submit instead of after the TTL.
 const MEMBER_TTL_MS = Number(process.env.MEMBER_CACHE_TTL_MS) || 60000
-const memberCache = new Map() // `${roomId}:${studentId}` -> expiresAt(ms)
+const memberCache = new Map() // `${roomId}:${studentId}` -> { admitted, expiresAt(ms) }
 
+export function invalidateMemberCache(roomId, studentId) {
+  memberCache.delete(`${roomId}:${studentId}`)
+}
+
+// Returns true only for confirmed ADMITTED members. A waiting/rejected member returns false, which
+// the POST handler turns into the same 403 a non-member gets.
 async function isRoomMember(RoomMember, roomId, studentId) {
   const key = `${roomId}:${studentId}`
-  const exp = memberCache.get(key)
-  if (exp && exp > Date.now()) return true
-  const found = await RoomMember.findOne({ roomId, studentId }).select('_id').lean()
+  const hit = memberCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.admitted
+  const found = await RoomMember.findOne({ roomId, studentId }).select('admissionStatus attendanceStatus').lean()
+  // Absent admissionStatus predates the waiting room -> admitted. A very-late arrival is admitted
+  // but watch-only, so they are blocked here too.
+  const admitted = !!found && (found.admissionStatus === 'admitted' || found.admissionStatus == null) &&
+    found.attendanceStatus !== 'very_late'
   if (found) {
     if (memberCache.size > 50000) memberCache.clear() // safe bound: a miss just re-hits the DB
-    memberCache.set(key, Date.now() + MEMBER_TTL_MS)
-    return true
+    memberCache.set(key, { admitted, expiresAt: Date.now() + MEMBER_TTL_MS })
   }
-  return false
+  return admitted
 }
+
 
 // Question: an approved question is immutable while it is being answered (teacher edits happen
 // pre-launch), so cache the lean doc used for scoring. Short TTL so any change still propagates.
@@ -109,10 +124,12 @@ router.post('/', authorize('student'), async (req, res) => {
     const { roomId, questionId, selectedOptions, responseTime } = req.body
     const studentId = req.user._id // Must be authenticated user
 
-    // Verify student is in the room (member of RoomMember) — cached (Fix 4), DB fallback on miss.
+    // Verify student is an ADMITTED member of the room — cached (Fix 4), DB fallback on miss.
+    // A waiting-room or rejected student is deliberately NOT admitted and is refused here, so the
+    // watch-only UI is enforced server-side and not merely by the client.
     const isMember = await isRoomMember(RoomMember, roomId, studentId)
     if (!isMember) {
-      return res.status(403).json({ error: 'You have not joined this room' })
+      return res.status(403).json({ error: 'You are not admitted to this room' })
     }
 
     if (!roomId || !questionId || !selectedOptions || !Array.isArray(selectedOptions)) {
@@ -523,6 +540,10 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
       if (!isMember) {
         return res.status(403).json({ error: 'Not a member of this room' })
       }
+      // Very-late (watch-only) students see the video and nothing else, including past polls.
+      if (isMember.attendanceStatus === 'very_late') {
+        return res.status(403).json({ error: 'You joined very late and can only watch the video' })
+      }
     }
 
     // Ended rooms serve this student's per-question breakdown from the shared snapshot — an O(1)
@@ -768,8 +789,8 @@ router.get('/leaderboard/:roomId', async (req, res) => {
     // Check if student is a member of the room
     const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
     
-    // Deny access if neither
-    if (!isTeacher && !isStudentMember) {
+    // Deny access if neither. Very-late (watch-only) students may not see the leaderboard either.
+    if (!isTeacher && (!isStudentMember || isStudentMember.attendanceStatus === 'very_late')) {
       return res.status(403).json({ error: 'Not authorized to view this leaderboard' })
     }
 

@@ -56,8 +56,29 @@ const roomSchema = new mongoose.Schema({
     // Only meaningful while anonymousLeaderboard is ON. When the teacher turns this ON, students ALSO
     // see the real names of the bottom anonymityPercent% (the same lowest-scorer slice the teacher
     // sees) appended to their masked top-N board. OFF (default) = students see only the masked top-N.
-    revealBottomToStudents: { type: Boolean, default: false }
-  }
+    revealBottomToStudents: { type: Boolean, default: false },
+    // --- Waiting room & attendance ---------------------------------------------------------
+    // When OFF (default) every student who has the code joins the live session directly, exactly
+    // as before. When ON, joins are routed through a waiting room and gated by the policy below.
+    waitingRoomEnabled: { type: Boolean, default: false },
+    // 'automatic' = admit immediately (attendance still reflects timing);
+    // 'manual'    = admit on-time/late students immediately; only very_late arrivals wait for approval.
+    waitingRoomPolicy: { type: String, enum: ['automatic', 'manual'], default: 'automatic' },
+    // Play a subtle chime on the teacher's device when a student enters the waiting room.
+    waitingRoomChime: { type: Boolean, default: true },
+    // Planned class start. Drives on_time / late / very_late classification at join/admission time.
+    scheduledStartAt: { type: Date, default: null },
+    // Minutes after scheduledStartAt that still count as on time. May be fractional: the settings
+    // dialog's seconds mode stores e.g. 0.5 for 30s.
+    graceMinutes: { type: Number, default: 5, min: 0, max: 120 },
+    // Minutes after the grace period that still count as "late" (beyond that = very_late).
+    lateWindowMinutes: { type: Number, default: 15, min: 0, max: 240 },
+    // SP penalty applied by the attendance ledger for a late arrival (very_late = 2x, absent = 3x).
+    latePenaltySp: { type: Number, default: 0, min: 0, max: 1000 }
+  },
+  // Set once when the room ends and the attendance ledger has been processed. Makes end-of-room
+  // processing idempotent (a second end/recovery run is a no-op).
+  attendanceProcessedAt: { type: Date, default: null }
 }, {
   timestamps: true
 })

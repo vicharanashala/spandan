@@ -23,6 +23,7 @@ import AdminPage from './pages/AdminPage'
 import TermsPage from './pages/TermsPage'
 import TermsGate from './components/TermsGate'
 import { isTokenExpired } from './lib/jwt.js'
+import { BASE_PATH } from './config.js'
 
 function App() {
   const { isDark } = useThemeStore()
@@ -67,7 +68,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={BASE_PATH || '/'}>
       {/* Mounted once for every page: the ⓘ help popup and the guided tour overlay (auto-starts per page). */}
       <HelpModal />
       <Tour />

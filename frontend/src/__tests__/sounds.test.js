@@ -63,7 +63,7 @@ describe('mute preference', () => {
 })
 
 describe('playing', () => {
-  it('teacher cue = 10 tones over ~5 s, student cue = 18 tones over ~5 s, preview = 1 short tone', async () => {
+  it('teacher cue = 10 tones over ~5 s, student cue = 18 tones over ~5 s, waiting chime = 2 short quiet tones, preview = 1 short tone', async () => {
     const s = load()
     const last = (notes) => Math.max(...notes.map(([, at, dur]) => at + dur))
     expect(s.TEACHER_READY_NOTES).toHaveLength(10)
@@ -71,13 +71,17 @@ describe('playing', () => {
     expect(s.STUDENT_QUESTION_NOTES).toHaveLength(18)
     expect(last(s.STUDENT_QUESTION_NOTES)).toBeGreaterThanOrEqual(4.9)
     expect(last(s.STUDENT_QUESTION_NOTES)).toBeLessThanOrEqual(s.CUE_DURATION_SECONDS)
+    // The waiting chime is deliberately tiny: two notes, under half a second.
+    expect(s.WAITING_CHIME_NOTES).toHaveLength(2)
+    expect(last(s.WAITING_CHIME_NOTES)).toBeLessThanOrEqual(0.5)
 
     expect(await s.playTeacherReady()).toBe('played')
     expect(await s.playStudentQuestion()).toBe('played')
+    expect(await s.playWaitingChime()).toBe('played')
     expect(await s.playPreview()).toBe('played')
     const ctx = FakeContext.instances[0]
     expect(FakeContext.instances).toHaveLength(1) // one shared context
-    expect(ctx.oscillators).toHaveLength(10 + 18 + 1)
+    expect(ctx.oscillators).toHaveLength(10 + 18 + 2 + 1)
     for (const o of ctx.oscillators) { expect(o.start).toHaveBeenCalled(); expect(o.stop).toHaveBeenCalled() }
   })
 

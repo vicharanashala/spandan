@@ -1,6 +1,6 @@
 // Real-schema tests for PUT /rooms/:id validation (roomUpdateSchema / roomSettingsSchema).
 // The ranges must match what RoomSettingsModal.jsx lets a teacher pick.
-import { roomUpdateSchema, roomSettingsSchema } from '../middleware/validation.js'
+import { roomUpdateSchema, roomSettingsSchema, createRoomSchema } from '../middleware/validation.js'
 
 const ok = (body) => roomUpdateSchema.safeParse(body).success
 const firstError = (body) => roomUpdateSchema.safeParse(body).error.issues[0]
@@ -82,5 +82,51 @@ describe('PUT /rooms/:id body (roomUpdateSchema)', () => {
   it('roomSettingsSchema alone still validates a bare settings object', () => {
     expect(roomSettingsSchema.safeParse(fullSettings).success).toBe(true)
     expect(roomSettingsSchema.safeParse({ segmentTime: 30 }).success).toBe(false)
+  })
+
+  describe('waiting room + attendance fields', () => {
+    const waiting = {
+      waitingRoomEnabled: true,
+      waitingRoomPolicy: 'manual',
+      waitingRoomChime: true,
+      scheduledStartAt: new Date().toISOString(),
+      graceMinutes: 5,
+      lateWindowMinutes: 15,
+      latePenaltySp: 10
+    }
+
+    it('accepts the waiting-room settings on both create and update', () => {
+      expect(createRoomSchema.safeParse({ name: 'Room', settings: waiting }).success).toBe(true)
+      expect(ok({ settings: { ...fullSettings, ...waiting } })).toBe(true)
+    })
+
+    it('accepts every dialog extreme (grace 0/120, window 0/240, penalty 0/1000)', () => {
+      expect(ok({ settings: { graceMinutes: 0, lateWindowMinutes: 0, latePenaltySp: 0 } })).toBe(true)
+      expect(ok({ settings: { graceMinutes: 120, lateWindowMinutes: 240, latePenaltySp: 1000 } })).toBe(true)
+    })
+
+    it('accepts a null / ISO / Date scheduledStartAt', () => {
+      expect(ok({ settings: { scheduledStartAt: null } })).toBe(true)
+      expect(ok({ settings: { scheduledStartAt: new Date().toISOString() } })).toBe(true)
+      expect(ok({ settings: { scheduledStartAt: new Date() } })).toBe(true)
+    })
+
+    it('rejects out-of-range values and non-integer penalties', () => {
+      expect(ok({ settings: { graceMinutes: 121 } })).toBe(false)
+      expect(ok({ settings: { lateWindowMinutes: 241 } })).toBe(false)
+      expect(ok({ settings: { latePenaltySp: 1001 } })).toBe(false)
+      expect(ok({ settings: { latePenaltySp: 2.5 } })).toBe(false)
+    })
+
+    it('accepts fractional minutes for seconds-level grace / late window', () => {
+      expect(ok({ settings: { graceMinutes: 2.5 } })).toBe(true)
+      expect(ok({ settings: { graceMinutes: 0.5, lateWindowMinutes: 1.5 } })).toBe(true)
+    })
+
+    it('rejects an unknown policy and a non-date scheduledStartAt', () => {
+      expect(ok({ settings: { waitingRoomPolicy: 'anarchy' } })).toBe(false)
+      expect(ok({ settings: { waitingRoomChime: 'loud' } })).toBe(false)
+      expect(ok({ settings: { scheduledStartAt: 'tomorrow morning' } })).toBe(false)
+    })
   })
 })

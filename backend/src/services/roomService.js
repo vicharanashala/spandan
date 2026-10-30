@@ -4,6 +4,8 @@ import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
+import { ensureRoomMember, evaluateJoin } from './waitingRoom.js'
+import { getStudentAttendanceSummary } from './attendanceLedger.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -30,6 +32,54 @@ export const getRoomByCode = async (code) => {
     throw new Error('Room not found')
   }
   return room
+}
+
+// Enriched join used by both the REST join (GET /rooms/join/:code) and the waiting-room flows.
+// Creates/refreshes the RoomMember row (never demoting an admitted student), then returns the
+// room plus everything the client needs to decide between the live session and the waiting room:
+//
+//   { room, admitted, waitingRoom, admissionStatus, attendanceStatus, lateMinutes,
+//     waitingRoomEnabled, policy, notification, attendance }
+//
+// Contract change: joinRoomByCode used to resolve to the bare room; callers must now read
+// `.room`. See frontend/src/stores/roomStore.js.
+export const joinRoomByCode = async (code, studentId, { at = new Date() } = {}) => {
+  const room = await getRoomByCode(code)
+  if (!room) throw new Error('Room not found')
+  if (room.endedAt) throw new Error('This room has ended and can no longer be joined')
+
+  const { member, evaluation, becameWaiting = false } = await ensureRoomMember({ room, studentId, at })
+  // The account entering the room is always a participant in the attendance ledger view, even if
+  // it is still waiting, so we do not filter the summary by admission here.
+  let attendance = null
+  try {
+    attendance = await getStudentAttendanceSummary(studentId)
+  } catch (e) {
+    attendance = null
+  }
+
+  return {
+    room,
+    member,
+    admitted: evaluation.admitted,
+    waitingRoom: evaluation.waitingRoom,
+    watchOnly: evaluation.watchOnly,
+    admissionStatus: evaluation.state,
+    attendanceStatus: evaluation.attendanceStatus,
+    lateMinutes: evaluation.lateMinutes,
+    waitingRoomEnabled: evaluation.enabled,
+    policy: evaluation.policy,
+    notification: evaluation.notification,
+    attendance,
+    // True only when this join moved the student INTO the waiting room (drives the teacher chime).
+    becameWaiting
+  }
+}
+
+// Current waiting-room state for a student (used by polling/refresh and the socket layer).
+export const getJoinState = async (room, studentId, { at = new Date() } = {}) => {
+  const member = await RoomMember.findOne({ roomId: room._id, studentId })
+  return evaluateJoin({ room, member, at })
 }
 
 export const getRoomsByTeacher = async (teacherId, options = {}) => {

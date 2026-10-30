@@ -13,6 +13,17 @@ import { FailoverStore } from './middleware/rateLimitStore.js'
 // client queues commands, which would hang an answer submit until Redis returns.
 import { initRedis, isRedisReady } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
+import {
+  ensureRoomMember,
+  evaluateJoin,
+  admitRoomMember,
+  rejectRoomMember,
+  listWaitingMembers,
+  countParticipants,
+  countWaiting,
+  participantsChannel,
+  viewersChannel
+} from './services/waitingRoom.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
 import { buildStudentBoard } from './services/anonymizeLeaderboard.js'
@@ -315,6 +326,12 @@ app.set('liveUpdates', {
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', 1)
 
+// API responses are authenticated and change constantly (live rooms, balances, streaks). Express's
+// default weak ETag makes browsers send If-None-Match and receive 304 with no body; fetch clients
+// that check response.ok then treat the refresh as a failure and render stale zeroes. Disable it so
+// every API read returns a fresh 200 body.
+app.set('etag', false)
+
 // Rate limiting — shared across instances via Redis when enabled, else per-process memory.
 // A shared store is required for multi-instance so limits are global, not N-times looser.
 // FailoverStore counts in memory while Redis is down, so a Redis outage can't hang every request.
@@ -584,7 +601,6 @@ io.on('connection', (socket) => {
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
 
       // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
       // caller is allowed in (teacher must own it; student may join an active room by code).
@@ -595,34 +611,143 @@ io.on('connection', (socket) => {
         return
       }
 
-      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
+      // Private per-user channel: waiting-room decisions AND the leaderboard "your row" fold are
+      // pushed here, so a student is reachable even while they are still in the lobby.
+      socket.join('user:' + userId)
+
+      // Channel routing depends on the waiting-room decision:
+      //   participants channel (room.code)           -> live session (polls, leaderboard)
+      //   viewers channel   (viewers:<room.code>)    -> waiting room / rejected (watch-only)
+      // A student is a participant only when admitted; teachers always join as participants.
+      let evaluation = null
+      let becameWaiting = false
       if (role === 'student') {
-        await RoomMember.findOneAndUpdate(
-          { roomId: room._id, studentId: userId },
-          { roomId: room._id, studentId: userId, joinedAt: new Date() },
-          { upsert: true, new: true }
-        )
+        // Enroll + keep the member row current (never demotes an admitted student).
+        const ensured = await ensureRoomMember({ room: room, studentId: userId })
+        evaluation = ensured.evaluation
+        becameWaiting = !!ensured.becameWaiting
       }
 
-      // Authorized → now join the socket room and announce. The room-wide event carries only the
-      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
-      socket.join(roomCode)
-      // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
-      // (privacy — a student never receives the full board, just the public top 10 + their own rank).
-      socket.join('user:' + userId)
-      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      // Very-late arrivals are admitted but watch-only, so they also go to the viewers channel.
+      const asViewer = role === 'student' && evaluation && (!evaluation.admitted || evaluation.watchOnly)
+      // socket.io rooms are joined by key; leave neither channel before joining the right one so a
+      // re-join (e.g. after admit) relocates the socket cleanly.
+      socket.leave(participantsChannel(roomCode))
+      socket.leave(viewersChannel(roomCode))
+      socket.join(asViewer ? viewersChannel(roomCode) : participantsChannel(roomCode))
 
-      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      // Authorized → announce. The room-wide event carries only aggregate counts, never the
+      // joiner's userId (which would let any peer harvest participant IDs). Both channels get the
+      // counts so the lobby UI and the teacher view agree.
+      const [participantCount, waitingCount] = await Promise.all([
+        countParticipants(room._id),
+        countWaiting(room._id)
+      ])
+      const lobby = { roomCode, participants: participantCount, waiting: waitingCount }
+      io.to(participantsChannel(roomCode)).emit('room:joined', lobby)
+      io.to(participantsChannel(roomCode)).emit('room:lobby', lobby)
+      if (waitingCount > 0) io.to(viewersChannel(roomCode)).emit('room:lobby', lobby)
+
+      // Subtle teacher chime: only when this join actually MOVED the student into the waiting room
+      // (not on every reconnect) and the room has not disabled it in its settings.
+      if (becameWaiting && room.settings?.waitingRoomChime !== false) {
+        const teacherId = room.teacher?._id || room.teacher
+        if (teacherId) {
+          io.to('user:' + teacherId).emit('waiting:new', {
+            roomCode,
+            waiting: waitingCount
+          })
+        }
+      }
+
+      // Tell a waiting/rejected/watch-only student their current state (drives the lobby UI).
+      if (asViewer && evaluation) {
+        socket.emit('room:waiting', {
+          roomCode,
+          roomId: room._id,
+          admissionStatus: evaluation.state,
+          admitted: evaluation.admitted,
+          waitingRoom: !evaluation.admitted,
+          watchOnly: evaluation.watchOnly,
+          attendanceStatus: evaluation.attendanceStatus,
+          notification: evaluation.notification
+        })
+      }
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
       const vp = videoProgress.get(roomCode)
       if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
       // If the teacher's question popup is currently open, a late-joining student must start paused.
-      if (videoPaused.get(roomCode)) socket.emit('video:pause')
+      // Watch-only students have no polls, so their video is never held for one.
+      if (videoPaused.get(roomCode) && !evaluation?.watchOnly) socket.emit('video:pause')
     } catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
+    }
+  })
+
+  // Teacher-only: fetch the current waiting list (used to seed the console lobby panel).
+  socket.on('waiting:list', async ({ roomCode } = {}) => {
+    const room = await verifyRoomOwner(socket, roomCode)
+    if (!room) return
+    try {
+      const waiting = await listWaitingMembers(room._id)
+      socket.emit('waiting:list', {
+        roomCode,
+        waiting: waiting.map((m) => ({
+          studentId: m.studentId?._id || m.studentId,
+          name: m.studentId?.name || 'Student',
+          email: m.studentId?.email || '',
+          requestedAt: m.waitingRequestedAt || m.joinedAt
+        })),
+        participants: await countParticipants(room._id)
+      })
+    } catch (e) { /* non-fatal */ }
+  })
+
+  // Teacher-only: admit a waiting student from the console. Relocates the student's sockets from the
+  // viewers channel to the participants channel and tells them to re-join (the client then re-emits
+  // room:join, which performs the relocation authoritatively).
+  socket.on('waiting:admit', async ({ roomCode, studentId } = {}) => {
+    const room = await verifyRoomOwner(socket, roomCode)
+    if (!room || !studentId) return
+    try {
+      const result = await admitRoomMember({ room, studentId, admittedBy: socket.data.userId })
+      if (!result) return
+      io.to('user:' + studentId).emit('room:admitted', {
+        roomCode,
+        roomId: room._id,
+        attendanceStatus: result.evaluation.attendanceStatus,
+        watchOnly: result.evaluation.watchOnly,
+        notification: result.evaluation.notification || 'Your teacher admitted you. You are now in the room.'
+      })
+      const [participants, waiting] = await Promise.all([countParticipants(room._id), countWaiting(room._id)])
+      io.to(participantsChannel(roomCode)).emit('room:lobby', { roomCode, participants, waiting })
+      io.to(viewersChannel(roomCode)).emit('room:lobby', { roomCode, participants, waiting })
+    } catch (e) {
+      console.error('waiting:admit error:', e.message)
+    }
+  })
+
+  // Teacher-only: reject a waiting student from the console. They stay in the viewers channel.
+  socket.on('waiting:reject', async ({ roomCode, studentId, reason } = {}) => {
+    const room = await verifyRoomOwner(socket, roomCode)
+    if (!room || !studentId) return
+    try {
+      const result = await rejectRoomMember({ room, studentId, rejectedBy: socket.data.userId })
+      if (!result) return
+      io.to('user:' + studentId).emit('room:rejected', {
+        roomCode,
+        roomId: room._id,
+        reason: reason || '',
+        notification: 'Your request to join this room was declined by the teacher.'
+      })
+      const [participants, waiting] = await Promise.all([countParticipants(room._id), countWaiting(room._id)])
+      io.to(participantsChannel(roomCode)).emit('room:lobby', { roomCode, participants, waiting })
+      io.to(viewersChannel(roomCode)).emit('room:lobby', { roomCode, participants, waiting })
+    } catch (e) {
+      console.error('waiting:reject error:', e.message)
     }
   })
 
@@ -635,21 +760,28 @@ io.on('connection', (socket) => {
       const Room = (await import('./models/Room.js')).default
       const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.leave(roomCode)
+      socket.leave(participantsChannel(roomCode))
+      socket.leave(viewersChannel(roomCode))
       const room = await Room.findByCode(roomCode)
 
       let participantCount = 0
       if (room) {
         if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
+          // Keep the row: marking it left preserves the original joinedAt/admittedAt/attendance so
+          // a rejoin restores the same admission instead of re-evaluating (and possibly marking a
+          // network reconnect as very late or parking them back in the lobby).
+          await RoomMember.updateOne(
+            { roomId: room._id, studentId: userId },
+            { $set: { leftAt: new Date() } }
+          )
         }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        participantCount = await countParticipants(room._id)
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      io.to(participantsChannel(roomCode)).emit('room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
+      io.to(participantsChannel(roomCode)).emit('room:left', { roomCode, participants: 0 })
     }
   })
 
@@ -704,6 +836,8 @@ io.on('connection', (socket) => {
     const playing = !!data?.playing
     videoProgress.set(data.roomCode, { time, playing })
     socket.to(data.roomCode).emit('video:progress', { time, playing })
+    // Watch-only (very-late) students sit in the viewers channel but still play the video.
+    socket.to(viewersChannel(data.roomCode)).emit('video:progress', { time, playing })
   })
 
   // Teacher's question popup opened → students hold their video paused for the whole popup window.
@@ -781,6 +915,10 @@ const startServer = async () => {
   httpServer.listen(PORT, () => {
     console.log(`Spandan backend v0.5 running on port ${PORT}`)
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
+    // One line so it is obvious whether SP/attendance will mirror Samagama or use local data.
+    import('./services/spurtiLive.js')
+      .then(({ describeSpurti }) => console.log(`[spurti] ${describeSpurti()}`))
+      .catch(() => {})
   })
 }
 

@@ -17,7 +17,18 @@ const fire = (ev, data) => (mockListeners[ev] || []).forEach(fn => fn(data))
 jest.mock('../stores/authStore', () => () => ({ user: { _id: 'stu1', name: 'Smoke Student', role: 'student' }, token: 'tok', logout: jest.fn() }))
 jest.mock('../stores/socketStore', () => () => ({ socket: mockSocket, isConnected: true, joinRoom: jest.fn(), leaveRoom: jest.fn() }))
 jest.mock('../stores/roomStore', () => () => ({
-  joinRoomByCode: jest.fn().mockResolvedValue({ _id: 'room1', code: 'ABC123', name: 'Smoke room', settings: { mode: 'normal' } }),
+  joinRoomByCode: jest.fn().mockResolvedValue({
+    room: { _id: 'room1', code: 'ABC123', name: 'Smoke room', settings: { mode: 'normal' } },
+    admitted: true,
+    waitingRoom: false,
+    admissionStatus: 'admitted',
+    attendanceStatus: 'on_time',
+    lateMinutes: 0,
+    waitingRoomEnabled: false,
+    policy: 'automatic',
+    notification: '',
+    attendance: null
+  }),
   setAuthToken: jest.fn()
 }))
 jest.mock('../config.js', () => ({ BASE_PATH: '/spandan', API_URL: '/spandan/api', SOCKET_URL: 'http://localhost' }))

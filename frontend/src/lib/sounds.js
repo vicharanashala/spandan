@@ -2,10 +2,12 @@
 //
 //   playTeacherReady()    — ~5 s two-tone ring (10 alternating tones): a generated batch is ready for review.
 //   playStudentQuestion() — ~5 s rising three-note motif repeated 6×: it is question time (once per batch).
+//   playWaitingChime()    — a very quiet two-note "ding" when a student enters the waiting room.
 //   playPreview()         — one short tone, used when the bell toggle is switched on.
 //
-// Both cues are deliberately long and loud (≈5 s, triangle wave, peak 0.35) so they carry in a classroom
-// and from a background tab; the preview is a single quiet tone.
+// The attention cues are deliberately long and loud (≈5 s, triangle wave, peak 0.35) so they carry in a
+// classroom and from a background tab. The waiting chime and the preview are quiet by design: they should
+// be noticeable at the teacher's desk without interrupting the class.
 //
 // Each returns a Promise of 'played' | 'muted' | 'blocked' | 'unsupported'. 'blocked' means the browser's
 // autoplay policy has not yet seen a user gesture on this page; installUnlockOnInteraction() resumes the
@@ -100,9 +102,13 @@ export const STUDENT_QUESTION_NOTES = Array.from({ length: 6 }, (_, r) => [
   [784, r * 0.9, 0.22], [988, r * 0.9 + 0.22, 0.22], [1175, r * 0.9 + 0.44, 0.4]
 ]).flat()
 export const CUE_DURATION_SECONDS = 5.5
+// Teacher: two soft sine notes (E6 → A6) under a fifth of a second apart. Peak 0.1 keeps it subtle;
+// a sine wave has no upper harmonics, so it reads as a gentle "ting" rather than a bell.
+export const WAITING_CHIME_NOTES = [[1318.5, 0, 0.16], [1760, 0.13, 0.24]]
 
 export const playTeacherReady = () => playPattern(TEACHER_READY_NOTES)
 export const playStudentQuestion = () => playPattern(STUDENT_QUESTION_NOTES)
+export const playWaitingChime = () => playPattern(WAITING_CHIME_NOTES, 0.1, 'sine')
 export const playPreview = () => playPattern([[880, 0, 0.15]], 0.14, 'sine')
 
 // Test hook: forget the cached context so a fresh AudioContext mock is picked up.

@@ -14,15 +14,104 @@ const clampSegmentTime = (v) => {
   return Math.min(SEGMENT_MAX, Math.max(SEGMENT_MIN, n))
 }
 
+// Waiting room / attendance input bounds — must match backend/src/middleware/validation.js.
+const GRACE_MIN = 0, GRACE_MAX = 120, GRACE_DEFAULT = 5
+const LATE_WINDOW_MIN = 0, LATE_WINDOW_MAX = 240, LATE_WINDOW_DEFAULT = 15
+const LATE_PENALTY_MIN = 0, LATE_PENALTY_MAX = 1000, LATE_PENALTY_DEFAULT = 0
+const clampIntInRange = (v, min, max, fallback) => {
+  const n = parseInt(v, 10)
+  if (Number.isNaN(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+// Grace / late window support both minutes and seconds. Minutes remain the canonical stored unit
+// (fractional when seconds are chosen, e.g. 30s = 0.5), so the backend only needs one field.
+const toUnitValue = (minutes, unit) => {
+  const m = Number(minutes)
+  if (!Number.isFinite(m)) return 0
+  return unit === 'sec' ? Math.round(m * 60) : Number(m.toFixed(4))
+}
+const fromUnitValue = (raw, unit, maxMinutes, fallback) => {
+  if (raw === '' || raw === null || raw === undefined) return fallback
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  const minutes = unit === 'sec' ? n / 60 : n
+  return Math.min(maxMinutes, Math.max(0, Math.round(minutes * 1e6) / 1e6))
+}
+const unitForValue = (minutes) => {
+  const m = Number(minutes)
+  // Reopen in seconds mode when the stored value isn't a whole number of minutes.
+  return Number.isFinite(m) && m > 0 && Math.abs((m * 60) % 60) > 0.000001 ? 'sec' : 'min'
+}
+
+// Number input that keeps the raw text while the field is focused, so it can be fully cleared or hold
+// a partial value like "0." without snapping back. Valid numbers are pushed through onCommit as you
+// type; on blur the text is committed once more (empty → onCommit's fallback) and the field resyncs.
+function DraftNumberInput({ value, onCommit, ...props }) {
+  const [draft, setDraft] = useState(null) // null = not editing, show the committed value
+  return (
+    <input
+      {...props}
+      type="number"
+      value={draft ?? value}
+      onChange={(e) => {
+        const raw = e.target.value
+        setDraft(raw)
+        if (raw !== '' && Number.isFinite(Number(raw))) onCommit(raw)
+      }}
+      onBlur={() => {
+        if (draft !== null) onCommit(draft)
+        setDraft(null)
+      }}
+    />
+  )
+}
+
+function UnitToggle({ value, onChange }) {
+  return (
+    <div style={{ display: 'inline-flex', border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
+      {['min', 'sec'].map((u) => (
+        <button
+          key={u}
+          type="button"
+          onClick={() => onChange(u)}
+          style={{
+            padding: '3px 8px', fontSize: '11px', fontWeight: 600, border: 'none', cursor: 'pointer',
+            background: value === u ? 'var(--accent)' : 'transparent',
+            color: value === u ? '#fff' : 'var(--text-secondary)'
+          }}
+        >
+          {u === 'min' ? 'Min' : 'Sec'}
+        </button>
+      ))}
+    </div>
+  )
+}
+// <input type="datetime-local"> wants 'YYYY-MM-DDTHH:mm' in LOCAL time; the API stores ISO/UTC.
+const isoToLocalInput = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+const localInputToIso = (v) => {
+  if (!v) return null
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings)
   const [providers, setProviders] = useState([])
   const [loadingProviders, setLoadingProviders] = useState(false)
+  const [graceUnit, setGraceUnit] = useState('min')
+  const [lateWindowUnit, setLateWindowUnit] = useState('min')
 
   useEffect(() => {
     if (isOpen) {
       // Clamp on open so a room saved under the old list (e.g. 20 or 30 min) shows an in-range value.
       setLocalSettings({ ...settings, segmentTime: clampSegmentTime(settings?.segmentTime) })
+      setGraceUnit(unitForValue(settings?.graceMinutes ?? GRACE_DEFAULT))
+      setLateWindowUnit(unitForValue(settings?.lateWindowMinutes ?? LATE_WINDOW_DEFAULT))
       loadProviders()
     }
   }, [isOpen, settings])
@@ -545,6 +634,169 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
                 </p>
               </div>
             </div>
+          )}
+        </div>
+
+        {/* Waiting Room & Attendance */}
+        <div style={{ marginBottom: '24px', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: 650, color: 'var(--text-primary)' }}>
+            Waiting Room &amp; Attendance
+          </h3>
+          <p style={{ margin: '0 0 14px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Record late arrivals in the attendance ledger. On-time and late students join straight
+            away; in Manual mode only very-late arrivals wait for your approval.
+          </p>
+
+          <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>
+            Enable Waiting Room
+          </label>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+            {[{ label: 'Off', value: false }, { label: 'On', value: true }].map(opt => {
+              const active = !!localSettings.waitingRoomEnabled === opt.value
+              return (
+                <button
+                  key={opt.label}
+                  onClick={() => setLocalSettings(prev => ({ ...prev, waitingRoomEnabled: opt.value }))}
+                  style={{
+                    flex: 1, padding: '10px 16px', borderRadius: '8px',
+                    border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                    background: active ? '#dbeafe' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-primary)',
+                    cursor: 'pointer', fontSize: '14px', fontWeight: active ? '600' : '400'
+                  }}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {localSettings.waitingRoomEnabled && (
+            <>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                Admission Policy
+              </label>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                {[{ label: 'Automatic', value: 'automatic' }, { label: 'Manual', value: 'manual' }].map(opt => {
+                  const active = (localSettings.waitingRoomPolicy || 'automatic') === opt.value
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => setLocalSettings(prev => ({ ...prev, waitingRoomPolicy: opt.value }))}
+                      style={{
+                        flex: 1, padding: '10px 16px', borderRadius: '8px',
+                        border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                        background: active ? '#dbeafe' : 'transparent',
+                        color: active ? 'var(--accent)' : 'var(--text-primary)',
+                        cursor: 'pointer', fontSize: '14px', fontWeight: active ? '600' : '400'
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  )
+                })}
+              </div>
+              <p style={{ margin: '-8px 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Automatic admits students on join; Manual admits on-time and late students
+                automatically and only asks you to approve very-late arrivals.
+              </p>
+
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                Waiting Room Chime
+              </label>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                {[{ label: 'Off', value: false }, { label: 'On', value: true }].map(opt => {
+                  const active = (localSettings.waitingRoomChime !== false) === opt.value
+                  return (
+                    <button
+                      key={opt.label}
+                      onClick={() => setLocalSettings(prev => ({ ...prev, waitingRoomChime: opt.value }))}
+                      style={{
+                        flex: 1, padding: '10px 16px', borderRadius: '8px',
+                        border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                        background: active ? '#dbeafe' : 'transparent',
+                        color: active ? 'var(--accent)' : 'var(--text-primary)',
+                        cursor: 'pointer', fontSize: '14px', fontWeight: active ? '600' : '400'
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  )
+                })}
+              </div>
+              <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                Play a soft chime on your device when a student enters the waiting room. The global
+                sound toggle still mutes all sounds.
+              </p>
+
+              {/* Schedule + penalty inputs only make sense when the waiting room / attendance
+                  tracking is on — hide them entirely when it is off. */}
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                Scheduled Start (optional)
+              </label>
+          <input
+            type="datetime-local"
+            value={isoToLocalInput(localSettings.scheduledStartAt)}
+            onChange={(e) => setLocalSettings(prev => ({ ...prev, scheduledStartAt: localInputToIso(e.target.value) }))}
+            style={{
+              width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px', boxSizing: 'border-box',
+              marginBottom: '16px'
+            }}
+          />
+          <p style={{ margin: '-8px 0 16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Used to classify on-time / late / very-late. Leave empty to mark everyone on time.
+          </p>
+
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 140px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                  Grace ({graceUnit})
+                </label>
+                <UnitToggle value={graceUnit} onChange={setGraceUnit} />
+              </div>
+              <DraftNumberInput
+                min={GRACE_MIN}
+                max={graceUnit === 'sec' ? GRACE_MAX * 60 : GRACE_MAX}
+                step={graceUnit === 'sec' ? 1 : 'any'}
+                value={toUnitValue(localSettings.graceMinutes ?? GRACE_DEFAULT, graceUnit)}
+                onCommit={(raw) => setLocalSettings(prev => ({ ...prev, graceMinutes: fromUnitValue(raw, graceUnit, GRACE_MAX, GRACE_DEFAULT) }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '16px', fontWeight: '600', textAlign: 'center', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ flex: '1 1 140px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                  Late window ({lateWindowUnit})
+                </label>
+                <UnitToggle value={lateWindowUnit} onChange={setLateWindowUnit} />
+              </div>
+              <DraftNumberInput
+                min={LATE_WINDOW_MIN}
+                max={lateWindowUnit === 'sec' ? LATE_WINDOW_MAX * 60 : LATE_WINDOW_MAX}
+                step={lateWindowUnit === 'sec' ? 1 : 'any'}
+                value={toUnitValue(localSettings.lateWindowMinutes ?? LATE_WINDOW_DEFAULT, lateWindowUnit)}
+                onCommit={(raw) => setLocalSettings(prev => ({ ...prev, lateWindowMinutes: fromUnitValue(raw, lateWindowUnit, LATE_WINDOW_MAX, LATE_WINDOW_DEFAULT) }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '16px', fontWeight: '600', textAlign: 'center', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ flex: '1 1 140px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                Late penalty (SP)
+              </label>
+              <DraftNumberInput
+                min={LATE_PENALTY_MIN} max={LATE_PENALTY_MAX} step="1"
+                value={localSettings.latePenaltySp ?? LATE_PENALTY_DEFAULT}
+                onCommit={(raw) => setLocalSettings(prev => ({ ...prev, latePenaltySp: clampIntInRange(raw, LATE_PENALTY_MIN, LATE_PENALTY_MAX, LATE_PENALTY_DEFAULT) }))}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '16px', fontWeight: '600', textAlign: 'center', boxSizing: 'border-box' }}
+              />
+            </div>
+          </div>
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Late costs 1×, very late 2×, absent 3× this SP. Every 3rd consecutive late also triggers a strike.
+          </p>
+            </>
           )}
         </div>
 
