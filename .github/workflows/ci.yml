@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       # Backend tests use @shelf/jest-mongodb (in-memory MongoDB), so no DB
       # service or MONGODB_URI secret is needed. JWT_SECRET just needs to be set.
@@ -55,7 +55,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Run tests
         run: npm test
