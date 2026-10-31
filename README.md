@@ -23,15 +23,15 @@ We provide ultra-lightweight, 1-click web installers for all major desktop platf
 ## ✨ Features
 
 - **Live Polling** — Multiple-choice (MCQ), True/False (TF), and Multi-Select (MSQ) questions pushed in real time over Socket.IO with timers and decay scoring.
-- ⚡ **Multi-Question Quiz Mode & Save & Next** — Teachers can launch entire question banks at once. Students answer Question 1, see countdown timers, receive instant streak feedback with confetti, and advance seamlessly with `Save & Next Question` to Question 2, 3, etc., culminating in a quiz completion celebration card.
-- 📄 **Upload PDF / Document to Questions** — Upload course syllabi, lecture slides, notes, or assignment PDFs to automatically extract text and generate 5, 10, 15, or 20 formatted questions in 1 click without manual typing.
-- ➕ **Save & Add Another Question** — Create 10–15 questions back-to-back without closing the creation modal.
-- 🔥 **Streaks & Confetti** — Server-verified consecutive correct answer streaks visible in the header and question cards with celebration confetti milestones (3, 5, 10, 20) and fiery glow (`🔥 3 Streak — On Fire!`).
-- 🗂️ **Collapsible Sidebar & Quick Navigation** — 1-click toggle between full view with labels and a compact 76px icon-only rail. Tapping the Spandan logo navigates directly to the user's dashboard.
-- ❓ **"I'm Confused" Student Signal** — Students can tap the confusion icon anytime during class to signal the teacher with an optional private note explaining their confusion. The teacher receives an instant alert banner with expandable notes.
-- 💬 **Anonymous Doubt Box** — Students submit doubts with 100% peer anonymity. Supports idempotent upvoting (students cannot manipulate vote counts), oldest-first tie breaking, and teacher moderation (mark as addressed / delete).
-- 📊 **Questions to Revise** — Dedicated teacher analytics section highlighting the lowest-accuracy questions first so teachers know exactly which topics need revision.
-- 📋 **Duplicate Room** — Teachers can clone an entire room's settings and approved questions in 1 click, generating a clean `(Copy)` room with a fresh code and zero student/response baggage.
+- ⚡ **[NEW] Multi-Question Quiz Mode & Save & Next** — Teachers can launch entire question banks at once. Students answer Question 1, see countdown timers, receive instant streak feedback with confetti, and advance seamlessly with `Save & Next Question` to Question 2, 3, etc., culminating in a quiz completion celebration card.
+- 📄 **[NEW] Upload PDF / Document to Questions** — Upload course syllabi, lecture slides, notes, or assignment PDFs to automatically extract text and generate 5, 10, 15, or 20 formatted questions in 1 click without manual typing.
+- ➕ **[NEW] Save & Add Another Question** — Create 10–15 questions back-to-back without closing the creation modal.
+- 🔥 **[NEW] Streaks & Confetti** — Server-verified consecutive correct answer streaks visible in the header and question cards with celebration confetti milestones (3, 5, 10, 20) and fiery glow (`🔥 3 Streak — On Fire!`).
+- 🗂️ **[NEW] Collapsible Sidebar & Quick Navigation** — 1-click toggle between full view with labels and a compact 76px icon-only rail. Tapping the Spandan logo navigates directly to the user's dashboard.
+- ❓ **[NEW] "I'm Confused" Student Signal & Reason** — Students can tap the confusion icon anytime during class to signal the teacher with an optional private note explaining their confusion. The teacher receives an instant alert banner with expandable notes.
+- 💬 **[NEW] Anonymous Doubt Box** — Students submit doubts with 100% peer anonymity. Supports idempotent upvoting (students cannot manipulate vote counts), oldest-first tie breaking, and teacher moderation (mark as addressed / delete).
+- 📊 **[NEW] Questions to Revise Analytics** — Dedicated teacher analytics section highlighting the lowest-accuracy questions first so teachers know exactly which topics need revision.
+- 📋 **[NEW] Duplicate Room** — Teachers can clone an entire room's settings and approved questions in 1 click, generating a clean `(Copy)` room with a fresh code and zero student/response baggage.
 - 🤖 **LLM Question Generation** — Automatically generates relevant poll questions from the live lecture transcript. Supports MiniMax, OpenAI, Anthropic, and Google Gemini via BullMQ background queue or synchronous fallback.
 - 🎥 **Synchronized Video Mode** — Embed YouTube lectures with synchronized playback, seek-ahead restrictions past the teacher, and automatic pause during active poll windows.
 - 🏆 **Live Results & Masked Leaderboards** — Instant streaming responses, per-segment leaderboard folds, and optional anonymous leaderboard masking (`Anonymous #rank`).
