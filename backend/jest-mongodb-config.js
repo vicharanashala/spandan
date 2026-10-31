@@ -1,20 +1,12 @@
-import fs from 'fs'
-const localWinBinary = 'C:\\Users\\regin\\.gemini\\antigravity\\scratch\\spandan-main\\mongodb-win32-x86_64-windows-7.0.24\\bin\\mongod.exe'
-
-const config = {
+export default {
   mongodbMemoryServerOptions: {
+    binary: {
+      systemBinary: 'C:\\Users\\regin\\.gemini\\antigravity\\scratch\\spandan-main\\mongodb-win32-x86_64-windows-7.0.24\\bin\\mongod.exe',
+      skipMD5: true
+    },
+    autoStart: false,
     instance: {
       dbName: 'jest'
-    },
-    autoStart: false
+    }
   }
 }
-
-if (process.platform === 'win32' && fs.existsSync(localWinBinary)) {
-  config.mongodbMemoryServerOptions.binary = {
-    systemBinary: localWinBinary,
-    skipMD5: true
-  }
-}
-
-export default config

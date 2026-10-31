@@ -1,8 +1,6 @@
 name: CI
 
-# Runs the backend + frontend test suites. On pull_request it acts as the merge
-# gate (enable "require status checks" in branch protection once PRs open up).
-# On push to main it is informational only — it never blocks a direct push.
+# Runs the backend + frontend test suites.
 on:
   push:
     branches: [main]
@@ -13,6 +11,11 @@ jobs:
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
     defaults:
       run:
         working-directory: backend
@@ -24,18 +27,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
-      # Backend tests use @shelf/jest-mongodb (in-memory MongoDB), so no DB
-      # service or MONGODB_URI secret is needed. JWT_SECRET just needs to be set.
       - name: Run tests
         run: npm test
         env:
           JWT_SECRET: test-secret-key
+          MONGO_URL: mongodb://127.0.0.1:27017/jest
 
   frontend-test:
     name: Frontend Tests
@@ -51,11 +51,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --ci --maxWorkers=2
