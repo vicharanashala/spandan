@@ -1,3 +1,7 @@
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -8,11 +12,14 @@ import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
-import { RedisStore } from 'rate-limit-redis'
-import { initRedis } from './config/redis.js'
+import { FailoverStore } from './middleware/rateLimitStore.js'
+// isRedisReady (configured AND connected) guards the per-request Redis calls below: a disconnected
+// client queues commands, which would hang an answer submit until Redis returns.
+import { initRedis, isRedisReady } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
+import { buildStudentBoard } from './services/anonymizeLeaderboard.js'
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -23,11 +30,15 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import researchRoutes from './routes/research.js'
 import adminRoutes from './routes/admin.js'
+import doubtRoutes from './routes/doubts.js'
 
 // Import models for reference
 import './models/index.js'
 
 dotenv.config()
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
@@ -136,12 +147,20 @@ async function broadcastCounts(roomId) {
     const roomObjId = new mongoose.Types.ObjectId(roomId)
     const countAgg = await Response.aggregate([
       { $match: { roomId: roomObjId } },
-      { $group: { _id: '$questionId', count: { $sum: 1 } } }
+      { $group: {
+        _id: '$questionId',
+        count: { $sum: 1 },
+        confusedCount: { $sum: { $cond: [{ $eq: ['$isConfused', true] }, 1, 0] } }
+      } }
     ])
     const counts = {}
-    countAgg.forEach(c => { counts[c._id.toString()] = c.count })
+    const confusedCounts = {}
+    countAgg.forEach(c => {
+      counts[c._id.toString()] = c.count
+      confusedCounts[c._id.toString()] = c.confusedCount || 0
+    })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+    if (roomCode) io.to(roomCode).emit('counts:updated', { counts, confusedCounts })
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
@@ -149,7 +168,7 @@ async function broadcastCounts(roomId) {
 
 async function scheduleCountsBroadcast(roomId) {
   const id = String(roomId)
-  if (redis.enabled) {
+  if (isRedisReady()) {
     try {
       const won = await redis.client.set(`live:cnt:sched:${id}`, INSTANCE_ID, { NX: true, PX: LIVE_THROTTLE_MS })
       if (won === 'OK') setTimeout(() => broadcastCounts(id), LIVE_THROTTLE_MS)
@@ -186,10 +205,23 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
 
     const roomCode = await resolveRoomCode(roomId)
 
-    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A).
-    if (redis.enabled) {
+    // Anonymous-leaderboard settings, read fresh each fold so a mid-session toggle takes effect on the
+    // next per-segment broadcast. See anonymizeLeaderboard.js for the rule.
+    const RoomModel = (await import('./models/Room.js')).default
+    const anonDoc = await RoomModel.findById(roomId)
+      .select('settings.anonymousLeaderboard settings.anonymityPercent settings.revealBottomToStudents').lean()
+    const anonymous = !!anonDoc?.settings?.anonymousLeaderboard
+    const anonPct = anonDoc?.settings?.anonymityPercent ?? 0
+    const revealBottom = anonymous && !!anonDoc?.settings?.revealBottomToStudents
+
+    // Cache ranks for "rank on submit" (refreshed only when the board settles — Option A). We also
+    // stash the anonymous flag (as of this fold) so "rank on submit" can withhold a student's own rank
+    // in anonymous mode — otherwise a student could read their position from the POST /responses reply
+    // even though the leaderboard hides it. Same refresh cadence as the board, so it tracks a
+    // mid-session toggle at the next fold, consistently across instances (shared Redis hash).
+    if (isRedisReady()) {
       try {
-        const flat = { _total: String(full.length) }
+        const flat = { _total: String(full.length), _anon: anonymous ? '1' : '0' }
         rankByStudent.forEach((rank, sid) => { flat[sid] = String(rank) })
         const key = `live:ranks:${roomId}`
         await redis.client.del(key)
@@ -200,31 +232,41 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
       const s = getRoomState(String(roomId))
       s.rankByStudent = rankByStudent
       s.total = full.length
+      s.anon = anonymous
     }
 
     if (roomCode) {
-      // Public room push: the top N only (safe for every student to see) + the aggregate count.
+      // Public room push: the top N only (safe for every student to see) + the aggregate count. When
+      // anonymous is ON, every public row is masked to 'Anonymous #<rank>' (student viewer) BEFORE it
+      // leaves the server. anonymizeBoard returns NEW objects, so the shared cached `full` is untouched.
+      const publicBoard = full.slice(0, LEADERBOARD_TOP_N)
       io.to(roomCode).emit('leaderboard:updated', {
-        leaderboard: full.slice(0, LEADERBOARD_TOP_N),
+        leaderboard: anonymous
+          ? buildStudentBoard(full, { pct: anonPct, total: full.length, topN: LEADERBOARD_TOP_N, revealBottom })
+          : publicBoard,
         totalParticipants: full.length,
         topN: LEADERBOARD_TOP_N,
+        anonymous,
         counts
       })
       // Private push: each student ranked BELOW the public cutoff gets ONLY their own row, on their
       // personal channel — so no student's browser ever receives the full ranking. Students inside
       // the top N are already in the public payload, so they need no personal push. Runs once per
       // segment; an emit to an offline user-room is a cheap no-op.
-      for (const e of full) {
-        if (e.rank > LEADERBOARD_TOP_N) {
-          io.to('user:' + e.studentId).emit('leaderboard:you', {
-            rank: e.rank,
-            studentId: e.studentId,
-            studentName: e.studentName,
-            totalPoints: e.totalPoints,
-            correctCount: e.correctCount,
-            totalAnswered: e.totalAnswered,
-            totalParticipants: full.length
-          })
+      // SKIPPED entirely in anonymous mode: a student must not be able to locate their own rank.
+      if (!anonymous) {
+        for (const e of full) {
+          if (e.rank > LEADERBOARD_TOP_N) {
+            io.to('user:' + e.studentId).emit('leaderboard:you', {
+              rank: e.rank,
+              studentId: e.studentId,
+              studentName: e.studentName,
+              totalPoints: e.totalPoints,
+              correctCount: e.correctCount,
+              totalAnswered: e.totalAnswered,
+              totalParticipants: full.length
+            })
+          }
         }
       }
     }
@@ -262,16 +304,20 @@ async function refreshLeaderboardNow(roomId) {
 // may lag during an active burst (Option A — the student still gets their points immediately).
 async function getCachedStudentRank(roomId, studentId) {
   const id = String(roomId)
-  if (redis.enabled) {
+  if (isRedisReady()) {
     try {
-      const [rank, total] = await redis.client.hmGet(`live:ranks:${id}`, [String(studentId), '_total'])
-      return { rank: rank != null ? Number(rank) : null, totalParticipants: total != null ? Number(total) : null }
+      const [rank, total, anon] = await redis.client.hmGet(`live:ranks:${id}`, [String(studentId), '_total', '_anon'])
+      const totalParticipants = total != null ? Number(total) : null
+      // Anonymous mode: withhold the student's own position (they must not be able to locate themselves).
+      if (anon === '1') return { rank: null, totalParticipants }
+      return { rank: rank != null ? Number(rank) : null, totalParticipants }
     } catch (e) {
       return { rank: null, totalParticipants: null }
     }
   }
   const state = roomLive.get(id)
   if (!state) return { rank: null, totalParticipants: null }
+  if (state.anon) return { rank: null, totalParticipants: state.total ?? null }
   return { rank: state.rankByStudent?.get(String(studentId)) ?? null, totalParticipants: state.total ?? null }
 }
 
@@ -287,8 +333,9 @@ app.set('trust proxy', 1)
 
 // Rate limiting — shared across instances via Redis when enabled, else per-process memory.
 // A shared store is required for multi-instance so limits are global, not N-times looser.
+// FailoverStore counts in memory while Redis is down, so a Redis outage can't hang every request.
 const rlStore = (prefix) => redis.enabled
-  ? new RedisStore({ prefix, sendCommand: (...args) => redis.client.sendCommand(args) })
+  ? new FailoverStore({ prefix, client: redis.client })
   : undefined
 
 const apiLimiter = rateLimit({
@@ -336,7 +383,9 @@ const otpLimiter = rateLimit({
 })
 
 // Middleware
-app.use(helmet())
+app.use(helmet({
+  contentSecurityPolicy: false
+}))
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
@@ -360,6 +409,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/research', researchRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/doubts', doubtRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -374,7 +424,7 @@ app.get('/api/health', (req, res) => {
 // Socket.IO connection handling
 const connectedUsers = new Map() // socket.id -> userId
 
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'super-secret-spandan-jwt-key-2026-development'
 
 // Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
 // handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
@@ -382,7 +432,18 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role termsVersion').lean()
+  // Same Terms of Use gate as HTTP authenticate(): an account that has not accepted the current terms
+  // stays unauthenticated (cannot join rooms or receive polls) until it accepts and re-authenticates.
+  const { hasAcceptedCurrentTerms } = await import('./config/terms.js')
+  if (u && !hasAcceptedCurrentTerms(u)) {
+    socket.data.userId = null
+    socket.data.role = null
+    connectedUsers.delete(socket.id)
+    const e = new Error('Terms not accepted')
+    e.code = 'TERMS_REQUIRED'
+    throw e
+  }
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
@@ -518,6 +579,8 @@ io.on('connection', (socket) => {
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
         socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
+      } else if (error.code === 'TERMS_REQUIRED') {
+        socket.emit('authenticated', { success: false, error: 'Terms not accepted', termsRequired: true })
       } else {
         socket.emit('authenticated', { success: false, error: 'Invalid token' })
       }
@@ -676,6 +739,14 @@ io.on('connection', (socket) => {
     socket.to(data.roomCode).emit('video:resume')
   })
 
+  // A GENERATED batch reached the teacher's review popup (auto segment or Paste & Generate; Create Q
+  // never sends this) → every student in the room gets a one-off "question time" cue. No payload, no
+  // state: late joiners are not replayed this (they see the paused video / current question instead).
+  socket.on('questions:ready', async (data) => {
+    if (!(await verifyRoomOwner(socket, data?.roomCode))) return
+    socket.to(data.roomCode).emit('questions:ready')
+  })
+
   socket.on('disconnect', () => {
     if (socket.data?._expiryTimer) { clearTimeout(socket.data._expiryTimer); socket.data._expiryTimer = null }
     const userId = connectedUsers.get(socket.id)
@@ -692,6 +763,26 @@ app.use((err, req, res, next) => {
     message: process.env.NODE_ENV !== 'production' ? err.message : 'Something went wrong'
   })
 })
+
+// Serve frontend static build in production
+const possibleDistPaths = [
+  path.resolve(__dirname, '../../dist'),
+  path.resolve(__dirname, '../dist'),
+  path.resolve(process.cwd(), 'dist'),
+  path.resolve(process.cwd(), '../dist')
+]
+const distPath = possibleDistPaths.find(p => fs.existsSync(p))
+if (distPath) {
+  app.use(express.static(distPath))
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next()
+    const indexPath = path.join(distPath, 'index.html')
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath)
+    }
+    next()
+  })
+}
 
 // 404 handler
 app.use((req, res) => {
@@ -714,6 +805,43 @@ const connectDB = async () => {
     })
     
     console.log('MongoDB connected successfully')
+
+    // Auto-seed default accounts on fresh install / empty database
+    try {
+      const User = (await import('./models/User.js')).default
+      const Room = (await import('./models/Room.js')).default
+
+      const teacherEmail = 'teacher@spandan.test'
+      let teacher = await User.findOne({ email: teacherEmail })
+      if (!teacher) {
+        teacher = await User.create({
+          name: 'Teacher',
+          email: teacherEmail,
+          password: 'Password123!',
+          role: 'teacher',
+          teacherApprovalStatus: 'approved',
+          termsVersion: '1.0',
+          termsAcceptedAt: new Date()
+        })
+        console.log('[AutoSeed] Seeded default teacher:', teacherEmail)
+      }
+
+      const studentEmail = 'student@spandan.test'
+      let student = await User.findOne({ email: studentEmail })
+      if (!student) {
+        student = await User.create({
+          name: 'Rohan Verma',
+          email: studentEmail,
+          password: 'Password123!',
+          role: 'student',
+          termsVersion: '1.0',
+          termsAcceptedAt: new Date()
+        })
+        console.log('[AutoSeed] Seeded default student:', studentEmail)
+      }
+    } catch (seedErr) {
+      console.warn('[AutoSeed] Non-fatal seeding note:', seedErr.message)
+    }
   } catch (error) {
     console.error('MongoDB connection error:', error.message)
     console.log('Server will continue without database connection')

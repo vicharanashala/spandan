@@ -32,7 +32,7 @@ export default function AuthLoader({ children }) {
             width: '48px',
             height: '48px',
             border: '4px solid #e5e7eb',
-            borderTopColor: '#3b82f6',
+            borderTopColor: 'var(--accent)',
             borderRadius: '50%',
             animation: 'spin 1s linear infinite',
             margin: '0 auto 16px'

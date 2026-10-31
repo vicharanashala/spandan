@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { io } from 'socket.io-client'
-import { SOCKET_URL } from '../config.js'
+import { SOCKET_URL, SOCKET_PATH } from '../config.js'
 import useAuthStore from './authStore.js'
 
 export const useSocketStore = create((set, get) => ({
@@ -22,7 +22,7 @@ export const useSocketStore = create((set, get) => ({
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      path: '/spandan/socket.io',
+      path: SOCKET_PATH || '/socket.io',
       transports: ['websocket', 'polling']
     })
 
@@ -53,6 +53,11 @@ export const useSocketStore = create((set, get) => ({
         // unauthenticated socket that still shows polls but can't submit answers.
         if (data.expired) {
           useAuthStore.getState().handleSessionExpired()
+        }
+        // The account has not accepted the current Terms of Use: show the accept-terms screen. After
+        // acceptance, authStore.acceptTerms() calls reauthenticate() to bring this socket back.
+        if (data.termsRequired) {
+          useAuthStore.getState().setTermsRequired(true)
         }
       }
     })
@@ -94,6 +99,22 @@ export const useSocketStore = create((set, get) => ({
     })
 
     set({ socket })
+  },
+
+  // Re-run socket authentication on the existing connection (e.g. right after accepting the terms), then
+  // re-join the room we belong to, since the earlier join was refused while unauthenticated.
+  reauthenticate: (token) => {
+    const { socket } = get()
+    if (!socket?.connected || !token) return
+    // Join only once the server confirms: its authenticate handler is async, so an immediate room:join
+    // could arrive while the socket is still unauthenticated and be refused.
+    socket.once('authenticated', (data) => {
+      const room = get().joinedRoom
+      if (data?.success && room?.roomCode) {
+        socket.emit('room:join', { roomCode: room.roomCode, userId: room.userId })
+      }
+    })
+    socket.emit('authenticate', { token })
   },
 
   disconnect: () => {

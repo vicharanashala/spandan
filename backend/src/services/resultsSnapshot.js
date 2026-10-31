@@ -22,10 +22,13 @@
 //   results:lb:<roomId>       STRING  JSON ranked leaderboard[]          -> GET /leaderboard
 //   results:students:<roomId> HASH    field=studentId -> JSON questions  -> GET /room/:id/student/:sid
 //   results:stats:<roomId>    STRING  JSON { ...room stats, questionStats } -> GET /stats/room
+// The results-page insights (GET /insights) have their own once-per-room cache: services/insightsCache.js.
 
 import mongoose from 'mongoose'
-import { isRedisEnabled, getRedisClient } from '../config/redis.js'
+import { isRedisReady, getRedisClient } from '../config/redis.js'
 import { computeRanked } from './leaderboardAgg.js'
+import { invalidateInsights } from './insightsCache.js'
+import { tallyResponse, buildQuestionStats } from './questionStats.js'
 
 const SNAPSHOT_TTL_MS = 600000 // 10 min — an ended room's results never change; rebuilt on miss.
 const LOCK_MS = 10000          // single-flight build lock
@@ -120,26 +123,12 @@ export async function buildSnapshot(roomId) {
     })
   }
 
-  // Per-question stats over ALL questions (matches the current stats/room endpoint, which does not
-  // filter by status). One aggregation instead of the old find-per-question N+1 loop.
-  const questionStats = allQuestions.map((q) => {
-    const list = respByQuestion.get(toIdStr(q._id)) || []
-    const answerCounts = {}
-    let correctCount = 0
-    q.options.forEach((opt, idx) => {
-      const c = list.filter((r) => r.selectedOption === idx).length
-      answerCounts[idx] = c
-      if (opt.isCorrect) correctCount += c
-    })
-    return {
-      questionId: toIdStr(q._id),
-      question: q.question,
-      type: q.type,
-      totalResponses: list.length,
-      correctCount,
-      answerCounts
-    }
-  })
+  // Per-question stats over ALL questions (matches the stats/room endpoint, which does not filter by
+  // status). Same implementation as the direct path (services/questionStats.js): isCorrect for
+  // correctCount, every ticked option for answerCounts.
+  const tallies = new Map()
+  for (const [qid, list] of respByQuestion) for (const r of list) tallyResponse(tallies, qid, r)
+  const questionStats = buildQuestionStats(allQuestions, tallies, (q) => toIdStr(q._id))
 
   const stats = {
     totalResponses: responses.length,
@@ -176,7 +165,7 @@ async function writeSnapshot(roomId, snap) {
 // pre-warm so the cache is hot (and current) before students arrive. Single-flight so two
 // instances handling the same room-end don't both build.
 export async function rebuildSnapshot(roomId) {
-  if (!isRedisEnabled()) return false
+  if (!isRedisReady()) return false
   const client = getRedisClient()
   const k = keys(roomId)
   try {
@@ -199,7 +188,7 @@ export async function rebuildSnapshot(roomId) {
 // others wait briefly then read. Returns true if the cache is populated, false if unavailable
 // (redis off / error / gave up waiting) — in which case the caller falls back to direct compute.
 async function ensureBuilt(roomId) {
-  if (!isRedisEnabled()) return false
+  if (!isRedisReady()) return false
   const client = getRedisClient()
   const k = keys(roomId)
   try {
@@ -231,7 +220,7 @@ async function ensureBuilt(roomId) {
 // not yet ended is never snapshotted here (caller passes ended=false → we skip straight to null).
 
 export async function getLeaderboard(roomId, { ended } = {}) {
-  if (!ended || !isRedisEnabled()) return null
+  if (!ended || !isRedisReady()) return null
   try {
     if (!(await ensureBuilt(roomId))) return null
     const raw = await getRedisClient().get(keys(roomId).lb)
@@ -242,7 +231,7 @@ export async function getLeaderboard(roomId, { ended } = {}) {
 }
 
 export async function getStats(roomId, { ended } = {}) {
-  if (!ended || !isRedisEnabled()) return null
+  if (!ended || !isRedisReady()) return null
   try {
     if (!(await ensureBuilt(roomId))) return null
     const raw = await getRedisClient().get(keys(roomId).stats)
@@ -257,7 +246,7 @@ export async function getStats(roomId, { ended } = {}) {
 // student directly. This keeps a non-responder's correct (all-unanswered) payload without bloating
 // the cache with an entry per joined-but-silent student.
 export async function getStudent(roomId, studentId, { ended } = {}) {
-  if (!ended || !isRedisEnabled()) return { hit: false }
+  if (!ended || !isRedisReady()) return { hit: false }
   try {
     if (!(await ensureBuilt(roomId))) return { hit: false }
     const raw = await getRedisClient().hGet(keys(roomId).students, String(studentId))
@@ -270,7 +259,8 @@ export async function getStudent(roomId, studentId, { ended } = {}) {
 
 // Drop a room's snapshot (e.g. if its questions/responses are edited after it ended).
 export async function invalidate(roomId) {
-  if (!isRedisEnabled()) return
+  await invalidateInsights(roomId) // results-page insights cache (memory + Redis)
+  if (!isRedisReady()) return
   const k = keys(roomId)
   try {
     await getRedisClient().del([k.lb, k.students, k.stats])

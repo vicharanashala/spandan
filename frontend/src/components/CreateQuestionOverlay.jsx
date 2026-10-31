@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { PenLine, Timer, X, Check, Rocket, PlusCircle, BookmarkCheck, Sparkles } from 'lucide-react'
+import { Ico } from './icons'
 
-function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
+function CreateQuestionOverlay({ isOpen, onClose, onLaunch, onSave, defaultType = 'MCQ' }) {
   const [questionType, setQuestionType] = useState(defaultType)
   const [question, setQuestion] = useState('')
   const [options, setOptions] = useState([
@@ -11,6 +13,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   ])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [points, setPoints] = useState(100)
+  const [savedCount, setSavedCount] = useState(0)
+  const [saveToast, setSaveToast] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
 
   // Launched state - once teacher launches, show timer mode
   const [isLaunched, setIsLaunched] = useState(false)
@@ -85,20 +90,19 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     }
   }
 
-  const handleLaunch = () => {
+  const getQuestionPayload = () => {
     if (!question.trim()) {
       alert('Please enter a question')
-      return
+      return null
     }
 
     const filledOptions = options.filter(o => o.text.trim())
-    if (filledOptions.length < 2) {
+    if (questionType !== 'TF' && filledOptions.length < 2) {
       alert('Please enter at least 2 options')
-      return
+      return null
     }
 
-    // First, emit the question to students via onLaunch
-    onLaunch({
+    return {
       type: questionType,
       question: question.trim(),
       options: questionType === 'TF' 
@@ -106,7 +110,76 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
         : options.filter(o => o.text.trim()),
       timeToAnswer,
       points
-    })
+    }
+  }
+
+  const resetFormForNext = () => {
+    setQuestion('')
+    if (questionType === 'TF') {
+      setOptions([
+        { text: 'True', isCorrect: true },
+        { text: 'False', isCorrect: false }
+      ])
+    } else if (questionType === 'MSQ') {
+      setOptions([
+        { text: '', isCorrect: true },
+        { text: '', isCorrect: true },
+        { text: '', isCorrect: false },
+        { text: '', isCorrect: false }
+      ])
+    } else {
+      setOptions([
+        { text: '', isCorrect: true },
+        { text: '', isCorrect: false },
+        { text: '', isCorrect: false },
+        { text: '', isCorrect: false }
+      ])
+    }
+  }
+
+  const handleSaveAndAddAnother = async () => {
+    const payload = getQuestionPayload()
+    if (!payload) return
+
+    setIsSaving(true)
+    try {
+      if (onSave) {
+        await onSave(payload, false)
+      }
+      const nextCount = savedCount + 1
+      setSavedCount(nextCount)
+      setSaveToast(`Question #${nextCount} saved! You can add another question.`)
+      resetFormForNext()
+    } catch (err) {
+      alert('Failed to save question: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleSaveAndClose = async () => {
+    const payload = getQuestionPayload()
+    if (!payload) return
+
+    setIsSaving(true)
+    try {
+      if (onSave) {
+        await onSave(payload, true)
+      }
+      handleCloseAndReset()
+    } catch (err) {
+      alert('Failed to save question: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleLaunch = () => {
+    const payload = getQuestionPayload()
+    if (!payload) return
+
+    // First, emit the question to students via onLaunch
+    onLaunch(payload)
 
     // Start launched timer - question is now live
     setIsLaunched(true)
@@ -135,6 +208,8 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     }
     setIsLaunched(false)
     setLaunchedTimeLeft(0)
+    setSavedCount(0)
+    setSaveToast('')
     // Reset form
     setQuestion('')
     setOptions([
@@ -191,9 +266,25 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
           borderBottom: '1px solid var(--border-color)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#3b82f6' }}>
-              ✍️ Create Question
+            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: 'var(--accent)' }}>
+              <Ico as={PenLine} /> Create Question
             </h2>
+            {savedCount > 0 && !isLaunched && (
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '4px 10px',
+                borderRadius: '14px',
+                background: 'rgba(16, 185, 129, 0.15)',
+                color: '#10b981',
+                fontSize: '12px',
+                fontWeight: '600',
+                border: '1px solid rgba(16, 185, 129, 0.3)'
+              }}>
+                <Ico as={BookmarkCheck} /> {savedCount} {savedCount === 1 ? 'Question' : 'Questions'} Saved
+              </span>
+            )}
             {isLaunched && (
               <div style={{
                 display: 'flex',
@@ -205,7 +296,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                 border: `2px solid ${launchedTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: launchedTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  {launchedTimeLeft <= 5 ? '⏱️ TIME! ' : '⏱️ ' }{launchedTimeLeft}s
+                  <Ico as={Timer} /> {launchedTimeLeft <= 5 ? 'TIME! ' : ''}{launchedTimeLeft}s
                 </span>
                 {launchedTimeLeft <= 5 && (
                   <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600', animation: 'pulse 0.5s infinite' }}>
@@ -224,8 +315,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
               cursor: 'pointer',
               color: 'var(--text-secondary)'
             }}
+            aria-label="Close"
           >
-            ✕
+            <Ico as={X} />
           </button>
         </div>
 
@@ -243,9 +335,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                   flex: 1,
                   padding: '10px',
                   borderRadius: '8px',
-                  border: questionType === type ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                  border: questionType === type ? '2px solid var(--accent)' : '1px solid var(--border-color)',
                   background: questionType === type ? '#dbeafe' : 'transparent',
-                  color: questionType === type ? '#1e40af' : 'var(--text-primary)',
+                  color: questionType === type ? 'var(--accent)' : 'var(--text-primary)',
                   fontSize: '13px',
                   fontWeight: '600',
                   cursor: 'pointer'
@@ -297,9 +389,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                   marginLeft: '8px',
                   padding: '2px 8px',
                   fontSize: '10px',
-                  background: '#3b82f620',
-                  color: '#3b82f6',
-                  border: '1px solid #3b82f6',
+                  background: 'color-mix(in srgb, var(--accent) 13%, transparent)',
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
                   borderRadius: '4px',
                   cursor: 'pointer'
                 }}
@@ -320,9 +412,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                         width: '32px',
                         height: '32px',
                         borderRadius: '50%',
-                        border: opt.isCorrect ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                        border: opt.isCorrect ? '2px solid var(--accent)' : '1px solid var(--border-color)',
                         background: opt.isCorrect ? '#dbeafe' : 'var(--bg-primary)',
-                        color: opt.isCorrect ? '#3b82f6' : 'var(--text-secondary)',
+                        color: opt.isCorrect ? 'var(--accent)' : 'var(--text-secondary)',
                         fontSize: '12px',
                         fontWeight: '600',
                         cursor: 'pointer'
@@ -339,14 +431,14 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                         flex: 1,
                         padding: '10px 12px',
                         borderRadius: '8px',
-                        border: opt.isCorrect ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                        border: opt.isCorrect ? '2px solid var(--accent)' : '1px solid var(--border-color)',
                         background: 'var(--bg-primary)',
                         color: 'var(--text-primary)',
                         fontSize: '13px'
                       }}
                     />
                     {opt.isCorrect && (
-                      <span style={{ fontSize: '12px', color: '#3b82f6', fontWeight: '500' }}>✓</span>
+                      <span style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: '500' }}><Ico as={Check} /></span>
                     )}
                     {options.length > 2 && (
                       <button
@@ -360,8 +452,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                           borderRadius: '4px',
                           cursor: 'pointer'
                         }}
+                        aria-label="Remove option"
                       >
-                        ✕
+                        <Ico as={X} />
                       </button>
                     )}
                   </>
@@ -374,9 +467,9 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                         width: '32px',
                         height: '32px',
                         borderRadius: '50%',
-                        border: opt.isCorrect ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                        border: opt.isCorrect ? '2px solid var(--accent)' : '1px solid var(--border-color)',
                         background: opt.isCorrect ? '#dbeafe' : 'var(--bg-primary)',
-                        color: opt.isCorrect ? '#3b82f6' : 'var(--text-secondary)',
+                        color: opt.isCorrect ? 'var(--accent)' : 'var(--text-secondary)',
                         fontSize: '12px',
                         fontWeight: '600',
                         cursor: 'pointer'
@@ -388,7 +481,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
                       {opt.text}
                     </span>
                     {opt.isCorrect && (
-                      <span style={{ fontSize: '12px', color: '#3b82f6', fontWeight: '500' }}>✓ Correct</span>
+                      <span style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: '500' }}><Ico as={Check} /> Correct</span>
                     )}
                   </>
                 )}
@@ -482,27 +575,114 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
           </div>
         </div>
 
-        {/* Launch Button */}
-        <button
-          onClick={handleLaunch}
-          style={{
-            width: '100%',
-            padding: '14px',
-            borderRadius: '12px',
-            border: 'none',
-            background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
-            color: 'white',
-            fontSize: '14px',
+        {/* Saved feedback toast */}
+        {saveToast && !isLaunched && (
+          <div style={{
+            marginBottom: '16px',
+            padding: '10px 14px',
+            borderRadius: '10px',
+            background: 'rgba(16, 185, 129, 0.12)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            color: '#059669',
+            fontSize: '13px',
             fontWeight: '600',
-            cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px'
-          }}
-        >
-          🚀 Launch Question
-        </button>
+            gap: '8px',
+            animation: 'fadeIn 0.3s ease'
+          }}>
+            <Ico as={BookmarkCheck} /> {saveToast}
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        {isLaunched ? (
+          <div style={{
+            textAlign: 'center',
+            padding: '12px',
+            borderRadius: '10px',
+            background: 'rgba(16, 185, 129, 0.1)',
+            color: '#10b981',
+            fontWeight: '600',
+            fontSize: '14px'
+          }}>
+            🚀 Question is live with students!
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleSaveAndAddAnother}
+              disabled={isSaving}
+              style={{
+                flex: '1 1 auto',
+                minWidth: '170px',
+                padding: '13px 16px',
+                borderRadius: '10px',
+                border: '1.5px solid var(--accent)',
+                background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                color: 'var(--accent)',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: isSaving ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                transition: 'all 0.15s ease'
+              }}
+              title="Save this question and immediately prepare the next one"
+            >
+              <Ico as={PlusCircle} /> {isSaving ? 'Saving...' : 'Save & Add Another'}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSaveAndClose}
+              disabled={isSaving}
+              style={{
+                padding: '13px 16px',
+                borderRadius: '10px',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: isSaving ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+              title="Save question to session bank and close"
+            >
+              <Ico as={BookmarkCheck} /> Save & Close
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLaunch}
+              disabled={isSaving}
+              style={{
+                padding: '13px 18px',
+                borderRadius: '10px',
+                border: 'none',
+                background: 'var(--accent-gradient)',
+                color: 'white',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: isSaving ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+              title="Poll this question live to students immediately"
+            >
+              <Ico as={Rocket} /> Launch Now
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

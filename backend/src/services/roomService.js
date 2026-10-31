@@ -3,6 +3,7 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
+import Doubt from '../models/Doubt.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
@@ -85,16 +86,18 @@ export const deleteRoom = async (roomId) => {
   // Orphans (e.g. a Response whose room is gone) otherwise break student room-history and
   // skew per-room queries. The room doc is removed first (fail-fast on not-found); if a
   // cascade delete were to partially fail, the null-guards in the read paths still cope.
-  const [responses, members, questions, transcripts] = await Promise.all([
+  const [responses, members, questions, transcripts, doubts] = await Promise.all([
     Response.deleteMany({ roomId }),
     RoomMember.deleteMany({ roomId }),
     Question.deleteMany({ roomId }),
-    Transcript.deleteMany({ roomId })
+    Transcript.deleteMany({ roomId }),
+    Doubt.deleteMany({ roomId })
   ])
   console.log(
     `[rooms] deleted room ${roomId} + cascade: ` +
     `${responses.deletedCount} responses, ${members.deletedCount} members, ` +
-    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts`
+    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts, ` +
+    `${doubts.deletedCount} doubts`
   )
   return room
 }
@@ -220,4 +223,52 @@ export const getActiveRoomsByStudent = async (studentId) => {
     ...room.toObject(),
     questionCount: countMap.get(room._id.toString()) || 0
   })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+}
+
+export const duplicateRoom = async (roomId, teacherId) => {
+  const original = await Room.findById(roomId)
+  if (!original) {
+    throw new Error('Room not found')
+  }
+
+  if (original.teacher.toString() !== teacherId.toString()) {
+    throw new Error('Not authorized to duplicate this room')
+  }
+
+  // Create new room with identical settings and a "(Copy)" name suffix
+  const rawSettings = original.settings && typeof original.settings.toObject === 'function'
+    ? original.settings.toObject()
+    : (original.settings || {})
+
+  const newRoom = new Room({
+    name: `${original.name} (Copy)`.slice(0, 200),
+    teacher: teacherId,
+    settings: rawSettings
+  })
+
+  await newRoom.save() // Triggers pre-save hook to generate fresh unique 6-character room code
+
+  // Copy approved questions into the newly created room (clean slate: zero students, zero responses)
+  const originalQuestions = await Question.find({ roomId: original._id, status: 'approved' }).sort({ createdAt: 1 })
+
+  if (originalQuestions.length > 0) {
+    const clonedQuestions = originalQuestions.map(q => ({
+      roomId: newRoom._id,
+      type: q.type,
+      question: q.question,
+      options: (q.options || []).map(o => ({ text: o.text, isCorrect: !!o.isCorrect })),
+      explanation: q.explanation || '',
+      segmentIndex: q.segmentIndex || 0,
+      status: 'approved',
+      timeToAnswer: q.timeToAnswer || 30,
+      points: q.points || 100,
+      createdBy: teacherId
+    }))
+    await Question.insertMany(clonedQuestions)
+  }
+
+  return {
+    ...newRoom.toObject(),
+    questionCount: originalQuestions.length
+  }
 }

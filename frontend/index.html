@@ -2,9 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Icons live in src/assets so Vite hashes them into /assets/ (prod nginx serves only /assets/ and a few named files) -->
+    <link rel="icon" type="image/png" href="/src/assets/favicon.png" />
+    <link rel="apple-touch-icon" href="/src/assets/apple-touch-icon.png" />
+    <meta name="theme-color" content="#082049" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Spandan - Poll Question Generator</title>
+    <title>Spandan</title>
   </head>
   <body>
     <div id="root"></div>

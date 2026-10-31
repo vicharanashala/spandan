@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import useThemeStore from '../stores/themeStore'
+import { Eye, EyeOff, Check, Circle } from 'lucide-react'
 
 export default function PasswordInput({ value, onChange, placeholder, required, style, showRequirements, passwordReqs, ...props }) {
   const [show, setShow] = useState(false)
@@ -50,7 +51,7 @@ export default function PasswordInput({ value, onChange, placeholder, required, 
           }}
           tabIndex={-1}
         >
-          {show ? '🙈' : '👁️'}
+          {show ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
         </button>
       </div>
       {showRequirements && passwordReqs && (
@@ -72,8 +73,8 @@ export default function PasswordInput({ value, onChange, placeholder, required, 
               color: req.met ? (isDark ? '#6ee7b7' : '#059669') : (isDark ? '#94a3b8' : '#9ca3af'),
               fontWeight: req.met ? '600' : '400'
             }}>
-              <span style={{ fontSize: '14px', width: '16px', textAlign: 'center' }}>
-                {req.met ? '✓' : '○'}
+              <span style={{ fontSize: '14px', width: '16px', display: 'inline-flex', justifyContent: 'center' }}>
+                {req.met ? <Check size={14} strokeWidth={2.75} aria-hidden="true" /> : <Circle size={11} aria-hidden="true" />}
               </span>
               {req.label}
             </div>

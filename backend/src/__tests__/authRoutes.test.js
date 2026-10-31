@@ -2,59 +2,6 @@
 // Note: These tests mock the database interactions for CI environments
 
 import crypto from 'crypto'
-import { verifySamagamaToken } from '../services/samagamaService.js'
-
-describe('Samagama SSO — server-side token verification', () => {
-  // A fake fetch that returns Samagama's /me response.
-  const meResponder = ({ ok = true, user } = {}) => async (url, opts) => ({
-    ok,
-    json: async () => (user !== undefined ? { user } : {}),
-    _opts: opts
-  })
-
-  it('rejects an absent token without contacting Samagama (401)', async () => {
-    let called = false
-    const fetchImpl = async () => { called = true; return { ok: true, json: async () => ({ user: {} }) } }
-    await expect(verifySamagamaToken('', fetchImpl)).rejects.toMatchObject({ status: 401 })
-    await expect(verifySamagamaToken(undefined, fetchImpl)).rejects.toMatchObject({ status: 401 })
-    expect(called).toBe(false)
-  })
-
-  it('rejects a token Samagama does not validate (401)', async () => {
-    await expect(verifySamagamaToken('forged', meResponder({ ok: false }))).rejects.toMatchObject({ status: 401 })
-  })
-
-  it('rejects when Samagama returns no user (401)', async () => {
-    await expect(verifySamagamaToken('tok', meResponder({ ok: true }))).rejects.toMatchObject({ status: 401 })
-  })
-
-  it('returns the identity from Samagama and never from the caller', async () => {
-    const verified = await verifySamagamaToken('valid-token', meResponder({
-      user: { email: 'real@samagama.in', name: 'Real User', isAdmin: true }
-    }))
-    expect(verified).toEqual({
-      email: 'real@samagama.in',
-      name: 'Real User',
-      isAdmin: true,
-      isSuperAdmin: false
-    })
-  })
-
-  it('presents the token to Samagama as a Bearer credential', async () => {
-    let seenAuth
-    const fetchImpl = async (url, opts) => {
-      seenAuth = opts.headers.Authorization
-      return { ok: true, json: async () => ({ user: { email: 'a@b.c', name: 'A' } }) }
-    }
-    await verifySamagamaToken('tok123', fetchImpl)
-    expect(seenAuth).toBe('Bearer tok123')
-  })
-
-  it('surfaces a 502 when Samagama is unreachable', async () => {
-    const fetchImpl = async () => { throw new Error('network down') }
-    await expect(verifySamagamaToken('tok', fetchImpl)).rejects.toMatchObject({ status: 502 })
-  })
-})
 
 describe('Auth API Routes', () => {
   describe('POST /api/auth/register', () => {

@@ -5,21 +5,29 @@ import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import useThemeStore from '../stores/themeStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
+import { PageHeader } from '../components/AppUI'
 import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
 import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
+import PdfToQuestionsModal from '../components/PdfToQuestionsModal'
 import RoomSettingsModal from '../components/RoomSettingsModal'
+import DoubtBoxModal from '../components/DoubtBoxModal'
+import ConfusedIcon from '../components/ConfusedIcon'
+import SoundToggle from '../components/SoundToggle'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
-import { saveTranscript } from '../services/transcriptService'
+import { saveTranscript, getTranscripts } from '../services/transcriptService'
+import { lastSegmentInData, segmentToStart } from '../lib/segments'
+import { installUnlockOnInteraction } from '../lib/sounds'
+import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
-import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
+import { requestQuestionGeneration, fetchAllRoomQuestions, uploadPdfAndGenerateQuestions, saveBulkQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
+import { ArrowLeft, Check, Clapperboard, Copy, FileText, FileUp, Hourglass, LoaderCircle, Mic as MicIcon, PenLine, RefreshCw, Rocket, Settings, Timer, Trophy, Users, X } from 'lucide-react'
+import { Ico } from '../components/icons'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -31,7 +39,7 @@ function RoomDetailPage() {
   const isMobile = useIsMobile()
   // Room code + participant count use a deep blue on light, but that reads too dark on the dark card;
   // switch to white in dark mode for clean, high contrast.
-  const codeColor = isDark ? '#ffffff' : '#1e40af'
+  const codeColor = isDark ? '#ffffff' : 'var(--accent)'
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -70,6 +78,10 @@ function RoomDetailPage() {
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
+  // Highest segment this room already has data for (seeded from the server on load, raised on every
+  // segment save), so a reload continues the numbering instead of starting again at 1.
+  const lastSegmentRef = useRef(0)
+  const markSegmentUsed = (n) => { if (n > lastSegmentRef.current) lastSegmentRef.current = n }
   const [segmentTranscript, setSegmentTranscript] = useState('')
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
@@ -87,6 +99,9 @@ function RoomDetailPage() {
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [showPdfModal, setShowPdfModal] = useState(false)
+  const [isGeneratingFromPdf, setIsGeneratingFromPdf] = useState(false)
+  const [toastNotification, setToastNotification] = useState('')
   const [pastedText, setPastedText] = useState('') // preserved so a failed generation can reopen the popup with the text intact
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
@@ -110,6 +125,31 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [confusedCounts, setConfusedCounts] = useState({}) // questionId -> count
+  const [showDoubtBox, setShowDoubtBox] = useState(false)
+  const [showConfusedNotesModal, setShowConfusedNotesModal] = useState(false)
+  const [confusedNotes, setConfusedNotes] = useState([])
+  const [loadingConfusedNotes, setLoadingConfusedNotes] = useState(false)
+
+  const handleOpenConfusedNotes = async (questionId) => {
+    const targetRoomId = room?._id || roomId
+    if (!targetRoomId || !questionId) return
+    setShowConfusedNotesModal(true)
+    setLoadingConfusedNotes(true)
+    try {
+      const res = await fetch(`${API_URL}/responses/confused-reasons/${targetRoomId}/${questionId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.success) {
+        setConfusedNotes(data.reasons || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch confused notes:', err)
+    } finally {
+      setLoadingConfusedNotes(false)
+    }
+  }
 
   useEffect(() => {
     if (token) {
@@ -166,6 +206,7 @@ function RoomDetailPage() {
     if (!socket) return
     const handleCounts = (payload) => {
       if (payload?.counts) setAnswerCounts(payload.counts)
+      if (payload?.confusedCounts) setConfusedCounts(payload.confusedCounts)
     }
     socket.on('counts:updated', handleCounts)
     return () => socket.off('counts:updated', handleCounts)
@@ -355,7 +396,6 @@ function RoomDetailPage() {
       // Resume for next segment
       setIsPendingReview(false)
       setGenerateQEnabled(true)
-      setCurrentSegment(prev => prev + 1)
       setTranscript('')
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
@@ -394,6 +434,7 @@ function RoomDetailPage() {
       // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
       // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
       // source defaults to 'audio' (real segment).
+      markSegmentUsed(currentSegment)
       saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
         .catch((err) => console.error('[SEGMENT] Failed to save transcript (questions already generated):', err))
     }
@@ -515,6 +556,11 @@ function RoomDetailPage() {
       // not just the first 50.
       const questions = await fetchAllRoomQuestions(rid)
       setGeneratedQuestions(questions)
+      markSegmentUsed(lastSegmentInData(questions))
+      // Transcripts also count: a segment whose questions were all rejected leaves only its transcript.
+      getTranscripts(rid)
+        .then((data) => markSegmentUsed(lastSegmentInData([], data?.transcripts)))
+        .catch((err) => console.error('Failed to load transcripts for segment numbering:', err))
       // Also load answer counts
       const countsRes = await fetch(`${API_URL}/responses/counts/${rid}`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -523,6 +569,9 @@ function RoomDetailPage() {
         const countsData = await countsRes.json()
         if (countsData.counts) {
           setAnswerCounts(countsData.counts)
+        }
+        if (countsData.confusedCounts) {
+          setConfusedCounts(countsData.confusedCounts)
         }
       }
     } catch (err) {
@@ -686,7 +735,7 @@ function RoomDetailPage() {
     if (isVideoMode) {
       if (!streamRef.current) return
       setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
-      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+      setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
       transcriptionQueueRef.current = []
       nextSequenceRef.current = 0
@@ -727,7 +776,7 @@ function RoomDetailPage() {
       setTranscript('')
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
-      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+      setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
 
@@ -870,6 +919,14 @@ function RoomDetailPage() {
     createPopupWasOpenRef.current = showCreateQuestion
   }, [showCreateQuestion])
 
+  // Attention cues when a GENERATED batch arrives — the auto-segment approval popup or the Paste &
+  // Generate review popup opening (Create Q is the teacher's own typing: no cue). See the hook for the
+  // chime / 'questions:ready' emit (once per batch) / tab-title flash.
+  const generatedPopupOpen = (showQuestionPopup && pendingQuestions.length > 0)
+    || (showTextQuestionPopup && pendingTextQuestions.length > 0)
+  useEffect(() => { installUnlockOnInteraction() }, [])
+  useGeneratedBatchCues(generatedPopupOpen, socket, room?.code)
+
   const resumeTeacherVideo = () => {
     // Tell students the popup window is over so they resume + jump to the live edge (fire even if the
     // teacher's own player ref isn't ready).
@@ -937,7 +994,7 @@ function RoomDetailPage() {
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
       transcriptionQueueRef.current = []; nextSequenceRef.current = 0
       pendingSequenceRef.current = 0; isProcessingQueueRef.current = false
-      setCurrentSegment(1)
+      setCurrentSegment(segmentToStart({ lastUsed: lastSegmentRef.current, fresh: true }))
       setVideoSessionActive(true)
       setModelStatus('Ready - press play to begin')
 
@@ -1039,6 +1096,7 @@ function RoomDetailPage() {
         setIsPopupOpen(true)
         // Persist the transcript only once questions exist — fire-and-forget so it never blocks.
         // Live transcript → source 'audio'; segmentIndex matches the questions (currentSegment).
+        markSegmentUsed(currentSegment)
         saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
           .catch((err) => console.error('[MANUAL] Failed to save transcript (questions already generated):', err))
       }
@@ -1076,7 +1134,7 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
 
         // Emit to students via socket
-        if (socket && isConnected) {
+        if (question.autoLaunch !== false && socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -1118,7 +1176,7 @@ function RoomDetailPage() {
         const data = await response.json()
         setGeneratedQuestions(prev => [data.question, ...prev])
 
-        if (socket && isConnected) {
+        if (question.autoLaunch !== false && socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -1138,6 +1196,131 @@ function RoomDetailPage() {
     setShowTextQuestionPopup(false)
     setPendingTextQuestions([])
     // leaderboard fold fires via the pop-up-close watcher (textPopupWasOpenRef) on close
+  }
+
+  const handleTextQuestionsApproveAll = async (questionsToSave) => {
+    try {
+      const res = await saveBulkQuestions(room._id, questionsToSave)
+      if (res.success && res.questions) {
+        setGeneratedQuestions(prev => [...res.questions, ...prev])
+        setShowTextQuestionPopup(false)
+        setPendingTextQuestions([])
+        setToastNotification(`🎉 Added ${res.questions.length} questions to your room bank!`)
+        setTimeout(() => setToastNotification(''), 4000)
+      }
+    } catch (error) {
+      console.error('Error saving all questions:', error)
+      alert('Failed to save questions: ' + error.message)
+    }
+  }
+
+  const handleSaveQuestion = async (questionData, shouldClose = false) => {
+    try {
+      const response = await fetch(`${API_URL}/questions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId: room._id,
+          type: questionData.type,
+          question: questionData.question,
+          options: questionData.options,
+          timeToAnswer: questionData.timeToAnswer || roomSettings.timeToAnswer || 30,
+          points: questionData.points || roomSettings.points || 100,
+          status: 'approved'
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setGeneratedQuestions(prev => [data.question, ...prev])
+        setToastNotification(`✅ Question saved to room bank!`)
+        setTimeout(() => setToastNotification(''), 4000)
+        if (shouldClose) {
+          setShowCreateQuestion(false)
+        }
+      } else {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to save question')
+      }
+    } catch (error) {
+      console.error('Failed to save question:', error)
+      throw error
+    }
+  }
+
+  const handlePdfQuestionsGenerate = async ({ pdfBase64, fileName, numQuestions, difficulty, autoSave }) => {
+    setIsGeneratingFromPdf(true)
+    try {
+      const data = await uploadPdfAndGenerateQuestions({
+        roomId: room._id,
+        pdfBase64,
+        numQuestions,
+        difficulty,
+        autoSave,
+        questionTypeMix: roomSettings.questionTypeMix || null,
+        provider: roomSettings.questionProvider || null
+      })
+
+      setIsGeneratingFromPdf(false)
+      setShowPdfModal(false)
+
+      if (data.success && data.questions && data.questions.length > 0) {
+        if (autoSave || data.saved) {
+          setGeneratedQuestions(prev => [...data.questions, ...prev])
+          setToastNotification(`🎉 Successfully generated and saved ${data.questions.length} questions from ${fileName}!`)
+          setTimeout(() => setToastNotification(''), 5000)
+        } else {
+          const marked = data.questions.map(q => ({
+            ...q,
+            timeToAnswer: roomSettings.timeToAnswer || 30,
+            points: roomSettings.points || 100,
+            segmentIndex: currentSegment
+          }))
+          setPendingTextQuestions(marked)
+          setShowTextQuestionPopup(true)
+        }
+      } else {
+        alert(data.error || 'No questions could be generated from this PDF. Please check the document.')
+      }
+    } catch (error) {
+      setIsGeneratingFromPdf(false)
+      console.error('PDF generation error:', error)
+      alert('Failed to generate questions from PDF: ' + (error.message || 'Unknown error'))
+    }
+  }
+
+  const handleLaunchExistingQuestion = (question) => {
+    if (!socket || !isConnected) {
+      alert('Socket connection is reconnecting. Please try again.')
+      return
+    }
+    socket.emit('new_question', {
+      roomCode: room.code,
+      question
+    })
+    setToastNotification(`🚀 Question launched to all students!`)
+    setTimeout(() => setToastNotification(''), 4000)
+  }
+
+  const handleLaunchAllQuestions = () => {
+    if (!socket || !isConnected) {
+      alert('Socket connection is reconnecting. Please try again.')
+      return
+    }
+    socket.emit('questions:ready', { roomCode: room.code, totalQuestions: generatedQuestions.length })
+    if (generatedQuestions.length > 0) {
+      const firstQ = generatedQuestions[0]
+      socket.emit('new_question', {
+        roomCode: room.code,
+        question: firstQ,
+        totalQuestions: generatedQuestions.length
+      })
+    }
+    setToastNotification(`🚀 Quiz Mode launched! Students can now solve all ${generatedQuestions.length} questions.`)
+    setTimeout(() => setToastNotification(''), 4500)
   }
 
   const handleCreateQuestion = async (questionData) => {
@@ -1202,7 +1385,7 @@ function RoomDetailPage() {
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -1224,7 +1407,7 @@ function RoomDetailPage() {
             <button onClick={() => navigate('/teacher')} style={{
               marginTop: '16px',
               padding: '12px 24px',
-              background: '#3b82f6',
+              background: 'var(--accent-solid)',
               color: 'white',
               border: 'none',
               borderRadius: '10px',
@@ -1245,18 +1428,7 @@ function RoomDetailPage() {
       <Sidebar user={user} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
-        {/* Header */}
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={room.settings?.mode === 'video' ? Clapperboard : MicIcon} eyebrow={room.endedAt ? 'Teacher console · ended' : 'Teacher console · live'} title={room.name} />
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
@@ -1288,12 +1460,13 @@ function RoomDetailPage() {
               border: 'none',
               borderRadius: '8px',
               cursor: 'pointer',
-              fontSize: '18px'
+              fontSize: '18px',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
             }}>
-              ←
+              <ArrowLeft size={18} aria-hidden="true" />
             </button>
 
-            <div style={{
+            <div data-tour="room-code" style={{
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -1307,14 +1480,14 @@ function RoomDetailPage() {
               </span>
               <button onClick={copyRoomCode} disabled={isEnded} style={{
                 padding: '4px 12px',
-                background: isEnded ? '#9ca3af' : (copied ? '#10b981' : '#3b82f6'),
+                background: isEnded ? '#9ca3af' : (copied ? '#10b981' : 'var(--accent-solid)'),
                 color: 'white',
                 border: 'none',
                 borderRadius: '4px',
                 fontSize: '12px',
                 cursor: isEnded ? 'not-allowed' : 'pointer'
               }}>
-                {copied ? '✓ Copied' : '📋 Copy'}
+                {copied ? <><Ico as={Check} /> Copied</> : <><Ico as={Copy} /> Copy</>}
               </button>
             </div>
 
@@ -1333,7 +1506,7 @@ function RoomDetailPage() {
                 {totalParticipants}
               </span>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
-                👥 Participants
+                <Ico as={Users} /> Participants
               </span>
             </div>
 
@@ -1370,7 +1543,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  <Ico as={Timer} /> Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1398,18 +1571,100 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  <Ico as={Timer} /> Time's Up!
                 </span>
               </div>
+            )}
+
+            {/* Confused Alert for Active Question */}
+            {activeQuestion && (confusedCounts[activeQuestion._id] || 0) > 0 && (
+              <div style={{
+                padding: '8px 14px',
+                background: '#fef3c7',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                border: '2px solid #f59e0b',
+                color: '#92400e',
+                fontWeight: '600',
+                fontSize: '13px'
+              }}>
+                <ConfusedIcon size={18} />
+                <span>{confusedCounts[activeQuestion._id]} student{confusedCounts[activeQuestion._id] > 1 ? 's' : ''} confused — Needs re-explanation!</span>
+                <button
+                  onClick={() => handleOpenConfusedNotes(activeQuestion._id)}
+                  style={{
+                    marginLeft: '8px',
+                    padding: '3px 8px',
+                    background: '#f59e0b',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11.5px',
+                    fontWeight: '700',
+                    cursor: 'pointer'
+                  }}
+                  title="View explanations written by students"
+                >
+                  View notes ▾
+                </button>
+              </div>
+            )}
+
+            {/* Doubt Box Button */}
+            <button
+              onClick={() => setShowDoubtBox(true)}
+              style={{
+                padding: '8px 16px',
+                background: '#8b5cf6',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '500',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+              title="Open classroom anonymous doubts"
+            >
+              💬 Doubts
+            </button>
+
+            {/* Upload PDF Button */}
+            {!isEnded && (
+              <button
+                onClick={() => setShowPdfModal(true)}
+                style={{
+                  padding: '8px 16px',
+                  background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)'
+                }}
+                title="Upload PDF notes or slides to generate 10–15 quiz questions"
+              >
+                <Ico as={FileUp} /> Upload PDF
+              </button>
             )}
 
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
+                data-tour="paste-generate"
                 onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
                 style={{
                   padding: '8px 16px',
-                  background: '#10b981',
+                  background: 'var(--success-solid)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
@@ -1421,7 +1676,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                <Ico as={FileText} /> Paste & Generate
               </button>
             )}
 
@@ -1431,7 +1686,7 @@ function RoomDetailPage() {
                 onClick={() => setShowCreateQuestion(true)}
                 style={{
                   padding: '8px 16px',
-                  background: '#3b82f6',
+                  background: 'var(--accent-solid)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
@@ -1443,13 +1698,17 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                <Ico as={PenLine} /> Create Q
               </button>
             )}
+
+            {/* Sound on/off for the attention chimes (per device) */}
+            <SoundToggle />
 
             {/* Settings Dropdown */}
             <div style={{ position: 'relative' }} ref={settingsRef}>
               <button
+                data-tour="settings"
                 onClick={() => setShowSettings(true)}
                 style={{
                   padding: '8px 16px',
@@ -1465,7 +1724,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ⚙️ Settings
+                <Ico as={Settings} /> Settings
               </button>
 
               <RoomSettingsModal
@@ -1494,7 +1753,7 @@ function RoomDetailPage() {
 
             {/* End Room Button */}
             {!isEnded && (
-              <button onClick={handleEndRoom} style={{
+              <button data-tour="end-room" onClick={handleEndRoom} style={{
                 padding: '8px 16px',
                 background: '#ef4444',
                 color: 'white',
@@ -1623,6 +1882,7 @@ function RoomDetailPage() {
                   )}
                   {videoId && !videoSessionActive && (
                     <button
+                      data-tour="start-capture"
                       onClick={beginVideoSession}
                       disabled={isEnded}
                       style={{
@@ -1654,7 +1914,7 @@ function RoomDetailPage() {
               {!isVideoMode && (
               <>
               {/* Mic Button */}
-              <button
+              <button data-tour="start-capture"
                 onClick={toggleRecording}
                 disabled={isEnded}
                 style={{
@@ -1758,7 +2018,7 @@ function RoomDetailPage() {
             </div>
 
             {/* Transcription Card */}
-            <div style={{
+            <div data-tour="transcript" style={{
               flex: isMobile ? '1 1 100%' : (isVideoMode ? '1 1 calc(40% - 10px)' : '1 1 calc(70% - 10px)'),
               minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
@@ -1783,7 +2043,7 @@ function RoomDetailPage() {
                 borderBottom: '1px solid var(--border-color)'
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  <span style={{ fontSize: '18px' }}>🎙️</span>
+                  <span style={{ fontSize: '18px', display: 'inline-flex', color: 'var(--accent)' }}><MicIcon size={18} aria-hidden="true" /></span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
                   </span>
@@ -1804,7 +2064,7 @@ function RoomDetailPage() {
                       color: 'var(--text-secondary)',
                       cursor: 'pointer'
                     }}>
-                      ✕ Clear
+                      <Ico as={X} /> Clear
                     </button>
                   )}
                   <button
@@ -1812,7 +2072,7 @@ function RoomDetailPage() {
                     disabled={isGeneratingQuestions || !transcript || !generateQEnabled}
                     style={{
                       padding: '4px 12px',
-                      background: '#3b82f6',
+                      background: 'var(--accent-solid)',
                       color: 'white',
                       border: 'none',
                       borderRadius: '6px',
@@ -1825,7 +2085,7 @@ function RoomDetailPage() {
                       gap: '4px'
                     }}
                   >
-                    {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                    {isGeneratingQuestions ? <><Ico as={Hourglass} /> Generating...</> : <><Ico as={RefreshCw} /> Generate Q</>}
                   </button>
                 </div>
               </div>
@@ -1855,22 +2115,46 @@ function RoomDetailPage() {
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '20px', display: 'inline-flex', color: 'var(--accent)' }}><FileText size={20} aria-hidden="true" /></span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
               </span>
               {generatedQuestions.length > 0 && (
                 <span style={{
                   padding: '2px 10px',
-                  background: '#d1fae5',
-                  color: '#059669',
+                  background: 'var(--tint-success-bg)',
+                  color: 'var(--tint-success-fg)',
                   borderRadius: '12px',
                   fontSize: '12px',
                   fontWeight: '600'
                 }}>
                   {generatedQuestions.length}
                 </span>
+              )}
+              {generatedQuestions.length > 0 && !isEnded && (
+                <button
+                  type="button"
+                  onClick={handleLaunchAllQuestions}
+                  style={{
+                    marginLeft: 'auto',
+                    padding: '6px 14px',
+                    background: 'var(--accent-gradient)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                  }}
+                >
+                  <span>🚀</span>
+                  <span>Launch Quiz Mode ({generatedQuestions.length} Qs)</span>
+                </button>
               )}
             </div>
 
@@ -1891,7 +2175,7 @@ function RoomDetailPage() {
                       width: '28px',
                       height: '28px',
                       borderRadius: '50%',
-                      background: '#3b82f6',
+                      background: 'var(--accent-solid)',
                       color: 'white',
                       display: 'flex',
                       alignItems: 'center',
@@ -1909,8 +2193,8 @@ function RoomDetailPage() {
                           borderRadius: '4px',
                           fontSize: '10px',
                           fontWeight: '600',
-                          background: q.type === 'MCQ' ? '#3b82f620' : q.type === 'TF' ? '#10b9820' : '#8b5cf620',
-                          color: q.type === 'MCQ' ? '#3b82f6' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
+                          background: q.type === 'MCQ' ? 'color-mix(in srgb, var(--accent) 13%, transparent)' : q.type === 'TF' ? '#10b98120' : '#8b5cf620',
+                          color: q.type === 'MCQ' ? 'var(--accent)' : q.type === 'TF' ? '#10b982' : '#8b5cf6'
                         }}>
                           {q.type}
                         </span>
@@ -1919,8 +2203,8 @@ function RoomDetailPage() {
                           borderRadius: '4px',
                           fontSize: '10px',
                           fontWeight: '600',
-                          background: '#fef3c7',
-                          color: '#92400e'
+                          background: 'var(--tint-warn-bg)',
+                          color: 'var(--tint-warn-fg)'
                         }}>
                           {q.points || 100} pts
                         </span>
@@ -1934,14 +2218,14 @@ function RoomDetailPage() {
                           return (
                             <div key={optIdx} style={{
                               padding: '8px 12px',
-                              background: opt.isCorrect ? '#d1fae5' : 'var(--bg-secondary)',
-                              border: `2px solid ${opt.isCorrect ? '#059669' : 'var(--border-color)'}`,
+                              background: opt.isCorrect ? 'var(--tint-success-bg)' : 'var(--bg-secondary)',
+                              border: `2px solid ${opt.isCorrect ? 'var(--tint-success-border)' : 'var(--border-color)'}`,
                               borderRadius: '6px',
                               display: 'flex',
                               alignItems: 'center',
                               gap: '8px',
                               fontSize: '13px',
-                              color: opt.isCorrect ? '#059669' : 'var(--text-primary)'
+                              color: opt.isCorrect ? 'var(--tint-success-fg)' : 'var(--text-primary)'
                             }}>
                               <span style={{
                                 width: '22px',
@@ -1962,7 +2246,7 @@ function RoomDetailPage() {
                                 {opt.text}
                               </span>
                               {opt.isCorrect && (
-                                <span style={{ marginLeft: 'auto', fontSize: '12px' }}>✓</span>
+                                <span style={{ marginLeft: 'auto', fontSize: '12px', display: 'inline-flex' }}><Check size={14} strokeWidth={2.75} aria-label="Correct" /></span>
                               )}
                             </div>
                           )
@@ -1975,12 +2259,57 @@ function RoomDetailPage() {
                         borderRadius: '6px',
                         fontSize: '11px',
                         fontWeight: '600',
-                        background: (answerCounts[q._id] || 0) > 0 ? '#d1fae5' : '#fef3c7',
-                        color: (answerCounts[q._id] || 0) > 0 ? '#059669' : '#92400e'
+                        background: (answerCounts[q._id] || 0) > 0 ? 'var(--tint-success-bg)' : 'var(--tint-warn-bg)',
+                        color: (answerCounts[q._id] || 0) > 0 ? 'var(--tint-success-fg)' : 'var(--tint-warn-fg)'
                       }}>
                         {answerCounts[q._id] || 0}/{totalParticipants}
                       </span>
                       <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>answered</span>
+                      {!isEnded && (
+                        <button
+                          onClick={() => handleLaunchExistingQuestion(q)}
+                          style={{
+                            marginTop: '6px',
+                            padding: '5px 12px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: 'var(--accent-gradient)',
+                            color: 'white',
+                            border: 'none',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            boxShadow: '0 2px 6px rgba(37, 99, 235, 0.25)'
+                          }}
+                          title="Launch this question live to students"
+                        >
+                          <Ico as={Rocket} /> Launch
+                        </button>
+                      )}
+                      {(confusedCounts[q._id] || 0) > 0 && (
+                        <button
+                          onClick={() => handleOpenConfusedNotes(q._id)}
+                          style={{
+                            padding: '2px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: '#fef3c7',
+                            color: '#92400e',
+                            border: '1px solid #fde68a',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            cursor: 'pointer'
+                          }}
+                          title="Click to view student notes"
+                        >
+                          <ConfusedIcon size={13} />
+                          <span>{confusedCounts[q._id]} confused</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -2003,7 +2332,7 @@ function RoomDetailPage() {
             {/* Leaderboard - flexible width */}
             <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
+                <span style={{ fontSize: '20px', display: 'inline-flex', color: '#f59e0b' }}><Trophy size={20} aria-hidden="true" /></span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Leaderboard
                 </span>
@@ -2071,6 +2400,18 @@ function RoomDetailPage() {
           isOpen={showCreateQuestion}
           onClose={() => setShowCreateQuestion(false)}
           onLaunch={handleCreateQuestion}
+          onSave={handleSaveQuestion}
+        />
+      )}
+
+      {/* PDF to Questions Modal */}
+      {showPdfModal && (
+        <PdfToQuestionsModal
+          isOpen={showPdfModal}
+          onClose={() => setShowPdfModal(false)}
+          onGenerate={handlePdfQuestionsGenerate}
+          roomSettings={roomSettings}
+          isGenerating={isGeneratingFromPdf}
         />
       )}
 
@@ -2112,8 +2453,9 @@ function RoomDetailPage() {
             <div style={{
               fontSize: '48px',
               marginBottom: '16px',
-              animation: 'spin 1s linear infinite'
-            }}>⏳</div>
+              animation: 'spin 1s linear infinite',
+              display: 'inline-flex', color: 'var(--accent)'
+            }}><LoaderCircle size={48} aria-hidden="true" /></div>
             <h3 style={{
               margin: '0 0 8px',
               color: 'var(--text-primary)',
@@ -2137,8 +2479,157 @@ function RoomDetailPage() {
           onReject={handleTextQuestionReject}
           onClose={handleTextQuestionClose}
           onNext={handleTextQuestionClose}
+          onSaveAll={handleTextQuestionsApproveAll}
           isLast={true}
         />
+      )}
+
+      {/* Floating Toast Notification */}
+      {toastNotification && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(15, 23, 42, 0.95)',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '12px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
+          zIndex: 4000,
+          fontSize: '14px',
+          fontWeight: '600',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          animation: 'fadeIn 0.2s ease'
+        }}>
+          {toastNotification}
+        </div>
+      )}
+
+      {/* Anonymous Doubt Box Modal */}
+      {showDoubtBox && (
+        <DoubtBoxModal
+          roomId={room?._id || roomId}
+          token={token}
+          socket={socket}
+          isTeacher={true}
+          onClose={() => setShowDoubtBox(false)}
+        />
+      )}
+
+      {/* Student Confused Notes Modal */}
+      {showConfusedNotesModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 10000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(3px)',
+          padding: '16px'
+        }}>
+          <div style={{
+            position: 'relative',
+            width: 'min(520px, 100%)',
+            maxHeight: '80vh',
+            background: 'var(--bg-card)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border-color)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'var(--bg-primary)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ConfusedIcon size={20} />
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Student Confusion Explanations</h3>
+              </div>
+              <button
+                onClick={() => setShowConfusedNotesModal(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '18px',
+                  fontWeight: 700,
+                  padding: '4px'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{
+              padding: '16px 20px',
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+              maxHeight: '55vh'
+            }}>
+              {loadingConfusedNotes ? (
+                <div style={{ textAlign: 'center', padding: '28px', color: 'var(--text-secondary)' }}>Loading student notes...</div>
+              ) : confusedNotes.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '28px', color: 'var(--text-secondary)' }}>
+                  <p style={{ margin: 0, fontWeight: 600 }}>No written notes submitted</p>
+                  <p style={{ margin: '6px 0 0', fontSize: '13px' }}>Students tapped "I'm Confused" to signal difficulty without writing a custom explanation.</p>
+                </div>
+              ) : (
+                confusedNotes.map((note, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: '12px 14px',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '10px',
+                      fontSize: '13.5px',
+                      lineHeight: 1.5,
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    💬 "{note}"
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{
+              padding: '12px 20px',
+              borderTop: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              textAlign: 'right'
+            }}>
+              <button
+                onClick={() => setShowConfusedNotesModal(false)}
+                style={{
+                  padding: '7px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-primary)',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <style>{`

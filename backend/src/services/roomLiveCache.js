@@ -13,14 +13,14 @@
 // (identical behaviour to Phase 3 without this cache), so it is a pure optimisation, never a
 // correctness dependency. The TTL is only a backstop for a missed DEL; it is refreshed on each launch
 // and comfortably exceeds a session, so the key does not expire mid-session under normal use.
-import { getRedisClient, isRedisEnabled } from '../config/redis.js'
+import { getRedisClient, isRedisReady } from '../config/redis.js'
 
 const KEY = (roomId) => `live:room:${roomId}`
 const TTL_SEC = Number(process.env.ROOM_LIVE_CACHE_TTL_SEC) || 7200 // 2h backstop; refreshed each launch
 
 // Poll launched → room is live and this is the current question.
 export async function setRoomLive(roomId, questionId) {
-  if (!isRedisEnabled()) return
+  if (!isRedisReady()) return
   try {
     await getRedisClient().set(
       KEY(roomId),
@@ -33,14 +33,14 @@ export async function setRoomLive(roomId, questionId) {
 // Room ended (or any time we want reads to re-read Mongo). DEL so the next getRoomLive misses and
 // reads the fresh endedAt from Mongo.
 export async function invalidateRoomLive(roomId) {
-  if (!isRedisEnabled()) return
+  if (!isRedisReady()) return
   try { await getRedisClient().del(KEY(roomId)) } catch { /* non-fatal */ }
 }
 
 // Read the room's live state for the POST guard. Redis hit → no Mongo. Miss / Redis-off → fresh Mongo
 // read, NOT written back (launch is the sole value-writer → no read-populate race).
 export async function getRoomLive(Room, roomId) {
-  if (isRedisEnabled()) {
+  if (isRedisReady()) {
     try {
       const v = await getRedisClient().get(KEY(roomId))
       if (v) {

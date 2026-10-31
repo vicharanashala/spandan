@@ -1,5 +1,6 @@
 import User from '../models/User.js'
 import { sendWelcomeEmail } from './emailService.js'
+import { TERMS_VERSION } from '../config/terms.js'
 
 export const register = async (name, email, password, role) => {
   // Check if user already exists
@@ -15,7 +16,10 @@ export const register = async (name, email, password, role) => {
     email: email.toLowerCase(),
     password,
     role,
-    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved'
+    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved',
+    // Only reached after the route has validated acceptTerms === true.
+    termsVersion: TERMS_VERSION,
+    termsAcceptedAt: new Date()
   })
 
   await user.save()
@@ -135,6 +139,20 @@ export const updateProfile = async (userId, profileData) => {
   // Handle nested socialLinks object
   if (profileData.socialLinks) {
     user.socialLinks = { ...user.socialLinks.toObject(), ...profileData.socialLinks }
+  }
+
+  // Guided-tour completion flags: merge the tour ids sent (each an ISO date or null). Ids are short
+  // kebab-case tokens; anything else is ignored. Bounded so the object cannot grow without limit.
+  if (profileData.tourSeen && typeof profileData.tourSeen === 'object' && !Array.isArray(profileData.tourSeen)) {
+    const current = (user.tourSeen && typeof user.tourSeen === 'object') ? { ...user.tourSeen } : {}
+    for (const [id, v] of Object.entries(profileData.tourSeen)) {
+      if (!/^[a-z0-9-]{1,40}$/.test(id)) continue
+      if (v === null) { delete current[id]; continue }
+      const d = new Date(v)
+      if (!Number.isNaN(d.getTime())) current[id] = d
+    }
+    user.tourSeen = Object.fromEntries(Object.entries(current).slice(0, 50))
+    user.markModified('tourSeen')
   }
 
   await user.save()

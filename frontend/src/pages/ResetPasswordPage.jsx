@@ -6,6 +6,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { Check, Moon, Sun } from 'lucide-react'
 
 function ResetPasswordPage() {
   const navigate = useNavigate()
@@ -113,7 +114,7 @@ function ResetPasswordPage() {
           transition: 'all 0.2s'
         }}
       >
-        {isDark ? '☀️' : '🌙'}
+        {isDark ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
         <span style={{ fontSize: '13px', fontWeight: 600 }}>{isDark ? 'Light' : 'Dark'}</span>
       </button>
 
@@ -130,7 +131,7 @@ function ResetPasswordPage() {
             margin: '0 auto 20px',
             boxShadow: 'var(--shadow-md)'
           }}>
-            <span style={{ fontSize: '32px', color: '#fff' }}>✓</span>
+            <span style={{ fontSize: '32px', color: '#fff', display: 'inline-flex' }}><Check size={34} strokeWidth={3} aria-hidden="true" /></span>
           </div>
           <h2 style={{
             color: 'var(--text-primary)',

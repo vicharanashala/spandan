@@ -81,3 +81,48 @@ export const fetchAllRoomQuestions = async (roomId) => {
   }
   return all
 }
+
+// Upload a PDF document and generate quiz questions
+export const uploadPdfAndGenerateQuestions = async (params) => {
+  const token = useAuthStore.getState().token
+  const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {}
+
+  const res = await fetch(`${API_URL}/questions/upload-pdf`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader
+    },
+    body: JSON.stringify(params)
+  })
+
+  const data = await res.json()
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to generate questions from PDF')
+  }
+
+  return data
+}
+
+// Bulk save multiple questions directly to a room
+export const saveBulkQuestions = async (roomId, questions) => {
+  const token = useAuthStore.getState().token
+  const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {}
+
+  const res = await fetch(`${API_URL}/questions/bulk`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader
+    },
+    body: JSON.stringify({ roomId, questions })
+  })
+
+  const data = await res.json()
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to save questions')
+  }
+
+  return data
+}
+

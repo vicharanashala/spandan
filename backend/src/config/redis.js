@@ -44,4 +44,8 @@ export async function initRedis() {
 }
 
 export function isRedisEnabled() { return enabled }
+// Configured AND connected right now. Commands sent while the client is reconnecting wait in its
+// offline queue (a request would hang until Redis returns), so per-request cache paths check this
+// and use their no-Redis fallback instead.
+export function isRedisReady() { return enabled && !!client?.isReady }
 export function getRedisClient() { return client }

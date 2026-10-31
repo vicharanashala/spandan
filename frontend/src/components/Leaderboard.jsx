@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
+import { Medal } from 'lucide-react'
 
 const Leaderboard = ({ roomId, token, socket, userId }) => {
   const [leaderboard, setLeaderboard] = useState([])
@@ -12,6 +13,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
   const [topN, setTopN] = useState(10)
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [isTeacher, setIsTeacher] = useState(false)
+  // Anonymous-leaderboard mode (server-driven). When on, names arrive already masked; the client must
+  // additionally suppress the own-row and the "(You)" highlight so a student can't locate themselves.
+  const [anonymous, setAnonymous] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   // Keep the latest isTeacher available inside the socket listener without rebinding it.
@@ -30,6 +34,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
       const board = data.leaderboard || []
       const n = data.topN || 10
       setTopN(n)
+      setAnonymous(!!data.anonymous)
       if (data.isTeacher) {
         // Teachers are authorized to see the whole board.
         setLeaderboard(board)
@@ -79,6 +84,10 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
           setError(null) // a live push means the server is reachable — clear any stale fetch error
           if (typeof payload.topN === 'number') setTopN(payload.topN)
           if (typeof payload.totalParticipants === 'number') setTotalParticipants(payload.totalParticipants)
+          if (typeof payload.anonymous === 'boolean') setAnonymous(payload.anonymous)
+          // Anonymous mode: the server sends no own-row and the board is masked; drop any stale own-row
+          // so a student can never see their own position.
+          if (payload.anonymous) { setMyRow(null); return }
           if (userId) {
             const me = payload.leaderboard.find(e => String(e.studentId) === String(userId))
             if (me) {
@@ -161,7 +170,8 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     const isHighlighted = rank <= 3 || isCurrentUser
     const nameColor = isHighlighted ? '#1f2937' : 'var(--text-primary)'
     const subColor = isHighlighted ? '#6b7280' : 'var(--text-secondary)'
-    const pointsColor = rank === 1 ? '#f59e0b' : isHighlighted ? '#1f2937' : 'var(--text-primary)'
+    const pointsColor = rank === 1 ? '#D6B200' : rank === 2 ? '#5B616D' : rank === 3 ? '#8D4107' :
+                        isHighlighted ? '#1f2937' : 'var(--text-primary)'
 
     return (
       <div key={entry.studentId} style={{
@@ -175,19 +185,19 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         overflow: 'hidden',
         boxSizing: 'border-box',
         flexShrink: 0,
-        background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
-                     entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
-                     entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
+        background: entry.rank === 1 ? 'linear-gradient(135deg, #fffcf0, #fff8d6)' :
+                     entry.rank === 2 ? 'linear-gradient(135deg, #f9f9fa, #eff0f2)' :
+                     entry.rank === 3 ? 'linear-gradient(135deg, #faf4f0, #f1e2d7)' :
                      isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
-        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` :
-               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
+        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#FCD200' : entry.rank === 2 ? '#9ca3af' : '#A64C08'}` :
+               isCurrentUser ? '2px solid var(--accent)' : '1px solid var(--border-color)'
       }}>
         <span style={{
           width: '28px',
           height: '28px',
           borderRadius: '50%',
-          background: entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#6b7280' : entry.rank === 3 ? '#d97706' : 'var(--border-color)',
+          background: entry.rank === 1 ? '#FCD200' : entry.rank === 2 ? '#6b7280' : entry.rank === 3 ? '#A64C08' : 'var(--border-color)',
           color: 'white',
           display: 'flex',
           alignItems: 'center',
@@ -196,7 +206,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
           fontWeight: '700',
           flexShrink: 0
         }}>
-          {entry.rank <= 3 ? ['🥇', '🥈', '🥉'][entry.rank - 1] : rank}
+          {entry.rank <= 3 ? <Medal size={15} strokeWidth={2.25} aria-label={`Rank ${entry.rank}`} /> : rank}
         </span>
 
         <div style={{ flex: '1 1 auto', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
@@ -237,9 +247,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     )
   }
 
-  // Ellipsis marking the gap between the top 10 and the student's own (lower) rank.
-  const renderGap = () => (
-    <div style={{
+  // Ellipsis marking a jump in ranks (top-N → own row, or top-N → revealed bottom slice).
+  const renderGap = (key) => (
+    <div key={key} style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -252,8 +262,9 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     </div>
   )
 
-  // Show the student's own row (with a ••• gap) only when they rank below the public top N.
-  const showOwnRow = !isTeacher && myRow && myRow.rank > topN
+  // Show the student's own row (with a ••• gap) only when they rank below the public top N — never in
+  // anonymous mode (a student must not be able to locate themselves).
+  const showOwnRow = !isTeacher && !anonymous && myRow && myRow.rank > topN
 
   return (
     <div style={{ position: 'relative', width: '100%', minWidth: 0, maxWidth: '100%' }}>
@@ -269,7 +280,14 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         maxHeight: '60vh',
         boxSizing: 'border-box'
       }}>
-        {leaderboard.map((entry) => renderRank(entry))}
+        {/* Render the board; when ranks jump (e.g. masked top-N → revealed bottom slice) show a ••• gap. */}
+        {leaderboard.flatMap((entry, i) => {
+          const prev = leaderboard[i - 1]
+          const rows = []
+          if (prev && entry.rank - prev.rank > 1) rows.push(renderGap(`gap-${entry.rank}`))
+          rows.push(renderRank(entry))
+          return rows
+        })}
 
         {/* Student ranked below the top 10: a ••• gap then their OWN row (delivered privately). */}
         {showOwnRow && (

@@ -36,6 +36,15 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  isConfused: {
+    type: Boolean,
+    default: false
+  },
+  confusedReason: {
+    type: String,
+    default: '',
+    maxlength: 200
+  },
   createdAt: {
     type: Date,
     default: Date.now

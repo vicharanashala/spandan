@@ -6,6 +6,7 @@ body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   margin: 0;
   overflow-x: hidden;
+  overflow-x: clip; /* clip, not hidden: hidden makes <body> a scroll container, which breaks position: sticky */
 }
 
 * {
@@ -14,6 +15,7 @@ body {
 
 html {
   overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Theme Variables - Light (default) */
@@ -26,7 +28,7 @@ html {
   --text-secondary: #6b7280;
   --border-color: #e5e7eb;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  --header-bg: linear-gradient(to right, #1e40af, #3b82f6);
+  --header-bg: linear-gradient(120deg, #082049 0%, #0d2d63 55%, #1a4690 100%); /* logo navy #082049 */
   --sidebar-bg: #ffffff;
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.08);
   --nav-hover: #f3f4f6;
@@ -40,9 +42,12 @@ html {
   --shadow-sm: 0 1px 2px rgba(16,24,40,0.06), 0 1px 3px rgba(16,24,40,0.08);
   --shadow-md: 0 4px 12px rgba(16,24,40,0.08), 0 2px 6px rgba(16,24,40,0.05);
   --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
-  --accent: #3b82f6;
-  --accent-strong: #1e40af;
-  --accent-gradient: linear-gradient(135deg, #1e40af, #3b82f6);
+  --accent: #1f4ba5;          /* navy-family blue for links / focus / highlights (7:1 on white) */
+  --accent-strong: #082049;   /* the logo's navy */
+  --accent-gradient: linear-gradient(135deg, #082049, #1f4ba5);
+  --brand-navy: #082049;
+  --accent-solid: #1f4ba5;     /* filled buttons / badges that carry white text */
+  --tone-lift: 0%;             /* how much white to mix into fixed tone colours used as text (see toneText) */
 }
 
 /* Dark Theme */
@@ -55,7 +60,13 @@ html {
   --text-secondary: #9ca3af;
   --border-color: #374151;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  --header-bg: linear-gradient(to right, #1e3a8a, #2563eb);
+  --header-bg: linear-gradient(120deg, #061a3d 0%, #0b2858 55%, #173f86 100%);
+  /* dark mode: a lighter navy-blue for text / links / highlights so they stay readable on dark surfaces */
+  --accent: #7aa2f7;
+  --accent-strong: #0b2858;
+  --accent-gradient: linear-gradient(135deg, #0d2d63, #2a5bbf);
+  --accent-solid: #2a5bbf;     /* --accent is too light for white text in dark mode (2.5:1); this is 6.3:1 */
+  --tone-lift: 45%;            /* lift fixed tones (slate, pink, red, green) so small text stays readable on dark cards */
   --sidebar-bg: #1f2937;
   --sidebar-shadow: 2px 0 20px rgba(0,0,0,0.5);
   --nav-hover: #374151;
@@ -71,36 +82,61 @@ html {
   :root { --sidebar-width: 0px; }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar: light track + dark navy thumb in light mode (dark mode below) */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #1e3c72;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3b82f6;
-  border-radius: 4px;
+  background: var(--accent-strong);   /* the logo's dark navy */
+  border-radius: 999px;
+  border: 2px solid transparent;   /* inset look: the thumb floats inside the track */
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #2563eb;
+  background: var(--accent);
+  background-clip: padding-box;
 }
+
+/* Firefox (only where ::-webkit-scrollbar is unsupported — in Chrome, setting scrollbar-color would
+   switch off the custom styling above) */
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-color: var(--accent-strong) transparent; }
+  [data-theme="dark"] { scrollbar-color: #4b5563 transparent; }
+}
+
+/* Scroll boxes inside cards (results insights): same look as the global scrollbar, and the same
+   8px thickness on the HORIZONTAL bar too (the global rule only sets width). */
+.thin-scroll { scrollbar-width: thin; }
+.thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 
 /* Dark mode scrollbar */
+[data-theme="dark"]::-webkit-scrollbar-track,
 [data-theme="dark"] ::-webkit-scrollbar-track {
-  background: #1f2937;
+  background: transparent;
 }
 
+[data-theme="dark"]::-webkit-scrollbar-thumb,
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: #4b5563;
+  background-clip: padding-box;
+}
+
+[data-theme="dark"]::-webkit-scrollbar-thumb:hover,
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+  background-clip: padding-box;
 }
 
 /* ---- Modern base (redesign) ---- */
 html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-body { overflow-x: hidden; }
+body { overflow-x: hidden; overflow-x: clip; }
 
 /* Visible, accessible focus ring using the accent */
 *:focus-visible {
@@ -112,4 +148,64 @@ button, a { -webkit-tap-highlight-color: transparent; }
 /* Smooth theme + color transitions on surfaces */
 @media (prefers-reduced-motion: no-preference) {
   a, button { transition: background-color .15s ease, color .15s ease, box-shadow .15s ease, transform .15s ease; }
+}
+/* Results page (components/InsightUI.jsx): a gentle lift on hover for tiles and cards. */
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .insight-tile, .insight-card { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .insight-tile:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(16,24,40,0.10), 0 3px 8px rgba(16,24,40,0.06); }
+  .insight-card:hover { border-color: color-mix(in srgb, var(--accent) 28%, var(--border-color)); }
+}
+/* Results-page tile rows: whole rows only (cols from TileGrid); 2 per row in narrow windows. */
+.insight-tiles { grid-template-columns: repeat(var(--tile-cols, 4), minmax(0, 1fr)); }
+@media (max-width: 900px) { .insight-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* App-wide page kit (components/AppUI.jsx) */
+.app-input:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .app-card--hover { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .app-card--hover:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 30%, var(--border-color)); box-shadow: 0 14px 30px rgba(16,24,40,0.10), 0 4px 10px rgba(16,24,40,0.06) !important; }
+  .app-choice { transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-pulse { animation: app-pulse 1.8s ease-in-out infinite; }
+  @keyframes app-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+}
+/* Sidebar (components/Sidebar.jsx) hover states */
+.sb-item:not(.sb-item--active):hover { background: var(--nav-hover) !important; color: var(--text-primary) !important; }
+.sb-icon-btn:hover { background: var(--nav-hover) !important; color: var(--text-primary) !important; }
+@media (prefers-reduced-motion: no-preference) { .sb-item, .sb-icon-btn { transition: background .15s ease, color .15s ease; } }
+
+/* Semantic tints (success / danger / info / warning) for badges and answer rows: pale fills with dark text
+   in light mode, translucent fills with light text in dark mode — never a light block on a dark page. */
+:root {
+  --tint-success-bg: #d1fae5; --tint-success-fg: #047857; --tint-success-border: #059669;
+  --tint-danger-bg: #fee2e2;  --tint-danger-fg: #b91c1c;  --tint-danger-border: #ef4444;
+  --tint-info-bg: color-mix(in srgb, var(--accent) 9%, white); --tint-info-fg: var(--accent); --tint-info-border: var(--accent);
+  --tint-warn-bg: #fef3c7;    --tint-warn-fg: #92400e;    --tint-warn-border: #f59e0b;
+  --success-solid: #059669;   /* white text on it passes contrast (4.0:1) */
+}
+[data-theme="dark"] {
+  --tint-success-bg: rgba(16,185,129,0.16); --tint-success-fg: #6ee7b7; --tint-success-border: #10b981;
+  --tint-danger-bg: rgba(239,68,68,0.16);   --tint-danger-fg: #fca5a5;  --tint-danger-border: #f87171;
+  --tint-info-bg: color-mix(in srgb, var(--accent) 18%, transparent); --tint-info-fg: var(--accent); --tint-info-border: var(--accent);
+  --tint-warn-bg: rgba(245,158,11,0.18);    --tint-warn-fg: #fcd34d;    --tint-warn-border: #fbbf24;
+  --success-solid: #059669;
+}
+/* Sidebar logo = collapse toggle: a gentle lift on hover and a focus ring for the keyboard (no arrow overlay) */
+.sb-logo-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .sb-logo-toggle { transition: transform .15s ease, box-shadow .15s ease; }
+  .sb-logo-toggle:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(8,32,73,0.35) !important; }
+}
+
+/* Dashboard live clock: each changed digit flows up (old digit fades out the top, new one rises in from below).
+   0.9s with a sine ease so the seconds digit is almost always gently moving, like a stream; must stay < 1s. */
+.roll-slot { position: relative; display: inline-block; clip-path: inset(0); } /* clip-path (not overflow) keeps the text baseline */
+.roll-in { display: inline-block; animation: roll-in 0.9s cubic-bezier(.37,0,.63,1); }
+.roll-out { position: absolute; left: 0; top: 0; animation: roll-out 0.9s cubic-bezier(.37,0,.63,1) forwards; }
+@keyframes roll-in { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes roll-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-100%); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .roll-in { animation: none; }
+  .roll-out { display: none; }
 }

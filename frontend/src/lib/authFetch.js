@@ -33,7 +33,19 @@ export function installAuthFetchInterceptor() {
     const response = await originalFetch(...args)
     try {
       if (response.status === 401 && isOurApiUrl(args[0]) && useAuthStore.getState().token) {
-        useAuthStore.getState().handleSessionExpired()
+        response.clone().json().then(data => {
+          const reason = data?.message || data?.error || 'Your session expired. Please sign in again.'
+          useAuthStore.getState().handleSessionExpired(reason)
+        }).catch(() => {
+          useAuthStore.getState().handleSessionExpired()
+        })
+      }
+      // 403 TERMS_REQUIRED: the account has not accepted the current Terms of Use. Show the
+      // accept-terms screen (TermsGate). Read a clone so the caller still gets an unread body.
+      if (response.status === 403 && isOurApiUrl(args[0]) && useAuthStore.getState().token) {
+        response.clone().json()
+          .then((body) => { if (body?.code === 'TERMS_REQUIRED') useAuthStore.getState().setTermsRequired(true) })
+          .catch(() => {})
       }
     } catch {
       // Never let interceptor bookkeeping break the caller's response.

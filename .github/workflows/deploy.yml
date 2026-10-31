@@ -1,4 +1,9 @@
-name: Deploy to Production
+name: Deploy to old Samagama host (DEPRECATED)
+
+# DEPRECATED — targets the retired shared Samagama host
+# (/var/samagama/spandan-workspace/spandan). The live deployment is the
+# DigitalOcean droplet: use "Deploy to DigitalOcean (manual)" (deploy-do.yml).
+# Kept only for reference; do not run it.
 
 on:
   workflow_dispatch:

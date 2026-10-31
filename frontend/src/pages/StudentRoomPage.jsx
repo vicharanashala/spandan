@@ -4,13 +4,19 @@ import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
+import { PageHeader } from '../components/AppUI'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
+import SoundToggle from '../components/SoundToggle'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
+import { Bell, Check, CircleCheck, Clapperboard, ClipboardList, Flame, HelpCircle, Hourglass, Lightbulb, MessageSquare, Mic, TriangleAlert, Trophy, X } from 'lucide-react'
+import { Ico } from '../components/icons'
+import { triggerConfetti } from '../lib/confetti'
+import DoubtBoxModal from '../components/DoubtBoxModal'
+import ConfusedIcon from '../components/ConfusedIcon'
 
 // Spread the ~N students' navigation to the results page over this window (ms). When a big room
 // ends, all students receive room:ended at once; without a spread they'd all hit the results
@@ -32,6 +38,10 @@ function StudentRoomPage() {
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
+  const [streakFeedback, setStreakFeedback] = useState(null)
+  const [isConfused, setIsConfused] = useState(false)
+  const [confusedReason, setConfusedReason] = useState('')
+  const [showDoubtBox, setShowDoubtBox] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
@@ -52,6 +62,151 @@ function StudentRoomPage() {
   // True while the teacher's question-approval popup is open. The student video stays paused for the
   // WHOLE popup window (across every question the teacher launches from it), not just per-question.
   const [teacherVideoPaused, setTeacherVideoPaused] = useState(false)
+  // True when a "question time" chime could not play because the browser has not seen a user gesture on
+  // this page yet (e.g. after a reload). Shows a one-tap "Enable sound" button; cleared once sound works.
+  const [soundBlocked, setSoundBlocked] = useState(false)
+  // One-time hint for new students (per device). Dismissed with ✕; never shown again on this browser.
+  const [showHint, setShowHint] = useState(() => { try { return localStorage.getItem('spandan.studentHintSeen') !== '1' } catch (e) { return true } })
+  const dismissHint = () => { setShowHint(false); try { localStorage.setItem('spandan.studentHintSeen', '1') } catch (e) { /* ignore */ } }
+  useEffect(() => { installUnlockOnInteraction() }, [])
+  const enableSound = async () => {
+    await unlockAudio()
+    const r = await playStudentQuestion()
+    if (r !== 'blocked') setSoundBlocked(false)
+  }
+
+  // Calculate consecutive correct answer streak from server-verified responses
+  const { currentStreak, maxStreak } = React.useMemo(() => {
+    if (!pastResponses || pastResponses.length === 0) {
+      return { currentStreak: 0, maxStreak: 0 }
+    }
+    // Only evaluate questions whose answers/correctness have been revealed
+    const revealedQuestions = [...pastResponses]
+      .filter(q => !q.resultPending)
+      .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+
+    let curr = 0
+    let max = 0
+    for (const q of revealedQuestions) {
+      if (q.answered && q.isCorrect) {
+        curr += 1
+        if (curr > max) max = curr
+      } else {
+        // Any incorrect answer or missed question resets the active streak
+        curr = 0
+      }
+    }
+    return { currentStreak: curr, maxStreak: max }
+  }, [pastResponses])
+
+  // Trigger celebratory confetti on streak milestones (3, 5, 10, 20)
+  const prevStreakRef = useRef(0)
+  useEffect(() => {
+    const STREAK_MILESTONES = [3, 5, 10, 20]
+    if (currentStreak > prevStreakRef.current && STREAK_MILESTONES.includes(currentStreak)) {
+      triggerConfetti({
+        particleCount: currentStreak >= 10 ? 110 : currentStreak >= 5 ? 80 : 60
+      })
+    }
+    prevStreakRef.current = currentStreak
+  }, [currentStreak])
+
+  // Ref to track current question synchronously for socket events & timers
+  const currentQuestionRef = useRef(null)
+  currentQuestionRef.current = currentQuestion
+
+  const startQuestion = (q) => {
+    if (!q) return
+    console.log('[StudentRoom] Starting question:', q)
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current)
+      timerIntervalRef.current = null
+    }
+
+    setCurrentQuestion(q)
+    setSelectedOptions([])
+    setSubmitted(false)
+    setIsConfused(false)
+    setConfusedReason('')
+    setStreakFeedback(null)
+
+    const tta = Number(q.timeToAnswer) || 30
+    setTimeLeft(tta)
+
+    timerIntervalRef.current = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(timerIntervalRef.current)
+          timerIntervalRef.current = null
+          handleTimeExpired(q)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  const handleTimeExpired = (q) => {
+    setStreakFeedback({
+      type: 'expired',
+      message: "⏱️ Time's up for this question! Streak reset."
+    })
+    setSubmitted(true)
+
+    const qId = q._id || q.question?._id
+    setPastResponses(prev => {
+      const updated = prev.map(item => {
+        const id = item._id || item.question?._id
+        if (String(id) === String(qId)) {
+          return {
+            ...item,
+            answered: true,
+            isCorrect: false,
+            pointsEarned: 0,
+            resultPending: false
+          }
+        }
+        return item
+      })
+
+      const sorted = [...updated].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+      const nextQ = sorted.find(item => {
+        const id = item._id || item.question?._id
+        return String(id) !== String(qId) && !item.answered
+      })
+
+      setTimeout(() => {
+        if (nextQ) {
+          startQuestion(nextQ)
+        } else {
+          setCurrentQuestion(null)
+        }
+      }, 1500)
+
+      return updated
+    })
+  }
+
+  const advanceToNextQuestion = (currentQId) => {
+    setPastResponses(currentList => {
+      const sorted = [...currentList].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+      const nextQ = sorted.find(item => {
+        const id = item._id || item.question?._id
+        return String(id) !== String(currentQId) && !item.answered
+      })
+
+      if (nextQ) {
+        startQuestion(nextQ)
+      } else {
+        setCurrentQuestion(null)
+        if (timerIntervalRef.current) {
+          clearInterval(timerIntervalRef.current)
+          timerIntervalRef.current = null
+        }
+      }
+      return currentList
+    })
+  }
 
   useEffect(() => {
     if (!isVideoMode) return
@@ -92,36 +247,8 @@ function StudentRoomPage() {
     if (!socket) return
 
     const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
-      setSelectedOptions([])
-      setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
-      
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
+      const q = data.question || data
+      startQuestion(q)
     }
 
     const handleQuestionEnded = (data) => {
@@ -140,33 +267,18 @@ function StudentRoomPage() {
     }
 
     const handleNewQuestion = (question) => {
-      // Handle manually created questions from teacher
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
+      if (!question) return
+      setPastResponses(prev => {
+        const qId = question._id || question.question?._id
+        const exists = prev.some(item => String(item._id || item.question?._id) === String(qId))
+        if (!exists) {
+          return [...prev, { ...question, answered: false }]
+        }
+        return prev
+      })
+      if (!currentQuestionRef.current) {
+        startQuestion(question)
       }
-      
-      setCurrentQuestion(question)
-      setSelectedOptions([])
-      setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
     }
 
     // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
@@ -186,6 +298,14 @@ function StudentRoomPage() {
 
     const handleVideoPause = () => setTeacherVideoPaused(true)
     const handleVideoResume = () => setTeacherVideoPaused(false)
+    // Teacher's GENERATED batch arrived (once per segment / Paste & Generate; never for Create Q).
+    const handleQuestionsReady = async () => {
+      const r = await playStudentQuestion()
+      if (r === 'blocked') setSoundBlocked(true)
+      if (room?._id && user?._id) {
+        fetchPastResponses(room._id, user._id)
+      }
+    }
 
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
@@ -193,6 +313,7 @@ function StudentRoomPage() {
     socket.on('video:progress', handleVideoProgress)
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
+    socket.on('questions:ready', handleQuestionsReady)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -211,6 +332,7 @@ function StudentRoomPage() {
       socket.off('video:progress', handleVideoProgress)
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
+      socket.off('questions:ready', handleQuestionsReady)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
@@ -275,6 +397,15 @@ function StudentRoomPage() {
         if (data.questions.some(q => q.answered)) {
           setHasAnsweredPoll(true)
         }
+
+        // Auto-start first unanswered question if student doesn't have an active question
+        if (!currentQuestionRef.current) {
+          const sorted = [...data.questions].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+          const firstUnanswered = sorted.find(q => !q.answered)
+          if (firstUnanswered) {
+            startQuestion(firstUnanswered)
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to fetch past responses:', err)
@@ -285,31 +416,24 @@ function StudentRoomPage() {
     if (selectedOptions.length === 0 || submitted || !currentQuestion) return
 
     const questionId = currentQuestion._id || currentQuestion.question?._id
-    const tta = currentQuestion.timeToAnswer || 30
-    // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
-    // is actually sent, so the send-jitter below can never change a student's points.
-    const responseTime = tta - timeLeft
+    const tta = Number(currentQuestion.timeToAnswer) || 30
+    const responseTime = Math.max(1, tta - timeLeft)
     const roomId = room?._id
     const studentId = user?._id
 
-    // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
-    // even though the network POST itself is deferred by a small random delay.
-    setSubmitted(true)
-    setHasAnsweredPoll(true) // Prevent accidental leave after answering
+    // Stop timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current)
+      timerIntervalRef.current = null
+    }
 
-    // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
-    // not all hit POST /responses in the same instant. A simultaneous burst saturates the 2-core
-    // event loop and starves the next question's broadcast (the missed-poll root cause); smearing
-    // the sends flattens that peak. responseTime is already frozen above, so points are unaffected.
-    const jitterMs = Math.floor(Math.random() * 2000)
+    setSubmitted(true)
+    setHasAnsweredPoll(true)
 
     console.log('[StudentRoom] Submitting answer:', {
-      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime, jitterMs
+      questionId, roomId, studentId, selectedOptions, timeToAnswer: tta, timeLeft, responseTime
     })
 
-    if (jitterMs > 0) await new Promise(resolve => setTimeout(resolve, jitterMs))
-
-    // Save to MongoDB
     try {
       const saveResponse = await fetch(`${API_URL}/responses`, {
         method: 'POST',
@@ -322,21 +446,76 @@ function StudentRoomPage() {
           questionId,
           studentId,
           selectedOptions,
+          isConfused,
+          confusedReason: isConfused ? confusedReason.trim() : '',
           responseTime
         })
       })
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
 
-      // Phase 1: the server emits the throttled leaderboard/answer-count updates itself from this
-      // authenticated POST — the client no longer emits points:update / response:submit. The
-      // leaderboard (incl. this student's own row) refreshes once per segment, not per submit.
+      const isCorrect = !!(saveData.isCorrect ?? saveData.response?.isCorrect)
+      const points = saveData.points ?? saveData.response?.points ?? (isCorrect ? (currentQuestion.points || currentQuestion.maxPoints || 100) : 0)
+
+      if (isCorrect) {
+        const nextStreakVal = currentStreak + 1
+        triggerConfetti({ particleCount: 75, spread: 60 })
+        setStreakFeedback({
+          type: 'correct',
+          message: `🎉 Correct! +${points} pts • 🔥 ${nextStreakVal} Streak!`,
+          points
+        })
+      } else {
+        setStreakFeedback({
+          type: 'incorrect',
+          message: `❌ Not quite! Streak reset to 0. Keep going!`,
+          points: 0
+        })
+      }
+
+      // Update pastResponses with user response and proceed to next question after 1.2s
+      setPastResponses(prev => {
+        const updated = prev.map(item => {
+          const id = item._id || item.question?._id
+          if (String(id) === String(questionId)) {
+            return {
+              ...item,
+              answered: true,
+              selectedOptions,
+              isCorrect,
+              pointsEarned: points,
+              resultPending: false,
+              userResponse: {
+                selectedOptions,
+                isCorrect,
+                points
+              }
+            }
+          }
+          return item
+        })
+
+        const sorted = [...updated].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+        const nextQ = sorted.find(item => {
+          const id = item._id || item.question?._id
+          return String(id) !== String(questionId) && !item.answered
+        })
+
+        setTimeout(() => {
+          if (nextQ) {
+            startQuestion(nextQ)
+          } else {
+            setCurrentQuestion(null)
+          }
+        }, 1200)
+
+        return updated
+      })
     } catch (err) {
       console.error('Failed to save response:', err)
-    }
-
-    if (roomId && studentId) {
-      fetchPastResponses(roomId, studentId)
+      setTimeout(() => {
+        advanceToNextQuestion(questionId)
+      }, 1200)
     }
   }
 
@@ -362,7 +541,7 @@ function StudentRoomPage() {
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -397,7 +576,7 @@ function StudentRoomPage() {
               style={{
                 marginTop: '16px',
                 padding: '12px 24px',
-                background: '#3b82f6',
+                background: 'var(--accent-solid)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '10px',
@@ -427,7 +606,7 @@ function StudentRoomPage() {
               width: '48px',
               height: '48px',
               border: '4px solid var(--border-color)',
-              borderTopColor: '#3b82f6',
+              borderTopColor: 'var(--accent)',
               borderRadius: '50%',
               animation: 'spin 1s linear infinite',
               margin: '0 auto 16px'
@@ -438,6 +617,23 @@ function StudentRoomPage() {
       </div>
     )
   }
+
+  // Progression & streak helpers
+  const currentQId = currentQuestion ? (currentQuestion._id || currentQuestion.question?._id) : null
+  const sortedQuestions = [...pastResponses].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+
+  const currentQIndex = sortedQuestions.findIndex(q => {
+    const id = q._id || q.question?._id
+    return String(id) === String(currentQId)
+  })
+
+  const totalQuestions = sortedQuestions.length
+  const hasNextQuestion = sortedQuestions.some(q => {
+    const id = q._id || q.question?._id
+    return String(id) !== String(currentQId) && !q.answered
+  })
+
+  const isAllCompleted = totalQuestions > 0 && sortedQuestions.every(q => q.answered)
 
   return (
     <div style={{
@@ -452,29 +648,27 @@ function StudentRoomPage() {
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
-        {/* Header */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '24px 32px',
-          paddingLeft: isMobile ? '64px' : '32px'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '700' }}>Room: {room.name}</h1>
-              <p style={{ margin: '4px 0 0', opacity: 0.9, fontSize: '14px' }}>Code: {room.code}</p>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={room.settings?.mode === 'video' ? Clapperboard : Mic} eyebrow="Live session" title={room.name} subtitle={<>Code <strong style={{ letterSpacing: '0.1em' }}>{room.code}</strong></>} />
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+          {showHint && (
+            <div role="note" style={{
+              background: 'var(--bg-card)', border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderLeft: '4px solid var(--accent)',
+              borderRadius: '12px', padding: '12px 16px', marginBottom: '16px',
+              display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--text-primary)', fontSize: '14px'
+            }}>
+              <span aria-hidden="true" style={{ fontSize: '18px', display: 'inline-flex', color: '#f59e0b' }}><Lightbulb size={18} /></span>
+              <span style={{ flex: 1 }}>
+                When your teacher's questions are ready you will hear a chime, and each question takes over this screen until its timer ends.
+                Answer quickly — points reward speed. Tap the ⓘ button in the header for the full guide.
+              </span>
+              <button onClick={dismissHint} aria-label="Dismiss hint" style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '16px', cursor: 'pointer', padding: '4px', display: 'inline-flex' }}><X size={16} aria-hidden="true" /></button>
+            </div>
+          )}
+
           {/* Connection Status */}
-          <div style={{
+          <div data-tour="status-row" style={{
             background: 'var(--bg-card)',
             borderRadius: '16px',
             padding: '16px 24px',
@@ -485,7 +679,7 @@ function StudentRoomPage() {
             alignItems: 'center',
             justifyContent: 'space-between'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
               <div style={{
                 width: '12px',
                 height: '12px',
@@ -495,7 +689,80 @@ function StudentRoomPage() {
               <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '500' }}>
                 {isConnected ? 'Connected' : 'Reconnecting...'}
               </span>
+
+              {/* Streak Badge */}
+              <div style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 12px',
+                background: currentStreak >= 3
+                  ? 'linear-gradient(135deg, #f59e0b, #ef4444)'
+                  : currentStreak > 0
+                    ? 'color-mix(in srgb, #f59e0b 22%, transparent)'
+                    : 'color-mix(in srgb, var(--text-secondary) 14%, transparent)',
+                color: currentStreak >= 3
+                  ? '#ffffff'
+                  : currentStreak > 0
+                    ? '#f59e0b'
+                    : 'var(--text-secondary)',
+                border: currentStreak >= 3
+                  ? '1px solid rgba(255,255,255,0.3)'
+                  : currentStreak > 0
+                    ? '1px solid color-mix(in srgb, #f59e0b 45%, transparent)'
+                    : '1px solid var(--border-color)',
+                borderRadius: '20px',
+                fontSize: '13px',
+                fontWeight: '700',
+                boxShadow: currentStreak >= 3 ? '0 0 12px rgba(245, 158, 11, 0.45)' : 'none'
+              }}>
+                <Ico as={Flame} size={15} style={{ color: currentStreak >= 3 ? '#ffffff' : currentStreak > 0 ? '#f59e0b' : 'var(--text-secondary)' }} />
+                <span>{currentStreak} Streak{currentStreak >= 3 ? ' — On Fire!' : ''}</span>
+              </div>
             </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {/* Anonymous Doubt Box Toggle */}
+            <button
+              onClick={() => setShowDoubtBox(true)}
+              title="Open Anonymous Doubt Box"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+                color: 'var(--accent)',
+                border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              <Ico as={MessageSquare} size={15} />
+              <span>Doubts</span>
+            </button>
+
+            {/* Sound on/off for the question-time chime (per device) */}
+            <SoundToggle />
+            {soundBlocked && (
+              <button
+                onClick={enableSound}
+                title="Your browser blocked the chime until you interact with the page — tap once to enable it"
+                style={{
+                  padding: '8px 14px',
+                  background: '#f59e0b',
+                  color: '#111827',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                <Ico as={Bell} /> Enable sound
+              </button>
+            )}
             <button
               onClick={leaveSession}
               disabled={hasAnsweredPoll}
@@ -514,6 +781,7 @@ function StudentRoomPage() {
             >
               Leave
             </button>
+            </div>
           </div>
 
           {/* Video (video mode) — persistent so it doesn't remount when questions come/go.
@@ -562,6 +830,43 @@ function StudentRoomPage() {
               maxWidth: '100%',
               boxSizing: 'border-box'
             }}>
+              {/* Question Header: Progression & Streak */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingBottom: '14px',
+                borderBottom: '1px solid rgba(255,255,255,0.2)',
+                marginBottom: '18px',
+                fontSize: '13px',
+                fontWeight: '600',
+                color: 'rgba(255,255,255,0.95)'
+              }}>
+                <span style={{
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  background: 'rgba(255,255,255,0.2)',
+                  fontSize: '12.5px',
+                  fontWeight: '700'
+                }}>
+                  Question {currentQIndex >= 0 ? currentQIndex + 1 : 1} of {Math.max(totalQuestions, 1)}
+                </span>
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  background: currentStreak >= 3 ? 'rgba(245, 158, 11, 0.45)' : 'rgba(255,255,255,0.2)',
+                  color: '#ffffff',
+                  fontSize: '12.5px',
+                  fontWeight: '700'
+                }}>
+                  <Ico as={Flame} size={15} style={{ color: '#ffd700' }} />
+                  {currentStreak} Streak • {currentQuestion.points || currentQuestion.maxPoints || 100} pts
+                </span>
+              </div>
+
               {/* Timer */}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{
@@ -583,6 +888,23 @@ function StudentRoomPage() {
               <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
                 {currentQuestion.question}
               </h2>
+
+              {/* Streak feedback alert */}
+              {streakFeedback && (
+                <div style={{
+                  padding: '12px 16px',
+                  borderRadius: '12px',
+                  marginBottom: '18px',
+                  background: streakFeedback.type === 'correct' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)',
+                  border: `1.5px solid ${streakFeedback.type === 'correct' ? '#10b981' : '#ef4444'}`,
+                  color: '#ffffff',
+                  fontWeight: '700',
+                  textAlign: 'center',
+                  fontSize: '15px'
+                }}>
+                  {streakFeedback.message}
+                </div>
+              )}
 
               {/* Options */}
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
@@ -647,7 +969,7 @@ function StudentRoomPage() {
                           fontSize: '14px',
                           flexShrink: 0
                         }}>
-                          {isSelected ? '✓' : ''}
+                          {isSelected ? <Check size={14} strokeWidth={3} aria-hidden="true" /> : ''}
                         </span>
                       )}
                       <span style={{
@@ -671,18 +993,171 @@ function StudentRoomPage() {
                 })}
               </div>
 
+              {/* In-Question Actions: Confused Signal + Ask Doubt Button */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+                gap: '10px',
+                marginBottom: '16px'
+              }}>
+                {!submitted ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsConfused(prev => !prev)}
+                    style={{
+                      width: '100%',
+                      padding: '12px 14px',
+                      background: isConfused ? 'rgba(245, 158, 11, 0.28)' : 'rgba(255, 255, 255, 0.08)',
+                      border: `2px dashed ${isConfused ? '#f59e0b' : 'rgba(255, 255, 255, 0.25)'}`,
+                      borderRadius: '12px',
+                      color: isConfused ? '#fef08a' : 'rgba(255, 255, 255, 0.85)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      fontSize: '13.5px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <ConfusedIcon size={20} />
+                    <span>{isConfused ? "✓ Marked as Confused" : "I'm Confused (Signal Teacher)"}</span>
+                  </button>
+                ) : <div />}
+
+                <button
+                  type="button"
+                  onClick={() => setShowDoubtBox(true)}
+                  title="Open Anonymous Doubt Box"
+                  style={{
+                    width: '100%',
+                    padding: '12px 14px',
+                    background: 'rgba(255, 255, 255, 0.12)',
+                    border: '2px solid rgba(255, 255, 255, 0.28)',
+                    borderRadius: '12px',
+                    color: '#ffffff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    fontSize: '13.5px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Ico as={MessageSquare} size={17} />
+                  <span>💬 Ask a Doubt / View Doubts</span>
+                </button>
+              </div>
+
+              {/* Optional explanation input for student to specify what is confusing */}
+              {!submitted && isConfused && (
+                <div style={{
+                  marginBottom: '16px',
+                  padding: '12px',
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(245, 158, 11, 0.3)'
+                }}>
+                  <label style={{
+                    display: 'block',
+                    fontSize: '12.5px',
+                    color: '#fef08a',
+                    fontWeight: '600',
+                    marginBottom: '6px'
+                  }}>
+                    What part is confusing? (Optional — help the teacher explain better)
+                  </label>
+                  <textarea
+                    value={confusedReason}
+                    onChange={(e) => setConfusedReason(e.target.value.slice(0, 200))}
+                    placeholder="e.g. Can you explain why step 2 changed the sign? / Option B vs D is unclear"
+                    rows={2}
+                    maxLength={200}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      color: '#ffffff',
+                      fontSize: '13px',
+                      outline: 'none',
+                      resize: 'none',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    marginTop: '4px',
+                    fontSize: '11px',
+                    color: 'rgba(255, 255, 255, 0.5)'
+                  }}>
+                    <span>Sent to teacher live on answer submission</span>
+                    <span>{confusedReason.length}/200</span>
+                  </div>
+                </div>
+              )}
+
               {/* Submit Button */}
               {submitted ? (
                 <div style={{
                   textAlign: 'center',
                   padding: '20px',
-                  background: 'rgba(255,255,255,0.1)',
-                  borderRadius: '12px'
+                  background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255,255,255,0.25)'
                 }}>
-                  <p style={{ fontSize: '18px', fontWeight: '600' }}>✓ Answer Submitted</p>
-                  <p style={{ fontSize: '14px', opacity: 0.9, marginTop: '8px' }}>
-                    Waiting for next question...
+                  <p style={{ fontSize: '18px', fontWeight: '700', margin: '0 0 6px' }}>
+                    <Ico as={CircleCheck} /> {streakFeedback?.message || 'Answer Saved!'}
                   </p>
+                  <p style={{ fontSize: '14px', opacity: 0.9, margin: 0 }}>
+                    {hasNextQuestion ? 'Loading next question...' : 'All questions answered! Great job!'}
+                  </p>
+                  {hasNextQuestion && (
+                    <button
+                      type="button"
+                      onClick={() => advanceToNextQuestion(currentQuestion._id || currentQuestion.question?._id)}
+                      style={{
+                        marginTop: '12px',
+                        padding: '8px 18px',
+                        background: '#ffd700',
+                        color: '#1f2937',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        fontWeight: '700',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Next Question Now →
+                    </button>
+                  )}
+                  <div style={{ marginTop: '12px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowDoubtBox(true)}
+                      style={{
+                        padding: '6px 14px',
+                        background: 'rgba(255, 255, 255, 0.15)',
+                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                        borderRadius: '8px',
+                        color: 'white',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <Ico as={MessageSquare} size={13} />
+                      <span>💬 Have a Doubt? Open Doubt Box</span>
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <button
@@ -696,11 +1171,18 @@ function StudentRoomPage() {
                     border: 'none',
                     borderRadius: '12px',
                     fontSize: '16px',
-                    fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
+                    fontWeight: '700',
+                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: selectedOptions.length > 0 ? '0 4px 14px rgba(255,215,0,0.35)' : 'none',
+                    transition: 'all 0.15s ease'
                   }}
                 >
-                  Submit Answer
+                  <span>💾</span>
+                  <span>{hasNextQuestion ? 'Save & Next Question →' : 'Save & Submit Quiz ✓'}</span>
                 </button>
               )}
             </div>
@@ -712,43 +1194,100 @@ function StudentRoomPage() {
           <div style={{ display: currentQuestion ? 'none' : 'flex', flexDirection: 'column', gap: '24px' }}>
               {/* Active question area placeholder — hidden in video mode (the player fills this space) */}
               {!isVideoMode && (
-              <div style={{
-                background: 'var(--bg-card)',
-                borderRadius: 'var(--radius-lg)',
-                padding: isMobile ? '32px 20px' : '48px',
-                boxShadow: 'var(--shadow-md)',
-                border: '1px solid var(--border-color)',
-                textAlign: 'center'
-              }}>
-                <div style={{
-                  width: '80px',
-                  height: '80px',
-                  background: '#eff6ff',
-                  borderRadius: '50%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  margin: '0 auto 24px',
-                  fontSize: '40px'
-                }}>
-                  ⏳
-                </div>
-                <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
-                  Waiting for Next Question
-                </h2>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '0' }}>
-                  The teacher will start a poll soon. Stay tuned!
-                </p>
-              </div>
+                isAllCompleted ? (
+                  <div data-tour="question-area" style={{
+                    background: 'var(--bg-card)',
+                    borderRadius: 'var(--radius-lg)',
+                    padding: isMobile ? '32px 20px' : '44px',
+                    boxShadow: 'var(--shadow-md)',
+                    border: '2px solid var(--accent)',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{ fontSize: '48px', marginBottom: '12px' }}>🎉</div>
+                    <h2 style={{ fontSize: '24px', fontWeight: '800', color: 'var(--text-primary)', marginBottom: '8px' }}>
+                      All Questions Completed!
+                    </h2>
+                    <p style={{ fontSize: '15px', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+                      You have answered all {totalQuestions} questions in this session.
+                    </p>
+                    <div style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '8px 20px',
+                      background: 'color-mix(in srgb, #f59e0b 16%, transparent)',
+                      borderRadius: '24px',
+                      border: '1px solid color-mix(in srgb, #f59e0b 35%, transparent)',
+                      marginBottom: '16px'
+                    }}>
+                      <Ico as={Flame} size={20} style={{ color: '#f59e0b' }} />
+                      <span style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                        Final Streak: {currentStreak} 🔥 • Max Streak: {maxStreak} ⚡
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
+                      Scroll down to review all your answers, correct options, and detailed stats!
+                    </p>
+                  </div>
+                ) : (
+                  <div data-tour="question-area" style={{
+                    background: 'var(--bg-card)',
+                    borderRadius: 'var(--radius-lg)',
+                    padding: isMobile ? '32px 20px' : '48px',
+                    boxShadow: 'var(--shadow-md)',
+                    border: '1px solid var(--border-color)',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{
+                      width: '80px',
+                      height: '80px',
+                      background: 'var(--tint-info-bg)',
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto 24px',
+                      fontSize: '40px',
+                      color: 'var(--accent)'
+                    }}>
+                      <Hourglass size={38} aria-hidden="true" />
+                    </div>
+                    <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
+                      Waiting for Next Question
+                    </h2>
+                    <p style={{ color: 'var(--text-secondary)', marginBottom: '0' }}>
+                      The teacher will start a poll soon. Stay tuned!
+                    </p>
+                  </div>
+                )
               )}
 
               {/* Past Questions (flex) + Leaderboard (flex) */}
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', width: '100%', boxSizing: 'border-box' }}>
                 {/* Past Questions - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
-                  <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
-                  </h3>
+                <div data-tour="past-questions" style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 8px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Ico as={ClipboardList} style={{ color: 'var(--accent)' }} /> Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
+                    </h3>
+                    {currentStreak > 0 && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        padding: '3px 10px',
+                        background: currentStreak >= 3 ? 'linear-gradient(135deg, #f59e0b, #ef4444)' : 'color-mix(in srgb, #f59e0b 16%, transparent)',
+                        color: currentStreak >= 3 ? '#ffffff' : '#f59e0b',
+                        border: '1px solid color-mix(in srgb, #f59e0b 35%, transparent)',
+                        borderRadius: '16px',
+                        fontSize: '12px',
+                        fontWeight: '700'
+                      }}>
+                        <Ico as={Flame} size={14} style={{ color: currentStreak >= 3 ? '#ffffff' : '#f59e0b' }} />
+                        {currentStreak} Streak!
+                      </span>
+                    )}
+                  </div>
                 {pastResponses.length === 0 ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
                     No questions answered yet. Questions you answer will appear here.
@@ -769,8 +1308,8 @@ function StudentRoomPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <span style={{
                               padding: '2px 10px',
-                              background: q.answered ? '#d1fae5' : (q.resultPending ? '#eff6ff' : '#fee2e2'),
-                              color: q.answered ? '#059669' : (q.resultPending ? '#3b82f6' : '#dc2626'),
+                              background: q.answered ? 'var(--tint-success-bg)' : (q.resultPending ? 'var(--tint-info-bg)' : 'var(--tint-danger-bg)'),
+                              color: q.answered ? 'var(--tint-success-fg)' : (q.resultPending ? 'var(--tint-info-fg)' : 'var(--tint-danger-fg)'),
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -779,8 +1318,8 @@ function StudentRoomPage() {
                             </span>
                             <span style={{
                               padding: '2px 10px',
-                              background: '#eff6ff',
-                              color: '#3b82f6',
+                              background: 'var(--tint-info-bg)',
+                              color: 'var(--tint-info-fg)',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -789,8 +1328,8 @@ function StudentRoomPage() {
                             </span>
                             <span style={{
                               padding: '2px 10px',
-                              background: '#fef3c7',
-                              color: '#d97706',
+                              background: 'var(--tint-warn-bg)',
+                              color: 'var(--tint-warn-fg)',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
@@ -802,25 +1341,25 @@ function StudentRoomPage() {
                           {q.resultPending && q.answered && (
                             <span style={{
                               padding: '4px 12px',
-                              background: '#3b82f6',
+                              background: 'var(--accent-solid)',
                               color: 'white',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ⏳ Answer submitted
+                              <Ico as={Hourglass} /> Answer submitted
                             </span>
                           )}
                           {!q.resultPending && q.answered && q.isCorrect && (
                             <span style={{
                               padding: '4px 12px',
-                              background: '#10b981',
+                              background: 'var(--success-solid)',
                               color: 'white',
                               borderRadius: '6px',
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ✓ Correct (+{q.pointsEarned || 0})
+                              <Ico as={Check} /> Correct (+{q.pointsEarned || 0})
                             </span>
                           )}
                           {!q.resultPending && q.answered && !q.isCorrect && (
@@ -832,7 +1371,7 @@ function StudentRoomPage() {
                               fontSize: '12px',
                               fontWeight: '600'
                             }}>
-                              ✗ Incorrect (+{q.pointsEarned || 0})
+                              <Ico as={X} /> Incorrect (+{q.pointsEarned || 0})
                             </span>
                           )}
                         </div>
@@ -860,31 +1399,30 @@ function StudentRoomPage() {
                               // Live poll: NEVER reveal the correct option. Only mark what the student
                               // picked, in blue — the correct/incorrect result comes after it closes.
                               if (q.answered && isSelected) {
-                                bgColor = '#eff6ff'
-                                borderColor = '#3b82f6'
-                                letterBg = '#3b82f6'
-                                // The highlight bg is a fixed light pastel, so text must be a dark
-                                // accent (not var(--text-primary), which is white in dark mode and
-                                // would wash out over the pastel). Mirrors the teacher side.
-                                textColor = '#1e40af'
+                                bgColor = 'var(--tint-info-bg)'
+                                borderColor = 'var(--tint-info-border)'
+                                letterBg = 'var(--accent)'
+                                // Theme-aware tint + matching text (pale + dark text in light mode,
+                                // translucent + light text in dark mode).
+                                textColor = 'var(--tint-info-fg)'
                                 label = ' (Your answer)'
                               }
                             } else if (q.answered && isSelected && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
+                              bgColor = 'var(--tint-success-bg)'
+                              borderColor = 'var(--tint-success-border)'
                               letterBg = '#059669'
-                              textColor = '#065f46'
+                              textColor = 'var(--tint-success-fg)'
                               label = ' (Your correct answer)'
                             } else if (q.answered && isSelected && !isCorrect) {
-                              bgColor = '#fee2e2'
-                              borderColor = '#dc2626'
-                              textColor = '#991b1b'
+                              bgColor = 'var(--tint-danger-bg)'
+                              borderColor = 'var(--tint-danger-border)'
+                              textColor = 'var(--tint-danger-fg)'
                               label = ' (Your wrong answer)'
                             } else if (!q.answered && isCorrect) {
-                              bgColor = '#d1fae5'
-                              borderColor = '#059669'
+                              bgColor = 'var(--tint-success-bg)'
+                              borderColor = 'var(--tint-success-border)'
                               letterBg = '#059669'
-                              textColor = '#065f46'
+                              textColor = 'var(--tint-success-fg)'
                               label = ' (Correct answer)'
                             } else if (isCorrect) {
                               letterBg = '#059669'
@@ -930,13 +1468,13 @@ function StudentRoomPage() {
                         
                         {/* Live poll: result withheld until it closes. Otherwise, missed-question notice. */}
                         {q.resultPending && (
-                          <p style={{ fontSize: '13px', color: '#3b82f6', margin: 0, fontStyle: 'italic' }}>
-                            ⏳ Result will be shown once this poll closes
+                          <p style={{ fontSize: '13px', color: 'var(--accent)', margin: 0, fontStyle: 'italic' }}>
+                            <Ico as={Hourglass} /> Result will be shown once this poll closes
                           </p>
                         )}
                         {!q.resultPending && !q.answered && (
-                          <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
-                            ⚠️ You did not answer this question
+                          <p style={{ fontSize: '13px', color: 'var(--tint-danger-fg)', margin: 0, fontStyle: 'italic' }}>
+                            <Ico as={TriangleAlert} /> You did not answer this question
                           </p>
                         )}
                       </div>
@@ -949,9 +1487,9 @@ function StudentRoomPage() {
                 )}
                 </div>
                 {/* Leaderboard - flexible width */}
-                <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
+                <div data-tour="leaderboard" style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', padding: isMobile ? '16px' : '24px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)', boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    🏆 Leaderboard
+                    <Ico as={Trophy} style={{ color: '#f59e0b' }} /> Leaderboard
                   </h3>
                   <ErrorBoundary message="Leaderboard unavailable">
                     <Leaderboard roomId={room?._id} token={token} socket={socket} userId={user?._id} />
@@ -961,6 +1499,43 @@ function StudentRoomPage() {
             </div>
         </div>
       </div>
+
+      {/* Floating Doubt Box Action Button (Always accessible) */}
+      <button
+        onClick={() => setShowDoubtBox(true)}
+        title="Open Anonymous Doubt Box"
+        style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          zIndex: 90,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '12px 18px',
+          background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+          color: '#ffffff',
+          border: 'none',
+          borderRadius: '30px',
+          boxShadow: '0 4px 16px rgba(99, 102, 241, 0.45)',
+          fontSize: '13.5px',
+          fontWeight: '700',
+          cursor: 'pointer'
+        }}
+      >
+        <Ico as={MessageSquare} size={16} />
+        <span>💬 Doubts</span>
+      </button>
+
+      {showDoubtBox && (
+        <DoubtBoxModal
+          roomId={room?._id}
+          token={token}
+          socket={socket}
+          isTeacher={false}
+          onClose={() => setShowDoubtBox(false)}
+        />
+      )}
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import React from 'react'
 import useThemeStore from '../stores/themeStore'
+import { Sun, Moon } from 'lucide-react'
 
 export default function ThemeToggle() {
   const { isDark, toggleTheme } = useThemeStore()
@@ -21,7 +22,7 @@ export default function ThemeToggle() {
       }}
       title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
     >
-      {isDark ? '☀️' : '🌙'}
+      {isDark ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
     </button>
   )
 }
