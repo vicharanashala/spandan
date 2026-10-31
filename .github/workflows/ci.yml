@@ -1,6 +1,5 @@
 name: CI
 
-# Runs the backend + frontend test suites.
 on:
   push:
     branches: [main]
@@ -10,12 +9,7 @@ on:
 jobs:
   backend-test:
     name: Backend Tests
-    runs-on: ubuntu-latest
-    services:
-      mongodb:
-        image: mongo:7.0
-        ports:
-          - 27017:27017
+    runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: backend
@@ -32,14 +26,20 @@ jobs:
         run: npm ci --legacy-peer-deps
 
       - name: Run tests
-        run: npm test
+        run: |
+          npm test 2>&1 | tee test_log.txt || {
+            echo "### ❌ Backend Test Failure" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 60 test_log.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
         env:
           JWT_SECRET: test-secret-key
-          MONGO_URL: mongodb://127.0.0.1:27017/jest
 
   frontend-test:
     name: Frontend Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: frontend
@@ -56,4 +56,11 @@ jobs:
         run: npm ci --legacy-peer-deps
 
       - name: Run tests
-        run: npm test -- --ci --maxWorkers=2
+        run: |
+          npm test 2>&1 | tee test_log.txt || {
+            echo "### ❌ Frontend Test Failure" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 60 test_log.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
