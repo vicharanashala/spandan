@@ -23,7 +23,7 @@ const popups = [
   },
   {
     name: 'Paste & Generate (TextQuestionApprovalPopup)',
-    launchLabel: /Launch to Class/,
+    launchLabel: /Launch (Live|to Class)/,
     renderPopup: (questions, cbs) => render(
       <TextQuestionApprovalPopup questions={questions} onApprove={cbs.onApprove} onReject={cbs.onReject}
         onClose={cbs.onClose} onNext={cbs.onFinish} isLast />
