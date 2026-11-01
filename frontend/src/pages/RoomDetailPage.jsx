@@ -119,6 +119,7 @@ function RoomDetailPage() {
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+  const [adaptiveMeta, setAdaptiveMeta] = useState(null) // { sampleSize, correctnessPct } from the last generate call
 
   useEffect(() => {
     if (token) {
@@ -416,6 +417,7 @@ function RoomDetailPage() {
       // Backend may answer synchronously (no Redis) or async with a jobId; the helper polls the
       // job internally and returns the same { success, questions } shape either way.
       const data = await requestQuestionGeneration(text, {
+        roomId: room._id,
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
@@ -423,6 +425,10 @@ function RoomDetailPage() {
       }, { signal: genAbortRef.current.signal })
 
       setIsGeneratingQuestions(false)
+      if (data.adaptiveMeta) setAdaptiveMeta(data.adaptiveMeta)
+      if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
+        setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
+      }
       if (data.success && data.questions && data.questions.length > 0) {
         return data.questions.map(q => ({
           ...q,
@@ -452,6 +458,7 @@ function RoomDetailPage() {
       genAbortRef.current = new AbortController()
       // Helper handles both the sync response and the async (jobId → poll) path.
       const data = await requestQuestionGeneration(text, {
+        roomId: room._id,
         numQuestions: roomSettings.questionsPerSegment,
         difficulty: roomSettings.difficulty,
         provider: roomSettings.questionProvider || 'minimax',
@@ -460,6 +467,11 @@ function RoomDetailPage() {
 
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
+
+      if (data.adaptiveMeta) setAdaptiveMeta(data.adaptiveMeta)
+      if (data.resolvedDifficulty && data.resolvedDifficulty !== roomSettings.difficulty) {
+        setRoomSettings(prev => ({ ...prev, difficulty: data.resolvedDifficulty }))
+      }
 
       if (data.success && data.questions && data.questions.length > 0) {
         const markedQuestions = data.questions.map(q => ({
@@ -470,6 +482,7 @@ function RoomDetailPage() {
         }))
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
+        setCurrentSegment(prev => prev + 1)
         // Questions generated and the review popup is up — NOW persist the pasted source text,
         // fire-and-forget so a slow/failed/hung save can never block or delay generation. A paste
         // has no segment → source='paste' + sentinel segmentIndex -1 (never collides with audio).
@@ -480,7 +493,7 @@ function RoomDetailPage() {
         // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert(data.error || 'Failed to generate questions. Please try again.')
+        window.alert(data.error || 'The AI did not return any usable questions that time (this can happen occasionally) — please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
@@ -490,7 +503,7 @@ function RoomDetailPage() {
         // Same as above — preserve the pasted text and reopen the popup for a retry.
         setPastedText(text)
         setShowTextToQuestions(true)
-        window.alert('Failed to generate questions. Please try again.')
+        window.alert('Failed to generate questions: ' + error.message)
       }
     }
   }
@@ -1421,21 +1434,24 @@ function RoomDetailPage() {
               <button
                 data-tour="paste-generate"
                 onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
+                disabled={isGeneratingFromText || isGeneratingQuestions}
                 style={{
                   padding: '8px 16px',
-                  background: 'var(--success-solid)',
+                  background: (isGeneratingFromText || isGeneratingQuestions) ? '#9ca3af' : 'var(--success-solid)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '500',
-                  cursor: 'pointer',
+                  cursor: (isGeneratingFromText || isGeneratingQuestions) ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px'
                 }}
               >
-                <Ico as={FileText} /> Paste & Generate
+                {(isGeneratingFromText || isGeneratingQuestions)
+                  ? (<><Ico as={LoaderCircle} /> Generating...</>)
+                  : (<><Ico as={FileText} /> Paste & Generate</>)}
               </button>
             )}
 
@@ -1770,8 +1786,17 @@ function RoomDetailPage() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Difficulty:</span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>{roomSettings.difficulty}</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600', textTransform: 'capitalize' }}>
+                      {roomSettings.difficulty}{roomSettings.adaptiveDifficulty ? ' (auto)' : ''}
+                    </span>
                   </div>
+                  {roomSettings.adaptiveDifficulty && adaptiveMeta && (
+                    <div style={{ textAlign: 'right', fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                      {adaptiveMeta.sampleSize < 3
+                        ? `waiting for more students (${adaptiveMeta.sampleSize}/3 needed to adapt)`
+                        : `last batch: ${adaptiveMeta.correctnessPct}% correct (${adaptiveMeta.sampleSize} students)`}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
