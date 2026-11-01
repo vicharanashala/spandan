@@ -222,7 +222,7 @@ function generateFromMix(questionTypeMix, numQuestions) {
 }
 
 // Build prompt for question generation
-export function buildQuestionPrompt(transcript, questionTypes, difficulty) {
+export function buildQuestionPrompt(transcript, questionTypes, difficulty, avoidQuestions = []) {
   const typeInstructions = questionTypes.map((type, index) => {
     switch (type) {
       case 'MCQ':
@@ -247,11 +247,19 @@ export function buildQuestionPrompt(transcript, questionTypes, difficulty) {
       ? 'Since difficulty is HARD, skew toward the Analyze and Evaluate levels. Concretely: require connecting TWO OR MORE facts/relationships from the content, or applying the underlying logic to a new scenario not literally stated. Distractors must be genuinely tempting — each one should be wrong for a subtle, specific reason a rushed reader would miss.'
       : 'For MEDIUM difficulty, balance across Understand, Apply, Analyze and Evaluate, with a slight lean toward Analyze. Concretely: the correct answer should require connecting exactly one inference step beyond the literal text — harder than a direct lookup, but not requiring chaining multiple facts together.'
 
+  // Each generate call is an independent AI request with no memory of earlier batches, so without
+  // this the model has no way to know it already asked about a concept and will happily repeat it
+  // (reworded) across batches, especially on short source material with few distinct facts to draw
+  // from. Listing prior questions lets it steer toward genuinely new ground instead.
+  const avoidSection = avoidQuestions.length > 0
+    ? `\nALREADY ASKED — DO NOT REPEAT (these questions, or ones testing the same underlying fact/relationship, have already been used in this session; pick a different concept or angle from the content):\n${avoidQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}\n`
+    : ''
+
   return `You are an expert educational assessment designer. Using ONLY the session content below, write ${questionTypes.length} high-quality quiz questions that test understanding and inference — NOT recall.
 
 SESSION CONTENT:
 ${transcript}
-
+${avoidSection}
 DIFFICULTY: ${difficulty.toUpperCase()}
 
 QUESTION TYPES (produce exactly these, in this order):
@@ -541,17 +549,17 @@ async function generateWithGoogle(prompt, model = 'gemini-flash-latest') {
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null, avoidQuestions = [] } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
   }
 
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
-  const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
+  const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty, avoidQuestions)
 
   console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
 

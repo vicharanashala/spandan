@@ -50,6 +50,7 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
     let resolvedDifficulty = null
     let adaptiveMeta = null
     let effectiveDifficulty = difficulty
+    let avoidQuestions = []
     // The adaptive step is NOT persisted here. Persisting before generation makes it non-idempotent:
     // generateQuestions() can fail (AI hiccup) and the client auto-retries, so each retry would re-read
     // the already-stepped difficulty and step it AGAIN off the same batch. We defer the write until a
@@ -59,12 +60,20 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
     if (roomId) {
       const Room = (await import('../models/Room.js')).default
       const room = await Room.findById(roomId)
-      if (!room) {
-        return res.status(404).json({ success: false, error: 'Room not found' })
+      const ownership = checkRoomOwnership(room, req.user._id)
+      if (!ownership.ok) {
+        return res.status(ownership.status).json({ success: false, error: ownership.error })
       }
-      if (room.teacher.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ success: false, error: 'Not authorized to generate questions for this room' })
-      }
+
+      // Each generate call is an independent AI request with no memory of earlier batches in this
+      // room, so without this the model can (and does) repeat the same concept across batches,
+      // especially on short source material. Cap at 30 to keep the prompt bounded on long sessions.
+      const Question = (await import('../models/Question.js')).default
+      const priorQuestions = await Question.find({ roomId, status: 'approved' })
+        .sort({ createdAt: -1 })
+        .limit(30)
+        .select('question')
+      avoidQuestions = priorQuestions.map(q => q.question)
 
       if (room.settings?.adaptiveDifficulty) {
         const baseDifficulty = room.settings.difficulty || 'medium'
@@ -78,7 +87,7 @@ router.post('/generate', authorize('teacher'), requireApprovedTeacher, async (re
       }
     }
 
-    const jobConfig = { numQuestions, difficulty: effectiveDifficulty, provider, questionTypeMix }
+    const jobConfig = { numQuestions, difficulty: effectiveDifficulty, provider, questionTypeMix, avoidQuestions }
 
     // Async path (Redis/BullMQ): enqueue and return a jobId immediately, freeing the connection.
     // The client polls GET /questions/jobs/:jobId for the result. The out-of-process worker has no
