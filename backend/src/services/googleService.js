@@ -2,6 +2,7 @@ import { OAuth2Client } from 'google-auth-library'
 import jwt from 'jsonwebtoken'
 import User from '../models/User.js'
 import { sendWelcomeEmail } from './emailService.js'
+import { TERMS_VERSION } from '../config/terms.js'
 
 // Read config at call-time (not module load) so it never depends on dotenv import ordering.
 const cfg = () => ({
@@ -140,7 +141,10 @@ export const createGoogleUser = async (profile, requestedRole) => {
     googleId: profile.sub,
     authProvider: 'google',
     role,
-    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved'
+    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved',
+    // Only reached after /google/complete has checked acceptTerms === true.
+    termsVersion: TERMS_VERSION,
+    termsAcceptedAt: new Date()
   })
   await user.save()
 

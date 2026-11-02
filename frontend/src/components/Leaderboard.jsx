@@ -170,7 +170,8 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
     const isHighlighted = rank <= 3 || isCurrentUser
     const nameColor = isHighlighted ? '#1f2937' : 'var(--text-primary)'
     const subColor = isHighlighted ? '#6b7280' : 'var(--text-secondary)'
-    const pointsColor = rank === 1 ? '#f59e0b' : isHighlighted ? '#1f2937' : 'var(--text-primary)'
+    const pointsColor = rank === 1 ? '#D6B200' : rank === 2 ? '#5B616D' : rank === 3 ? '#8D4107' :
+                        isHighlighted ? '#1f2937' : 'var(--text-primary)'
 
     return (
       <div key={entry.studentId} style={{
@@ -184,19 +185,19 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
         overflow: 'hidden',
         boxSizing: 'border-box',
         flexShrink: 0,
-        background: entry.rank === 1 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
-                     entry.rank === 2 ? 'linear-gradient(135deg, #f3f4f6, #e5e7eb)' :
-                     entry.rank === 3 ? 'linear-gradient(135deg, #fef3c7, #fde68a)' :
+        background: entry.rank === 1 ? 'linear-gradient(135deg, #fffcf0, #fff8d6)' :
+                     entry.rank === 2 ? 'linear-gradient(135deg, #f9f9fa, #eff0f2)' :
+                     entry.rank === 3 ? 'linear-gradient(135deg, #faf4f0, #f1e2d7)' :
                      isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
-        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` :
+        border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#FCD200' : entry.rank === 2 ? '#9ca3af' : '#A64C08'}` :
                isCurrentUser ? '2px solid var(--accent)' : '1px solid var(--border-color)'
       }}>
         <span style={{
           width: '28px',
           height: '28px',
           borderRadius: '50%',
-          background: entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#6b7280' : entry.rank === 3 ? '#d97706' : 'var(--border-color)',
+          background: entry.rank === 1 ? '#FCD200' : entry.rank === 2 ? '#6b7280' : entry.rank === 3 ? '#A64C08' : 'var(--border-color)',
           color: 'white',
           display: 'flex',
           alignItems: 'center',

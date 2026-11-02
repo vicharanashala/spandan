@@ -4,6 +4,7 @@ import mongoose from 'mongoose'
 // storms. Output is standard bcrypt and cross-compatible with the previous bcryptjs
 // hashes, so existing passwords keep working (no reset needed).
 import { hash, compare } from '@node-rs/bcrypt'
+import { TERMS_VERSION } from '../config/terms.js'
 
 const BCRYPT_COST = Number(process.env.BCRYPT_COST) || 10
 
@@ -138,6 +139,17 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Terms of Use acceptance: the version last accepted and when. Absent on accounts created before
+  // the terms existed; authenticate() blocks any account whose version is not the current one until
+  // it accepts (POST /auth/accept-terms). Set only by the server, never from client profile input.
+  termsVersion: {
+    type: String,
+    default: null
+  },
+  termsAcceptedAt: {
+    type: Date,
+    default: null
+  },
   isActive: {
     type: Boolean,
     default: true
@@ -174,6 +186,8 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const obj = this.toObject()
   delete obj.password
+  // Lets the client decide whether to show the accept-terms screen without knowing the version.
+  obj.termsAccepted = obj.termsVersion === TERMS_VERSION
   return obj
 }
 

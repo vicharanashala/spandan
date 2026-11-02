@@ -1,5 +1,6 @@
 import User from '../models/User.js'
 import { sendWelcomeEmail } from './emailService.js'
+import { TERMS_VERSION } from '../config/terms.js'
 
 export const register = async (name, email, password, role) => {
   // Check if user already exists
@@ -15,7 +16,10 @@ export const register = async (name, email, password, role) => {
     email: email.toLowerCase(),
     password,
     role,
-    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved'
+    teacherApprovalStatus: role === 'teacher' ? 'pending' : 'approved',
+    // Only reached after the route has validated acceptTerms === true.
+    termsVersion: TERMS_VERSION,
+    termsAcceptedAt: new Date()
   })
 
   await user.save()

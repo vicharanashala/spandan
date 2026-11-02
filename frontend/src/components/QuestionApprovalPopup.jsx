@@ -1,22 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import QuestionEditor from './QuestionEditor'
-import { FileText, Timer, Check, Pencil, X } from 'lucide-react'
+import { FileText, Check, Pencil, X } from 'lucide-react'
 import { Ico } from './icons'
+import useLiveQuestionTimer from '../hooks/useLiveQuestionTimer'
+import LiveTimerChip from './LiveTimerChip'
+import QuestionNavPills from './QuestionNavPills'
 
 function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComplete }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [pendingQuestions, setPendingQuestions] = useState(questions || [])
-  const [timeToAnswer, setTimeToAnswer] = useState(30)
-  const [timeLeft, setTimeLeft] = useState(30)
-  const [isTimerActive, setIsTimerActive] = useState(false)
-  const [launchedQuestionIndex, setLaunchedQuestionIndex] = useState(-1) // which question is currently launched
+  const [status, setStatus] = useState({}) // index -> 'launched' | 'rejected'
   const [isEditing, setIsEditing] = useState(false)
-  const timerRef = useRef(null)
   const defaultTimeToAnswer = 30
 
   useEffect(() => {
     setPendingQuestions(questions || [])
     setCurrentIndex(0)
+    setStatus({})
   }, [questions])
 
   // Leave edit mode whenever we move to a different question.
@@ -26,82 +26,51 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   const updateCurrent = (updated) =>
     setPendingQuestions(prev => prev.map((q, i) => (i === currentIndex ? updated : q)))
 
-  // Start the countdown timer for a launched question
-  const startTimer = (questionIndex) => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-    }
-    
-    const tta = pendingQuestions[questionIndex]?.timeToAnswer || defaultTimeToAnswer
-    setTimeLeft(tta)
-    setIsTimerActive(true)
-    setLaunchedQuestionIndex(questionIndex)
-    
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current)
-          timerRef.current = null
-          setIsTimerActive(false)
-          // Auto-advance to next question when timer hits 0
-          if (questionIndex < pendingQuestions.length - 1) {
-            setTimeout(() => moveToNext(), 300)
-          } else {
-            // Last question - call onComplete
-            setTimeout(() => {
-              if (onComplete) onComplete()
-              else onClose()
-            }, 300)
-          }
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+  // All questions reviewed - call onComplete instead of just onClose
+  const finish = () => {
+    if (onComplete) onComplete()
+    else onClose()
   }
 
-  // Stop the current timer
-  const stopTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
+  // The next question still waiting for a decision after `from` (wrapping round), or -1 if none.
+  const nextUnhandled = (from, st) => {
+    for (let step = 1; step <= pendingQuestions.length; step++) {
+      const i = (from + step) % pendingQuestions.length
+      if (!st[i]) return i
     }
-    setIsTimerActive(false)
-    setLaunchedQuestionIndex(-1)
+    return -1
   }
+
+  // When the live question's time runs out: close if nothing is left to review; otherwise move on
+  // only if the teacher is looking at that question, so a question they are reading is not snatched away.
+  const timer = useLiveQuestionTimer((index) => {
+    const next = nextUnhandled(index, status)
+    if (next === -1) setTimeout(finish, 300)
+    else if (currentIndex === index) setTimeout(() => setCurrentIndex(next), 300)
+  })
 
   const handleApprove = () => {
+    if (status[currentIndex]) return // already launched or rejected - never launch twice
     const current = pendingQuestions[currentIndex]
     onApprove(current)
-    // Start timer when question is launched
-    startTimer(currentIndex)
+    setStatus(prev => ({ ...prev, [currentIndex]: 'launched' }))
+    // Start (or replace) the timer when the question is launched
+    timer.start(currentIndex, current?.timeToAnswer || defaultTimeToAnswer)
   }
 
   const handleReject = () => {
-    stopTimer() // Stop timer when rejecting
-    const current = pendingQuestions[currentIndex]
-    onReject(current)
-    moveToNext()
+    if (status[currentIndex]) return
+    onReject(pendingQuestions[currentIndex])
+    const st = { ...status, [currentIndex]: 'rejected' }
+    setStatus(st)
+    const next = nextUnhandled(currentIndex, st)
+    if (next !== -1) setCurrentIndex(next)
+    else if (!timer.isActive) finish() // a live question's timer still running closes the pop-up when it ends
   }
 
   const moveToNext = () => {
-    stopTimer() // Stop timer when moving to next
-    if (currentIndex < pendingQuestions.length - 1) {
-      setCurrentIndex(prev => prev + 1)
-    } else {
-      // All questions processed - call onComplete instead of just onClose
-      if (onComplete) {
-        onComplete()
-      } else {
-        onClose()
-      }
-    }
-  }
-
-  // Skip to a question (from navigation pills) - stops current timer
-  const skipToQuestion = (index) => {
-    stopTimer()
-    setCurrentIndex(index)
+    const next = nextUnhandled(currentIndex, status)
+    if (next !== -1) setCurrentIndex(next)
   }
 
   if (pendingQuestions.length === 0) {
@@ -109,6 +78,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
   }
 
   const currentQuestion = pendingQuestions[currentIndex]
+  const currentStatus = status[currentIndex]
+  const hasNext = nextUnhandled(currentIndex, status) !== -1
 
   const getTypeLabel = (type) => {
     switch (type) {
@@ -145,7 +116,7 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
         background: 'var(--bg-card)',
         borderRadius: '20px',
         padding: '24px',
-        width: '600px',
+        width: '680px',
         maxHeight: '85vh',
         overflow: 'auto',
         boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
@@ -165,36 +136,14 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
               </h2>
               <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
                 Question {currentIndex + 1} of {pendingQuestions.length}
+                {currentStatus === 'launched' && <span style={{ color: '#10b981', fontWeight: '600' }}> · Launched</span>}
+                {currentStatus === 'rejected' && <span style={{ color: '#ef4444', fontWeight: '600' }}> · Rejected</span>}
               </p>
             </div>
-            {isTimerActive && launchedQuestionIndex === currentIndex && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '8px 16px',
-                borderRadius: '20px',
-                background: timeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                border: `2px solid ${timeLeft <= 5 ? '#ef4444' : '#10b981'}`
-              }}>
-                <span style={{ 
-                  fontSize: '18px', 
-                  color: timeLeft <= 5 ? '#ef4444' : '#10b981', 
-                  fontWeight: '700',
-                  animation: timeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
-                }}>
-                  <Ico as={Timer} /> {timeLeft}s
-                </span>
-                {timeLeft <= 5 && (
-                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
-                    LEFT!
-                  </span>
-                )}
-              </div>
-            )}
+            <LiveTimerChip liveIndex={timer.liveIndex} timeLeft={timer.timeLeft} isActive={timer.isActive} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            {!(isTimerActive && launchedQuestionIndex === currentIndex) && (
+            {!currentStatus && (
               <button
                 onClick={() => setIsEditing(e => !e)}
                 style={{
@@ -228,27 +177,12 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
         </div>
 
         {/* Question Navigation Pills */}
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
-          {pendingQuestions.map((q, index) => (
-            <button
-              key={q.id || index}
-              onClick={() => skipToQuestion(index)}
-              style={{
-                padding: '4px 12px',
-                borderRadius: '20px',
-                border: index === currentIndex 
-                  ? '2px solid var(--accent)' 
-                  : '1px solid var(--border-color)',
-                background: index === currentIndex ? '#dbeafe' : 'transparent',
-                color: index === currentIndex ? 'var(--accent)' : 'var(--text-secondary)',
-                fontSize: '12px',
-                cursor: 'pointer'
-              }}
-            >
-              Q{index + 1} ({q.type})
-            </button>
-          ))}
-        </div>
+        <QuestionNavPills
+          questions={pendingQuestions}
+          currentIndex={currentIndex}
+          status={status}
+          onSelect={setCurrentIndex}
+        />
 
         {/* Current Question Card — editable when the teacher taps Edit, read-only otherwise */}
         {isEditing ? (
@@ -352,8 +286,8 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '12px' }}>
-          {isTimerActive && launchedQuestionIndex === currentIndex ? (
-            currentIndex < pendingQuestions.length - 1 ? (
+          {currentStatus ? (
+            hasNext ? (
               <button
                 onClick={moveToNext}
                 style={{

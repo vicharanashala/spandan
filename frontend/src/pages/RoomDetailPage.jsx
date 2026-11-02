@@ -16,7 +16,8 @@ import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
-import { saveTranscript } from '../services/transcriptService'
+import { saveTranscript, getTranscripts } from '../services/transcriptService'
+import { lastSegmentInData, segmentToStart } from '../lib/segments'
 import { installUnlockOnInteraction } from '../lib/sounds'
 import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
@@ -98,6 +99,10 @@ function RoomDetailPage() {
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
+  // Highest segment this room already has data for (seeded from the server on load, raised on every
+  // segment save), so a reload continues the numbering instead of starting again at 1.
+  const lastSegmentRef = useRef(0)
+  const markSegmentUsed = (n) => { if (n > lastSegmentRef.current) lastSegmentRef.current = n }
   const [segmentTranscript, setSegmentTranscript] = useState('')
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
@@ -383,7 +388,6 @@ function RoomDetailPage() {
       // Resume for next segment
       setIsPendingReview(false)
       setGenerateQEnabled(true)
-      setCurrentSegment(prev => prev + 1)
       setTranscript('')
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
@@ -422,6 +426,7 @@ function RoomDetailPage() {
       // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
       // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
       // source defaults to 'audio' (real segment).
+      markSegmentUsed(currentSegment)
       saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
         .catch((err) => console.error('[SEGMENT] Failed to save transcript (questions already generated):', err))
     }
@@ -543,6 +548,11 @@ function RoomDetailPage() {
       // not just the first 50.
       const questions = await fetchAllRoomQuestions(rid)
       setGeneratedQuestions(questions)
+      markSegmentUsed(lastSegmentInData(questions))
+      // Transcripts also count: a segment whose questions were all rejected leaves only its transcript.
+      getTranscripts(rid)
+        .then((data) => markSegmentUsed(lastSegmentInData([], data?.transcripts)))
+        .catch((err) => console.error('Failed to load transcripts for segment numbering:', err))
       // Also load answer counts
       const countsRes = await fetch(`${API_URL}/responses/counts/${rid}`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -716,7 +726,7 @@ function RoomDetailPage() {
     if (isVideoMode) {
       if (!streamRef.current) return
       setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
-      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+      setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
       transcriptionQueueRef.current = []
       nextSequenceRef.current = 0
@@ -757,7 +767,7 @@ function RoomDetailPage() {
       setTranscript('')
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
-      setCurrentSegment(prev => resetSegment ? 1 : prev + 1)
+      setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
 
@@ -975,7 +985,7 @@ function RoomDetailPage() {
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
       transcriptionQueueRef.current = []; nextSequenceRef.current = 0
       pendingSequenceRef.current = 0; isProcessingQueueRef.current = false
-      setCurrentSegment(1)
+      setCurrentSegment(segmentToStart({ lastUsed: lastSegmentRef.current, fresh: true }))
       setVideoSessionActive(true)
       setModelStatus('Ready - press play to begin')
 
@@ -1077,6 +1087,7 @@ function RoomDetailPage() {
         setIsPopupOpen(true)
         // Persist the transcript only once questions exist — fire-and-forget so it never blocks.
         // Live transcript → source 'audio'; segmentIndex matches the questions (currentSegment).
+        markSegmentUsed(currentSegment)
         saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
           .catch((err) => console.error('[MANUAL] Failed to save transcript (questions already generated):', err))
       }

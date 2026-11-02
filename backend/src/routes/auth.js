@@ -5,7 +5,9 @@ import { sendResetPasswordEmail } from '../services/emailService.js'
 import { generateToken } from '../middleware/auth.js'
 import { validate, sendOtpSchema, verifyRegistrationSchema, loginSchema } from '../middleware/validation.js'
 import { requestRegistrationOtp, verifyRegistrationOtp } from '../services/otpService.js'
-import { authenticate } from '../middleware/auth.js'
+import { authenticate, authenticateAllowPendingTerms, invalidateUserCache } from '../middleware/auth.js'
+import { TERMS_VERSION } from '../config/terms.js'
+import User from '../models/User.js'
 import {
   isGoogleOAuthConfigured,
   signState,
@@ -114,11 +116,31 @@ router.put('/role', authenticate, (req, res) => {
 })
 
 // Get current user
-router.get('/me', authenticate, async (req, res) => {
+router.get('/me', authenticateAllowPendingTerms, async (req, res) => {
   try {
     res.json({ user: req.user })
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// Record that the signed-in user accepts the CURRENT Terms of Use. Used by accounts created before the
+// terms existed (or before a version bump), which authenticate() otherwise refuses with TERMS_REQUIRED.
+router.post('/accept-terms', authenticateAllowPendingTerms, async (req, res) => {
+  try {
+    if (req.body?.acceptTerms !== true) {
+      return res.status(400).json({ error: 'You must accept the Terms of Use to continue' })
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { termsVersion: TERMS_VERSION, termsAcceptedAt: new Date() } },
+      { new: true }
+    ).select('-password')
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    invalidateUserCache(user._id) // the gate must see the acceptance on the very next request
+    res.json({ user })
+  } catch (error) {
+    res.status(500).json({ error: 'Could not record acceptance, please try again' })
   }
 })
 
@@ -297,10 +319,14 @@ router.post('/google/complete', async (req, res) => {
     if (!isGoogleOAuthConfigured()) {
       return res.status(503).json({ error: 'Google sign-in is not configured' })
     }
-    const { reg, role } = req.body || {}
+    const { reg, role, acceptTerms } = req.body || {}
     if (!reg) return res.status(400).json({ error: 'Missing registration session' })
     if (role !== 'teacher' && role !== 'student') {
       return res.status(400).json({ error: 'Please choose a valid role' })
+    }
+    // A first-time Google account is created here, so Terms of Use acceptance is enforced here.
+    if (acceptTerms !== true) {
+      return res.status(400).json({ error: 'You must accept the Terms of Use to register' })
     }
 
     let profile

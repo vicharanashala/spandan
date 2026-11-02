@@ -26,6 +26,8 @@ import TeacherClassesPage from './pages/TeacherClassesPage'
 import TeacherClassDetailPage from './pages/TeacherClassDetailPage'
 import StudentClassesPage from './pages/StudentClassesPage'
 import StudentClassDetailPage from './pages/StudentClassDetailPage'
+import TermsPage from './pages/TermsPage'
+import TermsGate from './components/TermsGate'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -68,11 +70,14 @@ function App() {
     <BrowserRouter basename="/spandan">
       <HelpModal />
       <Tour />
+      {/* Blocking accept-terms screen for signed-in accounts that have not accepted the current terms. */}
+      <TermsGate />
 
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/terms" element={<TermsPage />} />
 
         {/* Teacher routes */}
         <Route
@@ -83,7 +88,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/classes"
           element={
@@ -92,7 +96,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/classes/:id"
           element={
@@ -101,7 +104,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/create-room"
           element={
@@ -110,7 +112,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/manage-room"
           element={
@@ -119,7 +120,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/profile"
           element={
@@ -128,7 +128,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/room-history"
           element={
@@ -137,7 +136,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/room/:roomId"
           element={
@@ -146,7 +144,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/teacher/room/:roomId/results"
           element={
@@ -155,18 +152,11 @@ function App() {
             </ProtectedRoute>
           }
         />
+        {/* Old sidebar Manual pages are gone (help lives in the ⓘ popup); keep bookmarks working. */}
+        <Route path="/teacher/help" element={<Navigate to="/teacher" replace />} />
+        <Route path="/student/help" element={<Navigate to="/student" replace />} />
 
-        <Route
-          path="/teacher/help"
-          element={<Navigate to="/teacher" replace />}
-        />
-
-        <Route
-          path="/student/help"
-          element={<Navigate to="/student" replace />}
-        />
-
-        {/* Admin route */}
+        {/* Admin-only: teacher approval. Guarded to teachers here and isAdmin inside the page + API. */}
         <Route
           path="/admin"
           element={
@@ -185,7 +175,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/classes"
           element={
@@ -194,7 +183,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/classes/:id"
           element={
@@ -203,8 +191,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
-        {/* Student Performance page */}
         <Route
           path="/student/performance"
           element={
@@ -213,7 +199,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/join-room"
           element={
@@ -222,7 +207,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/room-history"
           element={
@@ -231,7 +215,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/profile"
           element={
@@ -240,7 +223,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/room/:roomId/results"
           element={
@@ -249,7 +231,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/student/session/:roomCode"
           element={

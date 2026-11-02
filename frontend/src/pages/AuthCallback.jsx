@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import SpandanIcon from '../components/SpandanIcon'
 import useThemeStore from '../stores/themeStore'
+import TermsCheckbox from '../components/TermsCheckbox'
+import { TERMS_TICKED_KEY } from '../content/terms.js'
 
 // Landing route for the Google OAuth redirect. The backend redirects here with a URL fragment that
 // describes the outcome — #token=<jwt> (success), #status=pending_teacher, or #error=<message>. The
@@ -17,6 +19,7 @@ function AuthCallback() {
   const [reg, setReg] = useState('')            // signed pending-registration token (first-time users)
   const [chosenRole, setChosenRole] = useState('student')
   const [submitting, setSubmitting] = useState(false)
+  const [acceptedTerms, setAcceptedTerms] = useState(false) // required to create the account (server-checked)
   const ran = useRef(false)
 
   useEffect(() => {
@@ -43,6 +46,8 @@ function AuthCallback() {
     if (status === 'needs_role' && regToken) {
       setReg(regToken)
       setChosenRole(hint === 'teacher' ? 'teacher' : 'student')
+      // Pre-tick only if the user already ticked the terms on the Register tab before going to Google.
+      try { setAcceptedTerms(sessionStorage.getItem(TERMS_TICKED_KEY) === '1') } catch { /* ask again */ }
       setState('needs_role')
       setMessage('Almost there — tell us how you will use Spandan.')
       return
@@ -64,10 +69,11 @@ function AuthCallback() {
 
   // Finalize a first-time sign-up with the chosen role.
   const handleRoleSubmit = () => {
-    if (submitting) return
+    if (submitting || !acceptedTerms) return
     setSubmitting(true)
-    completeGoogleSignup(reg, chosenRole)
+    completeGoogleSignup(reg, chosenRole, acceptedTerms)
       .then((result) => {
+        try { sessionStorage.removeItem(TERMS_TICKED_KEY) } catch { /* ignore */ }
         if (result?.pendingTeacher) {
           setState('pending')
           setMessage('Your teacher account has been created and is pending admin approval. You can sign in once an administrator approves it.')
@@ -158,10 +164,13 @@ function AuthCallback() {
                 Teacher accounts require administrator approval before you can sign in.
               </p>
             )}
+            <div style={{ marginBottom: '20px' }}>
+              <TermsCheckbox checked={acceptedTerms} onChange={setAcceptedTerms} disabled={submitting} />
+            </div>
             <button
               type="button"
               onClick={handleRoleSubmit}
-              disabled={submitting}
+              disabled={submitting || !acceptedTerms}
               style={{
                 width: '100%',
                 padding: '13px 18px',
@@ -171,8 +180,8 @@ function AuthCallback() {
                 color: '#fff',
                 border: 'none',
                 borderRadius: 'var(--radius)',
-                cursor: submitting ? 'default' : 'pointer',
-                opacity: submitting ? 0.7 : 1
+                cursor: submitting || !acceptedTerms ? 'not-allowed' : 'pointer',
+                opacity: submitting || !acceptedTerms ? 0.6 : 1
               }}
             >
               {submitting ? 'Creating your account…' : 'Continue'}

@@ -415,7 +415,18 @@ const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-p
 async function authenticateSocket(socket, token) {
   const decoded = jwt.verify(token, SOCKET_JWT_SECRET)
   const User = (await import('./models/User.js')).default
-  const u = await User.findById(decoded.userId).select('role').lean()
+  const u = await User.findById(decoded.userId).select('role termsVersion').lean()
+  // Same Terms of Use gate as HTTP authenticate(): an account that has not accepted the current terms
+  // stays unauthenticated (cannot join rooms or receive polls) until it accepts and re-authenticates.
+  const { hasAcceptedCurrentTerms } = await import('./config/terms.js')
+  if (u && !hasAcceptedCurrentTerms(u)) {
+    socket.data.userId = null
+    socket.data.role = null
+    connectedUsers.delete(socket.id)
+    const e = new Error('Terms not accepted')
+    e.code = 'TERMS_REQUIRED'
+    throw e
+  }
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
   socket.data.tokenExp = decoded.exp || null // seconds since epoch; used to enforce freshness below
@@ -552,6 +563,8 @@ io.on('connection', (socket) => {
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
         socket.emit('authenticated', { success: false, error: 'Token expired', expired: true })
+      } else if (error.code === 'TERMS_REQUIRED') {
+        socket.emit('authenticated', { success: false, error: 'Terms not accepted', termsRequired: true })
       } else {
         socket.emit('authenticated', { success: false, error: 'Invalid token' })
       }

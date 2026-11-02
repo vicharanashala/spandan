@@ -28,7 +28,11 @@ export const sendOtpSchema = z.object({
 })
 
 export const verifyRegistrationSchema = registerSchema.extend({
-  otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code')
+  otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+  // The account is created at this step, so this is where Terms of Use acceptance is enforced.
+  acceptTerms: z.literal(true, {
+    errorMap: () => ({ message: 'You must accept the Terms of Use to register' })
+  })
 })
 
 // Room validation schemas

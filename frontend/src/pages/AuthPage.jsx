@@ -9,6 +9,8 @@ import HelpButton from '../components/HelpButton'
 import useThemeStore from '../stores/themeStore'
 import useIsMobile from '../hooks/useIsMobile'
 import { API_URL } from '../config.js'
+import TermsCheckbox from '../components/TermsCheckbox'
+import { TERMS_TICKED_KEY } from '../content/terms.js'
 import { ArrowLeft, ChartColumn, Check, GraduationCap, Lock as LockIcon, Mic, Moon, Presentation, Sun, Target, Zap } from 'lucide-react'
 import { Ico, renderIcon } from '../components/icons'
 
@@ -54,6 +56,8 @@ function AuthPage() {
   const [otpSent, setOtpSent] = useState(false)
   const [otpValue, setOtpValue] = useState('')
   const [resendIn, setResendIn] = useState(0) // seconds left before "Resend" is allowed
+  // Terms of Use acceptance for registration (email and Google). The backend enforces it too.
+  const [acceptedTerms, setAcceptedTerms] = useState(false)
 
   // Reset form data whenever login/registration mode switches
   useEffect(() => {
@@ -109,6 +113,10 @@ function AuthPage() {
     setPendingMsg('')
 
     if (!validateForm()) return
+    if (!isLogin && !acceptedTerms) {
+      setValidationError('Please accept the Terms of Use to create an account')
+      return
+    }
 
     if (isLogin) {
       try {
@@ -145,7 +153,7 @@ function AuthPage() {
       return
     }
     try {
-      const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue)
+      const data = await verifyRegistration(formData.name, formData.email, formData.password, formData.role, otpValue, acceptedTerms)
       // Teacher accounts require admin approval: no session is created. Send the registrant
       // back to the login screen with an "approval pending" message instead of a dashboard.
       if (data.pendingApproval) {
@@ -187,6 +195,16 @@ function AuthPage() {
   const handleGoogleSignIn = () => {
     clearError()
     setValidationError('')
+    // On the Register tab the terms must be ticked first; remember it so the Google role screen
+    // (shown to first-time Google users) can pre-tick its own checkbox instead of asking twice.
+    if (!isLogin && !acceptedTerms) {
+      setValidationError('Please accept the Terms of Use to create an account')
+      return
+    }
+    try {
+      if (!isLogin && acceptedTerms) sessionStorage.setItem(TERMS_TICKED_KEY, '1')
+      else sessionStorage.removeItem(TERMS_TICKED_KEY)
+    } catch { /* storage blocked: the role screen just asks again */ }
     window.location.href = `${API_URL}/auth/google?role=${formData.role}`
   }
 
@@ -747,10 +765,16 @@ function AuthPage() {
                 </div>
               )}
 
+              {!isLogin && (
+                <div style={{ marginBottom: '20px' }}>
+                  <TermsCheckbox checked={acceptedTerms} onChange={setAcceptedTerms} disabled={isLoading} />
+                </div>
+              )}
+
               <button
                 type="submit"
-                disabled={isLoading}
-                style={primaryButtonStyle(isLoading)}
+                disabled={isLoading || (!isLogin && !acceptedTerms)}
+                style={primaryButtonStyle(isLoading || (!isLogin && !acceptedTerms))}
               >
                 {isLoading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
               </button>
@@ -766,7 +790,7 @@ function AuthPage() {
               <button
                 type="button"
                 onClick={handleGoogleSignIn}
-                disabled={isLoading}
+                disabled={isLoading || (!isLogin && !acceptedTerms)}
                 style={{
                   width: '100%',
                   padding: '12px 18px',
@@ -776,7 +800,8 @@ function AuthPage() {
                   color: 'var(--text-primary)',
                   border: '1px solid var(--border-color)',
                   borderRadius: '12px',
-                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  cursor: isLoading || (!isLogin && !acceptedTerms) ? 'not-allowed' : 'pointer',
+                  opacity: !isLogin && !acceptedTerms ? 0.6 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',

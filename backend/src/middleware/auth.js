@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import User from '../models/User.js'
+import { hasAcceptedCurrentTerms } from '../config/terms.js'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 const JWT_EXPIRY = process.env.JWT_EXPIRY || '30d'
@@ -18,8 +19,14 @@ const USER_CACHE_MAX = Number(process.env.AUTH_CACHE_MAX) || 20000
 const userCache = new Map() // userId -> { user, expires }
 
 export const clearUserCache = () => userCache.clear()
+// Drop one user's cached entry so a change to that account (e.g. accepting the terms) applies on
+// their very next request instead of after the TTL.
+export const invalidateUserCache = (userId) => userCache.delete(String(userId))
 
-export const authenticate = async (req, res, next) => {
+// `requireTerms` (default) refuses accounts that have not accepted the current Terms of Use with
+// 403 TERMS_REQUIRED; the client answers that by showing the accept-terms screen. Only the routes
+// that screen itself needs (GET /auth/me, POST /auth/accept-terms) use authenticateAllowPendingTerms.
+const makeAuthenticate = ({ requireTerms }) => async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization
 
@@ -34,17 +41,26 @@ export const authenticate = async (req, res, next) => {
 
     const decoded = jwt.verify(token, JWT_SECRET)
 
+    const loadFresh = async () => {
+      const fresh = await User.findById(decoded.userId).select('-password')
+      if (fresh) {
+        // Crude bound on cache size: clear wholesale rather than track LRU.
+        if (userCache.size >= USER_CACHE_MAX) userCache.clear()
+        userCache.set(decoded.userId, { user: fresh, expires: Date.now() + USER_CACHE_TTL_MS })
+      }
+      return fresh
+    }
+
     let user
     const cached = userCache.get(decoded.userId)
     if (cached && cached.expires > Date.now()) {
       user = cached.user
+      // The cache is per instance, so an acceptance recorded by ANOTHER backend instance is not seen
+      // here until the TTL ends. Before refusing on the terms gate, re-read this user once. Only
+      // not-yet-accepted accounts pay this read, and their client is held on the accept-terms screen.
+      if (requireTerms && !hasAcceptedCurrentTerms(user)) user = await loadFresh()
     } else {
-      user = await User.findById(decoded.userId).select('-password')
-      if (user) {
-        // Crude bound on cache size: clear wholesale rather than track LRU.
-        if (userCache.size >= USER_CACHE_MAX) userCache.clear()
-        userCache.set(decoded.userId, { user, expires: Date.now() + USER_CACHE_TTL_MS })
-      }
+      user = await loadFresh()
     }
 
     if (!user) {
@@ -68,6 +84,14 @@ export const authenticate = async (req, res, next) => {
       })
     }
 
+    if (requireTerms && !hasAcceptedCurrentTerms(user)) {
+      return res.status(403).json({
+        error: 'Terms not accepted',
+        code: 'TERMS_REQUIRED',
+        message: 'Please accept the Spandan Terms of Use to continue.'
+      })
+    }
+
     req.user = user
     next()
   } catch (error) {
@@ -86,6 +110,9 @@ export const authenticate = async (req, res, next) => {
     next(error)
   }
 }
+
+export const authenticate = makeAuthenticate({ requireTerms: true })
+export const authenticateAllowPendingTerms = makeAuthenticate({ requireTerms: false })
 
 export const authorize = (...roles) => {
   return (req, res, next) => {
