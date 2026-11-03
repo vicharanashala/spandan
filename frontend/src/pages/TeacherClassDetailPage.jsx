@@ -1142,7 +1142,7 @@ export default function TeacherClassDetailPage() {
                 <StatTile
                   icon={Library}
                   label="Average Attendance"
-                  value={`${stats?.avgAttendance ?? (sessions.length > 0 && activeMembers.length > 0 ? Math.round((activeMembers.reduce((acc, m) => acc + (m.sessionsAttended || 0), 0) / (activeMembers.length * sessions.length)) * 100) : 0)}%`}
+                  value={`${membersData.avgAttendance ?? stats?.avgAttendance ?? (activeMembers.length > 0 ? Math.round(activeMembers.reduce((sum, m) => sum + (m.attendanceRate ?? (m.sessionsPossible > 0 ? Math.round((m.sessionsAttended / m.sessionsPossible) * 100) : 0)), 0) / activeMembers.length) : 0)}%`}
                   sub={`${sessions.length} total sessions hosted`}
                   tint="#10b981"
                   isMobile={isMobile}
@@ -1226,12 +1226,36 @@ export default function TeacherClassDetailPage() {
                                   </td>
                                 )}
 
-                                <td style={{ padding: '12px 18px', color: 'var(--text-primary)', fontWeight: 600 }}>
-                                  {student.sessionsAttended} / {totalSess}
+                                <td style={{ padding: '12px 18px', color: 'var(--text-primary)' }}>
+                                  <div style={{ fontWeight: 650 }}>
+                                    {student.sessionsAttended} / {student.sessionsPossible ?? totalSess}
+                                  </div>
+                                  <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                    {student.attendanceRate ?? (student.sessionsPossible > 0 ? Math.round((student.sessionsAttended / student.sessionsPossible) * 100) : 0)}% rate
+                                    {student.sessionsPossible != null && student.sessionsPossible < totalSess && (
+                                      <span> · {student.sessionsAttended}/{totalSess} total</span>
+                                    )}
+                                  </div>
                                 </td>
 
-                                <td style={{ padding: '12px 18px', color: 'var(--text-primary)', fontWeight: 600 }}>
-                                  {student.pollsAttempted}
+                                <td style={{ padding: '12px 18px', color: 'var(--text-primary)' }}>
+                                  <div style={{ fontWeight: 650 }}>
+                                    {student.pollsAttempted}
+                                    {student.pollsLaunched != null && student.pollsLaunched > 0 && (
+                                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                                        {' '}/ {student.pollsLaunched}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {student.pollsMissed != null && student.pollsMissed > 0 ? (
+                                    <div style={{ fontSize: 11.5, color: '#f59e0b', marginTop: 2 }}>
+                                      {student.pollsMissed} missed
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                      attempted
+                                    </div>
+                                  )}
                                 </td>
 
                                 <td style={{ padding: '12px 18px' }}>
@@ -1393,17 +1417,35 @@ export default function TeacherClassDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   <SectionLabel>Class Performance Summary</SectionLabel>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
                     <StatTile
                       icon={Library}
                       label="Attendance"
-                      value={`${selectedStudent.sessionsAttended} / ${membersData.totalClassSessions || sessions.length}`}
+                      value={`${selectedStudent.sessionsAttended} / ${selectedStudent.sessionsPossible ?? (membersData.totalClassSessions || sessions.length)}`}
                       sub={
-                        membersData.totalClassSessions > 0
-                          ? `${Math.round((selectedStudent.sessionsAttended / membersData.totalClassSessions) * 100)}% attendance rate`
-                          : 'No sessions hosted'
+                        selectedStudent.sessionsPossible != null
+                          ? `${selectedStudent.attendanceRate ?? (selectedStudent.sessionsPossible > 0 ? Math.round((selectedStudent.sessionsAttended / selectedStudent.sessionsPossible) * 100) : 0)}% rate${selectedStudent.sessionsPossible < (membersData.totalClassSessions || sessions.length) ? ` (${selectedStudent.sessionsAttended}/${membersData.totalClassSessions || sessions.length} total)` : ' since joined'}`
+                          : membersData.totalClassSessions > 0
+                            ? `${Math.round((selectedStudent.sessionsAttended / membersData.totalClassSessions) * 100)}% attendance rate`
+                            : 'No sessions hosted'
                       }
                       tint="var(--accent)"
+                      isMobile
+                    />
+                    <StatTile
+                      icon={MessageSquare}
+                      label="Polls Answered"
+                      value={`${selectedStudent.pollsAttempted}${selectedStudent.pollsLaunched != null && selectedStudent.pollsLaunched > 0 ? ` / ${selectedStudent.pollsLaunched}` : ''}`}
+                      sub={selectedStudent.pollsMissed != null && selectedStudent.pollsMissed > 0 ? `${selectedStudent.pollsMissed} missed while present` : 'In attended sessions'}
+                      tint="#0ea5e9"
+                      isMobile
+                    />
+                    <StatTile
+                      icon={CircleAlert}
+                      label="Polls Missed"
+                      value={`${selectedStudent.pollsMissed ?? (studentPerformance?.pollsMissed ?? 0)}`}
+                      sub="Missed while present"
+                      tint="#f59e0b"
                       isMobile
                     />
                     <StatTile
@@ -1436,56 +1478,72 @@ export default function TeacherClassDetailPage() {
 
                   {studentPerformance?.sessions && studentPerformance.sessions.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {studentPerformance.sessions.map((sess) => (
-                        <div
-                          key={sess.roomId}
-                          style={{
-                            padding: '12px 14px',
-                            borderRadius: 12,
-                            background: sess.attended
-                              ? 'var(--bg-card)'
-                              : 'color-mix(in srgb, var(--text-secondary) 4%, var(--bg-card))',
-                            border: '1px solid var(--border-color)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: 12
-                          }}
-                        >
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>
-                                {sess.roomName}
-                              </span>
-                              {sess.attended ? (
-                                <Pill tone="#10b981">Attended</Pill>
+                      {studentPerformance.sessions.map((sess) => {
+                        const isPreJoin = sess.status === 'not_enrolled' || sess.isBeforeJoin
+                        return (
+                          <div
+                            key={sess.roomId}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: 12,
+                              background: sess.attended
+                                ? 'var(--bg-card)'
+                                : 'color-mix(in srgb, var(--text-secondary) 4%, var(--bg-card))',
+                              border: '1px solid var(--border-color)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 12
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>
+                                  {sess.roomName}
+                                </span>
+                                {isPreJoin ? (
+                                  <Pill tone="var(--text-secondary)">Before joined</Pill>
+                                ) : sess.attended ? (
+                                  <Pill tone="#10b981">Attended</Pill>
+                                ) : (
+                                  <Pill tone="var(--text-secondary)">Missed</Pill>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+                                {new Date(sess.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                              </div>
+                            </div>
+
+                            <div style={{ textAlign: 'right' }}>
+                              {isPreJoin ? (
+                                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  Not enrolled yet
+                                </span>
+                              ) : sess.attended ? (
+                                <div>
+                                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                                    {sess.correctCount} / {sess.pollsAttempted} correct
+                                  </div>
+                                  <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                    {sess.pollsAttempted} of {sess.totalQuestions} answered{sess.pollsMissed > 0 ? ` · ${sess.pollsMissed} missed` : ''} ({sess.accuracy}%)
+                                  </div>
+                                </div>
                               ) : (
-                                <Pill tone="var(--text-secondary)">Missed</Pill>
+                                <div>
+                                  <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                    Did not attend
+                                  </span>
+                                  {sess.totalQuestions > 0 && (
+                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                      {sess.totalQuestions} polls held
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </div>
-                            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
-                              {new Date(sess.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                            </div>
                           </div>
-
-                          <div style={{ textAlign: 'right' }}>
-                            {sess.attended ? (
-                              <div>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
-                                  {sess.correctCount} / {sess.pollsAttempted} correct
-                                </div>
-                                <div style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
-                                  {sess.accuracy}% accuracy
-                                </div>
-                              </div>
-                            ) : (
-                              <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                Did not attend
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                     <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>

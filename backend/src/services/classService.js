@@ -433,6 +433,30 @@ export const getClassSessions = async (classId) => {
   }))
 }
 
+export const isSessionBeforeJoin = (room, joinedAt) => {
+  if (!joinedAt) return false
+  const joinedTime = new Date(joinedAt).getTime()
+  if (isNaN(joinedTime)) return false
+
+  // If the room fully ended before student joined, it is not eligible (before join)
+  if (room.endedAt) {
+    const endedTime = new Date(room.endedAt).getTime()
+    if (!isNaN(endedTime) && endedTime < joinedTime) {
+      return true
+    }
+  }
+
+  // If room was created before the calendar day student joined and is inactive
+  const startOfDay = new Date(joinedAt)
+  startOfDay.setHours(0, 0, 0, 0)
+  const createdTime = new Date(room.createdAt).getTime()
+  if (!isNaN(createdTime) && createdTime < startOfDay.getTime() && !room.isActive) {
+    return true
+  }
+
+  return false
+}
+
 export const getClassMembersWithPerformance = async (classId, teacherId) => {
   const cls = await Class.findById(classId)
   if (!cls) {
@@ -454,20 +478,29 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
 
   // All rooms under this class
   const classRooms = await Room.find({ classId })
-    .select('_id name code createdAt endedAt')
+    .select('_id name code createdAt endedAt isActive')
     .lean()
   const roomIds = classRooms.map(r => r._id)
   const totalClassSessions = classRooms.length
 
-  // Room members for these rooms
-  const roomMembers = await RoomMember.find({ roomId: { $in: roomIds } })
-    .select('roomId studentId joinedAt')
-    .lean()
+  // Room members, responses, and questions for these rooms
+  const [roomMembers, responses, allQuestions] = await Promise.all([
+    RoomMember.find({ roomId: { $in: roomIds } })
+      .select('roomId studentId joinedAt')
+      .lean(),
+    Response.find({ roomId: { $in: roomIds } })
+      .select('roomId studentId isCorrect pointsEarned createdAt')
+      .lean(),
+    Question.find({ roomId: { $in: roomIds }, status: 'approved' })
+      .select('_id roomId')
+      .lean()
+  ])
 
-  // Responses for these rooms
-  const responses = await Response.find({ roomId: { $in: roomIds } })
-    .select('roomId studentId isCorrect pointsEarned createdAt')
-    .lean()
+  const questionsByRoom = new Map()
+  for (const q of allQuestions) {
+    const rid = String(q.roomId)
+    questionsByRoom.set(rid, (questionsByRoom.get(rid) || 0) + 1)
+  }
 
   // Build lookups per student
   const studentAttendedRooms = new Map() // sid -> Set of roomIds
@@ -494,7 +527,25 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
     const attendedSet = studentAttendedRooms.get(sid) || new Set()
     const studentResps = studentResponses.get(sid) || []
 
-    const sessionsAttended = attendedSet.size
+    const joinedAt = m.joinedAt || m.createdAt
+
+    // Eligible sessions for this student (sessions on or after joinedAt, plus any attended)
+    const eligibleRooms = classRooms.filter(r => attendedSet.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt))
+    const sessionsPossible = eligibleRooms.length
+    const sessionsAttended = classRooms.filter(r => attendedSet.has(String(r._id))).length
+    const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
+
+    // Polls launched and missed across attended sessions
+    const attendedRooms = classRooms.filter(r => attendedSet.has(String(r._id)))
+    let pollsLaunched = 0
+    let pollsMissed = 0
+    for (const r of attendedRooms) {
+      const totalQ = questionsByRoom.get(String(r._id)) || 0
+      pollsLaunched += totalQ
+      const attempted = studentResps.filter(resp => String(resp.roomId) === String(r._id)).length
+      pollsMissed += Math.max(0, totalQ - attempted)
+    }
+
     const pollsAttempted = studentResps.length
     const correctCount = studentResps.filter(r => r.isCorrect).length
     const accuracy = pollsAttempted > 0 ? Math.round((correctCount / pollsAttempted) * 100) : 0
@@ -517,8 +568,12 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
       removedAt: m.removedAt,
       approvedAt: m.approvedAt,
       sessionsAttended,
+      sessionsPossible,
       totalClassSessions,
+      attendanceRate,
       pollsAttempted,
+      pollsLaunched,
+      pollsMissed,
       correctCount,
       accuracy,
       lastActive
@@ -526,12 +581,17 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
   }
 
   const enriched = members.map(enrichMember)
+  const activeMembers = enriched.filter(m => m.status === 'active')
+  const avgAttendance = activeMembers.length > 0
+    ? Math.round(activeMembers.reduce((sum, m) => sum + (m.attendanceRate || 0), 0) / activeMembers.length)
+    : 0
 
   return {
-    active: enriched.filter(m => m.status === 'active'),
+    active: activeMembers,
     pending: enriched.filter(m => m.status === 'pending'),
     removed: enriched.filter(m => m.status === 'removed'),
-    totalClassSessions
+    totalClassSessions,
+    avgAttendance
   }
 }
 
@@ -574,6 +634,8 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     responsesByRoom.get(key).push(r)
   }
 
+  const joinedAt = member?.joinedAt || member?.createdAt
+
   // Session-by-session breakdown
   const sessionBreakdown = classRooms.map(room => {
     const rid = String(room._id)
@@ -583,6 +645,9 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     const attempted = roomResps.length
     const correct = roomResps.filter(r => r.isCorrect).length
     const accuracy = attempted > 0 ? Math.round((correct / attempted) * 100) : 0
+    const isBeforeJoin = !attended && isSessionBeforeJoin(room, joinedAt)
+    const status = attended ? 'attended' : (isBeforeJoin ? 'not_enrolled' : 'missed')
+    const pollsMissed = attended ? Math.max(0, totalQ - attempted) : 0
 
     return {
       roomId: room._id,
@@ -591,13 +656,31 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
       date: room.createdAt,
       endedAt: room.endedAt,
       isActive: room.isActive,
+      status, // 'attended' | 'missed' | 'not_enrolled'
       attended,
+      isBeforeJoin,
       totalQuestions: totalQ,
       pollsAttempted: attempted,
+      pollsMissed,
       correctCount: correct,
       accuracy
     }
   })
+
+  const eligibleRooms = classRooms.filter(r => attendedRoomIds.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt))
+  const sessionsPossible = eligibleRooms.length
+  const sessionsAttended = classRooms.filter(r => attendedRoomIds.has(String(r._id))).length
+  const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
+
+  const attendedRooms = classRooms.filter(r => attendedRoomIds.has(String(r._id)))
+  let pollsLaunched = 0
+  let pollsMissed = 0
+  for (const r of attendedRooms) {
+    const totalQ = questionsByRoom.get(String(r._id)) || 0
+    pollsLaunched += totalQ
+    const attempted = (responsesByRoom.get(String(r._id)) || []).length
+    pollsMissed += Math.max(0, totalQ - attempted)
+  }
 
   const pollsAttempted = responses.length
   const correctCount = responses.filter(r => r.isCorrect).length
@@ -611,10 +694,14 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
       profileImage: student?.profileImage
     },
     status: member?.status || 'active',
-    joinedAt: member?.joinedAt,
-    sessionsAttended: attendedRoomIds.size,
+    joinedAt,
+    sessionsAttended,
+    sessionsPossible,
     totalClassSessions: classRooms.length,
+    attendanceRate,
     pollsAttempted,
+    pollsLaunched,
+    pollsMissed,
     correctCount,
     accuracy,
     sessions: sessionBreakdown
@@ -654,9 +741,12 @@ export const exportClassCsv = async (classId, teacherId) => {
     'Email',
     'Status',
     'Sessions Attended',
-    'Total Sessions',
+    'Sessions Possible',
+    'Total Class Sessions',
     'Attendance %',
+    'Polls Launched',
     'Polls Attempted',
+    'Polls Missed',
     'Correct Answers',
     'Accuracy %',
     'Joined Date',
@@ -664,15 +754,17 @@ export const exportClassCsv = async (classId, teacherId) => {
   ])
 
   for (const m of allMembers) {
-    const attPct = totalClassSessions > 0 ? Math.round((m.sessionsAttended / totalClassSessions) * 100) : 0
     csv += row([
       m.name,
       m.email,
       m.status,
       m.sessionsAttended,
-      totalClassSessions,
-      `${attPct}%`,
+      m.sessionsPossible,
+      m.totalClassSessions,
+      `${m.attendanceRate}%`,
+      m.pollsLaunched ?? 0,
       m.pollsAttempted,
+      m.pollsMissed ?? 0,
       m.correctCount,
       `${m.accuracy}%`,
       m.joinedAt ? new Date(m.joinedAt).toLocaleDateString() : '',
@@ -700,31 +792,58 @@ export const getClassStats = async (classId, teacherId) => {
     throw err
   }
 
-  const rooms = await Room.find({ classId }).select('_id isActive endedAt').lean()
+  const rooms = await Room.find({ classId }).select('_id isActive endedAt createdAt').lean()
   const roomIds = rooms.map(r => r._id)
 
-  const [members, totalQuestions, allResponses] = await Promise.all([
-    ClassMember.find({ classId }).select('status').lean(),
+  const [members, totalQuestions, allResponses, roomMembers] = await Promise.all([
+    ClassMember.find({ classId }).select('studentId status joinedAt createdAt').lean(),
     Question.countDocuments({ roomId: { $in: roomIds }, status: 'approved' }),
-    Response.find({ roomId: { $in: roomIds } }).select('isCorrect studentId').lean()
+    Response.find({ roomId: { $in: roomIds } }).select('isCorrect studentId roomId').lean(),
+    RoomMember.find({ roomId: { $in: roomIds } }).select('roomId studentId').lean()
   ])
 
   const totalSessions = rooms.length
   const activeSessions = rooms.filter(r => r.isActive && !r.endedAt).length
-  const activeMembers = members.filter(m => m.status === 'active').length
+  const activeMembers = members.filter(m => m.status === 'active')
   const pendingRequests = members.filter(m => m.status === 'pending').length
 
   const totalResponses = allResponses.length
   const totalCorrect = allResponses.filter(r => r.isCorrect).length
   const averageAccuracy = totalResponses > 0 ? Math.round((totalCorrect / totalResponses) * 100) : 0
 
+  // Calculate fair average attendance across active members
+  const attendedMap = new Map() // sid -> Set of roomIds
+  for (const rm of roomMembers) {
+    const sid = String(rm.studentId)
+    if (!attendedMap.has(sid)) attendedMap.set(sid, new Set())
+    attendedMap.get(sid).add(String(rm.roomId))
+  }
+  for (const resp of allResponses) {
+    const sid = String(resp.studentId)
+    if (!attendedMap.has(sid)) attendedMap.set(sid, new Set())
+    attendedMap.get(sid).add(String(resp.roomId))
+  }
+
+  let totalAttPct = 0
+  for (const m of activeMembers) {
+    const sid = String(m.studentId)
+    const attendedSet = attendedMap.get(sid) || new Set()
+    const joinedAt = m.joinedAt || m.createdAt
+    const eligibleCount = rooms.filter(r => attendedSet.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt)).length
+    const attendedCount = rooms.filter(r => attendedSet.has(String(r._id))).length
+    const rate = eligibleCount > 0 ? Math.round((attendedCount / eligibleCount) * 100) : 0
+    totalAttPct += rate
+  }
+  const avgAttendance = activeMembers.length > 0 ? Math.round(totalAttPct / activeMembers.length) : 0
+
   return {
     totalSessions,
     activeSessions,
-    totalMembers: activeMembers,
+    totalMembers: activeMembers.length,
     pendingRequests,
     totalQuestions,
     totalResponses,
-    averageAccuracy
+    averageAccuracy,
+    avgAttendance
   }
 }

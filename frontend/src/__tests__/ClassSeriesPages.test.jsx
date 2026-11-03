@@ -72,32 +72,38 @@ jest.mock('../lib/api', () => ({
     }),
     getMembers: jest.fn().mockResolvedValue({
       active: [
-        { _id: 'm1', studentId: 's1', name: 'Alice Smith', email: 'alice@uni.edu', sessionsAttended: 4, pollsAttempted: 15, correctCount: 13, accuracy: 87, status: 'active' },
-        { _id: 'm2', studentId: 's2', name: 'Bob Jones', email: 'bob@uni.edu', sessionsAttended: 3, pollsAttempted: 12, correctCount: 9, accuracy: 75, status: 'active' },
-        { _id: 'm3', studentId: 's3', name: 'Charlie Brown', email: 'charlie@uni.edu', sessionsAttended: 2, pollsAttempted: 8, correctCount: 4, accuracy: 50, status: 'active' },
-        { _id: 'm4', studentId: 's4', name: 'David Lee', email: 'david@uni.edu', sessionsAttended: 1, pollsAttempted: 4, correctCount: 2, accuracy: 50, status: 'active' },
-        { _id: 'm5', studentId: 's5', name: 'Emma Wilson', email: 'emma@uni.edu', sessionsAttended: 4, pollsAttempted: 15, correctCount: 15, accuracy: 100, status: 'active' },
-        { _id: 'm6', studentId: 's6', name: 'Frank Miller', email: 'frank@uni.edu', sessionsAttended: 3, pollsAttempted: 10, correctCount: 8, accuracy: 80, status: 'active' },
-        { _id: 'm7', studentId: 's7', name: 'Grace Hopper', email: 'grace@uni.edu', sessionsAttended: 4, pollsAttempted: 15, correctCount: 14, accuracy: 93, status: 'active' },
-        { _id: 'm8', studentId: 's8', name: 'Hank Rearden', email: 'hank@uni.edu', sessionsAttended: 2, pollsAttempted: 7, correctCount: 5, accuracy: 71, status: 'active' },
-        { _id: 'm9', studentId: 's9', name: 'Ivy Chen', email: 'ivy@uni.edu', sessionsAttended: 1, pollsAttempted: 3, correctCount: 1, accuracy: 33, status: 'active' }
+        { _id: 'm1', studentId: 's1', name: 'Alice Smith', email: 'alice@uni.edu', sessionsAttended: 4, sessionsPossible: 4, attendanceRate: 100, pollsAttempted: 15, pollsLaunched: 15, pollsMissed: 0, correctCount: 13, accuracy: 87, status: 'active' },
+        { _id: 'm2', studentId: 's2', name: 'Bob Jones', email: 'bob@uni.edu', sessionsAttended: 3, sessionsPossible: 4, attendanceRate: 75, pollsAttempted: 12, pollsLaunched: 15, pollsMissed: 3, correctCount: 9, accuracy: 75, status: 'active' },
+        { _id: 'm3', studentId: 's3', name: 'Charlie Brown', email: 'charlie@uni.edu', sessionsAttended: 2, sessionsPossible: 4, attendanceRate: 50, pollsAttempted: 8, pollsLaunched: 10, pollsMissed: 2, correctCount: 4, accuracy: 50, status: 'active' },
+        { _id: 'm4', studentId: 's4', name: 'David Lee', email: 'david@uni.edu', sessionsAttended: 1, sessionsPossible: 2, attendanceRate: 50, pollsAttempted: 4, pollsLaunched: 6, pollsMissed: 2, correctCount: 2, accuracy: 50, status: 'active' },
+        { _id: 'm5', studentId: 's5', name: 'Emma Wilson', email: 'emma@uni.edu', sessionsAttended: 4, sessionsPossible: 4, attendanceRate: 100, pollsAttempted: 15, pollsLaunched: 15, pollsMissed: 0, correctCount: 15, accuracy: 100, status: 'active' },
+        { _id: 'm6', studentId: 's6', name: 'Frank Miller', email: 'frank@uni.edu', sessionsAttended: 3, sessionsPossible: 4, attendanceRate: 75, pollsAttempted: 10, pollsLaunched: 12, pollsMissed: 2, correctCount: 8, accuracy: 80, status: 'active' },
+        { _id: 'm7', studentId: 's7', name: 'Grace Hopper', email: 'grace@uni.edu', sessionsAttended: 4, sessionsPossible: 4, attendanceRate: 100, pollsAttempted: 15, pollsLaunched: 15, pollsMissed: 0, correctCount: 14, accuracy: 93, status: 'active' },
+        { _id: 'm8', studentId: 's8', name: 'Hank Rearden', email: 'hank@uni.edu', sessionsAttended: 2, sessionsPossible: 4, attendanceRate: 50, pollsAttempted: 7, pollsLaunched: 10, pollsMissed: 3, correctCount: 5, accuracy: 71, status: 'active' },
+        { _id: 'm9', studentId: 's9', name: 'Ivy Chen', email: 'ivy@uni.edu', sessionsAttended: 1, sessionsPossible: 2, attendanceRate: 50, pollsAttempted: 3, pollsLaunched: 5, pollsMissed: 2, correctCount: 1, accuracy: 33, status: 'active' }
       ],
       pending: [
         { _id: 'p1', studentId: 'sp1', name: 'Pending Pete', email: 'pete@uni.edu', status: 'pending' }
       ],
       removed: [],
-      totalClassSessions: 4
+      totalClassSessions: 4,
+      avgAttendance: 75
     }),
     getMemberPerformance: jest.fn().mockResolvedValue({
       student: { _id: 's1', name: 'Alice Smith', email: 'alice@uni.edu' },
       status: 'active',
       sessionsAttended: 4,
+      sessionsPossible: 4,
       totalClassSessions: 4,
+      attendanceRate: 100,
       pollsAttempted: 15,
+      pollsLaunched: 15,
+      pollsMissed: 0,
       correctCount: 13,
       accuracy: 87,
       sessions: [
-        { roomId: 'room-1', roomName: 'Lecture 4: Consensus', date: '2026-10-15', attended: true, pollsAttempted: 2, correctCount: 2, accuracy: 100 }
+        { roomId: 'room-1', roomName: 'Lecture 4: Consensus', date: '2026-10-15', status: 'attended', attended: true, isBeforeJoin: false, totalQuestions: 3, pollsAttempted: 2, pollsMissed: 1, correctCount: 2, accuracy: 100 },
+        { roomId: 'room-0', roomName: 'Lecture 0: Intro', date: '2026-10-01', status: 'not_enrolled', attended: false, isBeforeJoin: true, totalQuestions: 2, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
       ]
     }),
     create: jest.fn(),
@@ -221,6 +227,15 @@ describe('TeacherClassDetailPage', () => {
 
     expect(screen.getByText('Per-Session Breakdown')).toBeInTheDocument()
     expect(screen.getAllByText('Lecture 4: Consensus').length).toBeGreaterThanOrEqual(1)
+
+    // Check enriched poll stats in summary cards
+    expect(screen.getByText('Polls Answered')).toBeInTheDocument()
+    expect(screen.getByText('Polls Missed')).toBeInTheDocument()
+
+    // Check pre-join session label
+    expect(screen.getByText('Before joined')).toBeInTheDocument()
+    expect(screen.getByText('Not enrolled yet')).toBeInTheDocument()
+    expect(screen.getByText(/2 of 3 answered/)).toBeInTheDocument()
   })
 
   it('handles archiving and restoring classes with confirmation and state updates', async () => {
@@ -378,5 +393,49 @@ describe('Student Class Views - Archived State', () => {
     expect(screen.getByText(/Your teacher has archived this class/i)).toBeInTheDocument()
     expect(screen.getByText('Archived')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Join Live Session/i })).not.toBeInTheDocument()
+  })
+
+  it('renders Before joined badge for sessions held prior to student joining', async () => {
+    classApi.getById.mockResolvedValueOnce({
+      class: {
+        _id: 'class-late',
+        name: 'Operating Systems',
+        code: 'OS101',
+        isActive: true,
+        teacher: { name: 'Prof. Miller' }
+      },
+      activeSession: null
+    })
+    classApi.getMemberPerformance.mockResolvedValueOnce({
+      student: { _id: 's1', name: 'Alice Smith' },
+      status: 'active',
+      sessionsAttended: 1,
+      sessionsPossible: 1,
+      totalClassSessions: 2,
+      attendanceRate: 100,
+      pollsAttempted: 3,
+      correctCount: 2,
+      accuracy: 67,
+      sessions: [
+        { roomId: 'r2', roomName: 'Lecture 2: Threads', date: '2026-10-20', status: 'attended', attended: true, isBeforeJoin: false, totalQuestions: 3, pollsAttempted: 3, pollsMissed: 0, correctCount: 2, accuracy: 67 },
+        { roomId: 'r1', roomName: 'Lecture 1: Intro', date: '2026-10-01', status: 'not_enrolled', attended: false, isBeforeJoin: true, totalQuestions: 4, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
+      ]
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/student/classes/class-late']}>
+        <Routes>
+          <Route path="/student/classes/:id" element={<StudentClassDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Lecture 2: Threads')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Before joined')).toBeInTheDocument()
+    expect(screen.getByText('Not enrolled yet')).toBeInTheDocument()
+    expect(screen.getByText('Attended')).toBeInTheDocument()
   })
 })

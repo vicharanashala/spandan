@@ -6,6 +6,8 @@
 // 4. Performance aggregation & CSV export format
 // 5. Late-join active question recovery
 
+import { isSessionBeforeJoin } from '../services/classService.js'
+
 describe('Class Series Feature', () => {
   describe('Rule 1: Global One Active Session Across All Classes', () => {
     it('should reject starting a session when teacher has an active session in ANY class', () => {
@@ -265,6 +267,76 @@ describe('Class Series Feature', () => {
       expect(csv.startsWith('\uFEFF')).toBe(true)
       expect(csv).toContain('Alice Smith,alice@spandan.edu,active,3,4,75%,4,3,75%')
       expect(csv).toContain('Bob Jones,bob@spandan.edu,active,1,4,25%,2,1,50%')
+    })
+
+    it('should accurately calculate sessionsPossible, attendanceRate, and pollsMissed for late joiners', () => {
+      const studentJoinedAt = '2026-10-15T10:00:00.000Z'
+      const classRooms = [
+        { _id: 'r1', name: 'Lecture 1', createdAt: '2026-10-01T09:00:00Z', endedAt: '2026-10-01T10:00:00Z', isActive: false },
+        { _id: 'r2', name: 'Lecture 2', createdAt: '2026-10-05T09:00:00Z', endedAt: '2026-10-05T10:00:00Z', isActive: false },
+        { _id: 'r3', name: 'Lecture 3', createdAt: '2026-10-10T09:00:00Z', endedAt: '2026-10-10T10:00:00Z', isActive: false },
+        { _id: 'r4', name: 'Lecture 4', createdAt: '2026-10-16T09:00:00Z', endedAt: '2026-10-16T10:00:00Z', isActive: false },
+        { _id: 'r5', name: 'Lecture 5', createdAt: '2026-10-20T09:00:00Z', endedAt: null, isActive: true }
+      ]
+
+      // Verify isSessionBeforeJoin
+      expect(isSessionBeforeJoin(classRooms[0], studentJoinedAt)).toBe(true)
+      expect(isSessionBeforeJoin(classRooms[1], studentJoinedAt)).toBe(true)
+      expect(isSessionBeforeJoin(classRooms[2], studentJoinedAt)).toBe(true)
+      expect(isSessionBeforeJoin(classRooms[3], studentJoinedAt)).toBe(false)
+      expect(isSessionBeforeJoin(classRooms[4], studentJoinedAt)).toBe(false)
+
+      // Student attended r4 (answered 3 of 5 questions, 2 correct) and attended r5 (answered 2 of 2, 2 correct)
+      const attendedSet = new Set(['r4', 'r5'])
+      const eligibleRooms = classRooms.filter(r => attendedSet.has(r._id) || !isSessionBeforeJoin(r, studentJoinedAt))
+      expect(eligibleRooms.length).toBe(2) // r4 and r5
+
+      const sessionsPossible = eligibleRooms.length
+      const sessionsAttended = attendedSet.size
+      const attendanceRate = Math.round((sessionsAttended / sessionsPossible) * 100)
+
+      expect(sessionsPossible).toBe(2)
+      expect(sessionsAttended).toBe(2)
+      expect(attendanceRate).toBe(100) // Fair attendance rate! Not 2/5 (40%)
+
+      // Poll stats
+      const questionsCountByRoom = { r4: 5, r5: 2 }
+      const studentResponses = [
+        { roomId: 'r4', isCorrect: true },
+        { roomId: 'r4', isCorrect: true },
+        { roomId: 'r4', isCorrect: false },
+        { roomId: 'r5', isCorrect: true },
+        { roomId: 'r5', isCorrect: true }
+      ]
+
+      let pollsLaunched = 0
+      let pollsMissed = 0
+      for (const rid of attendedSet) {
+        const totalQ = questionsCountByRoom[rid] || 0
+        pollsLaunched += totalQ
+        const attempted = studentResponses.filter(r => r.roomId === rid).length
+        pollsMissed += Math.max(0, totalQ - attempted)
+      }
+
+      expect(pollsLaunched).toBe(7)
+      expect(studentResponses.length).toBe(5)
+      expect(pollsMissed).toBe(2) // 5 - 3 in r4 = 2 missed while present
+
+      // Verify per-session status classification
+      const breakdown = classRooms.map(room => {
+        const attended = attendedSet.has(room._id)
+        const isBefore = isSessionBeforeJoin(room, studentJoinedAt)
+        return {
+          roomId: room._id,
+          status: attended ? 'attended' : (isBefore ? 'not_enrolled' : 'missed')
+        }
+      })
+
+      expect(breakdown[0].status).toBe('not_enrolled')
+      expect(breakdown[1].status).toBe('not_enrolled')
+      expect(breakdown[2].status).toBe('not_enrolled')
+      expect(breakdown[3].status).toBe('attended')
+      expect(breakdown[4].status).toBe('attended')
     })
   })
 
