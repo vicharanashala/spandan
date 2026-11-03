@@ -1479,7 +1479,8 @@ export default function TeacherClassDetailPage() {
                   {studentPerformance?.sessions && studentPerformance.sessions.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       {studentPerformance.sessions.map((sess) => {
-                        const isPreJoin = sess.status === 'not_enrolled' || sess.isBeforeJoin
+                        const isPreJoin = sess.status === 'before_join' || sess.isBeforeJoin
+                        const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval
                         return (
                           <div
                             key={sess.roomId}
@@ -1503,6 +1504,8 @@ export default function TeacherClassDetailPage() {
                                 </span>
                                 {isPreJoin ? (
                                   <Pill tone="var(--text-secondary)">Before joined</Pill>
+                                ) : isRemoved ? (
+                                  <Pill tone="#f59e0b">Removed</Pill>
                                 ) : sess.attended ? (
                                   <Pill tone="#10b981">Attended</Pill>
                                 ) : (
@@ -1519,15 +1522,32 @@ export default function TeacherClassDetailPage() {
                                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
                                   Not enrolled yet
                                 </span>
+                              ) : isRemoved ? (
+                                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  Not in class
+                                </span>
                               ) : sess.attended ? (
-                                <div>
-                                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
-                                    {sess.correctCount} / {sess.pollsAttempted} correct
+                                sess.totalQuestions === 0 ? (
+                                  <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                    No polls in this session
+                                  </span>
+                                ) : (
+                                  <div>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                                      {sess.pollsAttempted} / {sess.totalQuestions} answered
+                                    </div>
+                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                      {sess.pollsAttempted > 0 ? (
+                                        <span>{sess.correctCount} / {sess.pollsAttempted} correct ({sess.accuracy}%)</span>
+                                      ) : (
+                                        <span>0 answered</span>
+                                      )}
+                                      {sess.pollsMissed > 0 && (
+                                        <span style={{ color: '#f59e0b' }}> · {sess.pollsMissed} missed</span>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                    {sess.pollsAttempted} of {sess.totalQuestions} answered{sess.pollsMissed > 0 ? ` · ${sess.pollsMissed} missed` : ''} ({sess.accuracy}%)
-                                  </div>
-                                </div>
+                                )
                               ) : (
                                 <div>
                                   <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
@@ -1535,7 +1555,7 @@ export default function TeacherClassDetailPage() {
                                   </span>
                                   {sess.totalQuestions > 0 && (
                                     <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                      {sess.totalQuestions} polls held
+                                      {sess.totalQuestions} {sess.totalQuestions === 1 ? 'poll' : 'polls'} held
                                     </div>
                                   )}
                                 </div>

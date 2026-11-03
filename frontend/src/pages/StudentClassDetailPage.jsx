@@ -412,8 +412,10 @@ export default function StudentClassDetailPage() {
                               </td>
 
                               <td style={{ padding: '14px 18px' }}>
-                                {sess.status === 'not_enrolled' || sess.isBeforeJoin ? (
+                                {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <Pill tone="var(--text-secondary)">Before joined</Pill>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
+                                  <Pill tone="#f59e0b">Removed</Pill>
                                 ) : sess.attended ? (
                                   <Pill tone="#10b981">Attended</Pill>
                                 ) : (
@@ -422,22 +424,30 @@ export default function StudentClassDetailPage() {
                               </td>
 
                               <td style={{ padding: '14px 18px' }}>
-                                {sess.status === 'not_enrolled' || sess.isBeforeJoin ? (
+                                {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not enrolled yet</span>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not in class</span>
                                 ) : sess.attended ? (
-                                  <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                      <span style={{ fontWeight: 650, color: 'var(--text-primary)' }}>
-                                        {sess.correctCount} / {sess.pollsAttempted}
-                                      </span>
-                                      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                                        ({sess.accuracy}%)
-                                      </span>
+                                  sess.totalQuestions === 0 ? (
+                                    <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>No polls in this session</span>
+                                  ) : (
+                                    <div>
+                                      <div style={{ fontWeight: 650, color: 'var(--text-primary)' }}>
+                                        {sess.pollsAttempted} / {sess.totalQuestions} answered
+                                      </div>
+                                      <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                        {sess.pollsAttempted > 0 ? (
+                                          <span>{sess.correctCount} / {sess.pollsAttempted} correct ({sess.accuracy}%)</span>
+                                        ) : (
+                                          <span>0 answered</span>
+                                        )}
+                                        {sess.pollsMissed > 0 && (
+                                          <span style={{ color: '#f59e0b' }}> · {sess.pollsMissed} missed</span>
+                                        )}
+                                      </div>
                                     </div>
-                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                      {sess.pollsAttempted} / {sess.totalQuestions} answered{sess.pollsMissed > 0 ? ` · ${sess.pollsMissed} missed` : ''}
-                                    </div>
-                                  </div>
+                                  )
                                 ) : (
                                   <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>—</span>
                                 )}

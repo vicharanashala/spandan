@@ -103,7 +103,8 @@ jest.mock('../lib/api', () => ({
       accuracy: 87,
       sessions: [
         { roomId: 'room-1', roomName: 'Lecture 4: Consensus', date: '2026-10-15', status: 'attended', attended: true, isBeforeJoin: false, totalQuestions: 3, pollsAttempted: 2, pollsMissed: 1, correctCount: 2, accuracy: 100 },
-        { roomId: 'room-0', roomName: 'Lecture 0: Intro', date: '2026-10-01', status: 'not_enrolled', attended: false, isBeforeJoin: true, totalQuestions: 2, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
+        { roomId: 'room-rem', roomName: 'Lecture 2: Two-Phase Commit', date: '2026-10-08', status: 'during_removal', attended: false, isBeforeJoin: false, isDuringRemoval: true, totalQuestions: 4, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 },
+        { roomId: 'room-0', roomName: 'Lecture 0: Intro', date: '2026-10-01', status: 'before_join', attended: false, isBeforeJoin: true, totalQuestions: 2, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
       ]
     }),
     create: jest.fn(),
@@ -232,10 +233,13 @@ describe('TeacherClassDetailPage', () => {
     expect(screen.getByText('Polls Answered')).toBeInTheDocument()
     expect(screen.getByText('Polls Missed')).toBeInTheDocument()
 
-    // Check pre-join session label
+    // Check pre-join and removal session labels
     expect(screen.getByText('Before joined')).toBeInTheDocument()
     expect(screen.getByText('Not enrolled yet')).toBeInTheDocument()
-    expect(screen.getByText(/2 of 3 answered/)).toBeInTheDocument()
+    expect(screen.getByText('Removed')).toBeInTheDocument()
+    expect(screen.getByText('Not in class')).toBeInTheDocument()
+    expect(screen.getByText(/2 \/ 3 answered/)).toBeInTheDocument()
+    expect(screen.getByText(/1 missed/)).toBeInTheDocument()
   })
 
   it('handles archiving and restoring classes with confirmation and state updates', async () => {
@@ -417,8 +421,10 @@ describe('Student Class Views - Archived State', () => {
       correctCount: 2,
       accuracy: 67,
       sessions: [
+        { roomId: 'r3', roomName: 'Lecture 3: Schedulers', date: '2026-10-25', status: 'attended', attended: true, isBeforeJoin: false, totalQuestions: 0, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 },
         { roomId: 'r2', roomName: 'Lecture 2: Threads', date: '2026-10-20', status: 'attended', attended: true, isBeforeJoin: false, totalQuestions: 3, pollsAttempted: 3, pollsMissed: 0, correctCount: 2, accuracy: 67 },
-        { roomId: 'r1', roomName: 'Lecture 1: Intro', date: '2026-10-01', status: 'not_enrolled', attended: false, isBeforeJoin: true, totalQuestions: 4, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
+        { roomId: 'r-rem', roomName: 'Lecture 1.5: Kernel', date: '2026-10-10', status: 'during_removal', attended: false, isBeforeJoin: false, isDuringRemoval: true, totalQuestions: 2, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 },
+        { roomId: 'r1', roomName: 'Lecture 1: Intro', date: '2026-10-01', status: 'before_join', attended: false, isBeforeJoin: true, totalQuestions: 4, pollsAttempted: 0, pollsMissed: 0, correctCount: 0, accuracy: 0 }
       ]
     })
 
@@ -436,6 +442,10 @@ describe('Student Class Views - Archived State', () => {
 
     expect(screen.getByText('Before joined')).toBeInTheDocument()
     expect(screen.getByText('Not enrolled yet')).toBeInTheDocument()
-    expect(screen.getByText('Attended')).toBeInTheDocument()
+    expect(screen.getByText('Removed')).toBeInTheDocument()
+    expect(screen.getByText('Not in class')).toBeInTheDocument()
+    expect(screen.getByText('No polls in this session')).toBeInTheDocument()
+    expect(screen.getByText(/3 \/ 3 answered/)).toBeInTheDocument()
+    expect(screen.getAllByText('Attended').length).toBeGreaterThanOrEqual(1)
   })
 })

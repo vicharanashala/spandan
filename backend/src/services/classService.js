@@ -434,27 +434,49 @@ export const getClassSessions = async (classId) => {
 }
 
 export const isSessionBeforeJoin = (room, joinedAt) => {
-  if (!joinedAt) return false
+  if (!joinedAt || !room) return false
   const joinedTime = new Date(joinedAt).getTime()
-  if (isNaN(joinedTime)) return false
+  const roomCreatedTime = new Date(room.createdAt).getTime()
+  if (isNaN(joinedTime) || isNaN(roomCreatedTime)) return false
+  return roomCreatedTime < joinedTime
+}
 
-  // If the room fully ended before student joined, it is not eligible (before join)
-  if (room.endedAt) {
-    const endedTime = new Date(room.endedAt).getTime()
-    if (!isNaN(endedTime) && endedTime < joinedTime) {
-      return true
+export const getSessionMembershipCoverage = (room, member) => {
+  if (!room || !member) return 'active_eligible'
+
+  const roomCreatedTime = new Date(room.createdAt).getTime()
+  if (isNaN(roomCreatedTime)) return 'active_eligible'
+
+  const joinedTime = member.joinedAt
+    ? new Date(member.joinedAt).getTime()
+    : (member.createdAt ? new Date(member.createdAt).getTime() : 0)
+
+  // 1. before_join: room was created strictly before the student's first enrollment
+  // Rule: room.createdAt < member.joinedAt (strict Date compare)
+  if (joinedTime && roomCreatedTime < joinedTime) {
+    return 'before_join'
+  }
+
+  // 2. during_removal:
+  // If member.removedAt is set AND room.createdAt >= member.removedAt
+  if (member.removedAt) {
+    const removedTime = new Date(member.removedAt).getTime()
+    if (!isNaN(removedTime) && roomCreatedTime >= removedTime) {
+      const approvedTime = member.approvedAt ? new Date(member.approvedAt).getTime() : 0
+      const isReactivated = member.status === 'active' && approvedTime > removedTime
+
+      if (!isReactivated) {
+        // Member was never re-activated after that removal, or status is still removed / pending
+        return 'during_removal'
+      } else if (roomCreatedTime < approvedTime) {
+        // Room was held during removal window [removedAt, approvedAt)
+        return 'during_removal'
+      }
     }
   }
 
-  // If room was created before the calendar day student joined and is inactive
-  const startOfDay = new Date(joinedAt)
-  startOfDay.setHours(0, 0, 0, 0)
-  const createdTime = new Date(room.createdAt).getTime()
-  if (!isNaN(createdTime) && createdTime < startOfDay.getTime() && !room.isActive) {
-    return true
-  }
-
-  return false
+  // 3. active_eligible: not before_join and not during_removal
+  return 'active_eligible'
 }
 
 export const getClassMembersWithPerformance = async (classId, teacherId) => {
@@ -529,25 +551,32 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
 
     const joinedAt = m.joinedAt || m.createdAt
 
-    // Eligible sessions for this student (sessions on or after joinedAt, plus any attended)
-    const eligibleRooms = classRooms.filter(r => attendedSet.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt))
-    const sessionsPossible = eligibleRooms.length
-    const sessionsAttended = classRooms.filter(r => attendedSet.has(String(r._id))).length
+    // Active eligible sessions for this student (excludes before_join and during_removal windows)
+    const activeEligibleRooms = classRooms.filter(r => {
+      const coverage = getSessionMembershipCoverage(r, m)
+      return coverage === 'active_eligible' || attendedSet.has(String(r._id))
+    })
+
+    const sessionsPossible = activeEligibleRooms.length
+    const sessionsAttended = activeEligibleRooms.filter(r => attendedSet.has(String(r._id))).length
     const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
 
-    // Polls launched and missed across attended sessions
-    const attendedRooms = classRooms.filter(r => attendedSet.has(String(r._id)))
+    // Polls launched and missed across attended eligible sessions
+    const attendedEligibleRooms = activeEligibleRooms.filter(r => attendedSet.has(String(r._id)))
     let pollsLaunched = 0
     let pollsMissed = 0
-    for (const r of attendedRooms) {
+    let pollsAttempted = 0
+    let correctCount = 0
+
+    for (const r of attendedEligibleRooms) {
       const totalQ = questionsByRoom.get(String(r._id)) || 0
       pollsLaunched += totalQ
-      const attempted = studentResps.filter(resp => String(resp.roomId) === String(r._id)).length
-      pollsMissed += Math.max(0, totalQ - attempted)
+      const respsInRoom = studentResps.filter(resp => String(resp.roomId) === String(r._id))
+      pollsAttempted += respsInRoom.length
+      correctCount += respsInRoom.filter(resp => resp.isCorrect).length
+      pollsMissed += Math.max(0, totalQ - respsInRoom.length)
     }
 
-    const pollsAttempted = studentResps.length
-    const correctCount = studentResps.filter(r => r.isCorrect).length
     const accuracy = pollsAttempted > 0 ? Math.round((correctCount / pollsAttempted) * 100) : 0
 
     let lastActive = m.joinedAt
@@ -645,8 +674,19 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     const attempted = roomResps.length
     const correct = roomResps.filter(r => r.isCorrect).length
     const accuracy = attempted > 0 ? Math.round((correct / attempted) * 100) : 0
-    const isBeforeJoin = !attended && isSessionBeforeJoin(room, joinedAt)
-    const status = attended ? 'attended' : (isBeforeJoin ? 'not_enrolled' : 'missed')
+
+    const coverage = getSessionMembershipCoverage(room, member || { joinedAt })
+    let status = 'missed'
+    if (attended) {
+      status = 'attended'
+    } else if (coverage === 'before_join') {
+      status = 'before_join'
+    } else if (coverage === 'during_removal') {
+      status = 'during_removal'
+    } else {
+      status = 'missed'
+    }
+
     const pollsMissed = attended ? Math.max(0, totalQ - attempted) : 0
 
     return {
@@ -656,9 +696,11 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
       date: room.createdAt,
       endedAt: room.endedAt,
       isActive: room.isActive,
-      status, // 'attended' | 'missed' | 'not_enrolled'
+      status, // 'attended' | 'missed' | 'before_join' | 'during_removal'
+      coverage, // 'active_eligible' | 'before_join' | 'during_removal'
       attended,
-      isBeforeJoin,
+      isBeforeJoin: status === 'before_join',
+      isDuringRemoval: status === 'during_removal',
       totalQuestions: totalQ,
       pollsAttempted: attempted,
       pollsMissed,
@@ -667,23 +709,35 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     }
   })
 
-  const eligibleRooms = classRooms.filter(r => attendedRoomIds.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt))
-  const sessionsPossible = eligibleRooms.length
-  const sessionsAttended = classRooms.filter(r => attendedRoomIds.has(String(r._id))).length
+  // Ensure sessions are strictly sorted by createdAt descending
+  sessionBreakdown.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+  // Active eligible sessions for this student (excludes before_join and during_removal windows)
+  const activeEligibleRooms = classRooms.filter(r => {
+    const coverage = getSessionMembershipCoverage(r, member || { joinedAt })
+    return coverage === 'active_eligible' || attendedRoomIds.has(String(r._id))
+  })
+
+  const sessionsPossible = activeEligibleRooms.length
+  const sessionsAttended = activeEligibleRooms.filter(r => attendedRoomIds.has(String(r._id))).length
   const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
 
-  const attendedRooms = classRooms.filter(r => attendedRoomIds.has(String(r._id)))
+  // Polls launched, attempted, and missed across attended eligible sessions
+  const attendedEligibleRooms = activeEligibleRooms.filter(r => attendedRoomIds.has(String(r._id)))
   let pollsLaunched = 0
   let pollsMissed = 0
-  for (const r of attendedRooms) {
+  let pollsAttempted = 0
+  let correctCount = 0
+
+  for (const r of attendedEligibleRooms) {
     const totalQ = questionsByRoom.get(String(r._id)) || 0
     pollsLaunched += totalQ
-    const attempted = (responsesByRoom.get(String(r._id)) || []).length
-    pollsMissed += Math.max(0, totalQ - attempted)
+    const respsInRoom = responsesByRoom.get(String(r._id)) || []
+    pollsAttempted += respsInRoom.length
+    correctCount += respsInRoom.filter(resp => resp.isCorrect).length
+    pollsMissed += Math.max(0, totalQ - respsInRoom.length)
   }
 
-  const pollsAttempted = responses.length
-  const correctCount = responses.filter(r => r.isCorrect).length
   const accuracy = pollsAttempted > 0 ? Math.round((correctCount / pollsAttempted) * 100) : 0
 
   return {
@@ -796,7 +850,7 @@ export const getClassStats = async (classId, teacherId) => {
   const roomIds = rooms.map(r => r._id)
 
   const [members, totalQuestions, allResponses, roomMembers] = await Promise.all([
-    ClassMember.find({ classId }).select('studentId status joinedAt createdAt').lean(),
+    ClassMember.find({ classId }).select('studentId status joinedAt createdAt removedAt approvedAt').lean(),
     Question.countDocuments({ roomId: { $in: roomIds }, status: 'approved' }),
     Response.find({ roomId: { $in: roomIds } }).select('isCorrect studentId roomId').lean(),
     RoomMember.find({ roomId: { $in: roomIds } }).select('roomId studentId').lean()
@@ -828,10 +882,13 @@ export const getClassStats = async (classId, teacherId) => {
   for (const m of activeMembers) {
     const sid = String(m.studentId)
     const attendedSet = attendedMap.get(sid) || new Set()
-    const joinedAt = m.joinedAt || m.createdAt
-    const eligibleCount = rooms.filter(r => attendedSet.has(String(r._id)) || !isSessionBeforeJoin(r, joinedAt)).length
-    const attendedCount = rooms.filter(r => attendedSet.has(String(r._id))).length
-    const rate = eligibleCount > 0 ? Math.round((attendedCount / eligibleCount) * 100) : 0
+    const activeEligible = rooms.filter(r => {
+      const coverage = getSessionMembershipCoverage(r, m)
+      return coverage === 'active_eligible' || attendedSet.has(String(r._id))
+    })
+    const possible = activeEligible.length
+    const attended = activeEligible.filter(r => attendedSet.has(String(r._id))).length
+    const rate = possible > 0 ? Math.round((attended / possible) * 100) : 0
     totalAttPct += rate
   }
   const avgAttendance = activeMembers.length > 0 ? Math.round(totalAttPct / activeMembers.length) : 0

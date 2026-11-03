@@ -6,7 +6,7 @@
 // 4. Performance aggregation & CSV export format
 // 5. Late-join active question recovery
 
-import { isSessionBeforeJoin } from '../services/classService.js'
+import { isSessionBeforeJoin, getSessionMembershipCoverage } from '../services/classService.js'
 
 describe('Class Series Feature', () => {
   describe('Rule 1: Global One Active Session Across All Classes', () => {
@@ -434,6 +434,105 @@ describe('Class Series Feature', () => {
       const archived = allClasses.find(c => c._id === 'c2')
       expect(archived.isActive).toBe(false)
       expect(archived.sessions.length).toBe(3) // all data preserved
+    })
+  })
+
+  describe('Rule 8: Membership Windows (Join + Removal) & Fair Attendance', () => {
+    it('should correctly classify before_join, during_removal, and active_eligible sessions', () => {
+      // Timeline:
+      // 2026-10-01: r1 (before student joined)
+      // 2026-10-05: student joined
+      // 2026-10-06: r2 (active eligible)
+      // 2026-10-10: student removed
+      // 2026-10-12: r3 (held during removal)
+      // 2026-10-15: student re-approved
+      // 2026-10-18: r4 (active eligible after re-approval)
+
+      const memberReactivated = {
+        joinedAt: new Date('2026-10-05T09:00:00Z'),
+        removedAt: new Date('2026-10-10T12:00:00Z'),
+        approvedAt: new Date('2026-10-15T10:00:00Z'),
+        status: 'active'
+      }
+
+      const r1 = { _id: 'r1', createdAt: new Date('2026-10-01T10:00:00Z') }
+      const r2 = { _id: 'r2', createdAt: new Date('2026-10-06T10:00:00Z') }
+      const r3 = { _id: 'r3', createdAt: new Date('2026-10-12T10:00:00Z') }
+      const r4 = { _id: 'r4', createdAt: new Date('2026-10-18T10:00:00Z') }
+
+      expect(getSessionMembershipCoverage(r1, memberReactivated)).toBe('before_join')
+      expect(getSessionMembershipCoverage(r2, memberReactivated)).toBe('active_eligible')
+      expect(getSessionMembershipCoverage(r3, memberReactivated)).toBe('during_removal')
+      expect(getSessionMembershipCoverage(r4, memberReactivated)).toBe('active_eligible')
+
+      // Case: student currently removed (never re-activated)
+      const memberCurrentlyRemoved = {
+        joinedAt: new Date('2026-10-05T09:00:00Z'),
+        removedAt: new Date('2026-10-10T12:00:00Z'),
+        approvedAt: null,
+        status: 'removed'
+      }
+
+      expect(getSessionMembershipCoverage(r1, memberCurrentlyRemoved)).toBe('before_join')
+      expect(getSessionMembershipCoverage(r2, memberCurrentlyRemoved)).toBe('active_eligible')
+      expect(getSessionMembershipCoverage(r3, memberCurrentlyRemoved)).toBe('during_removal')
+      expect(getSessionMembershipCoverage(r4, memberCurrentlyRemoved)).toBe('during_removal')
+    })
+
+    it('should calculate fair attendance rate without charging missed sessions for removal windows', () => {
+      const member = {
+        joinedAt: new Date('2026-10-05T09:00:00Z'),
+        removedAt: new Date('2026-10-10T12:00:00Z'),
+        approvedAt: new Date('2026-10-15T10:00:00Z'),
+        status: 'active'
+      }
+
+      const classRooms = [
+        { _id: 'r1', createdAt: new Date('2026-10-01T10:00:00Z') }, // before_join
+        { _id: 'r2', createdAt: new Date('2026-10-06T10:00:00Z') }, // active_eligible (attended)
+        { _id: 'r3', createdAt: new Date('2026-10-12T10:00:00Z') }, // during_removal (not attended, NOT missed)
+        { _id: 'r4', createdAt: new Date('2026-10-18T10:00:00Z') }, // active_eligible (missed)
+        { _id: 'r5', createdAt: new Date('2026-10-20T10:00:00Z') }  // active_eligible (attended)
+      ]
+
+      const attendedSet = new Set(['r2', 'r5'])
+
+      // Active eligible rooms
+      const activeEligibleRooms = classRooms.filter(r => {
+        const coverage = getSessionMembershipCoverage(r, member)
+        return coverage === 'active_eligible' || attendedSet.has(r._id)
+      })
+
+      // Only r2, r4, r5 are active eligible (3 sessions)
+      expect(activeEligibleRooms.map(r => r._id)).toEqual(['r2', 'r4', 'r5'])
+
+      const sessionsPossible = activeEligibleRooms.length
+      const sessionsAttended = activeEligibleRooms.filter(r => attendedSet.has(r._id)).length
+      const attendanceRate = Math.round((sessionsAttended / sessionsPossible) * 100)
+
+      expect(sessionsPossible).toBe(3) // NOT 5 total class sessions
+      expect(sessionsAttended).toBe(2) // r2 and r5
+      expect(attendanceRate).toBe(67)  // 2 / 3 = 66.67% -> 67% (fair!)
+
+      // Breakdown status verification
+      const breakdown = classRooms.map(room => {
+        const attended = attendedSet.has(room._id)
+        const coverage = getSessionMembershipCoverage(room, member)
+        let status = 'missed'
+        if (attended) status = 'attended'
+        else if (coverage === 'before_join') status = 'before_join'
+        else if (coverage === 'during_removal') status = 'during_removal'
+        else status = 'missed'
+        return { roomId: room._id, status }
+      })
+
+      expect(breakdown).toEqual([
+        { roomId: 'r1', status: 'before_join' },
+        { roomId: 'r2', status: 'attended' },
+        { roomId: 'r3', status: 'during_removal' },
+        { roomId: 'r4', status: 'missed' },
+        { roomId: 'r5', status: 'attended' }
+      ])
     })
   })
 })
