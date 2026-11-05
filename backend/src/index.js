@@ -9,6 +9,7 @@ import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { FailoverStore } from './middleware/rateLimitStore.js'
+import { resolveRateLimits } from './config/rateLimits.js'
 // isRedisReady (configured AND connected) guards the per-request Redis calls below: a disconnected
 // client queues commands, which would hang an answer submit until Redis returns.
 import { initRedis, isRedisReady } from './config/redis.js'
@@ -322,12 +323,16 @@ const rlStore = (prefix) => redis.enabled
   ? new FailoverStore({ prefix, client: redis.client })
   : undefined
 
+// Maximums default to the values noted below; each can be overridden via env (config/rateLimits.js)
+// — e.g. for a local load test, where every simulated student shares one IP.
+const RATE_LIMITS = resolveRateLimits()
+
 const apiLimiter = rateLimit({
   store: rlStore('rl:api:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
   // Note: hundreds of students at a live event usually share ONE public IP (venue/campus NAT),
   // so this per-IP limit is effectively shared across the whole room. Sized for that.
-  max: 50000, // limit each IP to 50000 requests per windowMs (shared across a NATed classroom)
+  max: RATE_LIMITS.api, // default 50000 requests per IP per windowMs (shared across a NATed classroom); API_RATE_LIMIT_MAX
   message: { error: 'Too many requests, please try again later' }
 })
 
@@ -337,21 +342,21 @@ const authLimiter = rateLimit({
   // Only count FAILED auth attempts: 700 students behind one NAT share this bucket, so counting
   // successful logins would trip a 429 mid-event (seen at ~250 logins). Failures still throttle brute-force.
   skipSuccessfulRequests: true,
-  max: 5000, // limit each IP to 5000 FAILED auth attempts per hour (brute-force backstop)
+  max: RATE_LIMITS.authFailures, // default 5000 FAILED auth attempts per IP per hour (brute-force backstop); AUTH_RATE_LIMIT_MAX
   message: { error: 'Too many authentication attempts, please try again later' }
 })
 
 const responseLimiter = rateLimit({
   store: rlStore('rl:resp:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  max: RATE_LIMITS.responses, // default 5000 response submissions per IP per windowMs (high limit for live quizzes); RESPONSE_RATE_LIMIT_MAX
   message: { error: 'Too many response submissions, please try again later' }
 })
 
 const leaderboardLimiter = rateLimit({
   store: rlStore('rl:lb:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
+  max: RATE_LIMITS.leaderboard, // default 10000 leaderboard reads per IP per windowMs (refreshes on every points update during live sessions); LEADERBOARD_RATE_LIMIT_MAX
   message: { error: 'Too many requests, please try again later' }
 })
 

@@ -8,6 +8,8 @@
     "start": "node src/index.js",
     "worker": "node src/worker.js",
     "seed:dev": "node scripts/seed_dev_users.js",
+    "seed:loadtest": "node scripts/seed_loadtest.js",
+    "clean:loadtest": "node scripts/seed_loadtest.js --clean",
     "build": "echo 'Backend build complete'",
     "test": "jest",
     "test:watch": "jest --watch",

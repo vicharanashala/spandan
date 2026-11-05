@@ -18,6 +18,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
+import { assertDevDatabase, redact } from './lib/devGuard.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
@@ -41,32 +42,14 @@ const ACCOUNTS = [
   }))
 ]
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
-
-// Hostnames from a mongodb:// or mongodb+srv:// URI (credentials and port stripped).
-const uriHosts = (uri) => {
-  const m = uri.match(/^mongodb(\+srv)?:\/\/(?:[^@/]*@)?([^/?]+)/)
-  if (!m) return null
-  if (m[1]) return [m[2]] // +srv is always a DNS name, never local
-  return m[2].split(',').map(h => h.replace(/:\d+$/, '').toLowerCase())
-}
-
-// Credentials are never printed.
-const redact = (uri) => uri.replace(/\/\/[^@/]*@/, '//***@')
-
 function guard() {
-  if ((process.env.NODE_ENV || '').toLowerCase() === 'production') {
-    throw new Error('Refusing to seed: NODE_ENV is "production". This script is for development only.')
-  }
-  const hosts = uriHosts(URI)
-  if (!hosts) throw new Error(`Refusing to seed: cannot parse MONGODB_URI (${redact(URI)}).`)
-  const remote = hosts.filter(h => !LOCAL_HOSTS.has(h))
-  if (remote.length && !ALLOW_REMOTE) {
-    throw new Error(
-      `Refusing to seed: MONGODB_URI points at a non-local host (${remote.join(', ')}).\n` +
-      'If this is definitely a development database, re-run with: npm run seed:dev -- --allow-remote'
-    )
-  }
+  assertDevDatabase({
+    uri: URI,
+    allowRemote: ALLOW_REMOTE,
+    nodeEnv: process.env.NODE_ENV,
+    action: 'seed',
+    command: 'npm run seed:dev'
+  })
 }
 
 async function main() {
