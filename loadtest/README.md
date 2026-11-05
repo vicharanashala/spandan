@@ -33,8 +33,10 @@ npm install
 cd ../backend
 npm run seed:loadtest -- --students 50
 
-# 3. Start the backend (in its own terminal)
-npm run dev
+# 3. Start the backend (in its own terminal), with the optional server-side metrics
+SERVER_METRICS=on npm run dev            # Git Bash / macOS / Linux
+# PowerShell:  $env:SERVER_METRICS='on'; npm run dev
+# (plain `npm run dev` also works; the run then has client-side numbers only)
 ```
 
 The seed creates `lt.teacher@loadtest.spandan.test` and `lt.student0001@…` to `lt.student00NN@…`,
@@ -71,6 +73,7 @@ automatically.** Above 200 students you must add `--confirm-large`.
 | `--settle S` | 25 | After the last poll, wait for the leaderboard update (the server delays it by 15 s) |
 | `--base-url URL` | `http://localhost:3001` | Backend URL |
 | `--api-prefix P` | none | `/spandan` when going through the nginx proxy |
+| `--server-metrics M` | `auto` | Read the backend's `/internal/metrics`: `auto` (use it if enabled), `require` (fail if not enabled), `off` |
 | `--allow-remote` | off | Allow a non-localhost target (authorized test servers only) |
 | `--confirm-large` | off | Allow more than 200 students |
 
@@ -133,6 +136,7 @@ The console prints a table and a PASS/FAIL list. The full detail is in `results/
 | `polls[]` | Per poll: how many students received it, and answers accepted or rejected |
 | `socketEventsReceived` | Total events of each type received by all students |
 | `generator` | This machine's CPU and event-loop lag, plus bottleneck warnings |
+| `server` | The backend's own metrics for this run, when `SERVER_METRICS=on` (see below) |
 | `timeline[]` | Per second: requests, errors, connected sockets, CPU |
 
 Errors are grouped by kind, for example `http_409:poll_closed` (answer arrived outside the poll
@@ -142,6 +146,54 @@ window), `http_429` (rate limited), `timeout`, or `network:ECONNREFUSED`.
 reads under 1.5 s; poll delivery under 1 s), at most 1% errors per operation, at least 99% of
 students joined, every poll and `room:ended` reaching every joined student, and no correct
 answers leaking in what students receive.
+
+## Server-side metrics (`SERVER_METRICS=on`)
+
+The simulator only sees what the clients see. To also see the backend's side, start the
+backend with `SERVER_METRICS=on`. This enables two endpoints:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /internal/metrics` | A JSON snapshot (see below) |
+| `POST /internal/metrics/reset` | Clears the counters |
+
+With the default `--server-metrics auto`, the simulator:
+1. resets the counters when the run starts, so the snapshot covers exactly this run,
+2. samples the endpoint every 2 s into the `timeline` (`serverCpu`, `serverRssMb`, `serverHeapMb`,
+   `serverLoopP99Ms`, `serverSockets`, `serverInFlight`),
+3. saves the final snapshot as `server.metrics` in the results file, and prints the server's CPU,
+   memory, slowest routes and socket message counts.
+
+If metrics are off, the run continues and the summary says so. Use `--server-metrics require`
+to make that an error instead.
+
+The snapshot contains:
+
+| Section | Contents |
+|---|---|
+| `http.routes` | Per route **pattern** (e.g. `GET /api/responses/leaderboard/:roomId`): count, status codes, 5xx errors, mean, p50, p95, p99 and max latency (percentiles over the most recent 1,024 requests). Requests a limiter rejected before routing appear as `… (unmatched)`. |
+| `http` | Totals, in-flight requests and aborted requests |
+| `sockets` | Active, peak and total connections; disconnect reasons; engine connection errors; incoming and outgoing event counts by name. Outgoing counts are per-socket deliveries, so one broadcast to 50 students counts 50. |
+| `process` | CPU % of one core (1 s samples), RSS and heap memory, event-loop delay, uptime, MongoDB and Redis state |
+
+You can also look at it directly: `curl http://localhost:3001/internal/metrics`.
+
+**Safety.** The endpoint is designed so it can't leak data or be reached from outside:
+- It is **off unless `SERVER_METRICS=on`** and is **ignored when `NODE_ENV=production`**. When
+  off, nothing is installed and the URL is a normal 404.
+- It answers only **direct requests from this machine**. A non-loopback address, or any
+  `X-Forwarded-For`, `X-Real-IP`, `Forwarded` or `X-Forwarded-Host` header, gets a 403.
+- It sits **outside `/api`**, so a reverse proxy that forwards `/api` and `/socket.io` never
+  routes to it.
+- It never records URLs, query strings, request bodies, headers, tokens, user ids, emails, room
+  codes, socket ids or event payloads. Only route patterns, status codes, timings and event
+  names. Unknown event names are grouped as `(invalid)` and key counts are capped, so memory
+  stays bounded.
+
+**Limits.**
+- Each backend process keeps its own counters. Under PM2 cluster mode, each scrape reads
+  whichever worker answers (`process.pid` tells you which).
+- CPU and memory cover the Node process only, not MongoDB or Redis.
 
 ### "Is it my laptop or the server?"
 
@@ -172,8 +224,8 @@ This deletes only `@loadtest.spandan.test` data. Real users and rooms are never 
 ## Limits of this MVP
 
 - One process generates all the load, so very large runs are limited by this machine.
-- Delivery is measured by what the clients received. The server does not yet trace events
-  (that comes in a later step), and there are no server CPU or memory metrics yet.
+- Delivery is measured by what the clients received. Server-side metrics count messages sent, but
+  individual events are not traced end to end yet (that comes in a later step).
 - The report is the console table plus the JSON file. A dashboard comes later.
 
 ## Tests

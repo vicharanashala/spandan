@@ -88,6 +88,18 @@ export function printSummary(result, log = console.log) {
   log(`room:ended received by ${summary.roomEndedReceived}/${c.studentsJoined} joined students`)
   log(`generator: CPU avg ${generator.processCpuAvg}% / peak ${generator.processCpuPeak}% of one core, machine avg ${generator.machineCpuAvg}% / peak ${generator.machineCpuPeak}% (${generator.cores} cores), loop lag p99 peak ${generator.loopLagP99PeakMs}ms`)
   for (const w of generator.warnings) log(`WARNING: ${w}`)
+  const sm = result.server?.metrics
+  if (sm) {
+    const p = sm.process
+    log(`server:    CPU avg ${p.cpuPercent.avg ?? '-'}% / peak ${p.cpuPercent.max ?? '-'}% of one core, RSS ${p.memoryMb.rss} MB, heap ${p.memoryMb.heapUsed} MB, loop delay p99 ${p.eventLoopDelayMs?.p99 ?? '-'}ms`)
+    log(`           HTTP ${sm.http.total} requests (${sm.http.errors} 5xx), sockets peak ${sm.sockets.peak}, disconnects ${sm.sockets.disconnects} (incl. the clean close at the end: ${JSON.stringify(sm.sockets.disconnectReasons)})`)
+    const slow = Object.entries(sm.http.routes).sort((a, b) => (b[1].p95Ms ?? 0) - (a[1].p95Ms ?? 0)).slice(0, 3)
+    for (const [route, r] of slow) log(`           slowest: ${route}  p95 ${r.p95Ms}ms  (n=${r.count})`)
+    const out = Object.entries(sm.sockets.outgoingEvents).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    log(`           socket messages sent: ${out.map(([e, n]) => `${e} ${n}`).join(', ') || 'none'}`)
+  } else if (result.server && !result.server.available) {
+    log(`server:    not collected (${result.server.reason})`)
+  }
   log('--------------------------------------------------')
   for (const ch of v.checks) log(`${ch.pass ? 'PASS' : 'FAIL'}  ${ch.check}  (got ${ch.value})`)
   log(`OVERALL: ${v.pass ? 'PASS' : 'FAIL'}${generator.possibleBottleneck ? '  (results may be limited by this machine, see warnings)' : ''}`)

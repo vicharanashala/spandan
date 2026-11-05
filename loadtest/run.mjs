@@ -11,6 +11,7 @@ import { parseArgs, resolveConfig, HELP } from './lib/config.mjs'
 import { Recorder } from './lib/metrics.mjs'
 import { makeApi } from './lib/http.mjs'
 import { startMonitor } from './lib/monitor.mjs'
+import { startServerMetrics } from './lib/serverMetrics.mjs'
 import { Session, SimTeacher } from './lib/session.mjs'
 import { SimStudent } from './lib/student.mjs'
 import { verdict, pollSummary, saveResult, printSummary } from './lib/report.mjs'
@@ -50,6 +51,7 @@ async function main() {
 
   const startedAt = new Date()
   const rec = new Recorder()
+  const serverMetrics = await startServerMetrics(cfg, rec) // resets the backend's counters first
   const session = new Session()
   const students = []
   let connected = 0
@@ -101,6 +103,7 @@ async function main() {
   for (const s of students) await s.stop()
   teacher.stop()
   process.off('SIGINT', onSigint)
+  const serverRun = await serverMetrics.stop()
   const generator = monitor.stop()
   const endedAt = new Date()
 
@@ -147,6 +150,11 @@ async function main() {
     polls: pollSummary(session, cfg.students),
     leaderboardBroadcasts: pushStats.map(p => ({ receipts: p.receipts, spreadMs: p.spreadMs })),
     generator,
+    // Backend-side view (only when the backend runs with SERVER_METRICS=on): the final snapshot of
+    // /internal/metrics, covering exactly this run (counters were reset at the start).
+    server: serverMetrics.available
+      ? { available: true, url: serverMetrics.url, samples: serverRun.samples, failures: serverRun.failures, metrics: serverRun.final }
+      : { available: false, reason: serverMetrics.reason },
     errorSamples: snap.errorSamples,
     timeline: snap.timeline
   }

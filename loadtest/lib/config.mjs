@@ -13,6 +13,7 @@ export const DEFAULTS = Object.freeze({
   answerRate: 1,                    // fraction of students who answer each poll
   settleSeconds: 25,                // after the last poll, wait this long for the leaderboard push
   password: 'LoadTest@123',         // seeded load-test password (backend LOADTEST_PASSWORD)
+  serverMetrics: 'auto',            // read backend /internal/metrics if enabled: auto | require | off
   allowRemote: false,               // refuse non-local targets unless set
   confirmLarge: false               // required above LARGE_STUDENT_THRESHOLD
 })
@@ -34,6 +35,7 @@ const OPTIONS = {
   answerRate: ['LOADTEST_ANSWER_RATE', 'number'],
   settleSeconds: ['LOADTEST_SETTLE_SECONDS', 'number'],
   password: ['LOADTEST_PASSWORD', 'string'],
+  serverMetrics: ['LOADTEST_SERVER_METRICS', 'string'],
   allowRemote: [null, 'flag'],
   confirmLarge: [null, 'flag']
 }
@@ -110,6 +112,7 @@ export function resolveConfig(cli = {}, env = {}) {
   if (cfg.answerRate < 0 || cfg.answerRate > 1) errs.push('--answer-rate must be between 0 and 1.')
   if (cfg.settleSeconds < 0 || cfg.settleSeconds > 120) errs.push('--settle must be 0..120 seconds.')
   if (String(cfg.password).length < 6) errs.push('Password must be at least 6 characters.')
+  if (!['auto', 'require', 'off'].includes(cfg.serverMetrics)) errs.push('--server-metrics must be auto, require or off.')
   if (errs.length) throw new Error(errs.join('\n'))
 
   if (!cfg.allowRemote && !isLocalUrl(cfg.baseUrl)) {
@@ -149,6 +152,7 @@ Usage: npm start -- [options]
   --base-url URL       backend URL (default ${DEFAULTS.baseUrl})
   --api-prefix P       path prefix, e.g. /spandan behind the nginx proxy (default none)
   --password P         seeded load-test password (default ${DEFAULTS.password})
+  --server-metrics M   read backend /internal/metrics (needs SERVER_METRICS=on): auto | require | off (default auto)
   --allow-remote       allow a non-localhost target (authorized test servers only, never production)
   --confirm-large      allow more than ${LIMITS.largeThreshold} students
 

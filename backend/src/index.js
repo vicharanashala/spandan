@@ -10,6 +10,7 @@ import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { FailoverStore } from './middleware/rateLimitStore.js'
 import { resolveRateLimits } from './config/rateLimits.js'
+import { installServerMetrics } from './services/serverMetrics.js'
 // isRedisReady (configured AND connected) guards the per-request Redis calls below: a disconnected
 // client queues commands, which would hang an answer submit until Redis returns.
 import { initRedis, isRedisReady } from './config/redis.js'
@@ -369,6 +370,16 @@ const otpLimiter = rateLimit({
   // (a campus behind one IP), so the default is well above 100. Override via OTP_LIMIT_PER_HOUR in .env.
   max: Number(process.env.OTP_LIMIT_PER_HOUR) || 500, // sends per IP per hour
   message: { error: 'Too many verification requests, please try again later' }
+})
+
+// Opt-in server metrics for local load testing (services/serverMetrics.js). Installs nothing at all
+// unless SERVER_METRICS=on (and never when NODE_ENV=production). Placed before the limiters so 429s
+// are measured too.
+installServerMetrics(app, io, {
+  probes: {
+    mongodb: () => (mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'),
+    redis: () => (redis.enabled ? (isRedisReady() ? 'connected' : 'disconnected') : 'off')
+  }
 })
 
 // Middleware

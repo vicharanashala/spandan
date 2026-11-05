@@ -307,6 +307,22 @@ npm test --workspace=frontend
 
 GitHub Actions runs both suites on every push and pull request to `main`.
 
+### Load testing (local only)
+
+`loadtest/` simulates a live classroom (students join, answer polls and read the leaderboard)
+against a **local** backend, and saves each run to `loadtest/results/`. Setup, options and
+safe-use rules are in [`loadtest/README.md`](loadtest/README.md). In short:
+
+```bash
+cd backend && npm run seed:loadtest -- --students 50   # test accounts (dev DB only)
+SERVER_METRICS=on npm run dev                          # optional: server-side metrics
+cd loadtest && npm install && npm start                # 50 students, 3 polls
+cd backend && npm run clean:loadtest                   # remove the test data
+```
+
+`SERVER_METRICS=on` enables `GET /internal/metrics` for local runs. It is off by default,
+answers only direct local requests, and is ignored when `NODE_ENV=production`.
+
 ## Deployment
 
 Production runs the built frontend and the API behind nginx, with the app
