@@ -1,0 +1,17 @@
+{
+  "name": "spandan-loadtest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local load simulator for Spandan live sessions (students join, answer polls, read the leaderboard).",
+  "type": "module",
+  "scripts": {
+    "start": "node run.mjs",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "socket.io-client": "4.8.3"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
