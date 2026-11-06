@@ -1,5 +1,6 @@
 // Run configuration: defaults, CLI flags (--name value) and environment overrides, validated.
 // Pure (no I/O), so it is unit-tested.
+import { DEFAULT_LATE_MS } from './delivery.mjs'
 
 export const DEFAULTS = Object.freeze({
   baseUrl: 'http://localhost:3001', // backend directly (no nginx); the prod proxy adds /spandan
@@ -14,6 +15,7 @@ export const DEFAULTS = Object.freeze({
   settleSeconds: 25,                // after the last poll, wait this long for the leaderboard push
   password: 'LoadTest@123',         // seeded load-test password (backend LOADTEST_PASSWORD)
   serverMetrics: 'auto',            // read backend /internal/metrics if enabled: auto | require | off
+  lateMs: DEFAULT_LATE_MS,          // a traced broadcast delivered later than this counts as late (reported, never fails)
   allowRemote: false,               // refuse non-local targets unless set
   confirmLarge: false               // required above LARGE_STUDENT_THRESHOLD
 })
@@ -36,6 +38,7 @@ const OPTIONS = {
   settleSeconds: ['LOADTEST_SETTLE_SECONDS', 'number'],
   password: ['LOADTEST_PASSWORD', 'string'],
   serverMetrics: ['LOADTEST_SERVER_METRICS', 'string'],
+  lateMs: ['LOADTEST_LATE_MS', 'number'],
   allowRemote: [null, 'flag'],
   confirmLarge: [null, 'flag']
 }
@@ -113,6 +116,7 @@ export function resolveConfig(cli = {}, env = {}) {
   if (cfg.settleSeconds < 0 || cfg.settleSeconds > 120) errs.push('--settle must be 0..120 seconds.')
   if (String(cfg.password).length < 6) errs.push('Password must be at least 6 characters.')
   if (!['auto', 'require', 'off'].includes(cfg.serverMetrics)) errs.push('--server-metrics must be auto, require or off.')
+  if (cfg.lateMs <= 0 || cfg.lateMs > 60000) errs.push('--late-ms must be 1..60000 milliseconds.')
   if (errs.length) throw new Error(errs.join('\n'))
 
   if (!cfg.allowRemote && !isLocalUrl(cfg.baseUrl)) {
@@ -153,6 +157,7 @@ Usage: npm start -- [options]
   --api-prefix P       path prefix, e.g. /spandan behind the nginx proxy (default none)
   --password P         seeded load-test password (default ${DEFAULTS.password})
   --server-metrics M   read backend /internal/metrics (needs SERVER_METRICS=on): auto | require | off (default auto)
+  --late-ms MS         traced event delivered later than this counts as late; reported, never fails (default ${DEFAULTS.lateMs})
   --allow-remote       allow a non-localhost target (authorized test servers only, never production)
   --confirm-large      allow more than ${LIMITS.largeThreshold} students
 

@@ -112,7 +112,8 @@ export class SimTeacher {
       }
     }))
     const q = created.question
-    const entry = { index, questionId: String(q._id), type: q.type, launchedAt: performance.now(), received: 0, accepted: 0, rejected: 0 }
+    // recovered: students who missed the socket push during an outage but got the poll from the resync.
+    const entry = { index, questionId: String(q._id), type: q.type, launchedAt: performance.now(), received: 0, recovered: 0, accepted: 0, rejected: 0 }
     session.polls.set(entry.questionId, entry)
     this.socket.emit('new_question', { roomCode: session.roomCode, question: q })
     rec.count('pollsLaunched')

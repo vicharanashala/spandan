@@ -37,7 +37,7 @@ export function serverGauges(snap) {
 
 export async function startServerMetrics(cfg, rec, { intervalMs = 2000, log = console.log } = {}) {
   const url = serverMetricsUrl(cfg.baseUrl)
-  const off = { available: false, url, reason: null, stop: async () => null }
+  const off = { available: false, url, reason: null, read: async () => null, stop: async () => null }
   if (cfg.serverMetrics === 'off') return { ...off, reason: 'disabled with --server-metrics off' }
 
   try {
@@ -69,6 +69,10 @@ export async function startServerMetrics(cfg, rec, { intervalMs = 2000, log = co
     available: true,
     url,
     reason: null,
+    /** One snapshot now (e.g. the event-trace ledger before sockets close); null if the read fails. */
+    async read() {
+      try { return await call(url) } catch { failures++; return null }
+    },
     async stop() {
       clearInterval(timer)
       let final = null

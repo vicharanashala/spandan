@@ -57,6 +57,16 @@ describe('config', () => {
     assert.throws(() => parseArgs(['--students']), /needs a value/)
     assert.throws(() => parseArgs(['students']), /Unexpected argument/)
   })
+
+  test('--late-ms defaults to 2000, reads CLI and env, and is validated', () => {
+    assert.equal(resolveConfig({}, {}).lateMs, 2000)
+    assert.equal(DEFAULTS.lateMs, 2000)
+    assert.equal(resolveConfig(parseArgs(['--late-ms', '750']), {}).lateMs, 750)
+    assert.equal(resolveConfig({}, { LOADTEST_LATE_MS: '1500' }).lateMs, 1500)
+    for (const v of ['0', '-5', '60001', 'soon']) {
+      assert.throws(() => resolveConfig(parseArgs(['--late-ms', v]), {}), /late-ms/, v)
+    }
+  })
 })
 
 describe('metrics', () => {

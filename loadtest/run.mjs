@@ -15,11 +15,14 @@ import { startServerMetrics } from './lib/serverMetrics.mjs'
 import { Session, SimTeacher } from './lib/session.mjs'
 import { SimStudent } from './lib/student.mjs'
 import { verdict, pollSummary, saveResult, printSummary } from './lib/report.mjs'
+import { mergeSummaries } from './lib/delivery.mjs'
 
 const RESULTS_DIR = new URL('./results/', import.meta.url)
 const TEACHER_EMAIL = 'lt.teacher@loadtest.spandan.test'
 const studentEmail = (n) => `lt.student${String(n).padStart(4, '0')}@loadtest.spandan.test`
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+const LEDGER_GRACE_MS = 1000 // after reading the ledger, let broadcasts already in flight land
+const MAX_OUTAGE_RECORDS = 200
 
 async function preflight(cfg, api) {
   try {
@@ -100,6 +103,14 @@ async function main() {
   await teacher.endRoom()
   await sleep(2000) // let 'room:ended' reach the students
 
+  // Delivery tracking is closed out BEFORE any socket closes, so a normal shutdown is never counted
+  // as an outage: read the server's event-trace ledger (the last seq per stream), give broadcasts
+  // already in flight a moment to land, then take each joined student's summary.
+  const ledgerSnap = await serverMetrics.read()
+  const ledger = ledgerSnap?.eventTrace?.streams ?? null
+  await sleep(LEDGER_GRACE_MS)
+  const finished = students.filter(s => s.joined).map(s => s.finishDelivery(ledger))
+
   for (const s of students) await s.stop()
   teacher.stop()
   process.off('SIGINT', onSigint)
@@ -158,6 +169,19 @@ async function main() {
     errorSamples: snap.errorSamples,
     timeline: snap.timeline
   }
+  // Raw delivery tracking (backend SERVER_EVENT_TRACE=on). Not judged or printed yet.
+  const traced = finished.some(f => f.traced)
+  result.delivery = traced
+    ? { traced: true, lateMs: cfg.lateMs, ledger: ledger ? 'server' : 'unavailable', ...mergeSummaries(finished.map(f => f.delivery)) }
+    : {
+        traced: false,
+        reason: !serverMetrics.available
+          ? `server metrics not available (${serverMetrics.reason})`
+          : 'backend event tracing is off (start it with SERVER_METRICS=on SERVER_EVENT_TRACE=on)'
+      }
+  const outages = finished.flatMap(f => f.outages)
+  result.outages = { total: outages.length, records: outages.slice(0, MAX_OUTAGE_RECORDS) }
+
   result.verdict = verdict({
     operations: snap.operations, events: ev, polls: result.polls,
     roomEndedReceived: aborted ? null : session.roomEndedReceipts

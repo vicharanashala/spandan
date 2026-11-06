@@ -45,6 +45,7 @@ describe('server metrics client', () => {
     assert.equal(sm.available, true)
     assert.equal(resets, 1)
     await new Promise(r => setTimeout(r, 120))
+    assert.deepEqual(await sm.read(), SNAP) // one-off read, e.g. the event-trace ledger
     const out = await sm.stop()
     assert.ok(out.samples >= 1)
     assert.deepEqual(out.final, SNAP)
@@ -57,6 +58,7 @@ describe('server metrics client', () => {
     assert.equal(sm.available, false)
     assert.match(sm.reason, /SERVER_METRICS=on/)
     assert.equal(await sm.stop(), null)
+    assert.equal(await sm.read(), null)
     mode = 'proxy'
     sm = await startServerMetrics(cfgFor('auto'), new Recorder(), { log: quiet })
     assert.match(sm.reason, /local-only/)
