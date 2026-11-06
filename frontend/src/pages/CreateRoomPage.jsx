@@ -10,6 +10,7 @@ import { SectionHeader, cardStyle } from '../components/InsightUI'
 import { Check, CircleDot, Clapperboard, FileText, Lightbulb, Mic, Plus } from 'lucide-react'
 import { Ico, renderIcon } from '../components/icons'
 import { classApi } from '../lib/api'
+import WaitingRoomSetup from '../components/WaitingRoomSetup'
 
 const label = { display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }
 
@@ -23,6 +24,8 @@ function CreateRoomPage() {
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  // Waiting room defaults: enabled, automatic bulk admission, 2-minute on-time grace window.
+  const [waitingRoom, setWaitingRoom] = useState({ enabled: true, mode: 'automatic', graceSeconds: 120, scheduledAt: null, reconnectAllowanceSeconds: 60 })
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
   const [hasLiveClassSession, setHasLiveClassSession] = useState(false)
@@ -78,11 +81,16 @@ function CreateRoomPage() {
       return
     }
 
+    if (waitingRoom.scheduledAt && new Date(waitingRoom.scheduledAt).getTime() <= Date.now()) {
+      setError('The scheduled class time is already in the past. Pick a future date and time.')
+      return
+    }
+
     setIsCreating(true)
     setError('')
 
     try {
-      const settings = { mode }
+      const settings = { mode, waitingRoom }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
       const room = await createRoom(roomName.trim(), settings)
       navigate(`/teacher/room/${room._id}`)
@@ -213,6 +221,10 @@ function CreateRoomPage() {
                   )}
                 </div>
               )}
+
+              <div style={{ marginBottom: '22px' }}>
+                <WaitingRoomSetup value={waitingRoom} onChange={setWaitingRoom} disabled={isCreating} />
+              </div>
 
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', flexDirection: isMobile ? 'column-reverse' : 'row', paddingTop: 18, borderTop: '1px solid var(--border-color)' }}>
                 <button

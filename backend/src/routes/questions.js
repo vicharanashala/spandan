@@ -174,7 +174,11 @@ router.get('/', async (req, res) => {
     // Check access: teacher owns room OR student is member
     const room = await Room.findById(roomId)
     const isTeacher = room && room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
+    const isStudentMember = await RoomMember.findOne({
+      roomId,
+      studentId: currentUser._id,
+      status: { $nin: ['waiting', 'rejected'] }
+    })
 
     if (!isTeacher && !isStudentMember) {
       return res.status(403).json({ error: 'Not authorized to access questions for this room' })

@@ -153,7 +153,7 @@ export const useRoomStore = create((set, get) => ({
       set({ currentRoom: data.room, isLoading: false })
       // Attach the seeded live participant count (see GET /rooms/:id) so the room page can show it
       // immediately on load; the room:joined/room:left socket events keep it updated afterwards.
-      return { ...data.room, participants: data.participants }
+      return { ...data.room, participants: data.participants, waitingRoom: data.waitingRoom }
     } catch (error) {
       set({ error: error.message, isLoading: false })
       throw error
@@ -180,7 +180,11 @@ export const useRoomStore = create((set, get) => ({
       }
 
       set({ currentRoom: data.room, isLoading: false })
-      return { ...data.room, activeQuestion: data.activeQuestion }
+      return {
+        ...data.room,
+        activeQuestion: data.activeQuestion,
+        waitingRoom: data.waitingRoom
+      }
     } catch (error) {
       set({ error: error.message, isLoading: false })
       throw error

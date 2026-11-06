@@ -70,7 +70,7 @@ export async function buildSnapshot(roomId) {
     computeRanked(roomId),
     Question.find({ roomId: roomObjId }).lean(),
     Response.find({ roomId: roomObjId }).lean(),
-    RoomMember.countDocuments({ roomId: roomObjId })
+    RoomMember.countDocuments({ roomId: roomObjId, status: { $nin: ['waiting', 'rejected'] } })
   ])
 
   // Group the single response scan two ways: per (student -> question) for the per-student

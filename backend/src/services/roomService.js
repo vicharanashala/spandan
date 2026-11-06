@@ -6,6 +6,48 @@ import Transcript from '../models/Transcript.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
 
 export const createRoom = async (name, teacherId, settings = {}, classId = null) => {
+  // New rooms default the waiting room ON (automatic mode, 2-minute grace window). Merge explicitly
+  // so a session started inside a class also gets a complete config even when the class settings
+  // predate the feature.
+  const requestedWaitingRoom = settings?.waitingRoom || {}
+  const requestedGrace = Number(requestedWaitingRoom.graceSeconds)
+  const requestedReconnect = Number(requestedWaitingRoom.reconnectAllowanceSeconds)
+  const rawScheduledAt = requestedWaitingRoom.scheduledAt
+  const parsedScheduledAt = rawScheduledAt ? new Date(rawScheduledAt) : null
+  const scheduledAt = parsedScheduledAt && !Number.isNaN(parsedScheduledAt.getTime())
+    ? parsedScheduledAt
+    : null
+  // A session cannot be scheduled for a time that has already passed: the grace clock would already
+  // be over before the room opens, marking every student late. Fail fast with a clear message.
+  if (scheduledAt && scheduledAt.getTime() <= Date.now()) {
+    const err = new Error('The scheduled class time is already in the past. Pick a future date and time.')
+    err.status = 400
+    err.code = 'SCHEDULED_TIME_IN_PAST'
+    throw err
+  }
+  const waitingRoom = {
+    enabled: requestedWaitingRoom.enabled !== false,
+    mode: requestedWaitingRoom.mode === 'manual' ? 'manual' : 'automatic',
+    graceSeconds: Number.isFinite(requestedGrace)
+      ? Math.max(0, Math.min(3600, Math.floor(requestedGrace)))
+      : 120,
+    // Stored as chosen; the attendance engine always applies a 60-second floor.
+    reconnectAllowanceSeconds: Number.isFinite(requestedReconnect)
+      ? Math.max(0, Math.min(3600, Math.floor(requestedReconnect)))
+      : 60,
+    scheduledAt
+  }
+
+  // Attention tracking is ON by default for new rooms; a teacher can switch it off in Settings.
+  const requestedAttention = settings?.attention || {}
+  const requestedAttentionGrace = Number(requestedAttention.graceSeconds)
+  const attention = {
+    enabled: requestedAttention.enabled !== false,
+    graceSeconds: Number.isFinite(requestedAttentionGrace)
+      ? Math.max(0, Math.min(300, Math.floor(requestedAttentionGrace)))
+      : 7
+  }
+
   // If teacher already has any live class session, reject creation
   const activeClassSession = await Room.findOne({
     teacher: teacherId,
@@ -25,8 +67,11 @@ export const createRoom = async (name, teacherId, settings = {}, classId = null)
   const room = new Room({
     name,
     teacher: teacherId,
-    settings,
-    classId: classId || null
+    settings: { ...settings, waitingRoom, attention },
+    classId: classId || null,
+    // A room is created at the moment the teacher starts the session, so creation time is the
+    // session start used by the waiting room's on-time grace window.
+    sessionStartedAt: new Date()
   })
 
   await room.save()

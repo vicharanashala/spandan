@@ -6,6 +6,8 @@ import useIsMobile from '../hooks/useIsMobile'
 import Sidebar from '../components/Sidebar'
 import { API_URL } from '../config.js'
 import { classApi } from '../lib/api'
+import WaitingRoomSetup from '../components/WaitingRoomSetup'
+import { ReconnectMeter, formatSpan } from '../components/ReconnectMeter'
 import { downloadText, safeFilename } from '../lib/questionsExport'
 import {
   PageHeader,
@@ -69,6 +71,7 @@ export default function TeacherClassDetailPage() {
   const [sessionName, setSessionName] = useState('')
   const [sessionMode, setSessionMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  const [waitingRoomSettings, setWaitingRoomSettings] = useState({ enabled: true, mode: 'automatic', graceSeconds: 120, scheduledAt: null, reconnectAllowanceSeconds: 60 })
   const [isStartingSession, setIsStartingSession] = useState(false)
 
   // Compact student list pagination ("Show more")
@@ -79,6 +82,8 @@ export default function TeacherClassDetailPage() {
   const [selectedStudent, setSelectedStudent] = useState(null)
   const [studentPerfLoading, setStudentPerfLoading] = useState(false)
   const [studentPerformance, setStudentPerformance] = useState(null)
+  // Which lecture row inside the performance panel is expanded (join/leave history + budget meter).
+  const [expandedSessionId, setExpandedSessionId] = useState(null)
 
   // Remove confirmation modal
   const [studentToRemove, setStudentToRemove] = useState(null)
@@ -162,6 +167,11 @@ export default function TeacherClassDetailPage() {
       return
     }
 
+    if (waitingRoomSettings.scheduledAt && new Date(waitingRoomSettings.scheduledAt).getTime() <= Date.now()) {
+      setError('The scheduled class time is already in the past. Pick a future date and time.')
+      return
+    }
+
     setIsStartingSession(true)
     setError(null)
     try {
@@ -169,6 +179,7 @@ export default function TeacherClassDetailPage() {
         name: sessionName.trim(),
         settings: {
           mode: sessionMode,
+          waitingRoom: waitingRoomSettings,
           ...(sessionMode === 'video' ? { videoUrl: videoUrl.trim() } : {})
         }
       }
@@ -176,6 +187,7 @@ export default function TeacherClassDetailPage() {
       setShowSessionModal(false)
       setSessionName('')
       setVideoUrl('')
+      setWaitingRoomSettings({ enabled: true, mode: 'automatic', graceSeconds: 120, scheduledAt: null, reconnectAllowanceSeconds: 60 })
       // Navigate directly into the newly started session
       if (res?.room?._id) {
         navigate(`/teacher/room/${res.room._id}`)
@@ -245,6 +257,7 @@ export default function TeacherClassDetailPage() {
 
   const handleViewPerformance = async (student) => {
     setSelectedStudent(student)
+    setExpandedSessionId(null)
     setStudentPerfLoading(true)
     try {
       const perf = await classApi.getMemberPerformance(classId, student.studentId || student._id)
@@ -1391,7 +1404,7 @@ export default function TeacherClassDetailPage() {
               </div>
               <button
                 type="button"
-                onClick={() => { setSelectedStudent(null); setStudentPerformance(null) }}
+                onClick={() => { setSelectedStudent(null); setStudentPerformance(null); setExpandedSessionId(null) }}
                 style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: 4 }}
               >
                 <X size={18} />
@@ -1478,89 +1491,165 @@ export default function TeacherClassDetailPage() {
 
                   {studentPerformance?.sessions && studentPerformance.sessions.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {studentPerformance.sessions.map((sess) => {
+                      {studentPerformance.sessions.map((sess, index) => {
+                        const lectureNo = studentPerformance.sessions.length - index
+                        const sessionKey = String(sess.roomId)
+                        const expanded = expandedSessionId === sessionKey
+                        const rc = sess.reconnect
                         const isPreJoin = sess.status === 'before_join' || sess.isBeforeJoin
                         const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval
                         return (
                           <div
                             key={sess.roomId}
                             style={{
-                              padding: '12px 14px',
                               borderRadius: 12,
                               background: sess.attended
                                 ? 'var(--bg-card)'
                                 : 'color-mix(in srgb, var(--text-secondary) 4%, var(--bg-card))',
-                              border: '1px solid var(--border-color)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: 12
+                              border: `1px solid ${expanded ? 'color-mix(in srgb, var(--accent) 45%, var(--border-color))' : 'var(--border-color)'}`,
+                              overflow: 'hidden'
                             }}
                           >
-                            <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <span style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>
-                                  {sess.roomName}
-                                </span>
-                                {isPreJoin ? (
-                                  <Pill tone="var(--text-secondary)">Before joined</Pill>
-                                ) : isRemoved ? (
-                                  <Pill tone="#f59e0b">Removed</Pill>
-                                ) : sess.attended ? (
-                                  <Pill tone="#10b981">Attended</Pill>
-                                ) : (
-                                  <Pill tone="var(--text-secondary)">Missed</Pill>
-                                )}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedSessionId(expanded ? null : sessionKey)}
+                              aria-expanded={expanded}
+                              title={expanded ? 'Hide lecture statistics' : 'Show time-away history and absence budget'}
+                              style={{
+                                width: '100%',
+                                padding: '12px 14px',
+                                border: 'none',
+                                background: 'transparent',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 12,
+                                cursor: 'pointer',
+                                textAlign: 'left',
+                                fontFamily: 'inherit',
+                                color: 'inherit'
+                              }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={{
+                                    fontSize: 10.5,
+                                    fontWeight: 750,
+                                    letterSpacing: '0.04em',
+                                    textTransform: 'uppercase',
+                                    color: 'var(--accent)',
+                                    background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                                    padding: '2px 7px',
+                                    borderRadius: 999
+                                  }}>
+                                    Lecture {lectureNo}
+                                  </span>
+                                  <span style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>
+                                    {sess.roomName}
+                                  </span>
+                                  {isPreJoin ? (
+                                    <Pill tone="var(--text-secondary)">Before joined</Pill>
+                                  ) : isRemoved ? (
+                                    <Pill tone="#f59e0b">Removed</Pill>
+                                  ) : sess.attended ? (
+                                    <Pill tone="#10b981">Attended</Pill>
+                                  ) : (
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                  )}
+                                  {sess.isActive && !sess.endedAt && <Pill tone="#10b981" dot>Live</Pill>}
+                                  {rc?.excused && <Pill tone="#0ea5e9">Excused</Pill>}
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+                                  {new Date(sess.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                                  {rc?.rejoins > 0 && <span> · {rc.rejoins} rejoin{rc.rejoins === 1 ? '' : 's'}</span>}
+                                  {rc && <span> · {formatSpan(rc.usedSeconds)} of {formatSpan(rc.allowanceSeconds)} absence budget used</span>}
+                                </div>
                               </div>
-                              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
-                                {new Date(sess.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                              </div>
-                            </div>
 
-                            <div style={{ textAlign: 'right' }}>
-                              {isPreJoin ? (
-                                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                  Not enrolled yet
-                                </span>
-                              ) : isRemoved ? (
-                                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                  Not in class
-                                </span>
-                              ) : sess.attended ? (
-                                sess.totalQuestions === 0 ? (
-                                  <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                    No polls in this session
-                                  </span>
-                                ) : (
-                                  <div>
-                                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
-                                      {sess.pollsAttempted} / {sess.totalQuestions} answered
-                                    </div>
-                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                      {sess.pollsAttempted > 0 ? (
-                                        <span>{sess.correctCount} / {sess.pollsAttempted} correct ({sess.accuracy}%)</span>
-                                      ) : (
-                                        <span>0 answered</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                                <div style={{ textAlign: 'right' }}>
+                                  {isPreJoin ? (
+                                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                      Not enrolled yet
+                                    </span>
+                                  ) : isRemoved ? (
+                                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                      Not in class
+                                    </span>
+                                  ) : sess.attended ? (
+                                    sess.totalQuestions === 0 ? (
+                                      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                        No polls in this session
+                                      </span>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                                          {sess.pollsAttempted} / {sess.totalQuestions} answered
+                                        </div>
+                                        <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                          {sess.pollsAttempted > 0 ? (
+                                            <span>{sess.correctCount} / {sess.pollsAttempted} correct ({sess.accuracy}%)</span>
+                                          ) : (
+                                            <span>0 answered</span>
+                                          )}
+                                          {sess.pollsMissed > 0 && (
+                                            <span style={{ color: '#f59e0b' }}> · {sess.pollsMissed} missed</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )
+                                  ) : (
+                                    <div>
+                                      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                        Did not attend
+                                      </span>
+                                      {sess.totalQuestions > 0 && (
+                                        <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                          {sess.totalQuestions} {sess.totalQuestions === 1 ? 'poll' : 'polls'} held
+                                        </div>
                                       )}
-                                      {sess.pollsMissed > 0 && (
-                                        <span style={{ color: '#f59e0b' }}> · {sess.pollsMissed} missed</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                )
-                              ) : (
-                                <div>
-                                  <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                    Did not attend
-                                  </span>
-                                  {sess.totalQuestions > 0 && (
-                                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                      {sess.totalQuestions} {sess.totalQuestions === 1 ? 'poll' : 'polls'} held
                                     </div>
                                   )}
                                 </div>
-                              )}
-                            </div>
+                                {expanded ? <ChevronUp size={16} color="var(--text-secondary)" /> : <ChevronDown size={16} color="var(--text-secondary)" />}
+                              </div>
+                            </button>
+
+                            {expanded && (
+                              <div style={{
+                                padding: '12px 14px 14px',
+                                borderTop: '1px solid var(--border-color)',
+                                background: 'color-mix(in srgb, var(--accent) 3%, transparent)'
+                              }}>
+                                {rc ? (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                    <ReconnectMeter
+                                      allowanceSeconds={rc.allowanceSeconds}
+                                      usedSeconds={rc.usedSeconds}
+                                      remainingSeconds={rc.remainingSeconds}
+                                      rejoins={rc.rejoins}
+                                      gaps={rc.gaps}
+                                      events={rc.events}
+                                      showEvents
+                                      showGaps
+                                      live={sess.isActive && !sess.endedAt}
+                                    />
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
+                                      <span><strong style={{ color: 'var(--text-primary)' }}>{formatSpan(rc.presentSeconds)}</strong> present</span>
+                                      <span><strong style={{ color: 'var(--text-primary)' }}>{formatSpan(rc.missedSeconds)}</strong> missed</span>
+                                      {rc.penaltyPercent !== null && rc.penaltyPercent !== undefined && (
+                                        <span>deduction <strong style={{ color: rc.penaltyPercent > 0 ? '#b45309' : 'var(--text-primary)' }}>{rc.penaltyPercent}%</strong></span>
+                                      )}
+                                      {rc.finalized ? <span style={{ color: '#047857' }}>attendance finalized</span> : <span style={{ color: '#0ea5e9' }}>in progress</span>}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                                    No presence or time-away data was recorded for this lecture.
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )
                       })}
@@ -1594,6 +1683,12 @@ export default function TeacherClassDetailPage() {
           <div style={{
             width: '100%',
             maxWidth: 480,
+            // Cap the dialog to the viewport and let its body scroll. Without this the card grows
+            // past the screen once the waiting-room section expands and the bottom controls become
+            // unreachable on short/mobile viewports.
+            maxHeight: 'calc(100vh - 32px)',
+            display: 'flex',
+            flexDirection: 'column',
             background: 'var(--bg-card)', // Solid opaque background
             borderRadius: 20,
             border: '1px solid var(--border-color)',
@@ -1606,7 +1701,8 @@ export default function TeacherClassDetailPage() {
               borderBottom: '1px solid var(--border-color)',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between'
+              justifyContent: 'space-between',
+              flexShrink: 0
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span style={{
@@ -1639,7 +1735,22 @@ export default function TeacherClassDetailPage() {
               </button>
             </div>
 
-            <form onSubmit={handleStartSession} style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <form
+              onSubmit={handleStartSession}
+              style={{
+                padding: 24,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 16,
+                // The dialog body is the scroll container: header stays put, everything below it
+                // scrolls when the waiting-room options expand beyond the viewport.
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                overscrollBehavior: 'contain',
+                boxSizing: 'border-box'
+              }}
+            >
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 650, color: 'var(--text-primary)', marginBottom: 6 }}>
                   Session Name <span style={{ color: '#ef4444' }}>*</span>
@@ -1692,6 +1803,14 @@ export default function TeacherClassDetailPage() {
                   />
                 </div>
               )}
+
+              <div>
+                <WaitingRoomSetup
+                  value={waitingRoomSettings}
+                  onChange={setWaitingRoomSettings}
+                  disabled={isStartingSession}
+                />
+              </div>
 
               {hasAnyLiveClassSession && (
                 <div style={{

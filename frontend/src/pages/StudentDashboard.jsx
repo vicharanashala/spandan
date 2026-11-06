@@ -138,7 +138,7 @@ function StudentDashboard() {
   }
 
   const totalPolls = stats.pollsTaken + stats.pollsMissed
-  const firstName = (user?.name || 'Student').split(' ')[0]
+  const displayName = user?.name || 'Student'
   const joinDisabled = isJoining || roomCode.trim().length !== 6
 
   return (
@@ -172,7 +172,7 @@ function StudentDashboard() {
               {dateLabel(now)} · <LiveClock />
             </>
           }
-          title={`${greeting(now)}, ${firstName}!`}
+          title={`${greeting(now)}, ${displayName}!`}
           subtitle="Join rooms and participate in polls"
         />
 

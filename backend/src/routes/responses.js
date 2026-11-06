@@ -10,6 +10,7 @@ import { computeInsights } from '../services/insightsService.js'
 import { getInsightsBody, roomVersion } from '../services/insightsCache.js'
 import { debug } from '../utils/debug.js'
 import { computeRanked } from '../services/leaderboardAgg.js'
+import { isMembershipPresent } from '../services/attendanceService.js'
 
 const router = express.Router()
 
@@ -30,7 +31,12 @@ async function isRoomMember(RoomMember, roomId, studentId) {
 
   if (exp && exp > Date.now()) return true
 
-  const found = await RoomMember.findOne({ roomId, studentId })
+  const found = await RoomMember.findOne({
+    roomId,
+    studentId,
+    // Waiting / rejected students are not members yet: they must not be able to submit answers.
+    status: { $nin: ['waiting', 'rejected'] }
+  })
     .select('_id')
     .lean()
 
@@ -130,6 +136,32 @@ router.post('/', authorize('student'), async (req, res) => {
     ) {
       return res.status(400).json({
         error: 'Missing required fields: roomId, questionId, and selectedOptions (array)'
+      })
+    }
+
+    // Fresh presence gate. `isRoomMember` above is cached for 60s, so it cannot tell whether the
+    // student is in the room RIGHT NOW. Attention tracking closes the open presence interval when
+    // the Spandan window has been hidden/unfocused (or the tab disconnected), so answering while
+    // away must be refused instead of silently recorded. A membership with no presence history at
+    // all (written before tracking existed) is treated as present for backward compatibility.
+    const liveMember = await RoomMember.findOne({
+      roomId,
+      studentId,
+      status: { $nin: ['waiting', 'rejected'] }
+    })
+      .select('leftAt presence')
+      .lean()
+
+    if (!liveMember) {
+      return res.status(403).json({ error: 'You have not joined this room' })
+    }
+
+    const hasOpenPresence = isMembershipPresent(liveMember)
+    if (!hasOpenPresence) {
+      return res.status(409).json({
+        code: 'AWAY',
+        error: 'attendance_required',
+        message: 'You are marked away. Return to the Spandan window to answer.'
       })
     }
 
@@ -308,7 +340,8 @@ router.get('/', async (req, res) => {
 
     const isStudentMember = await RoomMember.findOne({
       roomId,
-      studentId: currentUser._id
+      studentId: currentUser._id,
+      status: { $nin: ['waiting', 'rejected'] }
     })
 
     if (
@@ -1048,7 +1081,7 @@ router.get('/stats/room/:roomId', async (req, res) => {
     const [totalResponses, uniqueStudents, totalJoined, questions, grouped] = await Promise.all([
       Response.countDocuments({ roomId }),
       Response.distinct('studentId', { roomId }),
-      RoomMember.countDocuments({ roomId }),
+      RoomMember.countDocuments({ roomId, status: { $nin: ['waiting', 'rejected'] } }),
       Question.find({ roomId }).lean(),
       Response.aggregate([
         { $match: { roomId: roomObjId } },
@@ -1157,7 +1190,8 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     if (!isTeacher && isSelf) {
       const isMember = await RoomMember.findOne({
         roomId,
-        studentId: currentUser._id
+        studentId: currentUser._id,
+        status: { $nin: ['waiting', 'rejected'] }
       })
 
       if (!isMember) {
@@ -1380,7 +1414,11 @@ router.get('/insights/:roomId', async (req, res) => {
     const isTeacher = req.user.role === 'teacher' && checkRoomOwnership(room, req.user._id).ok
     if (!isTeacher) {
       if (req.user.role !== 'student') return res.status(403).json({ error: 'Not authorized to view this room' })
-      const member = await RoomMember.findOne({ roomId, studentId: req.user._id }).lean()
+      const member = await RoomMember.findOne({
+        roomId,
+        studentId: req.user._id,
+        status: { $nin: ['waiting', 'rejected'] }
+      }).lean()
       if (!member) return res.status(403).json({ error: 'Not authorized to view this room' })
       if (!room.endedAt) return res.status(403).json({ error: 'Results are available once the room has ended' })
     }
@@ -1395,7 +1433,9 @@ router.get('/insights/:roomId', async (req, res) => {
     const [questions, responses, members, transcripts] = await Promise.all([
       Question.find({ roomId }).lean(),
       Response.find({ roomId }).select('questionId studentId selectedOption selectedOptions isCorrect responseTime points createdAt').lean(),
-      RoomMember.find({ roomId }).select('studentId joinedAt').lean(),
+      RoomMember.find({ roomId, status: { $nin: ['waiting', 'rejected'] } })
+        .select('studentId joinedAt onTime presence leftAt attendanceExcused attendanceFinalizedAt sessionSeconds presentSeconds forgivenSeconds missedSeconds penaltyPercent rawPoints adjustedPoints')
+        .lean(),
       Transcript.find({ roomId }).select('segmentIndex wordCount duration').lean()
     ])
     let usersById = new Map()
@@ -1429,7 +1469,8 @@ router.get('/leaderboard/:roomId', async (req, res) => {
 
     const isStudentMember = await RoomMember.findOne({
       roomId,
-      studentId: currentUser._id
+      studentId: currentUser._id,
+      status: { $nin: ['waiting', 'rejected'] }
     })
 
     if (!isTeacher && !isStudentMember) {

@@ -69,7 +69,9 @@ export async function loadInsightsDocs(roomId) {
     Room.findById(roomId).lean(),
     Question.find({ roomId }).lean(),
     Response.find({ roomId }).select('questionId studentId selectedOption selectedOptions isCorrect responseTime points createdAt').lean(),
-    RoomMember.find({ roomId }).select('studentId joinedAt').lean(),
+    RoomMember.find({ roomId, status: { $nin: ['waiting', 'rejected'] } })
+      .select('studentId joinedAt onTime presence leftAt attendanceExcused attendanceFinalizedAt sessionSeconds presentSeconds forgivenSeconds missedSeconds penaltyPercent rawPoints adjustedPoints')
+      .lean(),
     Transcript.find({ roomId }).select('segmentIndex wordCount duration').lean()
   ])
   const ids = [...new Set([...responses.map((r) => String(r.studentId)), ...members.map((m) => String(m.studentId))])]
@@ -80,7 +82,7 @@ export async function loadInsightsDocs(roomId) {
 // A cached build is valid only for the same room version AND the same payload format. Room edits bump
 // updatedAt (timestamps: true); PAYLOAD_VERSION is bumped whenever computeInsights' output changes, so
 // a deploy never serves a bundle built by older code (Redis keeps it up to TTL_MS otherwise).
-const PAYLOAD_VERSION = 2 // 2: segments numbered as stored (1-based), 0/-1 grouped as manual / pasted
+const PAYLOAD_VERSION = 3 // 3: attendance + points deduction; 2: segments numbered as stored (1-based), 0/-1 grouped as manual / pasted
 export const roomVersion = (room) => `p${PAYLOAD_VERSION}:${room?.updatedAt ? new Date(room.updatedAt).getTime() : ''}`
 
 // Every view of the room, serialised once.

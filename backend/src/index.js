@@ -13,6 +13,19 @@ import { FailoverStore } from './middleware/rateLimitStore.js'
 // client queues commands, which would hang an answer submit until Redis returns.
 import { initRedis, isRedisReady } from './config/redis.js'
 import { canJoinRoom } from './services/roomJoinAuthz.js'
+import {
+  ensureMembership,
+  getWaitingRoomConfig,
+  emitWaitingRoomUpdate,
+  emitPresenceEvent
+} from './services/waitingRoomService.js'
+import { startPresence, endPresence, countPresent, getAttentionConfig } from './services/attendanceService.js'
+import {
+  ATTENTION_STALE_MS,
+  aggregateAttention,
+  attentionForSocket,
+  untrackedSocketExpiry
+} from './services/attentionAggregation.js'
 import { computeRanked } from './services/leaderboardAgg.js'
 import { computeRankedIncremental, invalidateLeaderboardCache } from './services/leaderboardCache.js'
 import { buildStudentBoard } from './services/anonymizeLeaderboard.js'
@@ -534,6 +547,267 @@ function sanitizeQuestionForStudents(q) {
   return rest
 }
 
+// ── Attention tracking ─────────────────────────────────────────────────────────────────────────
+// The student's browser reports whether the Spandan window is visible AND focused. Per-socket state
+// lives in memory (socket.data.attention), so a 10-second heartbeat never writes to Mongo. Presence
+// is only opened/closed on a real transition, aggregated across every tab of the same user: while
+// any tab is active the student is present; only when no tab is active is their interval closed.
+//
+// Legacy clients send no attention events at all. They are trusted for a short untracked grace
+// after joining (see services/attentionAggregation.js), after which they can no longer hold a
+// student present; a modern client re-establishes tracking with its first update/heartbeat.
+const ATTENTION_SWEEP_MS = Number(process.env.ATTENTION_SWEEP_MS) || 10000
+const ATTENTION_MAX_BACKDATE_MS = 24 * 60 * 60 * 1000
+const ATTENTION_REASONS = new Set(['tab-hidden', 'window-blur', 'frozen', 'attention', 'untracked'])
+const attentionLocks = new Map()
+let attentionSweeping = false
+
+const normalizeAttentionReason = (reason) =>
+  (typeof reason === 'string' && ATTENTION_REASONS.has(reason)) ? reason : 'attention'
+
+// Client-supplied "since" is only trusted within the last day and never in the future.
+const clampAttentionSince = (raw, fallbackMs = Date.now()) => {
+  const ms = Number(raw)
+  const now = Date.now()
+  const base = Number.isFinite(ms) ? ms : fallbackMs
+  return new Date(Math.max(now - ATTENTION_MAX_BACKDATE_MS, Math.min(now, base)))
+}
+
+// When a socket entered a room. Untracked sockets are only trusted for their join grace window.
+const markSocketRoomJoined = (socket, roomCode, at = Date.now()) => {
+  if (!socket.data) socket.data = {}
+  if (!socket.data.joinedRoomAt) socket.data.joinedRoomAt = new Map()
+  socket.data.joinedRoomAt.set(roomCode, at)
+}
+
+const setSocketAttention = (socket, roomCode, entry) => {
+  if (!socket.data) socket.data = {}
+  if (!socket.data.attention) socket.data.attention = Object.create(null)
+  if (entry) socket.data.attention[roomCode] = entry
+  else delete socket.data.attention[roomCode]
+}
+
+// Serialize transition handling per user+room so two tabs flipping at the same instant cannot open
+// (or close) two presence intervals. Heartbeats never take this lock.
+const withAttentionLock = (key, fn) => {
+  const previous = attentionLocks.get(key) || Promise.resolve()
+  const run = previous.catch(() => {}).then(fn)
+  attentionLocks.set(key, run)
+  const cleanup = () => { if (attentionLocks.get(key) === run) attentionLocks.delete(key) }
+  run.then(cleanup, cleanup)
+  return run
+}
+
+// Recompute the aggregate (all tabs) attention state for one user in one room and open/close the
+// presence interval exactly once on a transition. Returns { present } or null when nothing changed.
+const reconcileAttention = async ({ userId, roomCode, room, reason = null, at = new Date() }) => {
+  if (!room || room.endedAt) return null
+  const config = getAttentionConfig(room)
+  if (!config.enabled) return null
+
+  const siblings = await io.in(`user:${userId}`).fetchSockets()
+  const nowMs = new Date(at).getTime()
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now()
+  const { inRoom, tracked, anyActive } = aggregateAttention(siblings, roomCode, { now })
+  if (inRoom.length === 0) return null
+
+  const RoomMember = (await import('./models/RoomMember.js')).default
+  const member = await RoomMember.findOne({ roomId: room._id, studentId: userId })
+    .select('leftAt presence')
+    .lean()
+  if (!member) return null
+
+  const presence = Array.isArray(member.presence) ? member.presence : []
+  const open = presence.some((p) => !p.end)
+  const wasPresent = member.leftAt == null && (open || presence.length === 0)
+
+  if (anyActive) {
+    if (wasPresent) return { present: true }
+    await startPresence(room, userId, new Date())
+    await emitPresenceEvent(io, room, userId, 'returned', new Date(), { reason: null })
+    return { present: true }
+  }
+
+  let awayAt
+  let awayReason
+  if (tracked.length > 0) {
+    // Every tracked tab is away (or stale). The gap starts when the LAST active tab left: the most
+    // recent away `since`. A tracked socket that stopped heartbeating is treated as frozen at its
+    // last ping, so a frozen tab cannot backdate the gap artificially far.
+    const latest = tracked
+      .map((s) => {
+        const a = attentionForSocket(s, roomCode)
+        if (!a) return null
+        if (a.state === 'away') return a
+        const lastPing = Number(a.lastPingAt) || 0
+        return {
+          ...a,
+          state: 'away',
+          reason: 'frozen',
+          since: new Date(lastPing || now)
+        }
+      })
+      .filter((a) => a && a.state === 'away')
+      .map((a) => ({ ...a, sinceMs: new Date(a.since).getTime() }))
+      .filter((a) => Number.isFinite(a.sinceMs))
+      .sort((a, b) => b.sinceMs - a.sinceMs)[0]
+    awayAt = clampAttentionSince(latest?.sinceMs, now)
+    awayReason = latest?.reason || reason || 'attention'
+  } else {
+    // No socket ever reported attention. They stop counting when the newest untracked grace window
+    // expired, so the bill starts at the real departure rather than when the sweeper noticed.
+    const expiries = inRoom
+      .map((s) => untrackedSocketExpiry(s, roomCode))
+      .filter((ms) => Number.isFinite(ms) && ms > 0)
+    awayAt = clampAttentionSince(expiries.length ? Math.max(...expiries) : now, now)
+    awayReason = 'untracked'
+  }
+
+  if (!wasPresent) return { present: false }
+  const closed = await endPresence(room, userId, awayAt, awayReason)
+  if (closed?.closed) {
+    await emitPresenceEvent(io, room, userId, 'away', awayAt, { reason: awayReason })
+  }
+  return { present: false }
+}
+
+// Apply one client attention report (after the socket is inside the room channel). Extracted so the
+// `room:join` path can replay a report that arrived before the join finished.
+const applyAttentionUpdate = async (socket, roomCode, data) => {
+  const userId = socket.data?.userId
+  const role = socket.data?.role
+  if (role !== 'student' || !userId) return
+
+  const state = data?.state === 'away' ? 'away' : 'active'
+  const now = new Date()
+  const reason = state === 'away' ? normalizeAttentionReason(data?.reason) : null
+  const since = state === 'away' ? clampAttentionSince(data?.since, now.getTime()) : null
+  setSocketAttention(socket, roomCode, {
+    state,
+    reason,
+    since,
+    lastPingAt: Date.now()
+  })
+
+  let room = null
+  try {
+    const Room = (await import('./models/Room.js')).default
+    room = await Room.findByCode(roomCode)
+  } catch { /* non-fatal */ }
+
+  if (!room || room.endedAt) {
+    socket.emit('attention:ack', { roomCode, state: 'away', disabled: true, at: Date.now() })
+    return
+  }
+
+  // A room with attention tracking switched off never lets this feature close presence. If it was
+  // switched off mid-session while the student was away, an active report reopens their interval.
+  if (!getAttentionConfig(room).enabled) {
+    if (state === 'active') {
+      try {
+        await withAttentionLock(`${userId}:${roomCode}`, async () => {
+          const RoomMember = (await import('./models/RoomMember.js')).default
+          const member = await RoomMember.findOne({ roomId: room._id, studentId: userId })
+            .select('leftAt presence')
+            .lean()
+          if (!member) return
+          const presence = Array.isArray(member.presence) ? member.presence : []
+          const open = presence.some((p) => !p.end)
+          if (member.leftAt != null || !open) {
+            await startPresence(room, userId, new Date())
+            await emitPresenceEvent(io, room, userId, 'returned', new Date(), { reason: null })
+          }
+        })
+      } catch (err) {
+        console.error('attention re-enable failed:', err.message)
+      }
+    }
+    socket.emit('attention:ack', { roomCode, state: 'active', disabled: true, at: Date.now() })
+    return
+  }
+
+  try {
+    await withAttentionLock(`${userId}:${roomCode}`, () => reconcileAttention({
+      userId,
+      roomCode,
+      room,
+      reason,
+      at: now
+    }))
+  } catch (err) {
+    console.error('attention:update failed:', err.message)
+  }
+
+  // The client blocks Submit until it sees this ack, so returning from away cannot race the
+  // presence reopen (which would otherwise produce a 409 AWAY on the first answer).
+  socket.emit('attention:ack', { roomCode, state, disabled: false, at: Date.now() })
+}
+
+// A tracked "active" socket that stops heartbeating (crashed / discarded tab) is marked away, so a
+// frozen tab cannot hold the student present forever. A socket that never reported attention is
+// expired once its untracked grace window runs out.
+const startAttentionSweeper = () => {
+  const timer = setInterval(async () => {
+    if (attentionSweeping) return
+    attentionSweeping = true
+    try {
+      const now = Date.now()
+      const stale = []
+      for (const socket of io.sockets.sockets.values()) {
+        if (socket.data?.role !== 'student') continue
+        const roomCodes = new Set([
+          ...Object.keys(socket.data?.attention || {}),
+          ...(socket.data?.joinedRoomAt ? socket.data.joinedRoomAt.keys() : [])
+        ])
+        for (const roomCode of roomCodes) {
+          if (!socket.rooms?.has?.(roomCode)) continue
+          const att = attentionForSocket(socket, roomCode)
+          const userId = String(socket.data.userId)
+          if (!att) {
+            const expiry = untrackedSocketExpiry(socket, roomCode)
+            if (!expiry || now <= expiry) continue
+            stale.push({ socket, roomCode, userId, reason: 'untracked', sinceMs: expiry })
+            continue
+          }
+          if (att.state !== 'active') continue
+          const lastPing = Number(att.lastPingAt) || 0
+          if (now - lastPing <= ATTENTION_STALE_MS) continue
+          stale.push({ socket, roomCode, userId, reason: 'frozen', sinceMs: lastPing || now })
+        }
+      }
+      if (stale.length === 0) return
+      const Room = (await import('./models/Room.js')).default
+      for (const item of stale) {
+        // Mark this socket away before reconciling so the aggregate sees the new state.
+        const since = clampAttentionSince(item.sinceMs, now)
+        setSocketAttention(item.socket, item.roomCode, {
+          state: 'away',
+          reason: item.reason,
+          since,
+          lastPingAt: since.getTime()
+        })
+        try {
+          const room = await Room.findByCode(item.roomCode)
+          if (!room || room.endedAt || !getAttentionConfig(room).enabled) continue
+          await withAttentionLock(`${item.userId}:${item.roomCode}`, () => reconcileAttention({
+            userId: item.userId,
+            roomCode: item.roomCode,
+            room,
+            reason: item.reason,
+            at: since
+          }))
+        } catch { /* non-fatal */ }
+      }
+    } catch (err) {
+      console.error('attention sweeper failed:', err.message)
+    } finally {
+      attentionSweeping = false
+    }
+  }, ATTENTION_SWEEP_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  return timer
+}
+
 // Authenticate at connection time from the handshake token (client already sends auth:{token}),
 // so socket.data is populated BEFORE any event fires (no race). Unauthenticated sockets may still
 // connect, but privileged handlers reject them.
@@ -587,7 +861,6 @@ io.on('connection', (socket) => {
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
 
       // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
       // caller is allowed in (teacher must own it; student may join an active room by code).
@@ -608,24 +881,104 @@ io.on('connection', (socket) => {
         return
       }
 
-      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
-      if (role === 'student') {
-        await RoomMember.findOneAndUpdate(
-          { roomId: room._id, studentId: userId },
-          { roomId: room._id, studentId: userId, joinedAt: new Date() },
-          { upsert: true, new: true }
-        )
+      // Teachers own the waiting-room console: join a host-only channel so waiting-room updates
+      // reach the teacher even before any participant is admitted.
+      if (role === 'teacher') {
+        socket.join(`host:room:${room._id}`)
       }
 
-      // Authorized → now join the socket room and announce. The room-wide event carries only the
-      // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
+      // Students are enrolled on join (join-by-code model); teachers are not added to RoomMember.
+      let presenceEvent = null
+      let pendingAttention = null
+      if (role === 'student') {
+        const member = await ensureMembership({ room, studentId: userId })
+        const config = getWaitingRoomConfig(room)
+
+        // Remember every room this socket belongs to so a disconnect can close the student's
+        // attendance interval (a reload / tab close never emits room:leave).
+        if (!socket.data.joinedRooms) socket.data.joinedRooms = new Map()
+        socket.data.joinedRooms.set(roomCode, String(room._id))
+        markSocketRoomJoined(socket, roomCode)
+
+        // The client hook can announce before this handler subscribes the socket to the room; replay
+        // that report once we are inside the live channel (see below).
+        pendingAttention = socket.data?.pendingAttention?.[roomCode] || null
+
+        // The private per-user channel is joined immediately so waiting-room decisions reach a
+        // student who is not (yet) subscribed to the live room channel.
+        socket.join('user:' + userId)
+
+        const presence = member.presence || []
+        const alreadyOpen = presence.some((p) => !p.end)
+        // A second tab / duplicate join must not fire a second "joined" notice.
+        if (!alreadyOpen) presenceEvent = presence.length > 0 ? 'rejoined' : 'joined'
+        // A student who was already away when the join completed is not "present": suppress the
+        // join notice and let the replayed away report keep presence closed.
+        if (pendingAttention?.state === 'away') presenceEvent = null
+
+        if (config.enabled && member.status === 'waiting') {
+          // Held OUTSIDE the live room channel: they receive no questions, leaderboard or video.
+          socket.emit('waiting:joined', {
+            roomId: String(room._id),
+            roomCode,
+            status: 'waiting',
+            onTime: member.onTime !== false,
+            joinedAt: member.joinedAt,
+            mode: config.mode
+          })
+          await emitWaitingRoomUpdate(io, room)
+          return
+        }
+
+        if (config.enabled && member.status === 'rejected') {
+          socket.emit('waiting:rejected', {
+            roomId: String(room._id),
+            roomCode,
+            status: 'rejected'
+          })
+          return
+        }
+      }
+
+      // Authorized and admitted → now join the live room channel and announce. The room-wide event
+      // carries only the aggregate count, never the joiner's userId (which would let any peer
+      // harvest participant IDs).
       socket.join(roomCode)
-      // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
-      // (privacy — a student never receives the full board, just the public top 10 + their own rank).
       socket.join('user:' + userId)
-      const participantCount = await RoomMember.countDocuments({ roomId: room._id })
+      // Re-read after joining: a report can land in the queue during the awaits above.
+      const queuedAttention = socket.data?.pendingAttention?.[roomCode] || pendingAttention
+      // Open (or refresh) this student's attendance interval BEFORE counting participants, so a
+      // rejoin is immediately reflected in the live count. A queued `away` report means the window
+      // was already unfocused when the join completed: do not open a phantom interval for it.
+      if (role === 'student') {
+        if (queuedAttention?.state === 'away') {
+          setSocketAttention(socket, roomCode, {
+            state: 'away',
+            reason: normalizeAttentionReason(queuedAttention.reason),
+            since: clampAttentionSince(queuedAttention.since, Date.now()),
+            lastPingAt: Date.now()
+          })
+        } else {
+          await startPresence(room, userId)
+        }
+      }
+      // Replay the queued report now that the socket is inside the room channel. This also sends
+      // the attention ack the client is waiting for.
+      if (role === 'student' && queuedAttention) {
+        if (socket.data?.pendingAttention) delete socket.data.pendingAttention[roomCode]
+        await applyAttentionUpdate(socket, roomCode, queuedAttention)
+      }
+      const participantCount = await countPresent(room._id)
 
       io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      // Host-only notice with the student's name + live reconnect budget. Skipped for a duplicate
+      // socket that was already present.
+      if (role === 'student' && presenceEvent) {
+        await emitPresenceEvent(io, room, userId, presenceEvent)
+      }
+      if (role === 'teacher') {
+        await emitWaitingRoomUpdate(io, room)
+      }
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
@@ -689,24 +1042,118 @@ io.on('connection', (socket) => {
     if (!roomCode) return
     try {
       const Room = (await import('./models/Room.js')).default
-      const RoomMember = (await import('./models/RoomMember.js')).default
 
-      socket.leave(roomCode)
       const room = await Room.findByCode(roomCode)
+      socket.leave(roomCode)
+      if (room && role === 'teacher') socket.leave(`host:room:${room._id}`)
 
       let participantCount = 0
       if (room) {
         if (role === 'student' && userId) {
-          await RoomMember.deleteOne({ roomId: room._id, studentId: userId })
+          // Close this student's attendance interval but KEEP the membership: deleting it would
+          // erase their join order, on-time tag and attendance history, so a leave-and-rejoin could
+          // never be scored correctly. If the same user still has another ATTENTIVE socket in the
+          // room (a second, focused tab), keep the interval open — they are still present. A hidden
+          // tab (attention: away) or an expired untracked socket must not hold presence open after
+          // the active tab leaves.
+          setSocketAttention(socket, roomCode, null)
+          socket.data?.joinedRoomAt?.delete(roomCode)
+          if (socket.data?.pendingAttention) delete socket.data.pendingAttention[roomCode]
+          let stillPresent = false
+          try {
+            const siblings = await io.in(`user:${userId}`).fetchSockets()
+            stillPresent = aggregateAttention(siblings, roomCode, { excludeId: socket.id }).anyActive
+          } catch { /* best effort */ }
+          if (!stillPresent) {
+            const presence = await endPresence(room, userId, new Date(), 'leave')
+            if (presence?.closed) await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'leave' })
+          }
         }
-        participantCount = await RoomMember.countDocuments({ roomId: room._id })
+        participantCount = await countPresent(room._id)
       }
 
+      // The explicit leave has already closed presence, so a later disconnect must not process this
+      // room again (which would emit a second "left" notice).
+      socket.data?.joinedRooms?.delete(roomCode)
       io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
       io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
     }
+  })
+
+  // ── Attention tracking ───────────────────────────────────────────────────────────────────────
+  // A student's tab reports active/away transitions and a 10s heartbeat. The server aggregates the
+  // state across EVERY tab of the same user, so any focused tab keeps presence open; only when all
+  // tabs are away is the presence interval closed (and the absence budget starts draining).
+  socket.on('attention:update', async (data) => {
+    const userId = socket.data?.userId
+    const role = socket.data?.role
+    if (role !== 'student' || !userId) return
+    const roomCode = typeof data?.roomCode === 'string' ? data.roomCode : null
+    if (!roomCode) return
+
+    if (!socket.rooms?.has?.(roomCode)) {
+      // The client hook can announce before `room:join` has finished subscribing this socket. Keep
+      // the latest report (normalized, so not an arbitrary payload) and replay it after the join;
+      // dropping it here was why a reconnect-while-away could reopen a phantom presence.
+      if (!socket.data.pendingAttention) socket.data.pendingAttention = Object.create(null)
+      socket.data.pendingAttention[roomCode] = {
+        state: data?.state === 'away' ? 'away' : 'active',
+        reason: data?.reason,
+        since: data?.since
+      }
+      return
+    }
+
+    await applyAttentionUpdate(socket, roomCode, data)
+  })
+
+  // Heartbeat while the tab is active. In-memory only: no Mongo write and no waiting-room rebuild.
+  // If a socket never sent a transition (first report lost, or a reconnect), the heartbeat itself
+  // establishes a tracked active socket so the aggregate can reopen presence.
+  socket.on('attention:ping', async (data) => {
+    const userId = socket.data?.userId
+    const role = socket.data?.role
+    if (role !== 'student' || !userId) return
+    const roomCode = typeof data?.roomCode === 'string' ? data.roomCode : null
+    if (!roomCode || !socket.rooms?.has?.(roomCode)) return
+    const att = attentionForSocket(socket, roomCode)
+    if (!att) {
+      setSocketAttention(socket, roomCode, {
+        state: 'active',
+        reason: null,
+        since: null,
+        lastPingAt: Date.now()
+      })
+      try {
+        const Room = (await import('./models/Room.js')).default
+        const room = await Room.findByCode(roomCode)
+        if (room && !room.endedAt) {
+          if (!getAttentionConfig(room).enabled) {
+            socket.emit('attention:ack', { roomCode, state: 'active', disabled: true, at: Date.now() })
+            return
+          }
+          await withAttentionLock(`${userId}:${roomCode}`, () => reconcileAttention({
+            userId,
+            roomCode,
+            room,
+            reason: null,
+            at: new Date()
+          }))
+        }
+      } catch (err) {
+        console.error('attention ping failed:', err.message)
+      }
+      socket.emit('attention:ack', { roomCode, state: 'active', disabled: false, at: Date.now() })
+      return
+    }
+    if (att.state !== 'active') {
+      socket.emit('attention:ack', { roomCode, state: att.state, disabled: false, at: Date.now() })
+      return
+    }
+    att.lastPingAt = Date.now()
+    socket.emit('attention:ack', { roomCode, state: 'active', disabled: false, at: Date.now() })
   })
 
   // NOTE: the client-driven 'response:submit', 'points:update' and 'leaderboard:update'
@@ -794,9 +1241,50 @@ io.on('connection', (socket) => {
     }
     const userId = connectedUsers.get(socket.id)
     connectedUsers.delete(socket.id)
+
+    // Close attendance for rooms this socket was in. A tab close / network drop never emits
+    // room:leave, so without this a student would stay "present" until the session ended. If the
+    // same user still has another ATTENTIVE socket inside the room (a focused second tab), keep
+    // their interval open. A hidden (attention: away) or expired untracked tab must not hold
+    // presence open.
+    const joinedRooms = socket.data?.joinedRooms
+    if (userId && joinedRooms && joinedRooms.size > 0) {
+      ;(async () => {
+        try {
+          const Room = (await import('./models/Room.js')).default
+          for (const [roomCode, roomId] of joinedRooms) {
+            try {
+              setSocketAttention(socket, roomCode, null)
+              const remaining = await io.in(`user:${userId}`).fetchSockets()
+              const stillInRoom = aggregateAttention(remaining, roomCode, { excludeId: socket.id }).anyActive
+              if (stillInRoom) continue
+              const room = await Room.findById(roomId).lean()
+              if (!room || room.endedAt) continue
+              // Re-check right before closing: a reload can reconnect while this async cleanup was
+              // resolving the room, and the fresh socket must not be marked absent.
+              const recheck = await io.in(`user:${userId}`).fetchSockets()
+              if (aggregateAttention(recheck, roomCode, { excludeId: socket.id }).anyActive) continue
+              const presence = await endPresence(room, userId, new Date(), 'disconnect')
+              // A tab close / network drop must dip the live head-count and show the teacher a
+              // silent "left" notice, exactly like an explicit room:leave. A presence interval that
+              // was already closed (explicit leave) must not produce a second notice.
+              if (presence?.closed) await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'disconnect' })
+              const participants = await countPresent(room._id)
+              io.to(roomCode).emit('room:left', { roomCode, participants })
+            } catch { /* non-fatal */ }
+          }
+        } catch (err) {
+          console.error('attendance disconnect cleanup failed:', err.message)
+        }
+      })()
+    }
+
     console.log('Client disconnected:', socket.id, userId ? `(user: ${userId})` : '')
   })
 })
+
+// Mark tabs that promised a heartbeat but went silent (crashed / discarded) as away every 10s.
+startAttentionSweeper()
 
 // Error handling middleware
 app.use((err, req, res, next) => {

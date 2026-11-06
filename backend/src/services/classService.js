@@ -6,6 +6,7 @@ import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import User from '../models/User.js'
 import { createRoom } from './roomService.js'
+import { computeReconnectUsage } from './attendanceService.js'
 
 export const createClass = async ({ name, teacherId, settings = {} }) => {
   if (!name || !name.trim()) {
@@ -416,7 +417,7 @@ export const getClassSessions = async (classId) => {
       { $group: { _id: '$roomId', count: { $sum: 1 } } }
     ]),
     RoomMember.aggregate([
-      { $match: { roomId: { $in: roomIds } } },
+      { $match: { roomId: { $in: roomIds }, status: { $nin: ['waiting', 'rejected'] } } },
       { $group: { _id: '$roomId', count: { $sum: 1 } } }
     ])
   ])
@@ -505,9 +506,10 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
   const roomIds = classRooms.map(r => r._id)
   const totalClassSessions = classRooms.length
 
-  // Room members, responses, and questions for these rooms
+  // Room members, responses, and questions for these rooms. Waiting-room students (still waiting or
+  // rejected) are not counted as class attendance, so they are excluded from the member lookup.
   const [roomMembers, responses, allQuestions] = await Promise.all([
-    RoomMember.find({ roomId: { $in: roomIds } })
+    RoomMember.find({ roomId: { $in: roomIds }, status: { $nin: ['waiting', 'rejected'] } })
       .select('roomId studentId joinedAt')
       .lean(),
     Response.find({ roomId: { $in: roomIds } })
@@ -649,6 +651,8 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
   const attendedRoomIds = new Set(roomMembers.map(rm => String(rm.roomId)))
   responses.forEach(r => attendedRoomIds.add(String(r.roomId)))
 
+  const memberByRoom = new Map(roomMembers.map(rm => [String(rm.roomId), rm]))
+
   const questionsByRoom = new Map()
   for (const q of allQuestions) {
     const key = String(q.roomId)
@@ -674,7 +678,22 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     const attempted = roomResps.length
     const correct = roomResps.filter(r => r.isCorrect).length
     const accuracy = attempted > 0 ? Math.round((correct / attempted) * 100) : 0
+    const roomMember = memberByRoom.get(rid) || null
+    // Join/leave history + reconnect budget accounting for THIS lecture. Open for a live room, so
+    // the same shape drives the per-lecture expanded panel and the live meter.
+    const reconnect = roomMember
+      ? {
+        ...computeReconnectUsage({ member: roomMember, room, at: room.endedAt || new Date() }),
+        excused: !!roomMember.attendanceExcused,
+        finalized: !!roomMember.attendanceFinalizedAt,
+        penaltyPercent: roomMember.penaltyPercent ?? null,
+        rawPoints: roomMember.rawPoints ?? null,
+        adjustedPoints: roomMember.adjustedPoints ?? null
+      }
+      : null
 
+    // Upstream attendance windows are based on the CLASS membership (joined/removed/approved dates),
+    // not this room's membership row.
     const coverage = getSessionMembershipCoverage(room, member || { joinedAt })
     let status = 'missed'
     if (attended) {
@@ -705,7 +724,8 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
       pollsAttempted: attempted,
       pollsMissed,
       correctCount: correct,
-      accuracy
+      accuracy,
+      reconnect
     }
   })
 

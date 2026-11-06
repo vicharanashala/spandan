@@ -5,6 +5,7 @@ import { RT_BUCKET_LABELS, scoreTicks, rtTicks, formatDuration } from '../lib/in
 import { StatTile, TileGrid, SectionHeader, SectionLabel, HeroSummary, SectionNav, cardStyle, QPill, QuestionBox } from './InsightUI'
 import { ChartColumn, Check, CircleCheck, Clock as ClockIcon, Download, FileText, Funnel as FunnelIcon, Hand, Hourglass, MessageSquare, Mic, Mountain, PartyPopper, Puzzle, Search, Target, Timer, Users, Zap } from 'lucide-react'
 import { Ico } from './icons'
+import { ReconnectMeter } from './ReconnectMeter'
 
 const card = cardStyle
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
@@ -43,6 +44,7 @@ export default function RoomInsights({ insights, isTeacher, isMobile, onExportRe
   }, [questions, segments, totals])
   const correctTotal = useMemo(() => questions.reduce((a, q) => a + (q.correct || 0), 0), [questions])
   const sessionEnd = Math.max(totals.durationMin || 0, ...timeline.map(t => t.minute || 0), ...joinCurve.map(j => j.minute)) || 1
+  const attendance = Array.isArray(insights.attendance) ? insights.attendance : []
 
   const exportNow = () => {
     const isClass = Boolean(room?.classId)
@@ -59,7 +61,7 @@ export default function RoomInsights({ insights, isTeacher, isMobile, onExportRe
         meta={[room.createdAt ? new Date(room.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : null, formatDuration(totals.durationMin), plural(totals.questions, 'poll'), plural(totals.joined, 'student')].filter(m => m && m !== '—')}
         ring={{ value: totals.overallCorrectRate, label: 'correct', color: rateBand(totals.overallCorrectRate).color }}
         highlights={highlights} />
-      <SectionNav isMobile={isMobile} sections={[{ id: 'res-overview', label: 'Overview' }, { id: 'res-engagement', label: 'Engagement' }, { id: 'res-questions', label: 'Questions' }, ...(heatmap && heatmap.rows.length ? [{ id: 'res-students', label: 'Students' }] : [])]} />
+      <SectionNav isMobile={isMobile} sections={[{ id: 'res-overview', label: 'Overview' }, { id: 'res-engagement', label: 'Engagement' }, { id: 'res-questions', label: 'Questions' }, { id: 'res-attendance', label: 'Attendance' }, ...(heatmap && heatmap.rows.length ? [{ id: 'res-students', label: 'Students' }] : [])]} />
 
       {/* ---- overview: the download actions + the page's ONE tile row (students = everyone who joined or answered) ---- */}
       <SectionLabel actions={isTeacher && (
@@ -235,6 +237,63 @@ export default function RoomInsights({ insights, isTeacher, isMobile, onExportRe
         )}
       </div>
 
+      {/* ---- attendance & points deduction (teacher) ---- */}
+      {isTeacher && attendance.length > 0 && (
+        <>
+          <SectionLabel id="res-attendance">Attendance</SectionLabel>
+          <div className="insight-card" style={card(isMobile)}>
+            <SectionHeader icon={ClockIcon} tint="#0ea5e9" title="Attendance & points deduction" hint={<>Every student starts at 0: correct polls add marks, wrong polls add nothing, and at the end the missed-time percentage is taken off the marks they earned (never off a 100-mark balance). Time waiting in the waiting room counts as present for on-time students. Each student has one cumulative absence allowance (default 60 seconds, at least 60) that covers every moment they are away after their first join — reloads, network drops, explicit leaves, and a final departure with no return. Every drop shares that budget; time before the first join is never forgiven. A teacher can excuse a valid absence to remove its deduction.</>} />
+            <div className="thin-scroll" style={{ overflowX: 'auto' }}>
+              <table style={tbl}>
+                <thead><tr>{['Student', 'Joined', 'Present', 'Budget covered', 'Missed', 'Deduction', 'Marks earned', 'Status'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                <tbody>{attendance.map((a) => (
+                  <tr key={a.studentId}>
+                    <td style={td}>
+                      <span style={{ fontWeight: 650 }}>{a.name}</span>
+                      {a.rejoins > 0 && <span style={sm}> · {a.rejoins} rejoin{a.rejoins === 1 ? '' : 's'}</span>}
+                    </td>
+                    <td style={td}>{a.joinedAt ? new Date(a.joinedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                    <td style={td}>{fmtSpan(a.presentSeconds)} <span style={sm}>of {fmtSpan(a.sessionSeconds)}</span></td>
+                    <td style={td}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 140 }}>
+                        {a.forgivenSeconds > 0
+                          ? <span style={{ color: '#047857', fontWeight: 650 }}>{fmtSpan(a.forgivenSeconds)}</span>
+                          : <span style={sm}>0s</span>}
+                        {a.reconnectAllowanceSeconds > 0 && (
+                          <ReconnectMeter
+                            allowanceSeconds={a.reconnectAllowanceSeconds}
+                            usedSeconds={a.forgivenSeconds || 0}
+                            rejoins={a.rejoins}
+                            compact
+                          />
+                        )}
+                      </div>
+                    </td>
+                    <td style={td}>{fmtSpan(a.missedSeconds)}</td>
+                    <td style={td}>
+                      <span style={{ fontWeight: 700, color: a.penaltyPercent > 0 ? '#b45309' : '#059669' }}>
+                        {a.penaltyPercent > 0 ? `−${a.penaltyPercent}%` : 'None'}
+                      </span>
+                    </td>
+                    <td style={td}>
+                      {a.penaltyPercent > 0
+                        ? <><span style={sm}>{a.rawPoints} earned →</span> <strong>{a.adjustedPoints}</strong></>
+                        : (a.adjustedPoints ?? a.rawPoints ?? '—')}
+                    </td>
+                    <td style={td}>
+                      {a.excused
+                        ? <span style={{ ...chip, background: 'rgba(16,185,129,0.12)', color: '#047857', borderColor: 'rgba(16,185,129,0.35)' }}>Excused</span>
+                        : a.onTime
+                          ? <span style={chip}>On time</span>
+                          : <span style={{ ...chip, background: 'rgba(245,158,11,0.14)', color: '#b45309', borderColor: 'rgba(245,158,11,0.35)' }}>Late</span>}
+                    </td>
+                  </tr>))}</tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* ---- heatmap (teacher) ---- */}
       {isTeacher && heatmap && heatmap.rows.length > 0 && <SectionLabel id="res-students">Students</SectionLabel>}
       {isTeacher && heatmap && heatmap.rows.length > 0 && (
@@ -261,6 +320,14 @@ const td = { padding: '8px 10px', borderBottom: '1px solid var(--border-color)',
 const thM = { ...th, padding: '8px 5px' }
 const tdM = { ...td, padding: '8px 5px' }
 const sm = { fontSize: '12px', color: 'var(--text-secondary)' }
+// Seconds -> compact duration for the attendance table (e.g. 754 -> "12m 34s").
+const fmtSpan = (sec) => {
+  if (sec === null || sec === undefined || !Number.isFinite(Number(sec))) return '—'
+  const total = Math.max(0, Math.round(Number(sec)))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 const chip = { display: 'inline-block', fontSize: '11px', padding: '2px 7px', borderRadius: '999px', background: 'var(--nav-hover)', border: '1px solid var(--border-color)', marginRight: '4px', whiteSpace: 'nowrap' }
 const fs = { border: '1px solid var(--border-color)', borderRadius: '10px', padding: '8px 12px 10px', margin: '0 0 10px' }
 const lg = { fontSize: '12px', color: 'var(--text-secondary)', padding: '0 4px' }

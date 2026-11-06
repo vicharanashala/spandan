@@ -67,7 +67,7 @@ function App() {
   }, [isDark])
 
   return (
-    <BrowserRouter basename="/spandan">
+    <BrowserRouter basename={import.meta.env.VITE_BASE_PATH || '/'}>
       <HelpModal />
       <Tour />
       {/* Blocking accept-terms screen for signed-in accounts that have not accepted the current terms. */}
