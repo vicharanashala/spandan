@@ -203,8 +203,11 @@ describe('report', () => {
     const session = new Session()
     session.polls.set('a', { index: 0, type: 'MCQ', questionId: 'a', received: 48, accepted: 47, rejected: 1 })
     assert.deepEqual(pollSummary(session, 50), [
-      { poll: 1, type: 'MCQ', questionId: 'a', deliveredTo: 48, notDelivered: 2, answersAccepted: 47, answersRejected: 1 }
+      { poll: 1, type: 'MCQ', questionId: 'a', deliveredTo: 48, recoveredByResync: 0, notDelivered: 2, answersAccepted: 47, answersRejected: 1 }
     ])
+    session.polls.get('a').recovered = 1
+    assert.equal(pollSummary(session, 50)[0].recoveredByResync, 1)
+    assert.equal(pollSummary(session, 50)[0].notDelivered, 1)
   })
 })
 

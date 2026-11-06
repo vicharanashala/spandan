@@ -3,7 +3,9 @@
 Simulates a live Spandan classroom: one teacher runs polls while N students join, answer each
 poll inside its time window, and read the leaderboard. It measures latency (p50 / p95 / p99),
 errors, connection failures, disconnects and reconnects, watches this machine's CPU, and saves
-every run to `results/<timestamp>.json`.
+every run to `results/<timestamp>.json`. With the backend's optional event tracing it also checks
+that every room broadcast reached every student, in order and exactly once (see
+[Delivery tracking](#delivery-tracking-server_event_traceon)).
 
 The simulated clients follow the real app's requests and Socket.IO events step for step (see
 [What a run does](#what-a-run-does)), so the numbers reflect what real students would see.
@@ -33,9 +35,9 @@ npm install
 cd ../backend
 npm run seed:loadtest -- --students 50
 
-# 3. Start the backend (in its own terminal), with the optional server-side metrics
-SERVER_METRICS=on npm run dev            # Git Bash / macOS / Linux
-# PowerShell:  $env:SERVER_METRICS='on'; npm run dev
+# 3. Start the backend (in its own terminal), with the optional server-side metrics and event tracing
+SERVER_METRICS=on SERVER_EVENT_TRACE=on npm run dev     # Git Bash / macOS / Linux
+# PowerShell:  $env:SERVER_METRICS='on'; $env:SERVER_EVENT_TRACE='on'; npm run dev
 # (plain `npm run dev` also works; the run then has client-side numbers only)
 ```
 
@@ -74,6 +76,7 @@ automatically.** Above 200 students you must add `--confirm-large`.
 | `--base-url URL` | `http://localhost:3001` | Backend URL |
 | `--api-prefix P` | none | `/spandan` when going through the nginx proxy |
 | `--server-metrics M` | `auto` | Read the backend's `/internal/metrics`: `auto` (use it if enabled), `require` (fail if not enabled), `off` |
+| `--late-ms MS` | 2000 | A traced broadcast delivered later than this counts as late (1 to 60000). Reported only; it never fails the run. |
 | `--allow-remote` | off | Allow a non-localhost target (authorized test servers only) |
 | `--confirm-large` | off | Allow more than 200 students |
 
@@ -115,6 +118,7 @@ If you see `http_429` errors in a run, the rate limiter was hit, not a server fa
    random guess, because students never see which option is correct.
 5. When the poll's timer runs out, it re-fetches its past answers, as the real client does.
 6. After a reconnect, it re-sends `authenticate` and `room:join` and re-fetches its past answers.
+   Any poll it missed while disconnected counts as recovered if that re-fetch returns it.
 7. After the last poll, it reads the leaderboard once more.
 
 Students start one after another across the ramp period.
@@ -133,7 +137,9 @@ The console prints a table and a PASS/FAIL list. The full detail is in `results/
 | `leaderboard_push_spread` | For each leaderboard broadcast, how long after the first student each student received it |
 | `leaderboard_push_after_segment_done` | Time from the last `segment-done` until the leaderboard update. About 15 s by design (`LEADERBOARD_SEGMENT_DELAY_MS`). |
 | `connections` | Students joined, connect failures, disconnects (by reason) and reconnects |
-| `polls[]` | Per poll: how many students received it, and answers accepted or rejected |
+| `polls[]` | Per poll: how many students received it over the socket (`deliveredTo`), how many got it only from the post-reconnect re-fetch (`recoveredByResync`), and answers accepted or rejected |
+| `delivery` | Per-broadcast delivery, when the backend traces events (see [Delivery tracking](#delivery-tracking-server_event_traceon)) |
+| `outages` | One record per student disconnect: how long it lasted, re-join and re-fetch times, what was missed and whether it was recovered |
 | `socketEventsReceived` | Total events of each type received by all students |
 | `generator` | This machine's CPU and event-loop lag, plus bottleneck warnings |
 | `server` | The backend's own metrics for this run, when `SERVER_METRICS=on` (see below) |
@@ -142,10 +148,25 @@ The console prints a table and a PASS/FAIL list. The full detail is in `results/
 Errors are grouped by kind, for example `http_409:poll_closed` (answer arrived outside the poll
 window), `http_429` (rate limited), `timeout`, or `network:ECONNREFUSED`.
 
-**The PASS/FAIL checks** are p95 limits per operation (login under 2 s; answer and leaderboard
-reads under 1.5 s; poll delivery under 1 s), at most 1% errors per operation, at least 99% of
-students joined, every poll and `room:ended` reaching every joined student, and no correct
-answers leaking in what students receive.
+**The PASS/FAIL checks** are:
+- p95 limits per operation (login under 2 s; answer and leaderboard reads under 1.5 s; poll
+  delivery under 1 s), and at most 1% errors per operation
+- at least 99% of students joined
+- every poll reached every joined student, over the socket or the post-reconnect re-fetch, and
+  `room:ended` reached every joined student
+- no correct answers leaking in what students receive
+- with event tracing: no broadcast lost while connected (including the last one), **no
+  out-of-order broadcasts**, no duplicates, and every joined student got a trace baseline
+- when students disconnected: none stayed stuck, every poll missed while disconnected was
+  recovered, and the outage p95 was at most 8 s
+
+A check that cannot be measured in a run is printed as **`N/A`** with the reason (for example
+"unavailable: backend event tracing is off"). It never counts as a pass and never fails the run.
+Lines marked **`INFO`** are reported only: late broadcasts, delivery latency, and an
+unverified tail.
+
+The results file has `schemaVersion: 2`. Each check has `status` `PASS`, `FAIL` or `N/A`, and
+reported-only figures are in `verdict.info`.
 
 ## Server-side metrics (`SERVER_METRICS=on`)
 
@@ -208,6 +229,62 @@ If you see a warning, reduce `--students`, or treat the latencies as an upper bo
 event-loop lag never drops below about 30–40 ms, because of the system timer resolution. That is
 normal.
 
+## Delivery tracking (`SERVER_EVENT_TRACE=on`)
+
+Counting which polls arrived only catches lost polls. To check **every** room broadcast
+(`new_question`, `counts:updated`, `leaderboard:updated`, `room:joined`, `room:left`,
+`question:started`/`ended` and `room:ended`), start the backend with **both**
+`SERVER_METRICS=on` and `SERVER_EVENT_TRACE=on`. The simulator picks it up automatically.
+
+How it works:
+- The backend numbers each room's broadcasts in order. There is one numbered stream per room per
+  backend process. The number travels in an extra `__lt` field, which the app ignores.
+- When a socket joins a room, the backend tells it the stream's current number (`lt:hello`). The
+  student then expects every number above that, so a late joiner never counts earlier broadcasts
+  as missing.
+- At the end, the simulator reads the backend's last number per stream from `/internal/metrics`.
+  This catches a lost **final** broadcast, such as `room:ended`. It reads this before closing any
+  socket, so the normal shutdown is never counted as a disconnect.
+
+Each student's broadcasts are classified as follows:
+
+| Result | Meaning | Effect |
+|---|---|---|
+| `droppedConnected` | Never arrived although the socket was connected (a gap that never filled). Includes `tailMissing`: numbers the backend sent after the student's last one. | **FAIL** |
+| `outOfOrder` | Arrived after a later one | **FAIL** |
+| `duplicates` | Arrived twice | **FAIL** |
+| `missedOutage` | Sent while that student was disconnected. Expected; judged through `outages` instead. | reported |
+| `late` | Arrived more than `--late-ms` (default 2000 ms) after the backend sent it. Still delivered. | reported |
+| `beforeBaseline`, `unclassified`, `invalid`, `baselineInferred` | Diagnostics that should stay 0. `unclassified` appears only after more than 512 separate gaps. | reported |
+
+The `delivery` section of the results file also has:
+
+| Field | Meaning |
+|---|---|
+| `status` | `traced`, or `unavailable` with a `reason` (tracing off, metrics off). Unavailable is never shown as zero. |
+| `clock` | `local`, or `unavailable` for a remote target. Latency and `late` need the backend and the simulator on one clock; when it is unavailable they are `null`, but gaps, order and duplicates are still checked. |
+| `tail` | `verified`, `partial` (a stream was missing from the backend's numbers) or `unverified` (backend numbers not read). Only `verified` can detect a lost last broadcast. |
+| `latencyMs` | Mean and max delivery time over all traced broadcasts |
+| `byEvent` | Per event type: received, duplicates, out-of-order and late. A missing broadcast cannot be attributed to an event type, because the student never saw it. |
+| `worstStudents` | Up to 10 students with the most lost, out-of-order or duplicate broadcasts (by student number) |
+
+The `outages` section has one record per student disconnect (up to 200; `total` counts all). Each
+record holds:
+- `reason`, and `outageMs` (disconnect to reconnect)
+- `rejoinMs` (reconnect to the new `lt:hello`; traced runs only, otherwise `null`)
+- `resyncMs` (reconnect to the end of the past-answers re-fetch)
+- `missedSeqs`, the broadcasts missed while disconnected
+- `missedQuestions`, each with `recovered` saying whether the re-fetch returned it
+- `stuck`: still disconnected at the end, or reconnected without re-joining within 15 s
+
+The section also gives totals: `stuck`, `byReason`, `missedPolls`, `recoveredPolls`,
+`unrecoveredPolls`, and p50/p95/max of the three durations.
+
+**Limits.** Each backend process numbers its own stream, so under several instances a student
+sees one stream per instance, and an instance it never got `lt:hello` from is baselined on its first
+broadcast (`baselineInferred`). The private `leaderboard:you` channel and the video events
+(`video:*`, `questions:ready`) are not numbered.
+
 ## Clean up
 
 Test rooms, questions and answers stay in the database so you can inspect them. Remove everything
@@ -224,14 +301,16 @@ This deletes only `@loadtest.spandan.test` data. Real users and rooms are never 
 ## Limits of this MVP
 
 - One process generates all the load, so very large runs are limited by this machine.
-- Delivery is measured by what the clients received. Server-side metrics count messages sent, but
-  individual events are not traced end to end yet (that comes in a later step).
+- Per-broadcast tracing needs `SERVER_EVENT_TRACE=on` (and `SERVER_METRICS=on`). Without it,
+  delivery is judged only for polls and `room:ended`, and the tracing checks are `N/A`.
+- Disconnects happen only if the network or server causes them. Forced disconnects for testing the
+  reconnect path come in a later step.
 - The report is the console table plus the JSON file. A dashboard comes later.
 
 ## Tests
 
 ```bash
-npm test    # unit tests for config, metrics, answer timing, CPU analysis and the verdict
+npm test    # unit tests for config, metrics, answer timing, CPU analysis, delivery tracking, outages and the verdict
 ```
 
 Inspired by the load harness proposed in PR #31, rewritten for the current API: email-code sign-up,

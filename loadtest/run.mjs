@@ -14,15 +14,13 @@ import { startMonitor } from './lib/monitor.mjs'
 import { startServerMetrics } from './lib/serverMetrics.mjs'
 import { Session, SimTeacher } from './lib/session.mjs'
 import { SimStudent } from './lib/student.mjs'
-import { verdict, pollSummary, saveResult, printSummary } from './lib/report.mjs'
-import { mergeSummaries } from './lib/delivery.mjs'
+import { verdict, pollSummary, saveResult, printSummary, deliverySection, outageSection, RESULT_SCHEMA_VERSION } from './lib/report.mjs'
 
 const RESULTS_DIR = new URL('./results/', import.meta.url)
 const TEACHER_EMAIL = 'lt.teacher@loadtest.spandan.test'
 const studentEmail = (n) => `lt.student${String(n).padStart(4, '0')}@loadtest.spandan.test`
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 const LEDGER_GRACE_MS = 1000 // after reading the ledger, let broadcasts already in flight land
-const MAX_OUTAGE_RECORDS = 200
 
 async function preflight(cfg, api) {
   try {
@@ -109,7 +107,7 @@ async function main() {
   const ledgerSnap = await serverMetrics.read()
   const ledger = ledgerSnap?.eventTrace?.streams ?? null
   await sleep(LEDGER_GRACE_MS)
-  const finished = students.filter(s => s.joined).map(s => s.finishDelivery(ledger))
+  const finished = students.filter(s => s.joined).map(s => ({ student: s.index, ...s.finishDelivery(ledger) }))
 
   for (const s of students) await s.stop()
   teacher.stop()
@@ -129,7 +127,7 @@ async function main() {
 
   const { password: _pw, ...safeConfig } = cfg
   const result = {
-    schemaVersion: 1,
+    schemaVersion: RESULT_SCHEMA_VERSION,
     tool: 'spandan-loadtest',
     startedAt: startedAt.toISOString(),
     endedAt: endedAt.toISOString(),
@@ -169,22 +167,21 @@ async function main() {
     errorSamples: snap.errorSamples,
     timeline: snap.timeline
   }
-  // Raw delivery tracking (backend SERVER_EVENT_TRACE=on). Not judged or printed yet.
-  const traced = finished.some(f => f.traced)
-  result.delivery = traced
-    ? { traced: true, lateMs: cfg.lateMs, ledger: ledger ? 'server' : 'unavailable', ...mergeSummaries(finished.map(f => f.delivery)) }
-    : {
-        traced: false,
-        reason: !serverMetrics.available
-          ? `server metrics not available (${serverMetrics.reason})`
-          : 'backend event tracing is off (start it with SERVER_METRICS=on SERVER_EVENT_TRACE=on)'
-      }
-  const outages = finished.flatMap(f => f.outages)
-  result.outages = { total: outages.length, records: outages.slice(0, MAX_OUTAGE_RECORDS) }
+  // Per-broadcast delivery (backend SERVER_EVENT_TRACE=on) and per-disconnect outage records.
+  result.delivery = deliverySection(finished, {
+    ledgerAvailable: ledger != null,
+    lateMs: cfg.lateMs,
+    unavailableReason: !serverMetrics.available
+      ? `server metrics not available (${serverMetrics.reason})`
+      : 'backend event tracing is off (start it with SERVER_METRICS=on SERVER_EVENT_TRACE=on)'
+  })
+  result.outages = outageSection(finished.flatMap(f => f.outages), { traced: result.delivery.status === 'traced' })
 
   result.verdict = verdict({
     operations: snap.operations, events: ev, polls: result.polls,
-    roomEndedReceived: aborted ? null : session.roomEndedReceipts
+    roomEndedReceived: aborted ? null : session.roomEndedReceipts,
+    delivery: result.delivery,
+    outages: result.outages
   }, { students: cfg.students })
 
   const file = await saveResult(RESULTS_DIR, result, startedAt)

@@ -1,5 +1,7 @@
-// Turns a run's raw metrics into the saved JSON result and a console summary with a basic verdict.
+// Turns a run's raw metrics into the saved JSON result and a console summary with a verdict.
 import { mkdir, writeFile } from 'node:fs/promises'
+import { summarize } from './metrics.mjs'
+import { mergeSummaries } from './delivery.mjs'
 
 // Basic pass thresholds (p95, ms). Conservative for a local machine; the Step 5 report will make
 // these configurable. Operations not listed are reported but not judged.
@@ -15,35 +17,155 @@ export const THRESHOLDS = Object.freeze({
 })
 export const MAX_ERROR_RATE_PCT = 1
 export const MIN_JOIN_RATE_PCT = 99
+export const OUTAGE_P95_MS = 8000       // disconnect -> reconnect, judged only when outages happened
+export const MAX_OUTAGE_RECORDS = 200   // outage records kept in the result file
+export const MAX_WORST_STUDENTS = 10
+
+export const RESULT_SCHEMA_VERSION = 2
 
 // Windows-safe, sortable: 2026-11-06T02-15-30Z
 export const resultFileName = (date = new Date()) =>
   `${date.toISOString().slice(0, 19).replace(/:/g, '-')}Z.json`
 
-export function verdict({ operations, events, polls = [], roomEndedReceived = null }, { students }) {
+/**
+ * Run-level delivery figures from each joined student's finishDelivery() output
+ * ({ student, traced, delivery, outages }). Tracing that did not happen is `status: 'unavailable'`
+ * with the reason, never zeros.
+ */
+export function deliverySection(finished, { ledgerAvailable, lateMs, unavailableReason }) {
+  if (!finished.some(f => f.traced)) {
+    return { status: 'unavailable', reason: unavailableReason || 'no student received an lt:hello trace baseline' }
+  }
+  const m = mergeSummaries(finished.map(f => f.delivery))
+  const worstStudents = finished
+    .map(f => ({
+      student: f.student,
+      droppedConnected: f.delivery.droppedConnected,
+      tailMissing: f.delivery.tailMissing,
+      outOfOrder: f.delivery.outOfOrder,
+      duplicates: f.delivery.duplicates,
+      missedOutage: f.delivery.missedOutage
+    }))
+    .filter(w => w.droppedConnected + w.outOfOrder + w.duplicates > 0)
+    .sort((a, b) => (b.droppedConnected + b.outOfOrder + b.duplicates) - (a.droppedConnected + a.outOfOrder + a.duplicates))
+    .slice(0, MAX_WORST_STUDENTS)
+  return {
+    status: 'traced',
+    lateMs,
+    clock: m.clock,                                        // 'local' | 'unavailable' (remote target)
+    tail: !ledgerAvailable ? 'unverified' : m.tailUnverified ? 'partial' : 'verified',
+    students: m.students,
+    studentsUntraced: finished.filter(f => !f.traced).length,
+    studentsWithDrops: m.studentsWithDrops,
+    received: m.received,
+    droppedConnected: m.droppedConnected,                  // includes tailMissing
+    tailMissing: m.tailMissing,
+    missedOutage: m.missedOutage,
+    outOfOrder: m.outOfOrder,
+    duplicates: m.duplicates,
+    late: m.late,                                          // null when the clock is unavailable
+    latencyMs: m.latency,                                  // { n, meanMs, maxMs } or null
+    beforeBaseline: m.beforeBaseline,
+    unclassified: m.unclassified,
+    invalid: m.invalid,
+    baselineInferred: m.baselineInferred,
+    byEvent: m.byEvent,
+    worstStudents
+  }
+}
+
+/** Run-level outage figures from every student's outage records (stats over all, records capped). */
+export function outageSection(records, { traced }) {
+  const pick = (k) => records.map(r => r[k]).filter(v => typeof v === 'number')
+  const byReason = {}
+  let missedPolls = 0, recoveredPolls = 0
+  for (const r of records) {
+    byReason[r.reason] = (byReason[r.reason] || 0) + 1
+    missedPolls += r.missedQuestions.length
+    recoveredPolls += r.missedQuestions.filter(q => q.recovered).length
+  }
+  return {
+    total: records.length,
+    stuck: records.filter(r => r.stuck).length,
+    byReason,
+    outageMs: summarize(pick('outageMs')),
+    rejoinMs: traced ? summarize(pick('rejoinMs')) : null, // needs lt:hello; null = unavailable
+    resyncMs: summarize(pick('resyncMs')),
+    missedPolls,
+    recoveredPolls,
+    unrecoveredPolls: missedPolls - recoveredPolls,
+    truncated: records.length > MAX_OUTAGE_RECORDS,
+    records: records.slice(0, MAX_OUTAGE_RECORDS)
+  }
+}
+
+const check = (name, value, pass) => ({ check: name, value, pass, status: pass ? 'PASS' : 'FAIL' })
+const notAvailable = (name, reason) => ({ check: name, value: reason, pass: null, status: 'N/A' })
+
+/**
+ * Checks are PASS, FAIL or N/A (not measurable in this run, e.g. tracing off): N/A never counts as a
+ * pass in the figures nor fails the run. `info` lists reported-only figures (late events, latency).
+ */
+export function verdict({ operations, events, polls = [], roomEndedReceived = null, delivery = null, outages = null }, { students }) {
   const checks = []
+  const info = []
   for (const [op, limit] of Object.entries(THRESHOLDS)) {
     const o = operations[op]
     if (!o || !o.n) continue
-    checks.push({ check: `${op} p95 <= ${limit}ms`, value: o.p95, pass: o.p95 <= limit })
+    checks.push(check(`${op} p95 <= ${limit}ms`, o.p95, o.p95 <= limit))
   }
   for (const [op, o] of Object.entries(operations)) {
     if (!o.errorCount) continue
-    checks.push({ check: `${op} errors <= ${MAX_ERROR_RATE_PCT}%`, value: o.errorRate, pass: o.errorRate <= MAX_ERROR_RATE_PCT })
+    checks.push(check(`${op} errors <= ${MAX_ERROR_RATE_PCT}%`, o.errorRate, o.errorRate <= MAX_ERROR_RATE_PCT))
   }
   const joinRate = students ? ((events.studentsJoined || 0) / students) * 100 : 0
-  checks.push({ check: `students joined >= ${MIN_JOIN_RATE_PCT}%`, value: Math.round(joinRate * 10) / 10, pass: joinRate >= MIN_JOIN_RATE_PCT })
-  checks.push({ check: 'no answer key in student payloads', value: events.answerKeyLeaked || 0, pass: !events.answerKeyLeaked })
-  // Delivery, as seen by the clients (not server-side event tracing — that is a later step).
+  checks.push(check(`students joined >= ${MIN_JOIN_RATE_PCT}%`, Math.round(joinRate * 10) / 10, joinRate >= MIN_JOIN_RATE_PCT))
+  checks.push(check('no answer key in student payloads', events.answerKeyLeaked || 0, !events.answerKeyLeaked))
   const joined = events.studentsJoined || 0
   if (polls.length) {
-    const short = polls.filter(p => p.deliveredTo < joined).length
-    checks.push({ check: 'every poll reached every joined student', value: `${polls.length - short}/${polls.length} polls`, pass: short === 0 })
+    // A student who missed the socket push during an outage but got the poll from the resync counts.
+    const short = polls.filter(p => p.deliveredTo + (p.recoveredByResync || 0) < joined).length
+    const recovered = polls.reduce((n, p) => n + (p.recoveredByResync || 0), 0)
+    checks.push(check('every poll reached every joined student (socket or resync)',
+      `${polls.length - short}/${polls.length} polls${recovered ? ` (${recovered} via resync)` : ''}`, short === 0))
   }
   if (roomEndedReceived != null) {
-    checks.push({ check: 'room:ended reached every joined student', value: `${roomEndedReceived}/${joined}`, pass: roomEndedReceived >= joined })
+    checks.push(check('room:ended reached every joined student', `${roomEndedReceived}/${joined}`, roomEndedReceived >= joined))
   }
-  return { pass: checks.every(c => c.pass), checks }
+
+  if (delivery) {
+    const names = ['no broadcasts lost while connected', 'no out-of-order broadcasts', 'no duplicate broadcasts']
+    if (delivery.status !== 'traced') {
+      for (const n of names) checks.push(notAvailable(n, `unavailable: ${delivery.reason}`))
+    } else {
+      const tailNote = delivery.tail === 'verified' ? `incl. ${delivery.tailMissing} at the tail` : `tail ${delivery.tail}`
+      checks.push(check(names[0], `${delivery.droppedConnected} (${tailNote})`, delivery.droppedConnected === 0))
+      checks.push(check(names[1], delivery.outOfOrder, delivery.outOfOrder === 0))
+      checks.push(check(names[2], delivery.duplicates, delivery.duplicates === 0))
+      if (delivery.studentsUntraced) {
+        checks.push(check('every joined student got a trace baseline (lt:hello)', `${delivery.students - delivery.studentsUntraced}/${delivery.students}`, false))
+      }
+      info.push(delivery.clock === 'local'
+        ? { item: `late broadcasts (> ${delivery.lateMs}ms, reported only)`, value: delivery.late }
+        : { item: 'late broadcasts', value: 'unavailable: the server clock is not comparable for a remote target' })
+      if (delivery.latencyMs) info.push({ item: 'broadcast delivery latency', value: `mean ${delivery.latencyMs.meanMs}ms, max ${delivery.latencyMs.maxMs}ms` })
+      if (delivery.tail !== 'verified') info.push({ item: 'tail check', value: `${delivery.tail}: a lost final broadcast may go unnoticed (server ledger not read)` })
+      if (delivery.missedOutage) info.push({ item: 'broadcasts missed while disconnected', value: delivery.missedOutage })
+    }
+  }
+
+  if (outages) {
+    if (!outages.total) {
+      info.push({ item: 'disconnects during the run', value: 0 })
+    } else {
+      checks.push(check('no student stuck after a disconnect', `${outages.stuck}/${outages.total} outages`, outages.stuck === 0))
+      checks.push(check('every poll missed during an outage recovered by resync',
+        `${outages.recoveredPolls}/${outages.missedPolls}`, outages.unrecoveredPolls === 0))
+      checks.push(check(`outage p95 <= ${OUTAGE_P95_MS}ms`, outages.outageMs.p95, outages.outageMs.p95 != null && outages.outageMs.p95 <= OUTAGE_P95_MS))
+    }
+  }
+
+  return { pass: checks.every(c => c.pass !== false), checks, info }
 }
 
 export function pollSummary(session, students) {
@@ -52,7 +174,8 @@ export function pollSummary(session, students) {
     type: p.type,
     questionId: p.questionId,
     deliveredTo: p.received,
-    notDelivered: Math.max(0, students - p.received),
+    recoveredByResync: p.recovered || 0,
+    notDelivered: Math.max(0, students - p.received - (p.recovered || 0)),
     answersAccepted: p.accepted,
     answersRejected: p.rejected
   }))
@@ -67,6 +190,32 @@ export async function saveResult(dir, result, date = new Date()) {
 
 const fmt = (v) => (v == null ? '-' : String(Math.round(v)))
 const pad = (s, n) => String(s).padStart(n)
+const stat = (s) => (s && s.n ? `p50 ${fmt(s.p50)} / p95 ${fmt(s.p95)} / max ${fmt(s.max)}ms` : 'none measured')
+
+export function printDelivery(result, log = console.log) {
+  const d = result.delivery
+  if (!d) return
+  if (d.status !== 'traced') {
+    log(`delivery:  not traced (${d.reason})`)
+  } else {
+    const tail = d.tail === 'verified' ? `${d.tailMissing} at the tail` : `tail ${d.tail}`
+    log(`delivery:  traced, ${d.students} students, clock ${d.clock}, tail ${d.tail}`)
+    log(`           received ${d.received}, lost while connected ${d.droppedConnected} (${tail}; ${d.studentsWithDrops} students), missed while disconnected ${d.missedOutage}`)
+    log(`           out-of-order ${d.outOfOrder}, duplicates ${d.duplicates}${d.unclassified ? `, unclassified ${d.unclassified}` : ''}${d.studentsUntraced ? `, students without a baseline ${d.studentsUntraced}` : ''}`)
+    log(d.clock === 'local'
+      ? `           late (> ${d.lateMs}ms) ${d.late}${d.latencyMs ? `, latency mean ${d.latencyMs.meanMs}ms / max ${d.latencyMs.maxMs}ms` : ''}`
+      : '           late / latency: unavailable (remote target, clocks not comparable)')
+    for (const w of d.worstStudents.slice(0, 3)) {
+      log(`           student ${w.student}: lost ${w.droppedConnected}, out-of-order ${w.outOfOrder}, duplicates ${w.duplicates}`)
+    }
+  }
+  const o = result.outages
+  if (!o) return
+  if (!o.total) { log('outages:   none (no student disconnected)'); return }
+  log(`outages:   ${o.total} (${Object.entries(o.byReason).map(([r, n]) => `${r} x${n}`).join(', ')}), stuck ${o.stuck}`)
+  log(`           down ${stat(o.outageMs)}; re-join ${o.rejoinMs ? stat(o.rejoinMs) : 'unavailable (not traced)'}; resync ${stat(o.resyncMs)}`)
+  log(`           polls missed while down ${o.missedPolls}, recovered by resync ${o.recoveredPolls}, not recovered ${o.unrecoveredPolls}`)
+}
 
 export function printSummary(result, log = console.log) {
   const { config, summary, generator, polls, verdict: v } = result
@@ -83,9 +232,10 @@ export function printSummary(result, log = console.log) {
   const c = summary.connections
   log(`connections: joined ${c.studentsJoined}/${config.students}, connect failures ${c.connectFailures}, disconnects ${c.disconnects}, reconnects ${c.reconnects}`)
   for (const p of polls) {
-    log(`poll ${p.poll} (${p.type}): delivered ${p.deliveredTo}/${config.students}, answers accepted ${p.answersAccepted}, rejected ${p.answersRejected}`)
+    log(`poll ${p.poll} (${p.type}): delivered ${p.deliveredTo}/${config.students}${p.recoveredByResync ? `, recovered by resync ${p.recoveredByResync}` : ''}, answers accepted ${p.answersAccepted}, rejected ${p.answersRejected}`)
   }
   log(`room:ended received by ${summary.roomEndedReceived}/${c.studentsJoined} joined students`)
+  printDelivery(result, log)
   log(`generator: CPU avg ${generator.processCpuAvg}% / peak ${generator.processCpuPeak}% of one core, machine avg ${generator.machineCpuAvg}% / peak ${generator.machineCpuPeak}% (${generator.cores} cores), loop lag p99 peak ${generator.loopLagP99PeakMs}ms`)
   for (const w of generator.warnings) log(`WARNING: ${w}`)
   const sm = result.server?.metrics
@@ -101,7 +251,8 @@ export function printSummary(result, log = console.log) {
     log(`server:    not collected (${result.server.reason})`)
   }
   log('--------------------------------------------------')
-  for (const ch of v.checks) log(`${ch.pass ? 'PASS' : 'FAIL'}  ${ch.check}  (got ${ch.value})`)
+  for (const ch of v.checks) log(`${(ch.status || (ch.pass ? 'PASS' : 'FAIL')).padEnd(4)}  ${ch.check}  (${ch.pass === null ? '' : 'got '}${ch.value})`)
+  for (const i of v.info || []) log(`INFO  ${i.item}: ${i.value}`)
   log(`OVERALL: ${v.pass ? 'PASS' : 'FAIL'}${generator.possibleBottleneck ? '  (results may be limited by this machine, see warnings)' : ''}`)
   log('==================================================\n')
 }

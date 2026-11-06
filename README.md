@@ -322,6 +322,8 @@ cd backend && npm run clean:loadtest                   # remove the test data
 
 `SERVER_METRICS=on` enables `GET /internal/metrics` for local runs. It is off by default,
 answers only direct local requests, and is ignored when `NODE_ENV=production`.
+Adding `SERVER_EVENT_TRACE=on` (together with `SERVER_METRICS=on`) numbers room broadcasts so the
+simulator can check that none were lost, duplicated or reordered. It is also off by default.
 
 ## Deployment
 
