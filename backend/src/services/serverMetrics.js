@@ -94,10 +94,17 @@ export class ServerMetrics {
     this.loop = null
     this.timer = null
     this.probes = {}
+    this.sections = new Map()
     this.reset()
   }
 
+  /** Add a named section to the snapshot (e.g. event tracing); its reset() runs on every metrics reset. */
+  extend(name, { snapshot, reset }) {
+    this.sections.set(name, { snapshot, reset })
+  }
+
   reset() {
+    for (const s of this.sections?.values() || []) s.reset?.()
     this.since = new Date(this.clock()).toISOString()
     this.http = { total: 0, errors: 0, aborted: 0, inFlight: this.http?.inFlight || 0, routes: new Map() }
     const active = this.sockets?.active || 0
@@ -220,6 +227,10 @@ export class ServerMetrics {
       try { probes[k] = fn() } catch { probes[k] = 'unknown' }
     }
     const s = this.sockets
+    const extra = {}
+    for (const [name, sec] of this.sections) {
+      try { extra[name] = sec.snapshot() } catch { extra[name] = null }
+    }
     return {
       schemaVersion: 1,
       since: this.since,
@@ -251,7 +262,8 @@ export class ServerMetrics {
         connectionErrors: Object.fromEntries(s.connectionErrors),
         incomingEvents: Object.fromEntries(s.incoming),
         outgoingEvents: Object.fromEntries(s.outgoing)
-      }
+      },
+      ...extra
     }
   }
 
