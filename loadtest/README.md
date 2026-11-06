@@ -125,7 +125,36 @@ Students start one after another across the ramp period.
 
 ## Reading the results
 
-The console prints a table and a PASS/FAIL list. The full detail is in `results/<timestamp>.json`.
+The console prints a table and a PASS/FAIL list. The full detail is in `results/<timestamp>.json`,
+and an offline HTML report of the same run is saved next to it as `results/<timestamp>.html`.
+
+### HTML report
+
+Every run writes `results/<timestamp>.html`. To (re)build it from a saved result file:
+
+```bash
+npm run report                                        # newest results/*.json
+npm run report -- results/2026-11-06T02-15-30Z.json   # a specific run
+npm run report -- results/<file>.json --out my.html   # choose the output file
+```
+
+Open the `.html` file in any browser by double-clicking it, or with `start results\<file>.html`
+(Windows), `open` (macOS) or `xdg-open` (Linux). It is one self-contained file: no network access,
+no JavaScript, and nothing loaded from outside, so it can be attached or archived as is. It shows:
+- the overall verdict, and each check as **PASS**, **FAIL** or **N/A** (not measurable, with the
+  reason). INFO items are listed separately as reported only.
+- performance per operation against its p95 limit, with error kinds
+- connections, and polls, including students who got a poll only from the post-reconnect re-fetch
+- broadcast delivery, split into **failures** (lost while connected, out-of-order, duplicates) and
+  **reported only** (late, missed while disconnected, latency)
+- outages and reconnects: down, re-join and resync times, stuck students, and poll recovery per
+  outage
+- the load generator's and the server's CPU and memory, and error samples
+
+Anything a run could not measure is shown as *unavailable*, never as 0: delivery when tracing was
+off, late events and latency for a remote target, and re-join times for an untraced run. Older
+(schema v1) result files still render, with the newer sections marked as not recorded. Every
+value from the result file is escaped, and tables are capped at 200 rows (the JSON has everything).
 
 | Metric | Meaning |
 |---|---|
@@ -305,12 +334,13 @@ This deletes only `@loadtest.spandan.test` data. Real users and rooms are never 
   delivery is judged only for polls and `room:ended`, and the tracing checks are `N/A`.
 - Disconnects happen only if the network or server causes them. Forced disconnects for testing the
   reconnect path come in a later step.
-- The report is the console table plus the JSON file. A dashboard comes later.
+- The report is the console summary, the JSON file and the offline HTML page. There is no live
+  dashboard during a run.
 
 ## Tests
 
 ```bash
-npm test    # unit tests for config, metrics, answer timing, CPU analysis, delivery tracking, outages and the verdict
+npm test    # unit tests for config, metrics, answer timing, CPU analysis, delivery tracking, outages, the verdict and the HTML report
 ```
 
 Inspired by the load harness proposed in PR #31, rewritten for the current API: email-code sign-up,

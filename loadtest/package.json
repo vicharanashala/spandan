@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node run.mjs",
+    "report": "node make-report.mjs",
     "test": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {

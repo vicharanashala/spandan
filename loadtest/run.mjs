@@ -15,6 +15,8 @@ import { startServerMetrics } from './lib/serverMetrics.mjs'
 import { Session, SimTeacher } from './lib/session.mjs'
 import { SimStudent } from './lib/student.mjs'
 import { verdict, pollSummary, saveResult, printSummary, deliverySection, outageSection, RESULT_SCHEMA_VERSION } from './lib/report.mjs'
+import { buildReport } from './make-report.mjs'
+import { fileURLToPath } from 'node:url'
 
 const RESULTS_DIR = new URL('./results/', import.meta.url)
 const TEACHER_EMAIL = 'lt.teacher@loadtest.spandan.test'
@@ -186,7 +188,10 @@ async function main() {
 
   const file = await saveResult(RESULTS_DIR, result, startedAt)
   printSummary(result)
-  console.log(`Saved ${decodeURIComponent(file.pathname).replace(/^\/([A-Za-z]:)/, '$1')}`)
+  const jsonPath = fileURLToPath(file)
+  console.log(`Saved ${jsonPath}`)
+  // The offline HTML report, built from the file just saved (regenerate any time: npm run report).
+  try { console.log(`Report ${await buildReport(jsonPath)}`) } catch (err) { console.log(`HTML report not written: ${err.message}`) }
   console.log('Test data stays in the database for inspection; remove it with: cd backend && npm run clean:loadtest')
   return result.verdict.pass ? 0 : 1
 }
