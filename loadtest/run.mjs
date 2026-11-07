@@ -6,23 +6,33 @@
 //   npm start                                  # 50 students, 3 polls (safe default)
 //   npm start -- --students 20 --polls 2 --answer-time 10
 //   npm start -- --help
+//
+// Whatever happens once the run has started (normal end, Ctrl+C, or an error), the shutdown runs
+// in full: the room is ended if it was created, every socket, timer and monitor is stopped, and a
+// result file is saved with status "completed", "aborted" or "failed".
 import os from 'node:os'
-import { parseArgs, resolveConfig, HELP } from './lib/config.mjs'
+import { parseArgs, resolveConfig, passwordWarning, HELP } from './lib/config.mjs'
 import { Recorder } from './lib/metrics.mjs'
 import { makeApi } from './lib/http.mjs'
-import { startMonitor } from './lib/monitor.mjs'
+import { startMonitor, analyzeGenerator } from './lib/monitor.mjs'
 import { startServerMetrics } from './lib/serverMetrics.mjs'
 import { Session, SimTeacher } from './lib/session.mjs'
 import { SimStudent } from './lib/student.mjs'
 import { verdict, pollSummary, saveResult, printSummary, deliverySection, outageSection, RESULT_SCHEMA_VERSION } from './lib/report.mjs'
-import { buildReport } from './make-report.mjs'
+import { runStatus } from './lib/lifecycle.mjs'
+import { runPhases, closeOut } from './lib/orchestrate.mjs'
+import { buildReport } from './lib/reportFile.mjs'
 import { fileURLToPath } from 'node:url'
 
 const RESULTS_DIR = new URL('./results/', import.meta.url)
 const TEACHER_EMAIL = 'lt.teacher@loadtest.spandan.test'
 const studentEmail = (n) => `lt.student${String(n).padStart(4, '0')}@loadtest.spandan.test`
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-const LEDGER_GRACE_MS = 1000 // after reading the ledger, let broadcasts already in flight land
+const LEDGER_GRACE_MS = 1000   // after reading the ledger, let broadcasts already in flight land
+const ROOM_ENDED_WAIT_MS = 2000 // after ending the room, let 'room:ended' reach the students
+// Shutdown waits at most this long for student starts still in flight (a stuck login/connect/join
+// can otherwise hold it for its full timeouts, ~65 s). Those students are then stopped, and a stopped
+// student abandons its start before opening any socket (SimStudent.start).
+const START_WAIT_CAP_MS = 5000
 
 async function preflight(cfg, api) {
   try {
@@ -46,79 +56,50 @@ async function main() {
   const cli = parseArgs(process.argv.slice(2))
   if (cli.help) { console.log(HELP); return 0 }
   const cfg = resolveConfig(cli, process.env)
+  const pwWarning = passwordWarning(cfg)
+  if (pwWarning) console.log(`${pwWarning}\n`)
   const api = makeApi(cfg.api)
   console.log(`Spandan load test -> ${cfg.api} (socket ${cfg.socketPath})`)
   console.log(`${cfg.students} students over ${cfg.rampSeconds}s, ${cfg.durationSeconds ? `polls for ${cfg.durationSeconds}s` : `${cfg.polls} poll(s)`}, ${cfg.answerSeconds}s to answer, ${cfg.gapSeconds}s gap\n`)
 
+  // Nothing is created before this point, so a failure here simply exits (no result file).
   await preflight(cfg, api)
 
   const startedAt = new Date()
   const rec = new Recorder()
   const serverMetrics = await startServerMetrics(cfg, rec) // resets the backend's counters first
   const session = new Session()
-  const students = []
-  let connected = 0
+  // Created up front (cheap objects, nothing connects yet) so the ramp, the monitor gauge and the
+  // shutdown all work on the same list.
+  const students = Array.from({ length: cfg.students }, (_, i) =>
+    new SimStudent({ index: i + 1, email: studentEmail(i + 1), cfg, api, rec, session }))
+  const teacher = new SimTeacher({ email: TEACHER_EMAIL, cfg, api, rec, session })
   const monitor = startMonitor(rec, {
-    extraGauges: () => {
-      connected = students.reduce((n, s) => n + (s.socket?.connected ? 1 : 0), 0)
-      return { connectedSockets: connected }
-    }
+    extraGauges: () => ({ connectedSockets: students.reduce((n, s) => n + (s.socket?.connected ? 1 : 0), 0) })
   })
 
-  let aborted = false
-  const onSigint = () => { if (aborted) process.exit(130); aborted = true; console.log('\nStopping early (Ctrl+C again to force)...') }
+  // First Ctrl+C: abort (the ramp stops at once, no further poll starts); second: force exit.
+  const stopRun = new AbortController()
+  const onSigint = () => {
+    if (stopRun.signal.aborted) process.exit(130)
+    stopRun.abort()
+    console.log('\nStopping early (Ctrl+C again to force)...')
+  }
   process.on('SIGINT', onSigint)
 
-  const teacher = new SimTeacher({ email: TEACHER_EMAIL, cfg, api, rec, session })
-  await teacher.setup()
-  console.log(`room ${session.roomCode} created; ramping up students...`)
+  const { failure, finalLeaderboard, ramp } = await runPhases({ cfg, rec, session, teacher, students, signal: stopRun.signal })
+  const aborted = stopRun.signal.aborted
 
-  // Ramp: student i starts at (i / N) * ramp.
-  const starts = []
-  for (let i = 0; i < cfg.students; i++) {
-    const s = new SimStudent({ index: i + 1, email: studentEmail(i + 1), cfg, api, rec, session })
-    students.push(s)
-    const delay = cfg.students > 1 ? (i / cfg.students) * cfg.rampSeconds * 1000 : 0
-    starts.push(sleep(delay).then(() => (aborted ? null : s.start())).catch(() => { rec.count('studentsFailed') }))
-  }
-  await Promise.all(starts)
-  console.log(`${rec.events.get('studentsJoined') || 0}/${cfg.students} students joined in ${rec.elapsedSeconds().toFixed(1)}s`)
-
-  // Poll cycles.
-  const pollPhaseStart = performance.now()
-  const cycleMs = (cfg.answerSeconds + 1.5 + cfg.gapSeconds) * 1000
-  for (let i = 0; i < cfg.maxPolls && !aborted; i++) {
-    if (cfg.durationSeconds > 0 && i > 0 && performance.now() - pollPhaseStart + cycleMs > cfg.durationSeconds * 1000) break
-    const p = await teacher.runPoll(i).catch((err) => { console.log(`poll ${i + 1} failed: ${err.message}`); return null })
-    if (p) console.log(`poll ${i + 1}: delivered to ${p.received}/${cfg.students}, accepted ${p.accepted}, rejected ${p.rejected}`)
-    if (i + 1 < cfg.maxPolls && cfg.gapSeconds > 0 && !aborted) await sleep(cfg.gapSeconds * 1000)
-  }
-
-  if (!aborted) {
-    console.log(`waiting up to ${cfg.settleSeconds}s for the leaderboard push...`)
-    await teacher.waitForFinalLeaderboard()
-    // Every joined student checks the leaderboard once more, spread over a second.
-    await Promise.all(students.map(s => sleep(Math.random() * 1000).then(() => s.checkLeaderboard())))
-  }
-  await teacher.endRoom()
-  await sleep(2000) // let 'room:ended' reach the students
-
-  // Delivery tracking is closed out BEFORE any socket closes, so a normal shutdown is never counted
-  // as an outage: read the server's event-trace ledger (the last seq per stream), give broadcasts
-  // already in flight a moment to land, then take each joined student's summary.
-  const ledgerSnap = await serverMetrics.read()
-  const ledger = ledgerSnap?.eventTrace?.streams ?? null
-  await sleep(LEDGER_GRACE_MS)
-  const finished = students.filter(s => s.joined).map(s => ({ student: s.index, ...s.finishDelivery(ledger) }))
-
-  for (const s of students) await s.stop()
-  teacher.stop()
-  process.off('SIGINT', onSigint)
-  const serverRun = await serverMetrics.stop()
-  const generator = monitor.stop()
+  const { ledger, finished, serverRun, generator: gen, teardownErrors, startsAbandoned } = await closeOut({
+    students, ramp, teacher, session, serverMetrics, monitor,
+    onStopped: () => process.off('SIGINT', onSigint),
+    startWaitCapMs: START_WAIT_CAP_MS, roomEndedWaitMs: ROOM_ENDED_WAIT_MS, ledgerGraceMs: LEDGER_GRACE_MS
+  })
+  const generator = gen || analyzeGenerator([]) // the monitor failed to stop: report it empty, never crash
   const endedAt = new Date()
 
   const pushStats = session.pushStats()
+  const leaderboardGrouping = session.pushGrouping() // sequence (traced, exact) or receipt order
   for (const p of pushStats) for (const ms of p.spreads) rec.sample('leaderboard_push_spread', ms)
   const snap = rec.snapshot()
   const ev = snap.events
@@ -131,9 +112,12 @@ async function main() {
   const result = {
     schemaVersion: RESULT_SCHEMA_VERSION,
     tool: 'spandan-loadtest',
+    status: runStatus({ aborted, failure }), // completed | aborted | failed
     startedAt: startedAt.toISOString(),
     endedAt: endedAt.toISOString(),
     aborted,
+    failure,                                  // { phase, message } or null
+    teardownErrors,                           // cleanup steps that failed (normally empty)
     config: safeConfig,
     environment: {
       node: process.version, platform: process.platform, arch: process.arch,
@@ -150,21 +134,32 @@ async function main() {
         connectErrors: ev.connectErrors || 0,
         disconnects: ev.disconnects || 0,
         disconnectReasons,
-        reconnects: ev.reconnects || 0
+        reconnects: ev.reconnects || 0,
+        startsAbandoned                        // still starting when shutdown's 5 s wait ran out
       },
       socketEventsReceived: socketEvents,
       answersSkipped: ev.answersSkipped || 0,
       answerKeyLeaked: ev.answerKeyLeaked || 0,
       leaderboardPushMissing: ev.leaderboardPushMissing || 0,
+      finalLeaderboardPush: finalLeaderboard,  // { status: received | missing | not_checked, ... }
       roomEndedReceived: session.roomEndedReceipts
     },
-    polls: pollSummary(session, cfg.students),
-    leaderboardBroadcasts: pushStats.map(p => ({ receipts: p.receipts, spreadMs: p.spreadMs })),
+    polls: pollSummary(session, ev.studentsJoined || 0), // "not delivered" counts joined students only
+    leaderboardBroadcasts: pushStats.map(p => ({ seq: p.seq, receipts: p.receipts, spreadMs: p.spreadMs })),
+    leaderboardGrouping,                      // { mode, approximate, reason }
     generator,
     // Backend-side view (only when the backend runs with SERVER_METRICS=on): the final snapshot of
     // /internal/metrics, covering exactly this run (counters were reset at the start).
     server: serverMetrics.available
-      ? { available: true, url: serverMetrics.url, samples: serverRun.samples, failures: serverRun.failures, metrics: serverRun.final }
+      ? {
+          available: true,
+          url: serverMetrics.url,
+          samples: serverRun.samples,
+          failures: serverRun.failures,
+          preexistingSockets: serverMetrics.preexistingSockets, // connected before our reset
+          compromised: serverMetrics.compromised,               // non-null: reset by another client mid-run
+          metrics: serverRun.final
+        }
       : { available: false, reason: serverMetrics.reason },
     errorSamples: snap.errorSamples,
     timeline: snap.timeline
@@ -172,6 +167,7 @@ async function main() {
   // Per-broadcast delivery (backend SERVER_EVENT_TRACE=on) and per-disconnect outage records.
   result.delivery = deliverySection(finished, {
     ledgerAvailable: ledger != null,
+    ledgerCompromised: !!serverMetrics.compromised,
     lateMs: cfg.lateMs,
     unavailableReason: !serverMetrics.available
       ? `server metrics not available (${serverMetrics.reason})`
@@ -181,18 +177,29 @@ async function main() {
 
   result.verdict = verdict({
     operations: snap.operations, events: ev, polls: result.polls,
-    roomEndedReceived: aborted ? null : session.roomEndedReceipts,
+    // An aborted or failed run may never have ended the room for everyone: not judged.
+    roomEndedReceived: aborted || failure ? null : session.roomEndedReceipts,
     delivery: result.delivery,
-    outages: result.outages
+    outages: result.outages,
+    finalLeaderboard,
+    failure,
+    leaderboardGrouping,
+    serverCompromised: serverMetrics.compromised
   }, { students: cfg.students })
 
-  const file = await saveResult(RESULTS_DIR, result, startedAt)
-  printSummary(result)
-  const jsonPath = fileURLToPath(file)
-  console.log(`Saved ${jsonPath}`)
+  let jsonPath
+  try {
+    jsonPath = fileURLToPath(await saveResult(RESULTS_DIR, result, startedAt))
+  } catch (err) {
+    console.error(`\nCould not save the result file: ${err.message}`)
+    return 2
+  }
+  try { printSummary(result) } catch (err) { console.log(`Summary not printed: ${err.message}`) }
+  console.log(`Saved ${jsonPath}${result.status !== 'completed' ? ` (${result.status}: partial result)` : ''}`)
   // The offline HTML report, built from the file just saved (regenerate any time: npm run report).
   try { console.log(`Report ${await buildReport(jsonPath)}`) } catch (err) { console.log(`HTML report not written: ${err.message}`) }
   console.log('Test data stays in the database for inspection; remove it with: cd backend && npm run clean:loadtest')
+  if (failure) return 2
   return result.verdict.pass ? 0 : 1
 }
 

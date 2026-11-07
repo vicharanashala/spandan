@@ -29,6 +29,7 @@
 export const DEFAULT_LATE_MS = 2000
 export const MAX_HOLE_RANGES = 512
 export const MAX_STREAMS = 20
+const MAX_RETIRED_IDS = 1000 // evicted stream ids remembered (bounded memory under pathological churn)
 
 /** Sorted, non-overlapping inclusive integer ranges, appended in ascending order. */
 export class RangeSet {
@@ -103,10 +104,41 @@ export class DeliveryTracker {
     this.outages = 0         // re-joins after a disconnect
     this.invalid = 0         // events with a malformed __lt
     this.byEvent = new Map() // event -> { received, duplicates, outOfOrder, late, n, sumMs, maxMs }
+    // Streams evicted under MAX_STREAMS: their figures are folded in here so totals stay exact, and
+    // their ids are remembered so a late seq for one is "unclassified", never a fresh delivery.
+    this.retired = { streams: 0, received: 0, duplicates: 0, outOfOrder: 0, beforeBaseline: 0, unclassified: 0, droppedConnected: 0, missedOutage: 0, baselineInferred: 0 }
+    this.retiredIds = new Set()
+  }
+
+  // Look up a stream and mark it most recently used (eviction drops the least recently used).
+  _get(id) {
+    const st = this.streams.get(id)
+    if (st) { this.streams.delete(id); this.streams.set(id, st) }
+    return st
+  }
+
+  _retire(st) {
+    const r = this.retired
+    r.streams++
+    r.received += st.received
+    r.duplicates += st.duplicates
+    r.outOfOrder += st.outOfOrder
+    r.beforeBaseline += st.beforeBaseline
+    r.unclassified += st.unclassified
+    r.droppedConnected += st.holes.total // its open holes can no longer fill: final losses
+    r.missedOutage += st.outage.total
+    if (st.inferred) r.baselineInferred++
+    this.retiredIds.add(st.id)
+    if (this.retiredIds.size > MAX_RETIRED_IDS) this.retiredIds.delete(this.retiredIds.values().next().value)
   }
 
   _newStream(id, baseline, inferred) {
-    if (this.streams.size >= MAX_STREAMS) this.streams.delete(this.streams.keys().next().value)
+    if (this.streams.size >= MAX_STREAMS) {
+      const lru = this.streams.keys().next().value
+      this._retire(this.streams.get(lru))
+      this.streams.delete(lru)
+    }
+    this.retiredIds.delete(id) // a hello for an evicted stream starts it afresh
     const st = {
       id, baseline, highWater: baseline, inferred,
       holes: new RangeSet(this.maxHoleRanges),
@@ -131,7 +163,7 @@ export class DeliveryTracker {
     const wasDown = !this.connected && this.current !== null
     this.connected = true
     this.current = id
-    let st = this.streams.get(id)
+    const st = this._get(id)
     if (!st) { this._newStream(id, n, false); if (wasDown) this.outages++; return 0 }
     let missed = 0
     if (n > st.highWater) {
@@ -153,9 +185,14 @@ export class DeliveryTracker {
     const id = trace?.s
     const n = trace?.n
     if (typeof id !== 'string' || !isSeq(n)) { this.invalid++; return 'invalid' }
-    // No hello for this stream (e.g. the backend's metrics were reset mid-room, or another instance's
-    // stream): baseline on the first seq seen, and say so in the summary.
-    const st = this.streams.get(id) || this._newStream(id, n - 1, true)
+    let st = this._get(id)
+    if (!st) {
+      // A seq for a stream already evicted: a late fill and a duplicate can no longer be told apart.
+      if (this.retiredIds.has(id)) { this.retired.unclassified++; return 'unclassified' }
+      // No hello for this stream (e.g. the backend's metrics were reset mid-room, or another instance's
+      // stream): baseline on the first seq seen, and say so in the summary.
+      st = this._newStream(id, n - 1, true)
+    }
     const ev = this._event(event)
 
     let kind
@@ -205,10 +242,13 @@ export class DeliveryTracker {
    * a lost final event cannot be detected (tailUnverified).
    */
   summary(ledger = null) {
+    const r = this.retired
     const out = {
-      streams: this.streams.size, baselineInferred: 0,
-      received: 0, duplicates: 0, outOfOrder: 0, beforeBaseline: 0, unclassified: 0,
-      droppedConnected: 0, tailMissing: 0, missedOutage: 0, tailUnverified: false,
+      streams: this.streams.size + r.streams, streamsEvicted: r.streams, baselineInferred: r.baselineInferred,
+      received: r.received, duplicates: r.duplicates, outOfOrder: r.outOfOrder, beforeBaseline: r.beforeBaseline, unclassified: r.unclassified,
+      droppedConnected: r.droppedConnected, tailMissing: 0, missedOutage: r.missedOutage,
+      // An evicted stream's tail can't be checked against the ledger any more.
+      tailUnverified: r.streams > 0,
       late: 0, outages: this.outages, invalid: this.invalid,
       clock: this.clockComparable ? 'local' : 'unavailable',
       latency: null, byEvent: {}
@@ -246,7 +286,7 @@ export class DeliveryTracker {
   }
 }
 
-const SUM_FIELDS = ['received', 'duplicates', 'outOfOrder', 'beforeBaseline', 'unclassified', 'droppedConnected', 'tailMissing', 'missedOutage', 'outages', 'invalid', 'baselineInferred']
+const SUM_FIELDS = ['received', 'duplicates', 'outOfOrder', 'beforeBaseline', 'unclassified', 'droppedConnected', 'tailMissing', 'missedOutage', 'outages', 'invalid', 'baselineInferred', 'streamsEvicted']
 
 /** Combine per-student summaries into run totals (adds `students` and `studentsWithDrops`). */
 export function mergeSummaries(list) {

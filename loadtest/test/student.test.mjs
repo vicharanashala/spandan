@@ -124,7 +124,7 @@ describe('SimStudent outage records', () => {
     assert.equal(typeof o.resyncMs, 'number')
     assert.equal(o.missedSeqs, 3)
     // q-old was received; q-after was launched after the re-join, so it is not "missed".
-    assert.deepEqual(o.missedQuestions, [{ questionId: qid, poll: 2, recovered: true }])
+    assert.deepEqual(o.missedQuestions, [{ questionId: qid, poll: 2, recovered: true, recoveredAfterMs: o.resyncMs, retry: 'none' }])
     assert.equal(o.recovered, true)
     assert.equal(o.stuck, false)
     assert.ok(!Object.keys(o).some(k => k.startsWith('_')))
@@ -150,7 +150,7 @@ describe('SimStudent outage records', () => {
     await flush(); await flush()
     const o = s.finishDelivery({ A: { lastSeq: 2 } }).outages[0]
     assert.equal(o.recovered, false)
-    assert.deepEqual(o.missedQuestions, [{ questionId: 'q1', poll: 1, recovered: false }])
+    assert.deepEqual(o.missedQuestions, [{ questionId: 'q1', poll: 1, recovered: false, recoveredAfterMs: null, retry: 'none' }])
     assert.equal(session.polls.get('q1').recovered, 0)
   })
 
@@ -213,5 +213,57 @@ describe('SimStudent outage records', () => {
     s._onDisconnect('transport close')
     s._onDisconnect('transport close') // e.g. a duplicate signal before reconnecting
     assert.equal(s.outages.length, 1)
+  })
+})
+
+describe('SimStudent leaderboard push grouping', () => {
+  const lb = (n, sid = 'A') => ({ leaderboard: [], [TRACE_FIELD]: { s: sid, n, t: Date.now() } })
+
+  test('traced pushes are grouped by seq; a duplicate delivery adds no second receipt', () => {
+    const { s, session } = makeStudent()
+    const { s: s2 } = makeStudent()
+    s2.session = session // two students in one room
+    s._onLeaderboardPush(lb(5), 1000)
+    s2._onLeaderboardPush(lb(5), 1040)
+    s._onLeaderboardPush(lb(5), 1100) // duplicate for s: ignored for grouping
+    s._onLeaderboardPush(lb(6), 2000)
+    s2._onLeaderboardPush(lb(6), 2005)
+    assert.deepEqual(session.pushStats().map(p => [p.seq, p.receipts, p.spreadMs]), [[5, 2, 40], [6, 2, 5]])
+    assert.equal(s.rec.events.get('evt:leaderboard:updated'), 3) // every receipt is still counted as an event
+    assert.equal(session.pushGrouping().mode, 'sequence')
+  })
+
+  test('a student that missed a traced push still lands in the right broadcast', () => {
+    const { s, session } = makeStudent()
+    const { s: late } = makeStudent()
+    late.session = session
+    s._onLeaderboardPush(lb(1), 1000)
+    s._onLeaderboardPush(lb(2), 2000)
+    late._onLeaderboardPush(lb(2), 2015) // never got seq 1
+    assert.deepEqual(session.pushStats().map(p => [p.seq, p.receipts, p.spreadMs]), [[1, 1, 0], [2, 2, 15]])
+  })
+
+  test('untraced pushes fall back to receipt order; a malformed __lt counts as untraced', () => {
+    const { s, session } = makeStudent()
+    s._onLeaderboardPush({ leaderboard: [] }, 1000)
+    s._onLeaderboardPush({ leaderboard: [], [TRACE_FIELD]: { s: 'A', n: -1 } }, 2000)
+    s._onLeaderboardPush(undefined, 3000)
+    assert.deepEqual(session.pushStats().map(p => [p.seq, p.receipts]), [[null, 1], [null, 1], [null, 1]])
+    assert.equal(session.pushGrouping().mode, 'receipt-order')
+  })
+
+  test('a disconnect is reported to the session, making untraced grouping approximate', () => {
+    const { s, session } = makeStudent()
+    s._onLeaderboardPush({ leaderboard: [] }, 1000)
+    s._onDisconnect('transport close')
+    assert.equal(session.disconnects, 1)
+    assert.equal(session.pushGrouping().approximate, true)
+  })
+
+  test('a shutdown disconnect (closing) is not reported', async () => {
+    const { s, session } = makeStudent()
+    await s.stop()
+    s._onDisconnect('io client disconnect')
+    assert.equal(session.disconnects, 0)
   })
 })

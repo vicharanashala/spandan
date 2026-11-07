@@ -1,11 +1,11 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseArgs, resolveConfig, isLocalUrl, DEFAULTS } from '../lib/config.mjs'
+import { parseArgs, resolveConfig, isLocalUrl, passwordWarning, DEFAULTS } from '../lib/config.mjs'
 import { percentile, summarize, errorKind, Recorder } from '../lib/metrics.mjs'
 import { HttpError } from '../lib/http.mjs'
 import { pickOptions, answerPlan, questionFor, QUESTION_BANK } from '../lib/questions.mjs'
 import { analyzeGenerator } from '../lib/monitor.mjs'
-import { verdict, resultFileName, pollSummary } from '../lib/report.mjs'
+import { verdict, resultFileName, pollSummary, printSummary } from '../lib/report.mjs'
 import { Session } from '../lib/session.mjs'
 
 describe('config', () => {
@@ -66,6 +66,24 @@ describe('config', () => {
     for (const v of ['0', '-5', '60001', 'soon']) {
       assert.throws(() => resolveConfig(parseArgs(['--late-ms', v]), {}), /late-ms/, v)
     }
+  })
+
+  test('--password still works, but its source is recorded and the command line is warned about', () => {
+    const cli = resolveConfig(parseArgs(['--password', 'Cli-Secret-1']), { LOADTEST_PASSWORD: 'Env-Secret-1' })
+    assert.equal(cli.password, 'Cli-Secret-1') // CLI wins, exactly as before
+    assert.equal(cli.passwordSource, 'cli')
+    const w = passwordWarning(cli)
+    assert.match(w, /process list[\s\S]*shell history[\s\S]*LOADTEST_PASSWORD/)
+    assert.ok(!w.includes('Cli-Secret-1')) // never echoes the password
+
+    const env = resolveConfig({}, { LOADTEST_PASSWORD: 'Env-Secret-1' })
+    assert.equal(env.passwordSource, 'env')
+    assert.equal(passwordWarning(env), null)
+    const dflt = resolveConfig({}, { LOADTEST_PASSWORD: '' })
+    assert.equal(dflt.passwordSource, 'default')
+    assert.equal(dflt.password, DEFAULTS.password)
+    assert.equal(passwordWarning(dflt), null)
+    assert.match(parseArgs(['--password=Inline-1']).password, /Inline-1/) // --name=value form unchanged
   })
 })
 
@@ -209,6 +227,38 @@ describe('report', () => {
     assert.equal(pollSummary(session, 50)[0].recoveredByResync, 1)
     assert.equal(pollSummary(session, 50)[0].notDelivered, 1)
   })
+
+  test('"not delivered" counts joined students only, matching the verdict', () => {
+    // 50 configured, 47 joined, all 47 got the poll: nothing was lost.
+    const session = new Session()
+    session.polls.set('a', { index: 0, type: 'MCQ', questionId: 'a', received: 47, accepted: 47, rejected: 0 })
+    const polls = pollSummary(session, 47)
+    assert.equal(polls[0].notDelivered, 0)
+    const v = verdict({ operations: {}, events: { studentsJoined: 47 }, polls }, { students: 50 })
+    assert.equal(v.checks.find(c => /every poll reached/.test(c.check)).status, 'PASS')
+    assert.equal(v.checks.find(c => /students joined/.test(c.check)).status, 'FAIL') // the join gap is judged here
+    // One joined student missed it: exactly 1 not delivered, and the poll check fails.
+    session.polls.get('a').received = 46
+    assert.equal(pollSummary(session, 47)[0].notDelivered, 1)
+    assert.equal(verdict({ operations: {}, events: { studentsJoined: 47 }, polls: pollSummary(session, 47) }, { students: 50 })
+      .checks.find(c => /every poll reached/.test(c.check)).status, 'FAIL')
+    // Never negative, e.g. a poll launched before anyone joined.
+    assert.equal(pollSummary(session, 0)[0].notDelivered, 0)
+  })
+
+  test('printSummary shows delivery against joined students', () => {
+    const lines = []
+    printSummary({
+      config: { api: 'x', students: 50, rampSeconds: 1 },
+      summary: { durationSeconds: 1, operations: {}, connections: { studentsJoined: 47, connectFailures: 3, disconnects: 0, reconnects: 0 }, roomEndedReceived: 47 },
+      polls: [{ poll: 1, type: 'MCQ', deliveredTo: 46, recoveredByResync: 0, notDelivered: 1, answersAccepted: 46, answersRejected: 0 }],
+      generator: null,
+      verdict: { pass: false, checks: [], info: [] }
+    }, (l) => lines.push(l))
+    const out = lines.join('\n')
+    assert.match(out, /poll 1 \(MCQ\): delivered 46\/47 joined, not delivered 1,/)
+    assert.doesNotMatch(out, /delivered 46\/50/)
+  })
 })
 
 describe('session leaderboard broadcast grouping', () => {
@@ -223,5 +273,79 @@ describe('session leaderboard broadcast grouping', () => {
     assert.equal(s.firstPushAfter(500), 1000)
     assert.equal(s.firstPushAfter(1100), 1200)
     assert.equal(s.firstPushAfter(5000), null)
+    assert.deepEqual(s.pushGrouping(), { mode: 'receipt-order', approximate: false, reason: null })
+    assert.deepEqual(stats.map(p => p.seq), [null, null])
+  })
+
+  test('untraced grouping is marked approximate after a disconnect', () => {
+    const s = new Session()
+    s.noteLeaderboardPush(0, 1000)
+    s.noteDisconnect()
+    const g = s.pushGrouping()
+    assert.equal(g.mode, 'receipt-order')
+    assert.equal(g.approximate, true)
+    assert.match(g.reason, /1 disconnect\(s\)[\s\S]*SERVER_EVENT_TRACE=on/)
+  })
+
+  test('traced: grouped by sequence number, so a missed push does not shift later receipts', () => {
+    const s = new Session()
+    // 3 students; student C misses seq 5 (e.g. while down) and only gets seq 7.
+    s.noteTracedLeaderboardPush({ s: 'A', n: 5 }, 1000) // student A
+    s.noteTracedLeaderboardPush({ s: 'A', n: 5 }, 1030) // student B
+    s.noteTracedLeaderboardPush({ s: 'A', n: 7 }, 2000) // A
+    s.noteTracedLeaderboardPush({ s: 'A', n: 7 }, 2010) // B
+    s.noteTracedLeaderboardPush({ s: 'A', n: 7 }, 2020) // C: its FIRST push, still broadcast 7
+    const stats = s.pushStats()
+    assert.deepEqual(stats.map(p => [p.seq, p.receipts, p.spreadMs]), [[5, 2, 30], [7, 3, 20]])
+    // Receipt-order grouping would have put C's push into broadcast 5, reading a ~1 s spread.
+    assert.deepEqual(s.pushGrouping(), { mode: 'sequence', approximate: false, reason: null })
+    s.noteDisconnect()
+    assert.equal(s.pushGrouping().approximate, false) // sequence grouping stays exact after outages
+  })
+
+  test('traced: a late arrival joins its own broadcast and shows up as spread, not as a new broadcast', () => {
+    const s = new Session()
+    s.noteTracedLeaderboardPush({ s: 'A', n: 3 }, 1000)
+    s.noteTracedLeaderboardPush({ s: 'A', n: 4 }, 1200)
+    s.noteTracedLeaderboardPush({ s: 'A', n: 4 }, 1210)
+    s.noteTracedLeaderboardPush({ s: 'A', n: 3 }, 1900) // seq 3 reaching a slow student after seq 4
+    const stats = s.pushStats()
+    assert.deepEqual(stats.map(p => [p.seq, p.receipts, p.spreadMs]), [[3, 2, 900], [4, 2, 10]])
+    assert.equal(s.firstPushAfter(1100), 1200) // the late seq-3 receipt is not a "new" push
+    assert.equal(s.firstPushAfter(999), 1000)
+  })
+
+  test('traced: the same seq on two streams (two server instances) stays two broadcasts', () => {
+    const s = new Session()
+    s.noteTracedLeaderboardPush({ s: 'A', n: 1 }, 1000)
+    s.noteTracedLeaderboardPush({ s: 'B', n: 1 }, 1005)
+    assert.equal(s.pushStats().length, 2)
+  })
+
+  test('traced and untraced pushes together are reported as approximate', () => {
+    const s = new Session()
+    s.noteTracedLeaderboardPush({ s: 'A', n: 1 }, 1000)
+    s.noteLeaderboardPush(0, 1100)
+    const g = s.pushGrouping()
+    assert.equal(g.mode, 'mixed')
+    assert.equal(g.approximate, true)
+    assert.equal(s.pushStats().length, 2)
+  })
+
+  test('no pushes: nothing to group, nothing approximate', () => {
+    const s = new Session()
+    assert.deepEqual(s.pushStats(), [])
+    assert.equal(s.firstPushAfter(0), null)
+    assert.deepEqual(s.pushGrouping(), { mode: 'none', approximate: false, reason: null })
+  })
+
+  test('the verdict reports approximate grouping as info only, never as a failure', () => {
+    const base = { operations: {}, events: { studentsJoined: 5 } }
+    const approx = { mode: 'receipt-order', approximate: true, reason: 'grouped by receipt order; 2 disconnect(s)' }
+    const v = verdict({ ...base, leaderboardGrouping: approx }, { students: 5 })
+    assert.equal(v.pass, true)
+    assert.ok(v.info.some(i => i.item === 'leaderboard push spread is approximate' && /2 disconnect/.test(i.value)))
+    const exact = verdict({ ...base, leaderboardGrouping: { mode: 'sequence', approximate: false, reason: null } }, { students: 5 })
+    assert.ok(!exact.info.some(i => /approximate/.test(i.item)))
   })
 })

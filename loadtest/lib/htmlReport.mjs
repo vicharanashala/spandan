@@ -2,7 +2,8 @@
 // self-contained HTML string out.
 //
 // Safety: every value taken from the result is HTML-escaped and length-capped; the page has no
-// JavaScript and loads nothing (a strict Content-Security-Policy blocks scripts and any remote
+// JavaScript and loads nothing (a strict Content-Security-Policy, including base-uri and form-action,
+// which default-src does not cover, blocks scripts, <base> and form targets, and any remote
 // resource even if a value slipped through). Size: every table has a row cap.
 import { THRESHOLDS, RESULT_SCHEMA_VERSION } from './report.mjs'
 
@@ -103,13 +104,15 @@ function pollsSection(r) {
     num(p.answersAccepted), num(p.answersRejected)
   ])
   return section('polls', 'Polls',
-    '<p class="muted">Recovered by resync: the student missed the socket push while disconnected and got the poll from the past-answers re-fetch after reconnecting. It counts as reached.</p>' +
-    table(['Poll', 'Type', 'Delivered (socket)', 'Recovered by resync', 'Not delivered', 'Answers accepted', 'Answers rejected'], rows, { empty: 'no polls ran' }))
+    '<p class="muted">Recovered by resync: the student missed the socket push while disconnected and got the poll from the past-answers re-fetch after reconnecting. It counts as reached. ' +
+    `Not delivered counts only students who joined the room (${num(r.summary?.connections?.studentsJoined)} joined); students who never joined are reported under Connections.</p>` +
+    table(['Poll', 'Type', 'Delivered (socket)', 'Recovered by resync', 'Not delivered (of joined)', 'Answers accepted', 'Answers rejected'], rows, { empty: 'no polls ran' }))
 }
 
 function deliverySection(r) {
   const d = r.delivery
-  if (!d) return section('delivery', 'Broadcast delivery', `<div class="banner neutral">Delivery tracking: ${na('not recorded in this result file (schema v' + escapeHtml(r.schemaVersion ?? '?') + ')')}</div>`)
+  // na() escapes its argument, so the raw value goes in (escaping it here too would show "&amp;lt;").
+  if (!d) return section('delivery', 'Broadcast delivery', `<div class="banner neutral">Delivery tracking: ${na(`not recorded in this result file (schema v${r.schemaVersion ?? '?'})`)}</div>`)
   if (d.status !== 'traced') {
     return section('delivery', 'Broadcast delivery',
       `<div class="banner neutral"><strong>Unavailable.</strong> ${escapeHtml(d.reason || 'tracing was not active')}. The tracing checks are N/A, not passed.</div>`)
@@ -145,14 +148,22 @@ function deliverySection(r) {
     table(['Student', 'Lost', 'At tail', 'Out of order', 'Duplicates', 'Missed while down'], worst, { empty: 'none: no student lost, reordered or duplicated a broadcast' }))
 }
 
+// "poll 2 ✓ 140 ms", "poll 3 ✓ after retry, 11200 ms", "poll 4 ✗ retry still missing" (plain text; escaped by the caller)
+const RETRY_TEXT = { still_missing: 'retry still missing', not_completed: 'run ended before the retry' }
+function missedPollText(q) {
+  const ms = typeof q?.recoveredAfterMs === 'number' ? ` ${Math.round(q.recoveredAfterMs)} ms` : ''
+  if (q?.recovered) return `poll ${q.poll} ✓${q.retry === 'recovered' ? ' after retry,' : ''}${ms}`
+  return `poll ${q?.poll} ✗${RETRY_TEXT[q?.retry] ? ` ${RETRY_TEXT[q.retry]}` : ''}`
+}
+
 function outagesSection(r) {
   const o = r.outages
-  if (!o) return section('outages', 'Outages and reconnects', `<div class="banner neutral">Outage records: ${na('not recorded in this result file (schema v' + escapeHtml(r.schemaVersion ?? '?') + ')')}</div>`)
+  if (!o) return section('outages', 'Outages and reconnects', `<div class="banner neutral">Outage records: ${na(`not recorded in this result file (schema v${r.schemaVersion ?? '?'})`)}</div>`)
   if (!o.total) return section('outages', 'Outages and reconnects', '<p>No student disconnected during the run.</p>')
   const s3 = (s) => (s && s.n ? `${num(s.p50)} / ${num(s.p95)} / ${num(s.max)}` : na('none measured'))
   const records = list(o.records).map(x => [
     num(x.student), num(x.atSec, { digits: 1 }), txt(x.reason), num(x.outageMs), num(x.rejoinMs), num(x.resyncMs), num(x.missedSeqs),
-    escapeHtml(list(x.missedQuestions).map(q => `poll ${q.poll}${q.recovered ? ' ✓' : ' ✗'}`).join(', ') || '—'),
+    escapeHtml(list(x.missedQuestions).map(missedPollText).join(', ') || '—'),
     x.recovered === true ? pill('PASS') : x.recovered === false ? pill('FAIL') : na(),
     x.stuck ? pill('FAIL') : pill('PASS')
   ])
@@ -164,7 +175,8 @@ function outagesSection(r) {
     stat('Re-join (p50 / p95 / max ms)', o.rejoinMs ? s3(o.rejoinMs) : na('unavailable (not traced)')) +
     stat('Resync (p50 / p95 / max ms)', s3(o.resyncMs)) +
     stat('Polls missed while down', num(o.missedPolls)) +
-    stat('Recovered by resync', num(o.recoveredPolls), { tone: 'good' }) +
+    stat('Recovered by resync', num(o.recoveredPolls), { tone: 'good', note: o.resyncRetry?.recovered ? `${o.resyncRetry.recovered} only after the retry (stale backend cache)` : '' }) +
+    stat('Recovery delay (p50 / max ms)', o.recoveryDelayMs?.n ? `${num(o.recoveryDelayMs.p50)} / ${num(o.recoveryDelayMs.max)}` : na('none measured'), { tone: 'neutral', note: 'reconnect to the fetch that returned the poll; reported only' }) +
     failCount('Not recovered', o.unrecoveredPolls) +
     '</div>' +
     (o.truncated ? `<p class="muted">Showing the first ${list(o.records).length} of ${num(o.total)} outage records.</p>` : '') +
@@ -174,7 +186,10 @@ function outagesSection(r) {
 function machineSection(r) {
   const g = obj(r.generator)
   const sm = r.server?.metrics
-  const warnings = list(g.warnings).map(w => `<div class="banner warn">${escapeHtml(w)}</div>`).join('')
+  const c = r.server?.compromised
+  const warnings = (c ? `<div class="banner warn"><strong>Server metrics compromised</strong> at ${num(c.detectedAtSec, { digits: 1 })} s: ${escapeHtml(c.reason)}. The server figures and the delivery tail check cover only part of this run.</div>` : '') +
+    (isNum(r.server?.preexistingSockets) && r.server.preexistingSockets > 0 ? `<div class="banner warn">${num(r.server.preexistingSockets)} socket(s) were already connected to the backend before this run started; their traffic is in the server figures.</div>` : '') +
+    list(g.warnings).map(w => `<div class="banner warn">${escapeHtml(w)}</div>`).join('')
   const server = sm
     ? stat('Server CPU (avg / peak % of a core)', `${num(sm.process?.cpuPercent?.avg)} / ${num(sm.process?.cpuPercent?.max)}`) +
       stat('Server RSS / heap (MB)', `${num(sm.process?.memoryMb?.rss)} / ${num(sm.process?.memoryMb?.heapUsed)}`) +
@@ -229,7 +244,7 @@ export function renderHtmlReport(result) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>${title}</title>
 <style>${CSS}</style>
@@ -239,6 +254,7 @@ export function renderHtmlReport(result) {
 <h1>Spandan load test report</h1>
 <p class="muted">Generated offline from the saved result file. Local or authorized test environments only.</p>
 <div class="overall ${overall === 'PASS' ? 'pass' : overall === 'FAIL' ? 'fail' : 'na-pill'}">OVERALL: ${overall}</div>
+${r.failure ? `<div class="banner warn"><strong>The run failed</strong> during ${escapeHtml(r.failure.phase)}: ${escapeHtml(r.failure.message)}. This is a partial result; it was saved after cleanup.</div>` : ''}
 ${r.aborted ? '<div class="banner warn">The run was stopped early (Ctrl+C); some checks were skipped.</div>' : ''}
 ${r.generator?.possibleBottleneck ? '<div class="banner warn">The load generator may have been the bottleneck; see "Load generator and server".</div>' : ''}
 ${schemaNote}

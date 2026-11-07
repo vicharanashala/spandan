@@ -16,6 +16,7 @@ export const DEFAULTS = Object.freeze({
   password: 'LoadTest@123',         // seeded load-test password (backend LOADTEST_PASSWORD)
   serverMetrics: 'auto',            // read backend /internal/metrics if enabled: auto | require | off
   lateMs: DEFAULT_LATE_MS,          // a traced broadcast delivered later than this counts as late (reported, never fails)
+  resyncRetryMs: null,              // null = derived from the backend question-cache TTL (see defaultResyncRetryMs); 0 = no retry
   allowRemote: false,               // refuse non-local targets unless set
   confirmLarge: false               // required above LARGE_STUDENT_THRESHOLD
 })
@@ -39,6 +40,7 @@ const OPTIONS = {
   password: ['LOADTEST_PASSWORD', 'string'],
   serverMetrics: ['LOADTEST_SERVER_METRICS', 'string'],
   lateMs: ['LOADTEST_LATE_MS', 'number'],
+  resyncRetryMs: ['LOADTEST_RESYNC_RETRY_MS', 'int'],
   allowRemote: [null, 'flag'],
   confirmLarge: [null, 'flag']
 }
@@ -83,6 +85,25 @@ function coerce(name, raw, kind) {
   return n
 }
 
+// The backend caches each room's question list for ROOM_QUESTIONS_CACHE_TTL_MS (default 10 s,
+// backend/src/routes/responses.js) and does not invalidate it when a poll is created, so a resync
+// right after a launch can miss that poll. The one retry waits out that cache: the backend's TTL when
+// the same variable is set in this shell, else its default, plus a 1 s margin.
+export const BACKEND_QUESTION_CACHE_TTL_MS = 10000
+export const RESYNC_RETRY_MARGIN_MS = 1000
+export function defaultResyncRetryMs(env = {}) {
+  const ttl = Number(env.ROOM_QUESTIONS_CACHE_TTL_MS)
+  return (Number.isInteger(ttl) && ttl > 0 ? ttl : BACKEND_QUESTION_CACHE_TTL_MS) + RESYNC_RETRY_MARGIN_MS
+}
+
+/** The warning to print for this config's password source, or null. Never includes the password. */
+export function passwordWarning(cfg) {
+  if (cfg?.passwordSource !== 'cli') return null
+  return 'WARNING: --password was given on the command line, where other users can see it in the process list ' +
+    'and it stays in your shell history. Prefer the LOADTEST_PASSWORD environment variable ' +
+    '(it is required to be private when the accounts were seeded on a remote database).'
+}
+
 export function isLocalUrl(url) {
   try {
     return LOCAL_HOSTS.has(new URL(url).hostname.toLowerCase())
@@ -117,6 +138,9 @@ export function resolveConfig(cli = {}, env = {}) {
   if (String(cfg.password).length < 6) errs.push('Password must be at least 6 characters.')
   if (!['auto', 'require', 'off'].includes(cfg.serverMetrics)) errs.push('--server-metrics must be auto, require or off.')
   if (cfg.lateMs <= 0 || cfg.lateMs > 60000) errs.push('--late-ms must be 1..60000 milliseconds.')
+  cfg.resyncRetryDerived = cfg.resyncRetryMs == null
+  if (cfg.resyncRetryDerived) cfg.resyncRetryMs = defaultResyncRetryMs(env)
+  if (cfg.resyncRetryMs < 0 || cfg.resyncRetryMs > 120000) errs.push('--resync-retry-ms must be 0..120000 milliseconds (0 = no retry).')
   if (errs.length) throw new Error(errs.join('\n'))
 
   if (!cfg.allowRemote && !isLocalUrl(cfg.baseUrl)) {
@@ -131,6 +155,11 @@ export function resolveConfig(cli = {}, env = {}) {
       'and the local server; re-run with --confirm-large if you mean it.'
     )
   }
+
+  // Where the password came from (never the value). A --password on the command line is visible to
+  // other users in the process list and stays in shell history; run.mjs warns about it.
+  cfg.passwordSource = cli.password !== undefined ? 'cli'
+    : env.LOADTEST_PASSWORD !== undefined && env.LOADTEST_PASSWORD !== '' ? 'env' : 'default'
 
   // With --duration and no explicit --polls, keep cycling polls until the duration is used up.
   cfg.pollsExplicit = cli.polls !== undefined || (env.LOADTEST_POLLS !== undefined && env.LOADTEST_POLLS !== '')
@@ -155,9 +184,12 @@ Usage: npm start -- [options]
   --settle S           wait after the last poll for the leaderboard push (default ${DEFAULTS.settleSeconds})
   --base-url URL       backend URL (default ${DEFAULTS.baseUrl})
   --api-prefix P       path prefix, e.g. /spandan behind the nginx proxy (default none)
-  --password P         seeded load-test password (default ${DEFAULTS.password})
+  --password P         seeded load-test password (default ${DEFAULTS.password}). Prefer LOADTEST_PASSWORD:
+                       a value on the command line is visible in the process list and shell history
   --server-metrics M   read backend /internal/metrics (needs SERVER_METRICS=on): auto | require | off (default auto)
   --late-ms MS         traced event delivered later than this counts as late; reported, never fails (default ${DEFAULTS.lateMs})
+  --resync-retry-ms MS after a reconnect, re-fetch once this long later if the resync missed a poll; 0 = off
+                       (default: backend ROOM_QUESTIONS_CACHE_TTL_MS, else ${BACKEND_QUESTION_CACHE_TTL_MS}, + ${RESYNC_RETRY_MARGIN_MS} ms)
   --allow-remote       allow a non-localhost target (authorized test servers only, never production)
   --confirm-large      allow more than ${LIMITS.largeThreshold} students
 

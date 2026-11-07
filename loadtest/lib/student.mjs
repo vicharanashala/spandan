@@ -26,9 +26,16 @@ const MAX_OUTAGES_PER_STUDENT = 50
 
 const questionIdOf = (q) => String(q?._id ?? q?.id ?? q?.questionId ?? '')
 
+// A start abandoned because the run is shutting down. It is NOT a failure: callers must not record
+// it as a failed operation or a failed student (see isStopped).
+export const STOPPED = 'STUDENT_STOPPED'
+const stoppedError = (during) => Object.assign(new Error(`student stopped during ${during}`), { name: 'AbortError', code: STOPPED })
+export const isStopped = (err) => err?.code === STOPPED
+
 export class SimStudent {
-  constructor({ index, email, cfg, api, rec, session }) {
-    Object.assign(this, { index, email, cfg, api, rec, session })
+  // `connect` (the socket.io-client factory) and the two timeouts exist for the unit tests.
+  constructor({ index, email, cfg, api, rec, session, connect = io, connectTimeoutMs = 20000, joinTimeoutMs = 15000 }) {
+    Object.assign(this, { index, email, cfg, api, rec, session, connect, connectTimeoutMs, joinTimeoutMs })
     this.token = null
     this.userId = null
     this.socket = null
@@ -38,7 +45,10 @@ export class SimStudent {
     this.everConnected = false
     this.disconnectedAt = null
     this.timers = new Set()
-    this.leaderboardPushes = 0
+    this.aborts = new Set()   // settle a pending connect / join when stop() is called
+    this.closedOut = false    // finishDelivery() ran: the saved records must not change after this
+    this.leaderboardPushes = 0          // untraced pushes received (receipt-order grouping)
+    this.leaderboardSeqs = new Set()    // traced pushes received, as "stream:seq"
     this.received = new Set() // questionIds received
     this.answered = new Set()
     this.recoveredIds = new Set() // questionIds missed on the socket but returned by a resync
@@ -47,6 +57,8 @@ export class SimStudent {
       lateMs: cfg?.lateMs ?? DEFAULT_LATE_MS,
       clockComparable: isLocalUrl(cfg?.baseUrl)
     })
+    // One resync retry after the backend's question-cache lifetime (0 = no retry); see config.mjs.
+    this.resyncRetryMs = Number(cfg?.resyncRetryMs) > 0 ? Number(cfg.resyncRetryMs) : 0
     this.hellos = 0
     this.outages = []        // finished and open outage records
     this.outage = null       // the open outage: socket down, not reconnected yet
@@ -58,24 +70,36 @@ export class SimStudent {
     this.timers.add(t)
   }
 
-  /** Log in, join over HTTP and the socket, then load past answers and the leaderboard. */
+  /**
+   * Log in, join over HTTP and the socket, then load past answers and the leaderboard.
+   * Abandons (throws) as soon as stop() has been called, so a start still in flight when the run shuts
+   * down never opens a socket afterwards.
+   */
   async start() {
     const { rec, api, session, cfg } = this
     const login = await rec.time('login', () =>
       api('/auth/login', { method: 'POST', body: { email: this.email, password: cfg.password } }))
+    this._throwIfClosing()
     this.token = login.token
     this.userId = login.user?._id || login.user?.id
     if (!this.token || !this.userId) throw new Error('login returned no token/user')
 
     await rec.time('join_http', () => api(`/rooms/join/${session.roomCode}`, { token: this.token }))
+    this._throwIfClosing()
     await this._connect()
+    this._throwIfClosing()
     await this._joinRoom()
+    this._throwIfClosing()
     this.joined = true
     this.joinedAt = performance.now()
     rec.count('studentsJoined')
 
     await rec.time('past_responses', () => this._pastResponses()).catch(() => {})
     await rec.time('leaderboard_get', () => this._leaderboard()).catch(() => {})
+  }
+
+  _throwIfClosing() {
+    if (this.closing) throw stoppedError('start')
   }
 
   _pastResponses() {
@@ -92,11 +116,12 @@ export class SimStudent {
     await this.rec.time('leaderboard_get_final', () => this._leaderboard()).catch(() => {})
   }
 
-  _connect() {
+  _connect({ connect = this.connect, timeoutMs = this.connectTimeoutMs } = {}) {
     const { cfg, rec } = this
     return new Promise((resolve, reject) => {
+      if (this.closing) return reject(stoppedError('socket connect'))
       const started = performance.now()
-      const socket = io(cfg.baseUrl, {
+      const socket = connect(cfg.baseUrl, {
         path: cfg.socketPath,
         auth: { token: this.token },
         transports: ['websocket', 'polling'], // same order as the real client
@@ -107,21 +132,34 @@ export class SimStudent {
       })
       this.socket = socket
       let settled = false
-      const fail = (err) => {
-        if (settled) return
+      // Exactly one of: connected, failed (recorded), or stopped by stop() (NOT recorded).
+      const settle = () => {
         settled = true
         clearTimeout(guard)
+        this.timers.delete(guard)
+        this.aborts.delete(abort)
+      }
+      const fail = (err) => {
+        if (settled) return
+        settle()
         rec.failure('socket_connect', err)
         rec.count('connectFailures')
         socket.close()
         reject(err)
       }
-      const guard = setTimeout(() => fail(Object.assign(new Error('socket connect timeout'), { name: 'TimeoutError' })), 20000)
+      const abort = () => {
+        if (settled) return
+        settle()
+        socket.close()
+        reject(stoppedError('socket connect'))
+      }
+      const guard = setTimeout(() => fail(Object.assign(new Error('socket connect timeout'), { name: 'TimeoutError' })), timeoutMs)
+      this.timers.add(guard)
+      this.aborts.add(abort)
 
       socket.on('connect', () => {
         if (!settled) {
-          settled = true
-          clearTimeout(guard)
+          settle()
           this.everConnected = true
           rec.success('socket_connect', performance.now() - started)
           resolve()
@@ -146,7 +184,7 @@ export class SimStudent {
       socket.on('room:joined', () => rec.count('evt:room:joined'))
       socket.on('room:left', () => rec.count('evt:room:left'))
       socket.on('counts:updated', () => rec.count('evt:counts:updated'))
-      socket.on('leaderboard:updated', () => this._onLeaderboardPush())
+      socket.on('leaderboard:updated', (payload) => this._onLeaderboardPush(payload))
       socket.on('leaderboard:you', () => rec.count('evt:leaderboard:you'))
       socket.on('new_question', (q) => this._onQuestion(q))
       socket.on('room:ended', () => { rec.count('evt:room:ended'); this.session.noteRoomEnded() })
@@ -160,6 +198,7 @@ export class SimStudent {
     rec.count(`disconnect:${reason}`)
     this.disconnectedAt = now
     this.delivery.disconnected()
+    this.session.noteDisconnect()
     // A drop while still waiting for the re-join: that outage is over, unfinished.
     if (this.pendingRejoin) { this.pendingRejoin.stuck = this.hellos > 0; this.pendingRejoin = null }
     if (this.outage) return
@@ -217,21 +256,67 @@ export class SimStudent {
     if (trace) this.delivery.receive(event, trace, Date.now())
   }
 
-  // Resync after a reconnect: which polls had we not received by now, and did the resync return them?
+  /**
+   * Resync after a reconnect: which polls had we not received by now, and did the resync return them?
+   * Each missed poll becomes { questionId, poll, recovered, recoveredAfterMs, retry }:
+   *   recoveredAfterMs  reconnect -> the fetch that returned it (null while not recovered)
+   *   retry             'none'          not needed, or retries are off (--resync-retry-ms 0)
+   *                     'recovered'     the first fetch missed it, the one retry returned it
+   *                     'still_missing' the retry did not return it either   -> stays a FAIL
+   *                     'not_completed' the run ended before the retry ran   -> stays a FAIL
+   * The backend caches each room's question list (default 10 s) without invalidating it on launch, so
+   * the first fetch can miss a just-launched poll; the retry waits that out. A poll counts as
+   * recovered only when a fetch actually returned it.
+   */
   _onResync(o, data, now = performance.now()) {
+    // A resync still in flight at close-out must not change the saved records or poll counts.
+    if (this.closedOut) return
     o.resyncMs = o._connectedAt != null ? Math.round(now - o._connectedAt) : null
     const returned = new Set((data?.questions || []).map(questionIdOf))
     // Polls launched after the re-join reach this socket normally, so only earlier ones can be missed.
     const until = o._rejoinedAt ?? now
-    let all = true
+    const pending = []
     for (const p of this.session.polls.values()) {
       if (p.launchedAt > until || (this.joinedAt != null && p.launchedAt < this.joinedAt)) continue
       if (this.received.has(p.questionId) || this.recoveredIds.has(p.questionId)) continue
       const back = returned.has(p.questionId)
-      o.missedQuestions.push({ questionId: p.questionId, poll: p.index + 1, recovered: back })
-      if (back) { this.recoveredIds.add(p.questionId); p.recovered = (p.recovered || 0) + 1 } else all = false
+      const entry = { questionId: p.questionId, poll: p.index + 1, recovered: back, recoveredAfterMs: back ? o.resyncMs : null, retry: 'none' }
+      o.missedQuestions.push(entry)
+      if (back) this._markRecovered(p)
+      else pending.push({ entry, p })
     }
-    o.recovered = all
+    if (!pending.length || !this.resyncRetryMs) { o.recovered = pending.length === 0; return }
+
+    // Undecided until the retry: neither a pass nor a fail yet.
+    o.recovered = null
+    o._retry = pending
+    for (const { entry } of pending) entry.retry = 'not_completed' // stays so if the run ends first
+    this._later(this.resyncRetryMs, () => {
+      this.rec.time('past_responses_resync_retry', () => this._pastResponses())
+        .then((d) => this._onResyncRetry(o, d), () => this._onResyncRetry(o, null))
+    })
+  }
+
+  _onResyncRetry(o, data, now = performance.now()) {
+    if (this.closedOut || !o._retry) return
+    const returned = new Set((data?.questions || []).map(questionIdOf))
+    for (const { entry, p } of o._retry) {
+      if (returned.has(p.questionId)) {
+        entry.recovered = true
+        entry.recoveredAfterMs = o._connectedAt != null ? Math.round(now - o._connectedAt) : null
+        entry.retry = 'recovered'
+        if (!this.recoveredIds.has(p.questionId)) this._markRecovered(p)
+      } else {
+        entry.retry = 'still_missing'
+      }
+    }
+    o._retry = null
+    o.recovered = o.missedQuestions.every(q => q.recovered)
+  }
+
+  _markRecovered(p) {
+    this.recoveredIds.add(p.questionId)
+    p.recovered = (p.recovered || 0) + 1
   }
 
   /**
@@ -245,30 +330,69 @@ export class SimStudent {
       this.outage.stuck = true
     }
     if (this.pendingRejoin && this.hellos > 0) this.pendingRejoin.stuck = true
-    const outages = this.outages.map(({ _startedAt, _connectedAt, _rejoinedAt, ...o }) => o) // eslint-disable-line no-unused-vars
+    // A retry the run ended before: those polls were never returned, so they are not recovered.
+    for (const o of this.outages) if (o._retry) { o._retry = null; o.recovered = false }
+    this.closedOut = true
+    // Deep copies: nothing that happens after close-out can reach the saved records.
+    const outages = this.outages.map(o => ({
+      ...Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_'))),
+      missedQuestions: o.missedQuestions.map(q => ({ ...q }))
+    }))
     return { delivery: this.delivery.summary(ledger), outages, traced: this.hellos > 0 }
   }
 
-  _joinRoom() {
-    const { socket, session, rec } = this
-    return rec.time('join_socket', () => new Promise((resolve, reject) => {
-      const t = setTimeout(() => { socket.off('room:joined', onJoined); reject(Object.assign(new Error('room:join timeout'), { name: 'TimeoutError' })) }, 15000)
-      const onJoined = (data) => {
-        if (data?.roomCode !== session.roomCode) return
+  // Timed like rec.time('join_socket'), except that a stop() during the join is not a failure.
+  async _joinRoom({ timeoutMs = this.joinTimeoutMs } = {}) {
+    const started = performance.now()
+    try {
+      await this._joinRoomOnce(timeoutMs)
+      this.rec.success('join_socket', performance.now() - started)
+    } catch (err) {
+      if (!isStopped(err)) this.rec.failure('join_socket', err)
+      throw err
+    }
+  }
+
+  _joinRoomOnce(timeoutMs) {
+    const { socket, session } = this
+    return new Promise((resolve, reject) => {
+      if (this.closing) return reject(stoppedError('room join'))
+      let settled = false
+      const finish = (err) => {
+        if (settled) return
+        settled = true
         clearTimeout(t)
+        this.timers.delete(t)
+        this.aborts.delete(abort)
         socket.off('room:joined', onJoined)
-        resolve()
+        if (err) reject(err); else resolve()
       }
+      const onJoined = (data) => { if (data?.roomCode === session.roomCode) finish() }
+      const abort = () => finish(stoppedError('room join'))
+      const t = setTimeout(() => finish(Object.assign(new Error('room:join timeout'), { name: 'TimeoutError' })), timeoutMs)
+      this.timers.add(t)
+      this.aborts.add(abort)
       socket.on('room:joined', onJoined)
       // The socket already authenticated in the handshake; the real client still re-sends both.
       socket.emit('authenticate', { token: this.token })
       socket.emit('room:join', { roomCode: session.roomCode, userId: this.userId })
-    }))
+    })
   }
 
-  _onLeaderboardPush() {
+  // Traced pushes are grouped by their own seq (exact); untraced ones by this student's receipt order.
+  // A repeated seq is a duplicate delivery (the delivery tracker counts it) and must not add a second
+  // receipt to its broadcast.
+  _onLeaderboardPush(payload, now = performance.now()) {
     this.rec.count('evt:leaderboard:updated')
-    this.session.noteLeaderboardPush(this.leaderboardPushes++)
+    const t = payload && typeof payload === 'object' ? payload[TRACE_FIELD] : null
+    if (t && typeof t.s === 'string' && Number.isInteger(t.n) && t.n >= 0) {
+      const key = `${t.s}:${t.n}`
+      if (this.leaderboardSeqs.has(key)) return
+      this.leaderboardSeqs.add(key)
+      this.session.noteTracedLeaderboardPush(t, now)
+      return
+    }
+    this.session.noteLeaderboardPush(this.leaderboardPushes++, now)
   }
 
   _onQuestion(q) {
@@ -319,6 +443,8 @@ export class SimStudent {
 
   async stop() {
     this.closing = true
+    // Settle a connect / join still pending (as "stopped", not a failure) before its timers go.
+    for (const abort of [...this.aborts]) abort()
     for (const t of this.timers) clearTimeout(t)
     this.timers.clear()
     if (this.socket) this.socket.close()

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { RangeSet, DeliveryTracker, mergeSummaries, DEFAULT_LATE_MS, MAX_HOLE_RANGES } from '../lib/delivery.mjs'
+import { RangeSet, DeliveryTracker, mergeSummaries, DEFAULT_LATE_MS, MAX_HOLE_RANGES, MAX_STREAMS } from '../lib/delivery.mjs'
 
 const T0 = 1_700_000_000_000
 const lt = (n, s = 'A', t = T0) => ({ s, n, t })
@@ -316,5 +316,68 @@ describe('mergeSummaries', () => {
     assert.equal(m.students, 0)
     assert.equal(m.droppedConnected, 0)
     assert.equal(m.latency, null)
+  })
+})
+
+describe('stream eviction (more than MAX_STREAMS streams)', () => {
+  // Stream "A" (the room) has a lost seq; then MAX_STREAMS other streams appear, forcing evictions.
+  const churn = (tr, count, touchA = false) => {
+    for (let i = 0; i < count; i++) {
+      tr.receive('counts:updated', lt(1, `X${i}`), T0 + 10)
+      if (touchA) tr.receive('counts:updated', lt(10 + i, 'A'), T0 + 10)
+    }
+  }
+
+  test('an evicted stream keeps its figures: losses, duplicates and receipts stay in the totals', () => {
+    const tr = joined(0, 'A')
+    feed(tr, [1, 2, 4, 4]) // 3 lost, 4 duplicated
+    churn(tr, MAX_STREAMS) // A is the least recently used: evicted
+    const s = tr.summary(null)
+    assert.equal(s.streamsEvicted, 1)
+    assert.equal(s.streams, MAX_STREAMS + 1)
+    assert.equal(s.droppedConnected, 1) // seq 3, final once its stream is gone
+    assert.equal(s.duplicates, 1)
+    assert.equal(s.received, 3 + MAX_STREAMS)
+    assert.equal(s.baselineInferred, MAX_STREAMS) // the 20 live X streams had no hello; A (evicted) had one
+    assert.equal(s.tailUnverified, true)              // an evicted stream's tail can't be checked
+  })
+
+  test('a late seq for an evicted stream is unclassified, never a fresh delivery', () => {
+    const tr = joined(0, 'A')
+    feed(tr, [1, 3])
+    churn(tr, MAX_STREAMS)
+    assert.equal(tr.receive('counts:updated', lt(2, 'A'), T0 + 10), 'unclassified')
+    const s = tr.summary(null)
+    assert.equal(s.unclassified, 1)
+    assert.equal(s.droppedConnected, 1) // the hole stays counted
+  })
+
+  test('the stream in use is the most recently used, so it survives the churn', () => {
+    const tr = joined(0, 'A')
+    feed(tr, [1, 2])
+    tr.receive('counts:updated', lt(3, 'A'), T0 + 10)
+    for (let i = 0; i < MAX_STREAMS + 5; i++) {
+      tr.receive('counts:updated', lt(1, `X${i}`), T0 + 10)
+      tr.receive('counts:updated', lt(4 + i, 'A'), T0 + 10) // the room keeps broadcasting
+    }
+    const s = tr.summary({ A: { lastSeq: 3 + MAX_STREAMS + 5 } })
+    assert.equal(tr.streams.has('A'), true)
+    assert.equal(s.droppedConnected, 0)
+    assert.equal(s.tailMissing, 0)
+  })
+
+  test('a hello for an evicted stream starts it afresh from the new baseline', () => {
+    const tr = joined(0, 'A')
+    feed(tr, [1])
+    churn(tr, MAX_STREAMS)
+    tr.disconnected()
+    tr.hello({ s: 'A', n: 9 })
+    assert.equal(tr.receive('counts:updated', lt(10, 'A'), T0 + 10), 'received')
+  })
+
+  test('merged summaries carry the eviction count', () => {
+    const a = joined(0, 'A'); feed(a, [1]); churn(a, MAX_STREAMS)
+    const b = joined(0, 'A'); feed(b, [1])
+    assert.equal(mergeSummaries([a.summary(null), b.summary(null)]).streamsEvicted, 1)
   })
 })

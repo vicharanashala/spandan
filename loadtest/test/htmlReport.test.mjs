@@ -9,7 +9,10 @@ import path from 'node:path'
 import { renderHtmlReport, escapeHtml, MAX_TEXT, MAX_ROWS } from '../lib/htmlReport.mjs'
 import { DeliveryTracker } from '../lib/delivery.mjs'
 import { deliverySection, outageSection, verdict } from '../lib/report.mjs'
-import { buildReport, newestResult, htmlPathFor } from '../make-report.mjs'
+import { buildReport, newestResult, htmlPathFor } from '../lib/reportFile.mjs'
+import { execFileSync } from 'node:child_process'
+import { symlinkSync, rmSync, rmdirSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const T0 = 1_700_000_000_000
 function student(index, seqs, { lastSeq = Math.max(0, ...seqs), lateBy = 10, clockComparable = true, hello = true } = {}) {
@@ -64,6 +67,21 @@ describe('renderHtmlReport', () => {
     assert.doesNotMatch(html, /<script/i)
     assert.doesNotMatch(html, /\b(src|href)="(https?:)?\/\//i)
     assert.doesNotMatch(html, /<link /i)
+    // default-src does not cover these two; both must be locked down explicitly.
+    assert.match(html, /base-uri 'none'/)
+    assert.match(html, /form-action 'none'/)
+  })
+
+  test('a hostile schema version in an old file is escaped exactly once', () => {
+    const r = makeResult()
+    delete r.delivery
+    delete r.outages
+    r.schemaVersion = '<img src=x onerror=alert(1)>'
+    const html = renderHtmlReport(r)
+    assert.ok(!html.includes('<img src=x'))
+    assert.match(html, /Delivery tracking: <span class="na">not recorded in this result file \(schema v&lt;img src=x onerror=alert\(1\)&gt;\)/)
+    assert.match(html, /Outage records: <span class="na">not recorded in this result file \(schema v&lt;img/)
+    assert.doesNotMatch(html, /&amp;lt;/) // no double escaping anywhere
   })
 
   test('shows the overall verdict and PASS / FAIL checks', () => {
@@ -217,5 +235,25 @@ describe('make-report', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  test('the entry point runs however it is launched, including through a symlink / Windows junction', async () => {
+    const loadtestDir = fileURLToPath(new URL('..', import.meta.url))
+    const run = (script) => execFileSync(process.execPath, [script, '--help'], { cwd: os.tmpdir(), encoding: 'utf8' })
+    assert.match(run(path.join(loadtestDir, 'make-report.mjs')), /^Usage: npm run report/)
+
+    // A directory link to loadtest/ ('junction' on Windows needs no admin rights; a plain symlink elsewhere).
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'lt-link-'))
+    const link = path.join(dir, 'lt')
+    try {
+      symlinkSync(loadtestDir, link, 'junction')
+      assert.match(run(path.join(link, 'make-report.mjs')), /^Usage: npm run report/)
+    } finally {
+      // Never a recursive delete here: remove only the link itself, then the (now empty) temp dir.
+      try { rmSync(link) } catch { /* not created */ }
+      try { rmdirSync(dir) } catch { /* leave it rather than risk following the link */ }
+    }
+    assert.ok(existsSync(path.join(loadtestDir, 'make-report.mjs')), 'removing the link must never touch its target')
+    assert.ok(existsSync(path.join(loadtestDir, 'lib', 'reportFile.mjs')))
   })
 })

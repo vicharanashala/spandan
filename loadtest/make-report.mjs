@@ -4,32 +4,11 @@
 //   npm run report                                   # newest results/*.json -> same name .html
 //   npm run report -- results/2026-11-06T02-15-30Z.json
 //   npm run report -- results/<file>.json --out report.html
-import { readFile, writeFile, readdir } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
-import { renderHtmlReport } from './lib/htmlReport.mjs'
-
-const RESULTS_DIR = fileURLToPath(new URL('./results/', import.meta.url))
-
-export async function newestResult(dir = RESULTS_DIR) {
-  const files = (await readdir(dir).catch(() => [])).filter(f => f.endsWith('.json')).sort()
-  return files.length ? path.join(dir, files[files.length - 1]) : null
-}
-
-export const htmlPathFor = (jsonPath) => jsonPath.replace(/\.json$/i, '') + '.html'
-
-/** Read a saved result JSON and write its HTML report. Returns the output path. */
-export async function buildReport(jsonPath, outPath = htmlPathFor(jsonPath)) {
-  let result
-  try {
-    result = JSON.parse(await readFile(jsonPath, 'utf8'))
-  } catch (err) {
-    throw new Error(`Cannot read ${jsonPath} as a result file (${err.message}).`)
-  }
-  if (result?.tool !== 'spandan-loadtest') throw new Error(`${jsonPath} is not a spandan-loadtest result file.`)
-  await writeFile(outPath, renderHtmlReport(result))
-  return outPath
-}
+//
+// Entry point only: it always runs. The reusable functions live in lib/reportFile.mjs (import those,
+// not this file). There is deliberately no "am I the main module?" path comparison, which silently
+// did nothing when launched through a symlink or a Windows directory junction.
+import { buildReport, newestResult } from './lib/reportFile.mjs'
 
 async function main(argv) {
   let input = null, out = null
@@ -49,8 +28,6 @@ async function main(argv) {
   return 0
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2))
-    .then((code) => { process.exitCode = code })
-    .catch((err) => { console.error(err.message); process.exitCode = 2 })
-}
+main(process.argv.slice(2))
+  .then((code) => { process.exitCode = code })
+  .catch((err) => { console.error(err.message); process.exitCode = 2 })
