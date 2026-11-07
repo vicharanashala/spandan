@@ -8,7 +8,7 @@ import { Server } from 'socket.io'
 import { io as ioClient } from 'socket.io-client'
 import {
   metricsConfig, installServerMetrics, isLocalDirectRequest, routeKey, eventKey, percentileOf,
-  ServerMetrics, METRICS_PATH
+  ServerMetrics, METRICS_PATH, RESET_HEADER, RESET_HEADER_VALUE, hostnameOf, isLoopbackOrigin, metricsAccessError
 } from '../services/serverMetrics.js'
 
 const quiet = () => {}
@@ -126,7 +126,7 @@ describe('when enabled', () => {
   it('reset clears counters', async () => {
     await request(app).get('/api/rooms')
     expect((await request(app).get(METRICS_PATH)).body.http.total).toBe(1)
-    const reset = await request(app).post(`${METRICS_PATH}/reset`)
+    const reset = await request(app).post(`${METRICS_PATH}/reset`).set(RESET_HEADER, RESET_HEADER_VALUE)
     expect(reset.status).toBe(200)
     expect(reset.body.reset).toBe(true)
     const snap = (await request(app).get(METRICS_PATH)).body
@@ -140,7 +140,151 @@ describe('when enabled', () => {
       expect(res.status).toBe(403)
       expect(res.body).toEqual({ error: 'metrics are available only to direct local requests' })
     }
-    expect((await request(app).post(`${METRICS_PATH}/reset`).set('X-Forwarded-For', '1.2.3.4')).status).toBe(403)
+    expect((await request(app).post(`${METRICS_PATH}/reset`).set('X-Forwarded-For', '1.2.3.4').set(RESET_HEADER, RESET_HEADER_VALUE)).status).toBe(403)
+  })
+
+  it('reset without the custom header is refused and clears nothing (CSRF)', async () => {
+    await request(app).get('/api/rooms')
+    for (const value of [undefined, '', '1', 'RESET ']) {
+      const req = request(app).post(`${METRICS_PATH}/reset`)
+      const res = await (value === undefined ? req : req.set(RESET_HEADER, value))
+      expect(res.status).toBe(403)
+      expect(res.body.error).toMatch(/x-loadtest-metrics: reset/)
+    }
+    // A plain form-style POST, as a drive-by page would send it.
+    const form = await request(app).post(`${METRICS_PATH}/reset`).type('form').send('a=1')
+    expect(form.status).toBe(403)
+    expect((await request(app).get(METRICS_PATH)).body.http.total).toBe(1)
+  })
+
+  it('refuses a non-localhost Host header (DNS rebinding), for reads and resets', async () => {
+    for (const host of ['evil.example', 'evil.example:3001', '127.0.0.1.nip.io:3001', '10.0.0.5:3001', '']) {
+      expect((await request(app).get(METRICS_PATH).set('Host', host)).status).toBe(403)
+      expect((await request(app).post(`${METRICS_PATH}/reset`).set('Host', host).set(RESET_HEADER, RESET_HEADER_VALUE)).status).toBe(403)
+    }
+    const res = await request(app).get(METRICS_PATH).set('Host', 'evil.example')
+    expect(res.body).toEqual({ error: 'metrics require a localhost Host header' })
+    for (const host of ['localhost:3001', 'LOCALHOST', '127.0.0.1:3001', '[::1]:3001']) {
+      expect((await request(app).get(METRICS_PATH).set('Host', host)).status).toBe(200)
+    }
+  })
+
+  it('refuses requests a browser marks as cross-site or same-site, or with a foreign Origin', async () => {
+    for (const site of ['cross-site', 'same-site', 'CROSS-SITE']) {
+      const res = await request(app).post(`${METRICS_PATH}/reset`).set('Sec-Fetch-Site', site).set(RESET_HEADER, RESET_HEADER_VALUE)
+      expect(res.status).toBe(403)
+      expect(res.body.error).toMatch(/cross-site/)
+    }
+    for (const origin of ['https://evil.example', 'null', 'http://127.0.0.1.evil.example', 'file://', 'chrome-extension://abc']) {
+      const res = await request(app).get(METRICS_PATH).set('Origin', origin)
+      expect(res.status).toBe(403)
+      expect(res.body.error).toMatch(/cross-origin/)
+    }
+    // A cross-origin preflight is refused and never approved, so a page can't send the reset header.
+    const pre = await request(app).options(`${METRICS_PATH}/reset`).set('Origin', 'https://evil.example')
+      .set('Access-Control-Request-Method', 'POST').set('Access-Control-Request-Headers', RESET_HEADER)
+    expect(pre.status).toBe(403)
+    expect(pre.headers['access-control-allow-origin']).toBeUndefined()
+    // Same-origin / direct navigation and a loopback Origin are fine.
+    expect((await request(app).get(METRICS_PATH).set('Sec-Fetch-Site', 'none')).status).toBe(200)
+    expect((await request(app).get(METRICS_PATH).set('Sec-Fetch-Site', 'same-origin')).status).toBe(200)
+    expect((await request(app).get(METRICS_PATH).set('Origin', 'http://localhost:3001')).status).toBe(200)
+  })
+
+  it('sends its own security headers (it runs before helmet), on success and on refusal', async () => {
+    const ok = await request(app).get(METRICS_PATH)
+    const refused = await request(app).get(METRICS_PATH).set('Origin', 'https://evil.example')
+    const resetRefused = await request(app).post(`${METRICS_PATH}/reset`)
+    for (const res of [ok, refused, resetRefused]) {
+      expect(res.headers['cache-control']).toBe('no-store')
+      expect(res.headers['x-content-type-options']).toBe('nosniff')
+      expect(res.headers['cross-origin-resource-policy']).toBe('same-origin')
+      expect(res.headers['x-powered-by']).toBeUndefined()
+      expect(res.headers['content-type']).toMatch(/^application\/json/)
+    }
+    expect([ok.status, refused.status, resetRefused.status]).toEqual([200, 403, 403])
+  })
+
+  it('a non-browser client (no Origin or Sec-Fetch-Site), like the simulator, can read and reset', async () => {
+    expect((await request(app).get(METRICS_PATH).set('Sec-Fetch-Mode', 'cors')).status).toBe(200)
+    const res = await request(app).post(`${METRICS_PATH}/reset`).set('Sec-Fetch-Mode', 'cors').set(RESET_HEADER, RESET_HEADER_VALUE)
+    expect(res.status).toBe(200)
+  })
+})
+
+describe('route keys for errors handled at app level', () => {
+  let app, metrics
+  beforeEach(() => {
+    app = express()
+    metrics = installServerMetrics(app, null, { env: { SERVER_METRICS: 'on' }, log: quiet })
+    const rooms = express.Router()
+    rooms.get('/:id/fail', (req, res, next) => next(new Error('x')))
+    rooms.get('/:id/throw', () => { throw new Error('x') })
+    rooms.get('/:id/own500', (req, res) => res.status(500).json({}))
+    rooms.get('/', (req, res, next) => next(new Error('x')))
+    const questions = express.Router()
+    questions.get('/:id/fail', (req, res, next) => next(new Error('x')))
+    app.use('/api/rooms', rooms)
+    app.use('/api/questions', questions)
+    app.get('/api/health', (req, res, next) => next(new Error('x'))) // app-level route: already full
+    app.use((err, req, res, next) => res.status(500).json({ error: 'x' })) // eslint-disable-line no-unused-vars
+  })
+  afterEach(() => metrics?.stopSampling())
+
+  it('keeps each router prefix, so the same pattern in two routers never merges', async () => {
+    await request(app).get(`/api/rooms/${ROOM_ID}/fail`)
+    await request(app).get('/api/rooms/ABC123/throw')
+    await request(app).get(`/api/rooms/${ROOM_ID}/own500`)
+    await request(app).get('/api/rooms?x=1')
+    await request(app).get(`/api/questions/${ROOM_ID}/fail`)
+    await request(app).get('/api/health')
+    const snap = (await request(app).get(METRICS_PATH)).body
+    const keys = Object.keys(snap.http.routes).sort()
+    expect(keys).toEqual([
+      'GET /api/health', 'GET /api/questions/:id/fail', 'GET /api/rooms',
+      'GET /api/rooms/:id/fail', 'GET /api/rooms/:id/own500', 'GET /api/rooms/:id/throw'
+    ])
+    for (const k of keys) expect(snap.http.routes[k]).toMatchObject({ count: 1, errors: 1, statuses: { 500: 1 } })
+    expect(JSON.stringify(snap)).not.toContain(ROOM_ID)
+    expect(JSON.stringify(snap)).not.toContain('ABC123')
+  })
+
+  it('routeKey recovers the prefix only for known /api segments', () => {
+    const req = (originalUrl, path = '/:id') => ({ method: 'GET', baseUrl: '', originalUrl, route: { path } })
+    expect(routeKey(req('/api/rooms/1'))).toBe('GET /api/rooms/:id')
+    expect(routeKey(req('/api/unknownthing/1'))).toBe('GET /:id')
+    expect(routeKey(req('/other/1'))).toBe('GET /:id')
+    expect(routeKey(req('/api/health', '/api/health'))).toBe('GET /api/health')
+  })
+})
+
+describe('browser-request helpers', () => {
+  it('hostnameOf parses Host headers and rejects malformed ones', () => {
+    expect(hostnameOf('LocalHost:3001')).toBe('localhost')
+    expect(hostnameOf('127.0.0.1')).toBe('127.0.0.1')
+    expect(hostnameOf('[::1]:3001')).toBe('[::1]')
+    expect(hostnameOf('')).toBeNull()
+    expect(hostnameOf(undefined)).toBeNull()
+    expect(hostnameOf('a b')).toBeNull()
+    expect(hostnameOf('localhost:3001:1')).toBeNull()
+  })
+
+  it('isLoopbackOrigin accepts only http(s) origins on this machine', () => {
+    expect(isLoopbackOrigin('http://localhost:5173')).toBe(true)
+    expect(isLoopbackOrigin('https://127.0.0.1')).toBe(true)
+    expect(isLoopbackOrigin('http://[::1]:3001')).toBe(true)
+    expect(isLoopbackOrigin('null')).toBe(false)
+    expect(isLoopbackOrigin('http://localhost.evil.example')).toBe(false)
+    expect(isLoopbackOrigin('ws://localhost')).toBe(false)
+  })
+
+  it('metricsAccessError checks the peer first, then Host, Sec-Fetch-Site and Origin', () => {
+    const req = (headers, remoteAddress = '127.0.0.1') => ({ socket: { remoteAddress }, headers: { host: 'localhost:3001', ...headers } })
+    expect(metricsAccessError(req({}))).toBeNull()
+    expect(metricsAccessError(req({}, '10.0.0.5'))).toMatch(/direct local requests/)
+    expect(metricsAccessError(req({ host: 'evil.example' }))).toMatch(/Host/)
+    expect(metricsAccessError(req({ 'sec-fetch-site': 'cross-site' }))).toMatch(/cross-site/)
+    expect(metricsAccessError(req({ origin: 'https://evil.example' }))).toMatch(/cross-origin/)
   })
 })
 

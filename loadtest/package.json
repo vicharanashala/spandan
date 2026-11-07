@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node run.mjs",
     "report": "node make-report.mjs",
-    "test": "node --test \"test/**/*.test.mjs\""
+    "test": "node --test"
   },
   "dependencies": {
     "socket.io-client": "4.8.3"

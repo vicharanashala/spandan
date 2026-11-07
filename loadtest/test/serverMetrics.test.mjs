@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { startServerMetrics, serverGauges, serverMetricsUrl } from '../lib/serverMetrics.mjs'
+import { startServerMetrics, serverGauges, serverMetricsUrl, RESET_HEADERS } from '../lib/serverMetrics.mjs'
 import { resolveConfig, parseArgs } from '../lib/config.mjs'
 import { Recorder } from '../lib/metrics.mjs'
 
@@ -11,13 +11,20 @@ const SNAP = {
   sockets: { active: 50 }
 }
 
-// A stand-in backend: mode 'on' serves metrics, 'off' 404s (disabled), 'proxy' 403s.
+// A stand-in backend: mode 'on' serves metrics, 'off' 404s (disabled), 'proxy' 403s without a reason,
+// 'host' 403s with the backend's reason. Like the real backend, reset needs X-Loadtest-Metrics: reset.
 let mode = 'on'
 let resets = 0
+let lastResetHeaders = null
 const server = http.createServer((req, res) => {
   if (mode === 'off') { res.writeHead(404); return res.end('{}') }
   if (mode === 'proxy') { res.writeHead(403); return res.end('{}') }
-  if (req.method === 'POST' && req.url === '/internal/metrics/reset') { resets++; res.writeHead(200); return res.end('{"reset":true}') }
+  if (mode === 'host') { res.writeHead(403); return res.end('{"error":"metrics require a localhost Host header"}') }
+  if (req.method === 'POST' && req.url === '/internal/metrics/reset') {
+    lastResetHeaders = req.headers
+    if (req.headers['x-loadtest-metrics'] !== 'reset') { res.writeHead(403); return res.end('{"error":"reset requires the header"}') }
+    resets++; res.writeHead(200); return res.end('{"reset":true}')
+  }
   if (req.url === '/internal/metrics') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(SNAP)) }
   res.writeHead(404); res.end()
 })
@@ -62,6 +69,21 @@ describe('server metrics client', () => {
     mode = 'proxy'
     sm = await startServerMetrics(cfgFor('auto'), new Recorder(), { log: quiet })
     assert.match(sm.reason, /local-only/)
+    mode = 'host'
+    sm = await startServerMetrics(cfgFor('auto'), new Recorder(), { log: quiet })
+    assert.match(sm.reason, /backend refused: metrics require a localhost Host header/)
+  })
+
+  test('reset sends the CSRF header, and no Origin or Sec-Fetch-Site that the backend would refuse', async () => {
+    mode = 'on'; resets = 0; lastResetHeaders = null
+    const sm = await startServerMetrics(cfgFor('auto'), new Recorder(), { intervalMs: 1000, log: quiet })
+    await sm.stop()
+    assert.equal(resets, 1)
+    assert.equal(lastResetHeaders['x-loadtest-metrics'], 'reset')
+    assert.equal(lastResetHeaders.origin, undefined)
+    assert.equal(lastResetHeaders['sec-fetch-site'], undefined)
+    assert.match(lastResetHeaders.host, /^127\.0\.0\.1:\d+$/)
+    assert.deepEqual(RESET_HEADERS, { 'X-Loadtest-Metrics': 'reset' })
   })
 
   test('require mode fails fast; off mode never calls the backend', async () => {

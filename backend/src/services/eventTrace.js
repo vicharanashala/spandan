@@ -45,17 +45,28 @@ export class EventTrace {
   /** Drop every stream. A room that broadcasts afterwards starts a new stream (new id, seq from 1). */
   reset() {
     this.since = new Date(this.clock()).toISOString()
-    this.streams = new Map() // roomCode -> { id, seq, createdAt, emitted, recipients, byEvent: Map }
+    this.streams = new Map() // roomCode -> { id, seq, createdAt, emitted, recipients, byEvent: Map }, least recently used first
+    this.evicted = 0         // streams dropped under MAX_STREAMS since the last reset
   }
 
+  // Least-recently-USED eviction: every broadcast or hello moves its room to the back, so a room that
+  // is still live is never dropped in favour of rooms that went quiet (creation order would drop the
+  // oldest room even mid-session and restart its stream). An evicted room that broadcasts again gets
+  // a new stream id; the simulator then baselines it as a new stream.
   _stream(roomCode) {
     const key = String(roomCode)
     let s = this.streams.get(key)
-    if (!s) {
-      if (this.streams.size >= MAX_STREAMS) this.streams.delete(this.streams.keys().next().value)
-      s = { id: this.newId(), seq: 0, createdAt: new Date(this.clock()).toISOString(), emitted: 0, recipients: 0, byEvent: new Map() }
+    if (s) {
+      this.streams.delete(key)
       this.streams.set(key, s)
+      return s
     }
+    if (this.streams.size >= MAX_STREAMS) {
+      this.streams.delete(this.streams.keys().next().value)
+      this.evicted++
+    }
+    s = { id: this.newId(), seq: 0, createdAt: new Date(this.clock()).toISOString(), emitted: 0, recipients: 0, byEvent: new Map() }
+    this.streams.set(key, s)
     return s
   }
 
@@ -100,6 +111,8 @@ export class EventTrace {
       enabled: true,
       since: this.since,
       note: 'one stream per room per server instance; localRecipients counts sockets on this instance only',
+      maxStreams: MAX_STREAMS,
+      evictedStreams: this.evicted, // > 0: some room's stream was dropped (least recently used) and restarts if it broadcasts again
       streams
     }
   }

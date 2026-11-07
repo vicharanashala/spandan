@@ -16,12 +16,23 @@
 // only to requests from the loopback interface that did not come through a proxy. The endpoint is
 // deliberately outside /api, so a reverse proxy that forwards /api and /socket.io never routes it.
 //
+// Browser protection (a web page open on the same machine also connects from loopback):
+//   - the Host header must be localhost / 127.0.0.1 / [::1], which defeats DNS rebinding;
+//   - a request a browser marks as cross-site or same-site (Sec-Fetch-Site), or that carries a
+//     non-loopback Origin, is refused;
+//   - reset additionally needs the custom header `X-Loadtest-Metrics: reset`. A page cannot send a
+//     custom header cross-origin without a CORS preflight, and this route never approves one, so a
+//     drive-by form or fetch cannot wipe the counters mid-run.
+//
 // Never recorded: URLs, query strings, bodies, headers, tokens, user ids, emails, room codes,
 // socket ids or event payloads.
 import express from 'express'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 export const METRICS_PATH = '/internal/metrics'
+export const RESET_HEADER = 'x-loadtest-metrics'
+export const RESET_HEADER_VALUE = 'reset'
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
 const RESERVOIR_SIZE = 1024     // latency samples kept per route (recent window for percentiles)
 const MAX_ROUTE_KEYS = 200      // distinct route keys; beyond this, traffic lands in "other"
 const MAX_EVENT_KEYS = 100      // distinct socket event names, likewise
@@ -49,13 +60,53 @@ export function isLocalDirectRequest(req) {
   return !PROXY_HEADERS.some(h => req.headers?.[h] !== undefined)
 }
 
+/** Lowercased hostname from a Host header ("localhost:3001", "[::1]:3001"), or null if malformed. */
+export function hostnameOf(hostHeader) {
+  const m = String(hostHeader || '').trim().toLowerCase().match(/^(\[[0-9a-f:.]+\]|[^:[\]\s]+)(?::\d{1,5})?$/)
+  return m ? m[1] : null
+}
+
+/** An http(s) Origin on this machine. "null" (sandboxed frames, file://) and anything else: false. */
+export function isLoopbackOrigin(origin) {
+  try {
+    const u = new URL(String(origin))
+    return (u.protocol === 'http:' || u.protocol === 'https:') && LOOPBACK_HOSTNAMES.has(u.hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Why a request to the metrics endpoint must be refused, or null when it is allowed. Non-browser
+ * clients (curl, the load simulator's fetch) send no Origin or Sec-Fetch-Site and pass.
+ */
+export function metricsAccessError(req) {
+  if (!isLocalDirectRequest(req)) return 'metrics are available only to direct local requests'
+  if (!LOOPBACK_HOSTNAMES.has(hostnameOf(req.headers?.host))) return 'metrics require a localhost Host header'
+  const site = req.headers?.['sec-fetch-site']
+  if (site !== undefined && !['none', 'same-origin'].includes(String(site).toLowerCase())) {
+    return 'metrics refuse cross-site browser requests'
+  }
+  const origin = req.headers?.origin
+  if (origin !== undefined && !isLoopbackOrigin(origin)) return 'metrics refuse cross-origin browser requests'
+  return null
+}
+
 // Route key from Express's matched route pattern, so ids/codes never appear. Unmatched requests
 // (404s, or a rate limiter answering before routing) keep only a known /api/<segment> prefix.
 export function routeKey(req) {
   const method = req.method || 'GET'
   if (req.route?.path !== undefined) {
-    const base = req.baseUrl || ''
+    let base = req.baseUrl || ''
     const path = Array.isArray(req.route.path) ? req.route.path[0] : String(req.route.path)
+    // Express 4 restores req.baseUrl to '' when an error leaves a router (next(err) or a sync throw)
+    // but keeps req.route, so a 5xx from the app-level error handler would read "GET /:id", merging
+    // the same pattern across routers. Every router here is mounted at /api/<segment>, so recover
+    // that prefix from the URL (the segment only, never ids). App-level routes already start with /api.
+    if (!base && !path.startsWith('/api')) {
+      const parts = String(req.originalUrl || req.url || '').split('?')[0].split('/').filter(Boolean)
+      if (parts[0] === 'api' && KNOWN_API_SEGMENTS.has(parts[1])) base = `/api/${parts[1]}`
+    }
     return `${method} ${base}${path === '/' && base ? '' : path}`
   }
   const raw = String(req.originalUrl || req.url || '').split('?')[0]
@@ -270,14 +321,26 @@ export class ServerMetrics {
   router() {
     const r = express.Router()
     r.use((req, res, next) => {
-      if (!isLocalDirectRequest(req)) {
-        return res.status(403).json({ error: 'metrics are available only to direct local requests' })
-      }
-      res.set('Cache-Control', 'no-store')
+      // This router is mounted before helmet() (index.js), so it sets its own headers, on refusals too:
+      // never cached, never MIME-sniffed, not readable as a cross-origin subresource, no stack banner.
+      res.set({
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Cross-Origin-Resource-Policy': 'same-origin'
+      })
+      res.removeHeader('X-Powered-By')
+      const refused = metricsAccessError(req)
+      if (refused) return res.status(403).json({ error: refused })
       next()
     })
     r.get('/', (req, res) => res.json(this.snapshot()))
-    r.post('/reset', (req, res) => { this.reset(); res.json({ reset: true, since: this.since }) })
+    r.post('/reset', (req, res) => {
+      if (req.get(RESET_HEADER) !== RESET_HEADER_VALUE) {
+        return res.status(403).json({ error: `reset requires the header ${RESET_HEADER}: ${RESET_HEADER_VALUE}` })
+      }
+      this.reset()
+      res.json({ reset: true, since: this.since })
+    })
     return r
   }
 }

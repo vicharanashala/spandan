@@ -140,10 +140,44 @@ describe('EventTrace', () => {
   it('bounds the number of streams, dropping the oldest', () => {
     const t = make()
     for (let i = 0; i < 25; i++) t.stamp(`R${i}`, 'e', {})
-    const keys = Object.keys(t.snapshot().streams)
+    const snap = t.snapshot()
+    const keys = Object.keys(snap.streams)
     expect(keys).toHaveLength(20)
     expect(keys).not.toContain('stream1')
     expect(keys).toContain('stream25')
+    expect(snap.evictedStreams).toBe(5)
+    expect(snap.maxStreams).toBe(20)
+  })
+
+  it('evicts the least recently USED stream, so a live room keeps its stream', () => {
+    const t = make()
+    t.stamp('LIVE', 'e', {})                     // stream1, created first
+    for (let i = 0; i < 30; i++) {
+      t.stamp(`Q${i}`, 'e', {})                  // other rooms keep arriving
+      if (i % 5 === 0) t.stamp('LIVE', 'e', {})  // the live room keeps broadcasting
+    }
+    const live = t.snapshot().streams.stream1
+    expect(live).toBeDefined()                   // never evicted, never restarted
+    expect(live.lastSeq).toBe(7)                 // one contiguous stream: 1 + 6 later broadcasts
+    expect(t.current('LIVE')).toEqual({ s: 'stream1', n: 7 })
+  })
+
+  it('a hello (current) also counts as use', () => {
+    const t = make()
+    t.stamp('A', 'e', {})
+    for (let i = 0; i < 19; i++) t.stamp(`B${i}`, 'e', {}) // 20 streams, A least recently used
+    t.current('A')                                        // a socket joins room A
+    t.stamp('C', 'e', {})                                 // evicts the LRU, which is now B0, not A
+    expect(t.current('A').s).toBe('stream1')
+    expect(t.snapshot().evictedStreams).toBe(1)
+  })
+
+  it('reset clears the eviction count', () => {
+    const t = make()
+    for (let i = 0; i < 21; i++) t.stamp(`R${i}`, 'e', {})
+    expect(t.snapshot().evictedStreams).toBe(1)
+    t.reset()
+    expect(t.snapshot().evictedStreams).toBe(0)
   })
 
   it('bounds distinct event names per stream', () => {
