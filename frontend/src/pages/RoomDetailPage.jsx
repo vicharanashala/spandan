@@ -1,3 +1,4 @@
+import DiscussionPanel from '../components/DiscussionPanel'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
@@ -18,6 +19,7 @@ import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript, getTranscripts } from '../services/transcriptService'
 import { lastSegmentInData, segmentToStart } from '../lib/segments'
+import { appendSpeakerUtterance, formatTranscriptEntries, joinTranscriptBlocks, mergeTranscriptSession } from '../lib/speakerTranscript'
 import { installUnlockOnInteraction } from '../lib/sounds'
 import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
@@ -63,15 +65,43 @@ function RoomDetailPage() {
   // Aborts any in-flight generation poll (Phase 2D) when the page unmounts.
   const genAbortRef = useRef(null)
   const segmentTranscriptRef = useRef('')
+  const nonDiscussionTranscriptRef = useRef({ final: '', accumulated: '', segment: '' })
+  const discussionTranscriptRef = useRef({ session: null, entries: [], base: null })
+  const archivedDiscussionSessionsRef = useRef(new Set())
   const recordingActiveRef = useRef(false)
   const selectedMimeTypeRef = useRef('audio/webm')
   const mediaRecorderStopPromiseRef = useRef(null)
 
   // Transcription queue for ordered processing
+  const recordingEpochRef = useRef(0)
   const transcriptionQueueRef = useRef([])
   const nextSequenceRef = useRef(0)
   const pendingSequenceRef = useRef(0)
   const isProcessingQueueRef = useRef(false)
+
+  const applyDiscussionTranscript = useCallback((session, entries, active = true) => {
+    if (!active && archivedDiscussionSessionsRef.current.has(session)) return
+    const current = discussionTranscriptRef.current
+    const base = current.session === session && current.base ? current.base : current.base || { ...nonDiscussionTranscriptRef.current }
+    const merged = mergeTranscriptSession(current, session, entries)
+    discussionTranscriptRef.current = { ...merged, base }
+    const next = discussionTranscriptRef.current
+    const discussionText = formatTranscriptEntries(next.entries)
+    const withDiscussion = baseText => joinTranscriptBlocks(baseText, discussionText)
+    finalTranscriptRef.current = withDiscussion(next.base.final)
+    accumulatedTranscriptRef.current = withDiscussion(next.base.accumulated)
+    segmentTranscriptRef.current = withDiscussion(next.base.segment)
+    setTranscript(finalTranscriptRef.current)
+    setSegmentTranscript(segmentTranscriptRef.current)
+    if (!active && session) {
+      const archived = formatTranscriptEntries(next.entries)
+      const appendBlock = (baseText, block) => [baseText.trimEnd(), block].filter(Boolean).join('\n')
+      nonDiscussionTranscriptRef.current.final = appendBlock(nonDiscussionTranscriptRef.current.final, archived)
+      nonDiscussionTranscriptRef.current.accumulated = appendBlock(nonDiscussionTranscriptRef.current.accumulated, archived)
+      archivedDiscussionSessionsRef.current.add(session)
+      discussionTranscriptRef.current = { session: null, entries: [], base: null }
+    }
+  }, [])
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
@@ -369,6 +399,8 @@ function RoomDetailPage() {
       segmentTranscriptRef.current = ''
       finalTranscriptRef.current = ''
       accumulatedTranscriptRef.current = ''
+      nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+      discussionTranscriptRef.current = { session: null, entries: [], base: null }
       startRecording({ resetSegment: false })
       if (isVideoMode) resumeTeacherVideo()
       return
@@ -583,13 +615,19 @@ function RoomDetailPage() {
       transcriptionQueueRef.current = transcriptionQueueRef.current.filter(item => item !== nextItem)
 
       // Process the transcription result
-      if (nextItem.text && nextItem.text.trim()) {
+      if (nextItem.discussionEntry) {
+        applyDiscussionTranscript(nextItem.discussionEntry.session, [nextItem.discussionEntry])
+      } else if (nextItem.text && nextItem.text.trim()) {
         const text = nextItem.text.trim()
         console.log(`[TRANSCRIPTION] Processing sequence ${nextItem.sequence}: "${text.substring(0, 50)}..."`)
-        finalTranscriptRef.current += text + ' '
-        accumulatedTranscriptRef.current += text + ' '
+        const base = nonDiscussionTranscriptRef.current
+        base.final = appendSpeakerUtterance(base.final, 'Teacher', text)
+        base.accumulated = appendSpeakerUtterance(base.accumulated, 'Teacher', text)
+        base.segment = appendSpeakerUtterance(base.segment, 'Teacher', text)
+        finalTranscriptRef.current = appendSpeakerUtterance(finalTranscriptRef.current, 'Teacher', text)
+        accumulatedTranscriptRef.current = appendSpeakerUtterance(accumulatedTranscriptRef.current, 'Teacher', text)
         setTranscript(finalTranscriptRef.current)
-        segmentTranscriptRef.current += ' ' + text
+        segmentTranscriptRef.current = appendSpeakerUtterance(segmentTranscriptRef.current, 'Teacher', text)
         setSegmentTranscript(segmentTranscriptRef.current)
       }
 
@@ -597,20 +635,22 @@ function RoomDetailPage() {
     }
 
     isProcessingQueueRef.current = false
-  }, [])
+  }, [applyDiscussionTranscript])
 
   // Add transcription result to queue
-  const addToTranscriptionQueue = useCallback((sequence, text) => {
-    transcriptionQueueRef.current.push({ sequence, text })
+  const addToTranscriptionQueue = useCallback((sequence, text, discussionEntry = null) => {
+    transcriptionQueueRef.current.push({ sequence, text, discussionEntry })
     // Sort by sequence to maintain order
     transcriptionQueueRef.current.sort((a, b) => a.sequence - b.sequence)
     processTranscriptionQueue()
   }, [processTranscriptionQueue])
 
-  const sendForTranscription = useCallback(async (audioBlob, sequence) => {
+  const sendForTranscription = useCallback(async (audioBlob, sequence, epoch) => {
+    if (epoch !== recordingEpochRef.current) return
+    const settle = (text, discussionEntry = null) => { if (epoch === recordingEpochRef.current) addToTranscriptionQueue(sequence, text, discussionEntry) }
     if (!audioBlob || audioBlob.size < 5000) {
       console.log(`[TRANSCRIPTION] Skipping small audio: ${audioBlob?.size || 0} bytes`)
-      addToTranscriptionQueue(sequence, '')
+      settle('')
       return
     }
 
@@ -627,21 +667,23 @@ function RoomDetailPage() {
 
       if (!wavBlob) {
         console.log(`[TRANSCRIPTION] Sequence ${sequence} conversion failed, skipping`)
-        addToTranscriptionQueue(sequence, '')
+        settle('')
         return
       }
 
-      const result = await transcribeAudio(wavBlob)
-      addToTranscriptionQueue(sequence, result.text || '')
+      if (epoch !== recordingEpochRef.current) return
+      const result = await transcribeAudio(wavBlob, { roomId })
+      settle(result.text || '', result.discussionEntry || null)
     } catch (error) {
       console.error(`[TRANSCRIPTION] Error for sequence ${sequence}:`, error.message)
-      addToTranscriptionQueue(sequence, '')
+      settle('')
     }
-  }, [room?._id, addToTranscriptionQueue])
+  }, [roomId, addToTranscriptionQueue])
 
   const startTranscriptionWindow = useCallback(() => {
     if (!recordingActiveRef.current || !streamRef.current) return
 
+    const epoch = recordingEpochRef.current
     const sequence = nextSequenceRef.current++
     const chunks = []
     const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType: selectedMimeTypeRef.current })
@@ -673,7 +715,7 @@ function RoomDetailPage() {
 
         const audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType || selectedMimeTypeRef.current })
         console.log(`[TRANSCRIPTION] Sending sequence ${sequence}, size: ${audioBlob.size} bytes`)
-        await sendForTranscription(audioBlob, sequence)
+        await sendForTranscription(audioBlob, sequence, epoch)
         resolve()
 
         // Re-check identity AFTER the async send: only the current window may re-arm the loop.
@@ -702,6 +744,9 @@ function RoomDetailPage() {
       setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
       setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
+      nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+      discussionTranscriptRef.current = { session: null, entries: [], base: null }
+      recordingEpochRef.current++
       transcriptionQueueRef.current = []
       nextSequenceRef.current = 0
       pendingSequenceRef.current = 0
@@ -744,8 +789,11 @@ function RoomDetailPage() {
       setCurrentSegment(prev => segmentToStart({ prev, lastUsed: lastSegmentRef.current, fresh: resetSegment }))
       setSegmentTranscript('')
       segmentTranscriptRef.current = ''
+      nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+      discussionTranscriptRef.current = { session: null, entries: [], base: null }
 
       // Reset transcription queue
+      recordingEpochRef.current++
       transcriptionQueueRef.current = []
       nextSequenceRef.current = 0
       pendingSequenceRef.current = 0
@@ -957,6 +1005,9 @@ function RoomDetailPage() {
       // Fresh session state
       setTranscript(''); finalTranscriptRef.current = ''; accumulatedTranscriptRef.current = ''
       setSegmentTranscript(''); segmentTranscriptRef.current = ''
+      nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+      discussionTranscriptRef.current = { session: null, entries: [], base: null }
+      recordingEpochRef.current++
       transcriptionQueueRef.current = []; nextSequenceRef.current = 0
       pendingSequenceRef.current = 0; isProcessingQueueRef.current = false
       setCurrentSegment(segmentToStart({ lastUsed: lastSegmentRef.current, fresh: true }))
@@ -1037,6 +1088,8 @@ function RoomDetailPage() {
     finalTranscriptRef.current = ''
     setSegmentTranscript('')
     segmentTranscriptRef.current = ''
+    nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+    discussionTranscriptRef.current = { session: null, entries: [], base: null }
   }
 
   const handleManualGenerateQuestions = async () => {
@@ -1525,6 +1578,9 @@ function RoomDetailPage() {
                 End Room
               </button>
             )}
+
+            <DiscussionPanel room={room} socket={socket} user={user} teacher isMobile={isMobile}
+              onTranscriptUpdate={({ session, active, entries }) => applyDiscussionTranscript(session, entries, active)} />
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
@@ -2051,6 +2107,8 @@ function RoomDetailPage() {
             setSegmentTranscript('')
             segmentTranscriptRef.current = ''
             finalTranscriptRef.current = ''
+            nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+            discussionTranscriptRef.current = { session: null, entries: [], base: null }
 
             // Reset pending review flag
             setIsPendingReview(false)
@@ -2074,6 +2132,8 @@ function RoomDetailPage() {
             setSegmentTranscript('')
             segmentTranscriptRef.current = ''
             finalTranscriptRef.current = ''
+            nonDiscussionTranscriptRef.current = { final: '', accumulated: '', segment: '' }
+            discussionTranscriptRef.current = { session: null, entries: [], base: null }
             setIsPendingReview(false)
             setGenerateQEnabled(true)
             setSegmentTimeLeft(roomSettings.segmentTime * 60)

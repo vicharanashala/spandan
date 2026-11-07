@@ -3,26 +3,37 @@ import useAuthStore from '../stores/authStore'
 import { API_URL } from '../config.js'
 
 // Transcribe audio using server-side Whisper
-export const transcribeAudio = async (audioBlob) => {
+export const transcribeAudio = async (audioBlob, metadata = {}, options = {}) => {
   const token = useAuthStore.getState().token
   
   // Convert blob to base64
   const base64 = await blobToBase64(audioBlob)
   
-  const response = await fetch(`${API_URL}/transcription/transcribe`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ audio: base64 })
-  })
-  
-  if (!response.ok) {
-    throw new Error(`Transcription failed: ${response.statusText}`)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (options.signal?.aborted) controller.abort()
+  options.signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(abort, 40000)
+  try {
+    const response = await fetch(`${API_URL}/transcription/transcribe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ audio: base64, roomId: metadata.roomId, session: metadata.session, grant: metadata.grant }),
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      throw new Error(`Transcription failed: ${response.statusText}`)
+    }
+
+    return await response.json()
+  } finally {
+    clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abort)
   }
-  
-  return response.json()
 }
 
 // Convert blob to base64

@@ -45,6 +45,16 @@ describe('buildQuestionPrompt', () => {
     const p = buildQuestionPrompt(transcript, ['MCQ', 'TF'], 'medium')
     expect(p).toContain('write 2 high-quality quiz questions')
   })
+
+  it('preserves speaker labels and utterance boundaries in the session content sent to the model', () => {
+    const labeled = [
+      'Teacher: Today we are learning about photosynthesis.',
+      'Student (Harshitha): What is the role of chlorophyll?',
+      'Teacher: Chlorophyll absorbs sunlight and helps plants prepare food.'
+    ].join('\n')
+    const p = buildQuestionPrompt(labeled, ['MCQ'], 'medium')
+    expect(p).toContain(`SESSION CONTENT:\n${labeled}\n\nDIFFICULTY:`)
+  })
 })
 
 describe('parseQuestions', () => {
