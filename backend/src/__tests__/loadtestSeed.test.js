@@ -10,7 +10,10 @@ import RoomMember from '../models/RoomMember.js'
 import Transcript from '../models/Transcript.js'
 import { TERMS_VERSION } from '../config/terms.js'
 import { DEFAULT_RATE_LIMITS, RATE_LIMIT_ENV, resolveRateLimits, positiveIntOr } from '../config/rateLimits.js'
-import { assertDevDatabase, uriHosts, redact } from '../../scripts/lib/devGuard.js'
+import {
+  assertDevDatabase, uriHosts, redact, remoteHosts, uriDbName, looksLikeProduction,
+  describeTarget, assertRemoteWriteAllowed, assertConnectedDbAllowed
+} from '../../scripts/lib/devGuard.js'
 import {
   seedLoadtestUsers, cleanLoadtestData, parseStudentCount, studentEmail, isLoadtestEmail,
   TEACHER_EMAIL, LOADTEST_DOMAIN, DEFAULT_STUDENTS, MAX_STUDENTS
@@ -71,6 +74,99 @@ describe('devGuard.assertDevDatabase', () => {
     expect(() => assertDevDatabase({ uri: 'mongodb://admin:secret@db.example.com/x' }))
       .toThrow(expect.objectContaining({ message: expect.not.stringContaining('secret') }))
     expect(uriHosts('mongodb://admin:secret@Localhost:1/x')).toEqual(['localhost'])
+  })
+})
+
+describe('devGuard remote writes', () => {
+  const REMOTE = 'mongodb://admin:secret@dev-db.example.com:27017/spandan_dev?authSource=admin'
+  const good = { uri: REMOTE, confirmed: true, requirePassword: true, password: 'S0me-private-pw', defaultPassword: PW, passwordEnv: 'LOADTEST_PASSWORD' }
+  const run = (over = {}) => () => assertRemoteWriteAllowed({ ...good, ...over })
+
+  it('reads the database name the driver would use', () => {
+    expect(uriDbName(REMOTE)).toBe('spandan_dev')
+    expect(uriDbName('mongodb://localhost:27017')).toBe('test')
+    expect(uriDbName('mongodb://localhost:27017/?authSource=admin')).toBe('test')
+    expect(uriDbName('mongodb+srv://u:p@c0.abc.mongodb.net/my%20db?retryWrites=true')).toBe('my db')
+    expect(uriDbName('mongodb://h/%E0%A4%A')).toBeNull() // undecodable: fail closed
+    expect(uriDbName('postgres://h/db')).toBeNull()
+  })
+
+  it('flags production-looking names as whole words only', () => {
+    for (const n of ['prod', 'spandan-prod', 'spandan_production', 'spandanProd', 'live.cluster0.net', 'PRD', 'db.prod.example.com']) {
+      expect(looksLikeProduction(n)).toBe(true)
+    }
+    for (const n of ['spandan', 'spandan_dev', 'product', 'delivery', 'olive', 'reproduce', 'test', '']) {
+      expect(looksLikeProduction(n)).toBe(false)
+    }
+  })
+
+  it('is a no-op for a local database, even with the default password and no --yes', () => {
+    expect(run({ uri: 'mongodb://localhost:27017/spandan', confirmed: false, password: PW })).not.toThrow()
+    expect(run({ uri: 'mongodb://127.0.0.1/spandan', confirmed: false, password: '' })).not.toThrow()
+  })
+
+  it('allows a remote dev database with a private password and --yes', () => {
+    expect(run()).not.toThrow()
+  })
+
+  it('refuses remote seeding with the default or a missing password', () => {
+    expect(run({ password: PW })).toThrow(/default load-test password[\s\S]*LOADTEST_PASSWORD/)
+    expect(run({ password: '' })).toThrow(/default load-test password/)
+    expect(run({ password: undefined })).toThrow(/default load-test password/)
+  })
+
+  it('does not require the password for a remote clean', () => {
+    expect(run({ requirePassword: false, password: PW, action: 'clean' })).not.toThrow()
+  })
+
+  it('refuses without --yes, naming the target and the exact re-run command', () => {
+    expect(run({ confirmed: false, command: 'npm run seed:loadtest' }))
+      .toThrow(/without explicit confirmation[\s\S]*dev-db\.example\.com[\s\S]*"spandan_dev"[\s\S]*npm run seed:loadtest -- --allow-remote --yes/)
+  })
+
+  it('refuses production-looking databases and hosts, even when confirmed', () => {
+    expect(run({ uri: 'mongodb://dev-db.example.com/spandan_prod' })).toThrow(/"spandan_prod" looks like a production/)
+    expect(run({ uri: 'mongodb://prod-db.example.com/spandan' })).toThrow(/"prod-db\.example\.com" looks like a production/)
+    expect(run({ uri: 'mongodb+srv://u:p@live.abc.mongodb.net/spandan' })).toThrow(/looks like a production/)
+  })
+
+  it('checks production names before the password and confirmation', () => {
+    expect(run({ uri: 'mongodb://h.example.com/production', password: PW, confirmed: false })).toThrow(/production database/)
+  })
+
+  it('refuses a remote URI whose database name cannot be read', () => {
+    expect(run({ uri: 'mongodb://h.example.com/%E0%A4%A' })).toThrow(/cannot read the database name/)
+  })
+
+  it('checks the database actually connected to', () => {
+    expect(() => assertConnectedDbAllowed('spandan_dev', { expected: 'spandan_dev' })).not.toThrow()
+    expect(() => assertConnectedDbAllowed('spandanProd', { action: 'clean', expected: 'spandanProd' })).toThrow(/Refusing to clean: .*"spandanProd" looks like production/)
+  })
+
+  it('requires the connected database to be exactly the one MONGODB_URI names (fail closed)', () => {
+    expect(() => assertConnectedDbAllowed('other_db', { expected: 'spandan_dev' }))
+      .toThrow(/connected to database "other_db", but MONGODB_URI names "spandan_dev"/)
+    expect(() => assertConnectedDbAllowed('Spandan_Dev', { expected: 'spandan_dev' })).toThrow(/but MONGODB_URI names/) // exact, case-sensitive
+    expect(() => assertConnectedDbAllowed('spandan_dev')).toThrow(/cannot verify the connected database/)
+    expect(() => assertConnectedDbAllowed('spandan_dev', { expected: null })).toThrow(/cannot verify/)
+    expect(() => assertConnectedDbAllowed('spandan_dev', { expected: '' })).toThrow(/cannot verify/)
+    // The expected name is what the driver itself selects from the same URI, including its default.
+    expect(() => assertConnectedDbAllowed('test', { expected: uriDbName('mongodb://localhost:27017') })).not.toThrow()
+    expect(() => assertConnectedDbAllowed('my db', { expected: uriDbName('mongodb://localhost/my%20db') })).not.toThrow()
+  })
+
+  it('describes the target without credentials', () => {
+    const d = describeTarget(REMOTE)
+    expect(d).toBe('hosts dev-db.example.com; database "spandan_dev"  [REMOTE]')
+    expect(d).not.toContain('secret')
+    expect(describeTarget('mongodb://localhost:27017/spandan')).toBe('hosts localhost; database "spandan"  [local]')
+    expect(remoteHosts('mongodb://localhost:1,db2.example.com:2/x')).toEqual(['db2.example.com'])
+  })
+
+  it('never includes credentials in its errors', () => {
+    for (const over of [{ password: PW }, { confirmed: false }, { uri: 'mongodb://admin:secret@prod.example.com/x' }]) {
+      expect(run(over)).toThrow(expect.objectContaining({ message: expect.not.stringContaining('secret') }))
+    }
   })
 })
 
@@ -162,6 +258,49 @@ describe('seedLoadtestUsers', () => {
     expect(after.name).toBe('Pre-existing')
     expect(after.password).toBe(before.password)
     await expect(after.comparePassword('OldPass#1')).resolves.toBe(true)
+  })
+
+  it('reports validation failures instead of counting them as skipped, and writes nothing', async () => {
+    const bad = studentEmail(2)
+    const original = User.prototype.validate
+    const spy = jest.spyOn(User.prototype, 'validate').mockImplementation(function (...args) {
+      if (this.email === bad) return Promise.reject(new Error('Name cannot exceed 100 characters'))
+      return original.apply(this, args)
+    })
+    try {
+      await expect(seedLoadtestUsers({ count: 3, password: PW }))
+        .rejects.toThrow(/1 load-test account\(s\) failed User validation, so nothing was written\. First: lt\.student0002@loadtest\.spandan\.test: Name cannot exceed/)
+      expect(await User.countDocuments({})).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('still validates when some accounts already exist (the duplicate path cannot hide a failure)', async () => {
+    await seedLoadtestUsers({ count: 1, password: PW }) // teacher + student 1 exist
+    const original = User.prototype.validate
+    const spy = jest.spyOn(User.prototype, 'validate').mockImplementation(function (...args) {
+      if (this.email === studentEmail(3)) return Promise.reject(new Error('Role is required'))
+      return original.apply(this, args)
+    })
+    try {
+      await expect(seedLoadtestUsers({ count: 3, password: PW })).rejects.toThrow(/failed User validation[\s\S]*lt\.student0003/)
+      expect(await User.countDocuments({})).toBe(2) // nothing new was written
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('passes throwOnValidationError as a backstop and wraps a Mongoose bulk validation error', async () => {
+    const spy = jest.spyOn(User, 'insertMany').mockImplementation(async (docs, opts) => {
+      expect(opts).toMatchObject({ ordered: false, throwOnValidationError: true })
+      throw Object.assign(new Error('insertMany failed with 1 Mongoose validation errors: bad'), { name: 'MongooseBulkWriteError' })
+    })
+    try {
+      await expect(seedLoadtestUsers({ count: 1, password: PW })).rejects.toThrow(/Load-test accounts failed User validation: insertMany failed/)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('rejects a too-short password and a bad count before writing anything', async () => {

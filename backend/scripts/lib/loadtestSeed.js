@@ -43,9 +43,24 @@ export function parseStudentCount(raw) {
   return n
 }
 
+// Run the User schema's validation on each document; throw naming the failures (nothing is written).
+async function assertAllValid(docs) {
+  const invalid = []
+  await Promise.all(docs.map(async (d) => {
+    try { await new User(d).validate() } catch (err) { invalid.push({ email: d.email, message: err.message }) }
+  }))
+  if (!invalid.length) return
+  invalid.sort((a, b) => a.email.localeCompare(b.email))
+  throw new Error(
+    `${invalid.length} load-test account(s) failed User validation, so nothing was written. ` +
+    `First: ${invalid[0].email}: ${String(invalid[0].message).slice(0, 200)}`
+  )
+}
+
 /**
  * Create the load-test teacher and students 1..count. Idempotent: existing accounts are skipped
- * and never modified (passwords are not reset). Returns { created, skipped, total }.
+ * and never modified (passwords are not reset). Returns { created, skipped, total }, where skipped
+ * means "already existed" only: an account that fails validation throws instead of being counted.
  */
 export async function seedLoadtestUsers({ count = DEFAULT_STUDENTS, password = DEFAULT_PASSWORD } = {}) {
   const students = parseStudentCount(count)
@@ -78,10 +93,18 @@ export async function seedLoadtestUsers({ count = DEFAULT_STUDENTS, password = D
       termsVersion: TERMS_VERSION,
       termsAcceptedAt: now
     }))
+    // Validate every account BEFORE writing anything. An unordered insertMany otherwise drops invalid
+    // documents silently (they would be miscounted as "skipped"), and when the same batch also hits a
+    // duplicate email the driver's error replaces Mongoose's validation errors entirely.
+    await assertAllValid(docs)
     try {
-      const res = await User.insertMany(docs, { ordered: false })
+      // throwOnValidationError is a backstop: validation already passed above.
+      const res = await User.insertMany(docs, { ordered: false, throwOnValidationError: true })
       created = res.length
     } catch (err) {
+      if (err?.name === 'MongooseBulkWriteError') {
+        throw new Error(`Load-test accounts failed User validation: ${err.message}`)
+      }
       // Duplicate emails created concurrently between the check and the insert are still skips.
       const inserted = err?.insertedDocs?.length ?? err?.result?.insertedCount ?? 0
       const writeErrors = err?.writeErrors || []

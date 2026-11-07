@@ -11,17 +11,22 @@
  *   npm run seed:loadtest -- --students 50
  *   npm run clean:loadtest -- --dry-run             # show what would be deleted
  *   npm run clean:loadtest
- *   ... -- --allow-remote                           # only if your DEV database is not on localhost
+ *   ... -- --allow-remote --yes                     # only if your DEV database is not on localhost
  *
- * Refuses NODE_ENV=production and a non-local MONGODB_URI unless --allow-remote is passed.
- * Uses MONGODB_URI from backend/.env (same fallback as the server).
- * Password: LOADTEST_PASSWORD (default LoadTest@123).
+ * Refuses NODE_ENV=production and a non-local MONGODB_URI unless --allow-remote is passed. A remote
+ * write (seed or clean; --dry-run excepted) also needs --yes, and seeding a remote database needs a
+ * non-default LOADTEST_PASSWORD. A database or host name that looks like production (prod, production,
+ * prd, live) is always refused. The target hosts and database are printed before anything is written.
+ * Uses MONGODB_URI from backend/.env (same fallback as the server). "localhost" is not proof the
+ * database is local: an SSH tunnel, Docker port mapping or kubectl port-forward looks the same, so
+ * check MONGODB_URI yourself (the printed target names the hosts and database).
+ * Password: LOADTEST_PASSWORD (default LoadTest@123, local databases only).
  */
 import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 import mongoose from 'mongoose'
-import { assertDevDatabase, redact } from './lib/devGuard.js'
+import { assertDevDatabase, assertRemoteWriteAllowed, assertConnectedDbAllowed, describeTarget, redact, uriDbName } from './lib/devGuard.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
@@ -49,16 +54,26 @@ const PASSWORD = process.env.LOADTEST_PASSWORD || DEFAULT_PASSWORD
 
 async function main() {
   const students = CLEAN ? null : parseStudentCount(option('--students'))
-  assertDevDatabase({
+  const action = CLEAN ? 'clean' : 'seed'
+  const command = CLEAN ? 'npm run clean:loadtest' : 'npm run seed:loadtest'
+  assertDevDatabase({ uri: URI, allowRemote: flag('--allow-remote'), nodeEnv: process.env.NODE_ENV, action, command })
+
+  // Show exactly where this will write before connecting, then the remote-only checks.
+  console.log(`Target: ${describeTarget(URI)}`)
+  assertRemoteWriteAllowed({
     uri: URI,
-    allowRemote: flag('--allow-remote'),
-    nodeEnv: process.env.NODE_ENV,
-    action: CLEAN ? 'clean' : 'seed',
-    command: CLEAN ? 'npm run clean:loadtest' : 'npm run seed:loadtest'
+    action,
+    command,
+    confirmed: flag('--yes') || (CLEAN && DRY_RUN), // a dry run only counts, it writes nothing
+    requirePassword: !CLEAN,
+    password: PASSWORD,
+    defaultPassword: DEFAULT_PASSWORD,
+    passwordEnv: 'LOADTEST_PASSWORD'
   })
 
   await mongoose.connect(URI)
   console.log(`Connected: ${redact(URI)}  (db: ${mongoose.connection.name})\n`)
+  assertConnectedDbAllowed(mongoose.connection.name, { action, expected: uriDbName(URI) }) // before any write
 
   if (CLEAN) {
     const counts = await cleanLoadtestData({ dryRun: DRY_RUN })
