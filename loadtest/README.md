@@ -46,6 +46,22 @@ all with the password `LoadTest@123` (override with `LOADTEST_PASSWORD` for both
 simulator). Seed at least as many students as you plan to simulate. The simulator checks this
 before it starts.
 
+> **`localhost` is not proof the database is local.** An SSH tunnel (`ssh -L 27017:…`), a Docker
+> port mapping or `kubectl port-forward` all make a remote database answer on `localhost`, and the
+> scripts cannot tell. They print the target hosts and database before connecting, and refuse a
+> database or host name that looks like production even on `localhost`. Still check `MONGODB_URI`
+> in `backend/.env` yourself before seeding or cleaning, and never run them with a tunnel to a
+> shared or production database open.
+
+Seeding a **non-local** development database is refused unless all of these hold: you pass
+`--allow-remote --yes`, `LOADTEST_PASSWORD` is set to something other than the published default,
+and neither the database name nor a host name looks like production (`prod`, `production`, `prd`,
+`live`). The target hosts and database are printed before anything is written:
+
+```bash
+LOADTEST_PASSWORD='<private value>' npm run seed:loadtest -- --students 50 --allow-remote --yes
+```
+
 ## Run a small test
 
 ```bash
@@ -56,7 +72,21 @@ npm start -- --help             # all options
 ```
 
 The exit code is `0` when every check passes, `1` when any check fails, and `2` when the run
-could not start (for example, the backend is not running).
+could not start (for example, the backend is not running) or an error stopped it part-way.
+
+If an error stops a run after it has started (for example, the teacher cannot join its room), the
+simulator still cleans up: it ends the room if one was created, closes every socket and stops its
+timers and monitors, then saves a partial result with `"status": "failed"` and the `failure`
+(phase and message). A Ctrl+C run is saved the same way with `"status": "aborted"`. Checks that
+the run never reached are N/A, not passed.
+
+**Ctrl+C.** The first Ctrl+C stops the run early:
+- Students still waiting for their ramp slot are cancelled at once and never connect.
+- No further poll starts. A poll already running finishes its answer window first.
+- Students still signing in or joining get at most 5 s. They are then stopped, which counts as
+  `startsAbandoned`, never as a failed student or a failed operation.
+
+A second Ctrl+C exits immediately, without cleanup or a result file.
 
 Start small and climb gradually (50, then 100, then 200). **Larger runs are never started
 automatically.** Above 200 students you must add `--confirm-large`.
@@ -77,6 +107,8 @@ automatically.** Above 200 students you must add `--confirm-large`.
 | `--api-prefix P` | none | `/spandan` when going through the nginx proxy |
 | `--server-metrics M` | `auto` | Read the backend's `/internal/metrics`: `auto` (use it if enabled), `require` (fail if not enabled), `off` |
 | `--late-ms MS` | 2000 | A traced broadcast delivered later than this counts as late (1 to 60000). Reported only; it never fails the run. |
+| `--resync-retry-ms MS` | 11000 | After a reconnect, if the past-answers re-fetch missed a poll, re-fetch once this long later (0 to 120000; 0 turns the retry off). The default is the backend's question-cache lifetime (`ROOM_QUESTIONS_CACHE_TTL_MS` if it is set in this shell, else 10 s) plus 1 s. See "Outages and reconnects". |
+| `--password P` | `LoadTest@123` | Seeded load-test password. Prefer `LOADTEST_PASSWORD`: a value on the command line is visible in the process list and shell history, and the run prints a warning. |
 | `--allow-remote` | off | Allow a non-localhost target (authorized test servers only) |
 | `--confirm-large` | off | Allow more than 200 students |
 
@@ -118,8 +150,19 @@ If you see `http_429` errors in a run, the rate limiter was hit, not a server fa
    random guess, because students never see which option is correct.
 5. When the poll's timer runs out, it re-fetches its past answers, as the real client does.
 6. After a reconnect, it re-sends `authenticate` and `room:join` and re-fetches its past answers.
-   Any poll it missed while disconnected counts as recovered if that re-fetch returns it.
+   Any poll it missed while disconnected counts as recovered if that re-fetch returns it. The
+   backend caches each room's question list (default 10 s) and does not refresh it when a poll is
+   launched, so a re-fetch right after a launch can miss that poll. Real students hit this too.
+   When that happens, the student re-fetches **once** more after the cache lifetime
+   (`--resync-retry-ms`). A poll only that retry returned still counts as recovered, and is
+   reported as INFO with its delay. A poll that neither fetch returned, or whose retry the run
+   ended before, is **not recovered** and fails the run.
 7. After the last poll, it reads the leaderboard once more.
+
+After the last poll's `segment-done`, the run waits up to `--settle` seconds for a
+`leaderboard:updated` broadcast. None arriving fails the check "final leaderboard push received
+after the last segment-done". It is N/A when the run was aborted, failed first, or no poll
+completed.
 
 Students start one after another across the ramp period.
 
@@ -163,7 +206,7 @@ value from the result file is escaped, and tables are capped at 200 rows (the JS
 | `poll_delivery` | Time from the teacher emitting `new_question` until each student received it. Teacher and students share one clock, so this is true end-to-end fan-out time. |
 | `poll_expiry_refetch` | The past-answers re-fetch every student makes when a poll's timer ends. All students fire it at the same moment. |
 | `leaderboard_get`, `leaderboard_get_final` | Leaderboard reads on join and after the polls |
-| `leaderboard_push_spread` | For each leaderboard broadcast, how long after the first student each student received it |
+| `leaderboard_push_spread` | For each leaderboard broadcast, how long after the first student each student received it. With `SERVER_EVENT_TRACE=on`, receipts are matched to their broadcast by its sequence number, which is exact even when a student misses a push. Without tracing they are matched by each student's receipt order (its k-th push belongs to broadcast k). After any disconnect that is reported as approximate (an INFO line), since a missed push shifts that student's later receipts. |
 | `leaderboard_push_after_segment_done` | Time from the last `segment-done` until the leaderboard update. About 15 s by design (`LEADERBOARD_SEGMENT_DELAY_MS`). |
 | `connections` | Students joined, connect failures, disconnects (by reason) and reconnects |
 | `polls[]` | Per poll: how many students received it over the socket (`deliveredTo`), how many got it only from the post-reconnect re-fetch (`recoveredByResync`), and answers accepted or rejected |
@@ -233,12 +276,32 @@ You can also look at it directly: `curl http://localhost:3001/internal/metrics`.
   off, nothing is installed and the URL is a normal 404.
 - It answers only **direct requests from this machine**. A non-loopback address, or any
   `X-Forwarded-For`, `X-Real-IP`, `Forwarded` or `X-Forwarded-Host` header, gets a 403.
+- It refuses **browser requests from other sites**, since a web page open on this machine also
+  connects from loopback. The `Host` header must be `localhost`, `127.0.0.1` or `[::1]` (this
+  blocks DNS rebinding). A request the browser marks `Sec-Fetch-Site: cross-site` or `same-site`,
+  or that carries a non-loopback `Origin`, gets a 403.
+- `POST /internal/metrics/reset` also needs the header `X-Loadtest-Metrics: reset`. A page on
+  another site cannot send a custom header without a CORS preflight, and this route never approves
+  one, so it cannot wipe the counters mid-run. The simulator sends the header; by hand:
+  `curl -X POST -H 'X-Loadtest-Metrics: reset' http://localhost:3001/internal/metrics/reset`.
 - It sits **outside `/api`**, so a reverse proxy that forwards `/api` and `/socket.io` never
   routes to it.
 - It never records URLs, query strings, request bodies, headers, tokens, user ids, emails, room
   codes, socket ids or event payloads. Only route patterns, status codes, timings and event
   names. Unknown event names are grouped as `(invalid)` and key counts are capped, so memory
   stays bounded.
+
+**One simulator run per backend at a time.** Each run resets the backend's counters (and its
+event-trace ledger) when it starts, and every run signs in the same seeded students, so two runs
+against one backend corrupt each other's figures and cross their students' private channels.
+- At the start, the run reads how many sockets are already connected. If any are (another run, or
+  open app tabs), it prints a warning and records `server.preexistingSockets`; their traffic is in
+  the server figures.
+- Every snapshot is checked against the reset time the run's own reset returned. If it changes,
+  someone else reset the counters or the backend restarted. The run then records
+  `server.compromised`, ignores the ledger (the tail check reports `compromised`), and adds a
+  **FAIL** check, "server metrics not reset by another client during the run", so such a run is
+  never an ordinary PASS. Re-run it on its own.
 
 **Limits.**
 - Each backend process keeps its own counters. Under PM2 cluster mode, each scrape reads
@@ -260,10 +323,19 @@ normal.
 
 ## Delivery tracking (`SERVER_EVENT_TRACE=on`)
 
-Counting which polls arrived only catches lost polls. To check **every** room broadcast
+Counting which polls arrived only catches lost polls. To check every **room-wide** broadcast
 (`new_question`, `counts:updated`, `leaderboard:updated`, `room:joined`, `room:left`,
 `question:started`/`ended` and `room:ended`), start the backend with **both**
 `SERVER_METRICS=on` and `SERVER_EVENT_TRACE=on`. The simulator picks it up automatically.
+
+**Out of scope (not numbered, so a loss there goes undetected):**
+- the private per-student `leaderboard:you` channel;
+- events relayed to everyone except the sender: `video:progress`, `video:pause`, `video:resume`,
+  `questions:ready`;
+- the separate transcription server's `transcription_broadcast`.
+
+The simulator does not use the video or transcription features, so their events are not part of a
+run. Only `leaderboard:you` is received, and it is counted as an event but not checked for loss.
 
 How it works:
 - The backend numbers each room's broadcasts in order. There is one numbered stream per room per
@@ -303,11 +375,15 @@ record holds:
 - `rejoinMs` (reconnect to the new `lt:hello`; traced runs only, otherwise `null`)
 - `resyncMs` (reconnect to the end of the past-answers re-fetch)
 - `missedSeqs`, the broadcasts missed while disconnected
-- `missedQuestions`, each with `recovered` saying whether the re-fetch returned it
+- `missedQuestions`, each with `recovered` (whether a re-fetch returned it), `recoveredAfterMs`
+  (reconnect to the fetch that returned it) and `retry`: `none` (no retry needed or retries off),
+  `recovered` (only the one retry returned it), `still_missing` or `not_completed` (the run ended
+  first). The last two are not recovered.
 - `stuck`: still disconnected at the end, or reconnected without re-joining within 15 s
 
 The section also gives totals: `stuck`, `byReason`, `missedPolls`, `recoveredPolls`,
-`unrecoveredPolls`, and p50/p95/max of the three durations.
+`unrecoveredPolls`, p50/p95/max of the three durations, `recoveryDelayMs` (reported only) and
+`resyncRetry` (how many polls only the retry returned, were still missing, or the run ended before).
 
 **Limits.** Each backend process numbers its own stream, so under several instances a student
 sees one stream per instance, and an instance it never got `lt:hello` from is baselined on its first
@@ -325,7 +401,9 @@ npm run clean:loadtest -- --dry-run   # preview
 npm run clean:loadtest
 ```
 
-This deletes only `@loadtest.spandan.test` data. Real users and rooms are never touched.
+This deletes only `@loadtest.spandan.test` data. Real users and rooms are never touched. As with
+seeding, check that `MONGODB_URI` really is your development database (see the `localhost` note
+under Setup). A remote clean needs `--allow-remote --yes`; `--dry-run` only counts.
 
 ## Limits of this MVP
 
@@ -336,12 +414,30 @@ This deletes only `@loadtest.spandan.test` data. Real users and rooms are never 
   reconnect path come in a later step.
 - The report is the console summary, the JSON file and the offline HTML page. There is no live
   dashboard during a run.
+- **More than 20 trace streams per student** (only with several backend instances or repeated
+  metrics resets) evicts the least recently used stream on the student's side. Its figures are kept
+  in the totals, but its open gaps become final losses. A seq for it that arrives later is then
+  counted as both lost and `unclassified`. A re-join to an evicted stream starts it afresh, so that
+  outage's missed broadcasts are not counted in `missedOutage`. Its tail check becomes `partial`.
+- **Reset detection relies on the backend's `since`.** The run compares the reset time its own
+  `POST /internal/metrics/reset` returned with every later snapshot. This backend always returns
+  it. Against a backend that did not, detection would be silently off.
+- **A reset by another client seen only at the very last read** (after the event-trace ledger was
+  read) still fails the run. The tail check is then labelled `compromised` although the ledger it
+  used was read before the reset. That is a cosmetic mismatch only.
+- **A resync retry still pending when the run ends** (an outage in roughly the last
+  `--resync-retry-ms` before shutdown) counts as not recovered (`retry: not_completed`) and fails
+  the run.
 
 ## Tests
 
 ```bash
 npm test    # unit tests for config, metrics, answer timing, CPU analysis, delivery tracking, outages, the verdict and the HTML report
 ```
+
+`npm test` runs `node --test`, which finds every file under `test/` on Node 18.17 and later. The
+tests are offline: socket and HTTP peers are in-process stubs, and no backend or database is
+needed. CI runs them on Node 20 (the `Load Simulator Tests` job in `.github/workflows/ci.yml`).
 
 Inspired by the load harness proposed in PR #31, rewritten for the current API: email-code sign-up,
 Terms acceptance, server-side poll windows, and the removed client-side socket events.
