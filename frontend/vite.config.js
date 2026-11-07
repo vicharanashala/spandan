@@ -32,6 +32,13 @@ export default defineConfig(({ mode }) => {
         '/socket.io': {
           target: 'http://localhost:3001',
           ws: true
+        },
+        // The production socket client uses the /spandan prefix. Proxy that same path in Vite
+        // development and strip the prefix for the backend's default Socket.IO endpoint.
+        '/spandan/socket.io': {
+          target: 'http://localhost:3001',
+          ws: true,
+          rewrite: (path) => path.replace(/^\/spandan\/socket\.io/, '/socket.io')
         }
       }
     }

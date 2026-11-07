@@ -3,7 +3,9 @@ import Question from '../models/Question.js'
 import RoomMember from '../models/RoomMember.js'
 import Response from '../models/Response.js'
 import Transcript from '../models/Transcript.js'
+import Discussion from '../models/Discussion.js'
 import { invalidateRoomLive } from './roomLiveCache.js'
+import { closeDiscussionForRoom } from './discussionService.js'
 
 export const createRoom = async (name, teacherId, settings = {}) => {
   const room = new Room({
@@ -56,6 +58,9 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
 }
 
 export const updateRoom = async (roomId, updates) => {
+  if (updates && (updates.isActive === false || updates.endedAt)) {
+    await closeDiscussionForRoom(roomId)
+  }
   const room = await Room.findByIdAndUpdate(
     roomId,
     { $set: updates },
@@ -77,24 +82,48 @@ export const updateRoom = async (roomId, updates) => {
 }
 
 export const deleteRoom = async (roomId) => {
+  const existingRoom = await Room.findById(roomId)
+  if (!existingRoom) {
+    throw new Error('Room not found')
+  }
+
+  await closeDiscussionForRoom(roomId)
+
+  // Keep a tombstone room while deleting its children. If any cascade step fails, the
+  // ended room remains available for an idempotent retry, while room authorization rejects use.
+  const endedRoom = await Room.findByIdAndUpdate(
+    roomId,
+    { $set: { isActive: false, endedAt: existingRoom.endedAt || new Date() } },
+    { new: true, runValidators: true }
+  )
+  if (!endedRoom) {
+    // A concurrent delete may have removed the room after the initial existence check.
+    // Do not leave the marker created above orphaned when there is no room to retry.
+    await Discussion.deleteOne({ roomId })
+    throw new Error('Room not found')
+  }
+  await invalidateRoomLive(roomId)
+
+  // Cascade-delete everything tied to this room so no orphaned records are left behind.
+  // Keep the ended room until the cascades finish so a failed deletion can be retried safely.
+  const [responses, members, questions, transcripts, discussions] = await Promise.all([
+    Response.deleteMany({ roomId }),
+    RoomMember.deleteMany({ roomId }),
+    Question.deleteMany({ roomId }),
+    Transcript.deleteMany({ roomId }),
+    Discussion.deleteMany({ roomId })
+  ])
+
   const room = await Room.findByIdAndDelete(roomId)
   if (!room) {
     throw new Error('Room not found')
   }
-  // Cascade-delete everything tied to this room so no orphaned records are left behind.
-  // Orphans (e.g. a Response whose room is gone) otherwise break student room-history and
-  // skew per-room queries. The room doc is removed first (fail-fast on not-found); if a
-  // cascade delete were to partially fail, the null-guards in the read paths still cope.
-  const [responses, members, questions, transcripts] = await Promise.all([
-    Response.deleteMany({ roomId }),
-    RoomMember.deleteMany({ roomId }),
-    Question.deleteMany({ roomId }),
-    Transcript.deleteMany({ roomId })
-  ])
+
   console.log(
     `[rooms] deleted room ${roomId} + cascade: ` +
     `${responses.deletedCount} responses, ${members.deletedCount} members, ` +
-    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts`
+    `${questions.deletedCount} questions, ${transcripts.deletedCount} transcripts, ` +
+    `${discussions.deletedCount} discussions`
   )
   return room
 }
@@ -114,6 +143,7 @@ export const setCurrentQuestion = async (roomId, questionId) => {
 }
 
 export const deactivateRoom = async (roomId) => {
+  await closeDiscussionForRoom(roomId)
   const room = await Room.findByIdAndUpdate(
     roomId,
     { $set: { isActive: false, endedAt: new Date() } },

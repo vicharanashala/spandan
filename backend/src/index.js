@@ -1,3 +1,4 @@
+import { leaveSubscribedRooms, registerDiscussionSockets, sendDiscussionSnapshot } from './services/discussionSockets.js'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -418,12 +419,21 @@ async function authenticateSocket(socket, token) {
   // stays unauthenticated (cannot join rooms or receive polls) until it accepts and re-authenticates.
   const { hasAcceptedCurrentTerms } = await import('./config/terms.js')
   if (u && !hasAcceptedCurrentTerms(u)) {
+    // Do not leave the previous identity subscribed to a room after a denied reauthentication.
+    leaveSubscribedRooms(socket)
     socket.data.userId = null
     socket.data.role = null
+    socket.data.tokenExp = null
     connectedUsers.delete(socket.id)
     const e = new Error('Terms not accepted')
     e.code = 'TERMS_REQUIRED'
     throw e
+  }
+  // A socket may reauthenticate as another account (or the same account after a role change).
+  // Remove its old room subscriptions before updating the server-derived identity; discussion
+  // transcripts are broadcast to authorized room members.
+  if (socket.data?.userId && (socket.data.userId !== decoded.userId || socket.data.role !== (u?.role || null))) {
+    leaveSubscribedRooms(socket)
   }
   socket.data.userId = decoded.userId
   socket.data.role = u?.role || null
@@ -443,6 +453,8 @@ function socketTokenExpired(socket) {
 }
 
 function deauthenticateSocket(socket) {
+  // Expired sessions must stop receiving discussion transcripts as well as live polls.
+  leaveSubscribedRooms(socket)
   socket.data.userId = null
   socket.data.role = null
   connectedUsers.delete(socket.id)
@@ -543,6 +555,7 @@ io.use(async (socket, next) => {
 })
 
 io.on('connection', (socket) => {
+  registerDiscussionSockets(io, socket)
   console.log('Client connected:', socket.id)
   // Arm the proactive de-auth for a handshake-authenticated socket (io.use already ran authenticateSocket).
   scheduleSocketExpiry(socket)
@@ -620,6 +633,7 @@ io.on('connection', (socket) => {
       if (vp) socket.emit('video:progress', { time: vp.time, playing: vp.playing })
       // If the teacher's question popup is currently open, a late-joining student must start paused.
       if (videoPaused.get(roomCode)) socket.emit('video:pause')
+      await sendDiscussionSnapshot(socket, room)
     } catch (error) {
       console.error('Error in room:join:', error)
       socket.emit('room:error', { error: 'Failed to join room' })
