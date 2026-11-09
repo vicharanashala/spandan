@@ -405,13 +405,13 @@ This deletes only `@loadtest.spandan.test` data. Real users and rooms are never 
 seeding, check that `MONGODB_URI` really is your development database (see the `localhost` note
 under Setup). A remote clean needs `--allow-remote --yes`; `--dry-run` only counts.
 
-## Limits of this MVP
+## Known limits
 
 - One process generates all the load, so very large runs are limited by this machine.
 - Per-broadcast tracing needs `SERVER_EVENT_TRACE=on` (and `SERVER_METRICS=on`). Without it,
   delivery is judged only for polls and `room:ended`, and the tracing checks are `N/A`.
-- Disconnects happen only if the network or server causes them. Forced disconnects for testing the
-  reconnect path come in a later step.
+- Disconnects happen only if the network or server causes them. The simulator cannot force
+  disconnects, so the reconnect path is exercised only when a real drop occurs during a run.
 - The report is the console summary, the JSON file and the offline HTML page. There is no live
   dashboard during a run.
 - **More than 20 trace streams per student** (only with several backend instances or repeated

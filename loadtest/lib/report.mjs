@@ -3,8 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { summarize } from './metrics.mjs'
 import { mergeSummaries } from './delivery.mjs'
 
-// Basic pass thresholds (p95, ms). Conservative for a local machine; the Step 5 report will make
-// these configurable. Operations not listed are reported but not judged.
+// Basic pass thresholds (p95, ms). Conservative for a local machine and fixed here (not set from
+// the CLI or env). Operations not listed are reported but not judged.
 export const THRESHOLDS = Object.freeze({
   login: 2000,
   join_http: 1500,
