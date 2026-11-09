@@ -7,6 +7,9 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "worker": "node src/worker.js",
+    "seed:dev": "node scripts/seed_dev_users.js",
+    "seed:loadtest": "node scripts/seed_loadtest.js",
+    "clean:loadtest": "node scripts/seed_loadtest.js --clean",
     "build": "echo 'Backend build complete'",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -34,6 +37,7 @@
   "devDependencies": {
     "@shelf/jest-mongodb": "^6.0.2",
     "jest": "^30.4.2",
+    "socket.io-client": "^4.8.3",
     "supertest": "^7.2.2"
   }
 }

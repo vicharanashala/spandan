@@ -59,3 +59,28 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  # The load simulator's unit tests (node:test). Fully offline: no backend, database or network
+  # target is started; socket and HTTP peers are in-process stubs. This never runs a load test.
+  loadtest-test:
+    name: Load Simulator Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: loadtest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: loadtest/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test

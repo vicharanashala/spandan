@@ -9,6 +9,9 @@ import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import { createAdapter } from '@socket.io/redis-adapter'
 import { FailoverStore } from './middleware/rateLimitStore.js'
+import { resolveRateLimits } from './config/rateLimits.js'
+import { installServerMetrics } from './services/serverMetrics.js'
+import { installEventTrace, roomEmit, sendTraceHello } from './services/eventTrace.js'
 // isRedisReady (configured AND connected) guards the per-request Redis calls below: a disconnected
 // client queues commands, which would hang an answer submit until Redis returns.
 import { initRedis, isRedisReady } from './config/redis.js'
@@ -144,7 +147,7 @@ async function broadcastCounts(roomId) {
     const counts = {}
     countAgg.forEach(c => { counts[c._id.toString()] = c.count })
     const roomCode = await resolveRoomCode(roomId)
-    if (roomCode) io.to(roomCode).emit('counts:updated', { counts })
+    if (roomCode) roomEmit(io, roomCode, 'counts:updated', { counts })
   } catch (err) {
     console.error('broadcastCounts error:', err.message)
   }
@@ -224,7 +227,7 @@ async function broadcastLeaderboard(roomId, { incremental = false } = {}) {
       // anonymous is ON, every public row is masked to 'Anonymous #<rank>' (student viewer) BEFORE it
       // leaves the server. anonymizeBoard returns NEW objects, so the shared cached `full` is untouched.
       const publicBoard = full.slice(0, LEADERBOARD_TOP_N)
-      io.to(roomCode).emit('leaderboard:updated', {
+      roomEmit(io, roomCode, 'leaderboard:updated', {
         leaderboard: anonymous
           ? buildStudentBoard(full, { pct: anonPct, total: full.length, topN: LEADERBOARD_TOP_N, revealBottom })
           : publicBoard,
@@ -322,12 +325,16 @@ const rlStore = (prefix) => redis.enabled
   ? new FailoverStore({ prefix, client: redis.client })
   : undefined
 
+// Maximums default to the values noted below; each can be overridden via env (config/rateLimits.js)
+// — e.g. for a local load test, where every simulated student shares one IP.
+const RATE_LIMITS = resolveRateLimits()
+
 const apiLimiter = rateLimit({
   store: rlStore('rl:api:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
   // Note: hundreds of students at a live event usually share ONE public IP (venue/campus NAT),
   // so this per-IP limit is effectively shared across the whole room. Sized for that.
-  max: 50000, // limit each IP to 50000 requests per windowMs (shared across a NATed classroom)
+  max: RATE_LIMITS.api, // default 50000 requests per IP per windowMs (shared across a NATed classroom); API_RATE_LIMIT_MAX
   message: { error: 'Too many requests, please try again later' }
 })
 
@@ -337,21 +344,21 @@ const authLimiter = rateLimit({
   // Only count FAILED auth attempts: 700 students behind one NAT share this bucket, so counting
   // successful logins would trip a 429 mid-event (seen at ~250 logins). Failures still throttle brute-force.
   skipSuccessfulRequests: true,
-  max: 5000, // limit each IP to 5000 FAILED auth attempts per hour (brute-force backstop)
+  max: RATE_LIMITS.authFailures, // default 5000 FAILED auth attempts per IP per hour (brute-force backstop); AUTH_RATE_LIMIT_MAX
   message: { error: 'Too many authentication attempts, please try again later' }
 })
 
 const responseLimiter = rateLimit({
   store: rlStore('rl:resp:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 5000 response submissions per windowMs (high limit for live quizzes)
+  max: RATE_LIMITS.responses, // default 5000 response submissions per IP per windowMs (high limit for live quizzes); RESPONSE_RATE_LIMIT_MAX
   message: { error: 'Too many response submissions, please try again later' }
 })
 
 const leaderboardLimiter = rateLimit({
   store: rlStore('rl:lb:'),
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10000, // very high limit for leaderboard reads (refreshes on every points update during live sessions)
+  max: RATE_LIMITS.leaderboard, // default 10000 leaderboard reads per IP per windowMs (refreshes on every points update during live sessions); LEADERBOARD_RATE_LIMIT_MAX
   message: { error: 'Too many requests, please try again later' }
 })
 
@@ -365,6 +372,19 @@ const otpLimiter = rateLimit({
   max: Number(process.env.OTP_LIMIT_PER_HOUR) || 500, // sends per IP per hour
   message: { error: 'Too many verification requests, please try again later' }
 })
+
+// Opt-in server metrics for local load testing (services/serverMetrics.js). Installs nothing at all
+// unless SERVER_METRICS=on (and never when NODE_ENV=production). Placed before the limiters so 429s
+// are measured too.
+const serverMetrics = installServerMetrics(app, io, {
+  probes: {
+    mongodb: () => (mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'),
+    redis: () => (redis.enabled ? (isRedisReady() ? 'connected' : 'disconnected') : 'off')
+  }
+})
+// Opt-in event tracing (services/eventTrace.js): sequence numbers on room broadcasts, for the load
+// simulator's dropped-event detection. Needs SERVER_EVENT_TRACE=on AND the metrics above; else a no-op.
+installEventTrace(io, serverMetrics)
 
 // Middleware
 app.use(helmet())
@@ -607,12 +627,15 @@ io.on('connection', (socket) => {
       // Authorized → now join the socket room and announce. The room-wide event carries only the
       // aggregate count, never the joiner's userId (which would let any peer harvest participant IDs).
       socket.join(roomCode)
+      // Event-trace baseline (no-op unless tracing is on). Must stay synchronous right after the join,
+      // before any await: broadcasts sent during the awaits below already reach this socket.
+      sendTraceHello(io, socket, roomCode)
       // Private per-user channel: the leaderboard fold pushes each student ONLY their own row here
       // (privacy — a student never receives the full board, just the public top 10 + their own rank).
       socket.join('user:' + userId)
       const participantCount = await RoomMember.countDocuments({ roomId: room._id })
 
-      io.to(roomCode).emit('room:joined', { roomCode, participants: participantCount })
+      roomEmit(io, roomCode, 'room:joined', { roomCode, participants: participantCount })
 
       // Seed the joining socket with the teacher's last known video position (video mode) so a
       // reload/late-join can immediately seek forward up to where the class is.
@@ -646,10 +669,10 @@ io.on('connection', (socket) => {
         participantCount = await RoomMember.countDocuments({ roomId: room._id })
       }
 
-      io.to(roomCode).emit('room:left', { roomCode, participants: participantCount })
+      roomEmit(io, roomCode, 'room:left', { roomCode, participants: participantCount })
     } catch (error) {
       console.error('Error in room:leave:', error)
-      io.to(roomCode).emit('room:left', { roomCode, participants: 0 })
+      roomEmit(io, roomCode, 'room:left', { roomCode, participants: 0 })
     }
   })
 
@@ -665,7 +688,7 @@ io.on('connection', (socket) => {
     const room = await verifyRoomOwner(socket, data?.roomCode)
     if (!room) return
     if (data.questionId) setLiveQuestion(room._id, data.questionId)
-    io.to(data.roomCode).emit('question:started', {
+    roomEmit(io, data.roomCode, 'question:started', {
       questionId: data.questionId,
       question: sanitizeQuestionForStudents(data.question),
       timer: data.timer,
@@ -675,7 +698,7 @@ io.on('connection', (socket) => {
 
   socket.on('question:end', async (data) => {
     if (!(await verifyRoomOwner(socket, data?.roomCode))) return
-    io.to(data.roomCode).emit('question:ended', {
+    roomEmit(io, data.roomCode, 'question:ended', {
       questionId: data.questionId,
       results: data.results
     })
@@ -691,7 +714,7 @@ io.on('connection', (socket) => {
     if (data.question) {
       const qId = data.question._id || data.question.id
       if (qId) setLiveQuestion(room._id, qId)
-      io.to(data.roomCode).emit('new_question', sanitizeQuestionForStudents(data.question))
+      roomEmit(io, data.roomCode, 'new_question', sanitizeQuestionForStudents(data.question))
     }
   })
 

@@ -5,6 +5,7 @@ import { authorize, requireApprovedTeacher } from '../middleware/auth.js'
 import { validate, createRoomSchema, roomUpdateSchema } from '../middleware/validation.js'
 import { rebuildSnapshot } from '../services/resultsSnapshot.js'
 import { prewarmInsights } from '../services/insightsCache.js'
+import { roomEmit } from '../services/eventTrace.js'
 
 const router = express.Router()
 
@@ -146,7 +147,7 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, v
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
-      io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      roomEmit(io, room.code, 'room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)

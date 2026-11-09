@@ -1,0 +1,4 @@
+node_modules/
+# Run outputs are local to each machine; keep the folder, not the files.
+results/*
+!results/.gitkeep
