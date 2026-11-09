@@ -39,4 +39,23 @@ describe('canJoinRoom — socket room:join authorization', () => {
     expect(canJoinRoom({ role: undefined, userId: owner, room: { teacher: owner } }).ok).toBe(false)
     expect(canJoinRoom({ role: 'ghost', userId: owner, room: { teacher: owner } }).ok).toBe(false)
   })
+
+  it('allows active class member to join a class-linked room', () => {
+    const classRoom = { teacher: owner, endedAt: null, classId: '507f1f77bcf86cd799439088' }
+    const r = canJoinRoom({ role: 'student', userId: other, room: classRoom, isClassMember: true })
+    expect(r.ok).toBe(true)
+  })
+
+  it('blocks a non-enrolled student from joining a class-linked room', () => {
+    const classRoom = { teacher: owner, endedAt: null, classId: '507f1f77bcf86cd799439088' }
+    const r = canJoinRoom({ role: 'student', userId: other, room: classRoom, isClassMember: false })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/must be enrolled in this class/i)
+  })
+
+  it('allows public join when classId is null or not set', () => {
+    const publicRoom = { teacher: owner, endedAt: null, classId: null }
+    const r = canJoinRoom({ role: 'student', userId: other, room: publicRoom, isClassMember: false })
+    expect(r.ok).toBe(true)
+  })
 })

@@ -11,7 +11,7 @@
 // a room that does not exist or (for students) has ended.
 //
 // Returns { ok: true } or { ok: false, error: '<reason>' }.
-export function canJoinRoom({ role, userId, room }) {
+export function canJoinRoom({ role, userId, room, isClassMember = false }) {
   if (!room) return { ok: false, error: 'Room not found' }
 
   // room.teacher may be a raw ObjectId or a populated user doc — handle both.
@@ -24,9 +24,13 @@ export function canJoinRoom({ role, userId, room }) {
   }
 
   if (role === 'student') {
-    return room.endedAt
-      ? { ok: false, error: 'This room has ended' }
-      : { ok: true }
+    if (room.endedAt) {
+      return { ok: false, error: 'This room has ended' }
+    }
+    if (room.classId && !isClassMember) {
+      return { ok: false, error: 'You must be enrolled in this class to join the session' }
+    }
+    return { ok: true }
   }
 
   return { ok: false, error: 'Not authorized' }

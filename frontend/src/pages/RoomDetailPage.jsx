@@ -11,6 +11,8 @@ import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
+import { WaitingRoomPanel, AdmittedParticipantsModal } from '../components/WaitingRoomPanel'
+import { formatSpan, gapReasonLabel } from '../components/ReconnectMeter'
 import SoundToggle from '../components/SoundToggle'
 import Leaderboard from '../components/Leaderboard'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -22,6 +24,7 @@ import { installUnlockOnInteraction } from '../lib/sounds'
 import useGeneratedBatchCues from '../hooks/useGeneratedBatchCues'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
+import { classApi } from '../lib/api'
 import { API_URL } from '../config.js'
 import { ArrowLeft, Check, Clapperboard, Copy, FileText, Hourglass, LoaderCircle, Mic as MicIcon, PenLine, RefreshCw, Settings, Timer, Trophy, Users, X } from 'lucide-react'
 import { Ico } from '../components/icons'
@@ -43,6 +46,29 @@ function RoomDetailPage() {
   const [isRoomJoined, setIsRoomJoined] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [classCode, setClassCode] = useState(room?.classId?.code || '')
+
+  useEffect(() => {
+    if (room?.classId) {
+      if (typeof room.classId === 'object' && room.classId?.code) {
+        setClassCode(room.classId.code)
+      } else {
+        const classIdStr = typeof room.classId === 'string' ? room.classId : room.classId?._id
+        if (classIdStr) {
+          classApi.getById(classIdStr)
+            .then(res => {
+              if (res?.class?.code) setClassCode(res.class.code)
+            })
+            .catch(err => console.error('Failed to load class code:', err))
+        }
+      }
+    } else {
+      setClassCode('')
+    }
+  }, [room?.classId])
+
+  const isClassSession = Boolean(room?.classId)
+  const displayCode = isClassSession ? (classCode || '') : (room?.code || '')
   const [showSettings, setShowSettings] = useState(false)
   const settingsRef = useRef(null)
   const transcriptRef = useRef(null)
@@ -118,7 +144,19 @@ function RoomDetailPage() {
     points: 100
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
+  const [waitingRoom, setWaitingRoom] = useState(null)
+  const [showParticipants, setShowParticipants] = useState(false)
+  // Silent leave/rejoin notices from the host channel, plus a short pulse class for the live count.
+  const [presenceToasts, setPresenceToasts] = useState([])
+  const [participantPulse, setParticipantPulse] = useState('')
+  const presenceTimersRef = useRef(new Map())
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
+
+  // Clear any pending toast timers when leaving the live room.
+  useEffect(() => () => {
+    presenceTimersRef.current.forEach((timer) => clearTimeout(timer))
+    presenceTimersRef.current.clear()
+  }, [])
 
   useEffect(() => {
     if (token) {
@@ -159,12 +197,44 @@ function RoomDetailPage() {
       if (data?.participants !== undefined) setTotalParticipants(data.participants)
     }
 
+    // Host-channel push: the whole waiting-room snapshot (config + lists in join order).
+    const handleWaitingUpdated = (data) => {
+      if (!data) return
+      setWaitingRoom(data)
+      // `present` is the live head-count (open presence interval); `admitted` is the roster and
+      // would hide a dip caused by a disconnect.
+      if (data?.counts?.present !== undefined) setTotalParticipants(data.counts.present)
+      else if (data?.counts?.admitted !== undefined) setTotalParticipants(data.counts.admitted)
+    }
+
+    // A student joined, rejoined, left or lost attention. Silent toast + pulse on the participant
+    // counter; the budget figures in the payload also drive the meter in the participants modal via
+    // the refreshed waiting-room snapshot above.
+    const handlePresenceChanged = (data) => {
+      if (!data?.name) return
+      if (data.participants !== undefined) setTotalParticipants(data.participants)
+      setParticipantPulse((data.action === 'left' || data.action === 'away') ? 'down' : 'up')
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      setPresenceToasts((prev) => [...prev.slice(-2), { id, ...data }])
+      const pulseTimer = setTimeout(() => setParticipantPulse(''), 700)
+      const toastTimer = setTimeout(() => {
+        setPresenceToasts((prev) => prev.filter((t) => t.id !== id))
+        presenceTimersRef.current.delete(id)
+      }, 4500)
+      presenceTimersRef.current.set(`pulse-${id}`, pulseTimer)
+      presenceTimersRef.current.set(id, toastTimer)
+    }
+
     socket.on('room:joined', handleRoomJoined)
     socket.on('room:left', handleRoomLeft)
+    socket.on('waiting:updated', handleWaitingUpdated)
+    socket.on('presence:changed', handlePresenceChanged)
 
     return () => {
       socket.off('room:joined', handleRoomJoined)
       socket.off('room:left', handleRoomLeft)
+      socket.off('waiting:updated', handleWaitingUpdated)
+      socket.off('presence:changed', handlePresenceChanged)
     }
   }, [socket])
 
@@ -502,6 +572,8 @@ function RoomDetailPage() {
       setRoom(roomData)
       // Seed the live participant count so a mid-session reload doesn't flash 0 until the next join.
       if (roomData?.participants !== undefined) setTotalParticipants(roomData.participants)
+      // Seed the teacher's waiting-room console (config + waiting/admitted lists).
+      if (roomData?.waitingRoom) setWaitingRoom(roomData.waitingRoom)
       // Apply room settings if they exist
       if (roomData.settings) {
         setRoomSettings(prev => ({
@@ -553,14 +625,16 @@ function RoomDetailPage() {
         endedAt: new Date()
       })
       setRoom(updated)
-      navigate(`/teacher/room/${room._id}/results`)
+      navigate(`/teacher/room/${room._id}/results`, { state: { classId: room?.classId?._id || room?.classId, classCode } })
     } catch (err) {
       setError(err.message)
     }
   }
 
   const copyRoomCode = () => {
-    navigator.clipboard.writeText(room.code)
+    const codeToCopy = isClassSession ? classCode : room?.code
+    if (!codeToCopy) return
+    navigator.clipboard.writeText(codeToCopy)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -1315,40 +1389,58 @@ function RoomDetailPage() {
               border: '2px solid var(--border-color)',
               borderRadius: '10px'
             }}>
+              {isClassSession && (
+                <span style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Class Code
+                </span>
+              )}
               <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor, letterSpacing: '4px' }}>
-                {room.code}
+                {displayCode}
               </span>
-              <button onClick={copyRoomCode} disabled={isEnded} style={{
+              <button onClick={copyRoomCode} disabled={isEnded || (isClassSession && !classCode)} title={isClassSession ? 'Copy class code' : 'Copy room code'} style={{
                 padding: '4px 12px',
-                background: isEnded ? '#9ca3af' : (copied ? '#10b981' : 'var(--accent-solid)'),
+                background: (isEnded || (isClassSession && !classCode)) ? '#9ca3af' : (copied ? '#10b981' : 'var(--accent-solid)'),
                 color: 'white',
                 border: 'none',
                 borderRadius: '4px',
                 fontSize: '12px',
-                cursor: isEnded ? 'not-allowed' : 'pointer'
+                cursor: (isEnded || (isClassSession && !classCode)) ? 'not-allowed' : 'pointer'
               }}>
                 {copied ? <><Ico as={Check} /> Copied</> : <><Ico as={Copy} /> Copy</>}
               </button>
             </div>
 
-            {/* Live participant count — seeded on load, kept current by room:joined / room:left */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '4px',
-              padding: '8px 20px',
-              border: '2px solid var(--border-color)',
-              borderRadius: '10px'
-            }}>
-              <span style={{ fontSize: '28px', fontWeight: '700', color: codeColor }}>
+            {/* Live participant count — seeded on load, kept current by room:joined / room:left.
+                Clicking it opens the admitted-participant list (waiting-room students excluded). */}
+            <button
+              type="button"
+              onClick={() => setShowParticipants(true)}
+              title="View admitted participants in join order"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                padding: '8px 20px',
+                border: '2px solid var(--border-color)',
+                borderRadius: '10px',
+                background: 'transparent',
+                fontFamily: 'inherit',
+                cursor: 'pointer'
+              }}
+            >
+              <span
+                key={`${totalParticipants}-${participantPulse}`}
+                className={participantPulse ? `participant-count-${participantPulse}` : undefined}
+                style={{ fontSize: '28px', fontWeight: '700', color: codeColor, display: 'inline-block' }}
+              >
                 {totalParticipants}
               </span>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>
                 <Ico as={Users} /> Participants
               </span>
-            </div>
+            </button>
 
             <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
@@ -1491,7 +1583,29 @@ function RoomDetailPage() {
                 onClose={() => setShowSettings(false)}
                 settings={roomSettings}
                 onSave={async (newSettings) => {
-                  setRoomSettings(newSettings)
+                  // Preserve config objects the modal does not fully own: the PUT below replaces the
+                  // whole settings object, so dropping them would silently reset the waiting room or
+                  // attention tracking. The modal edits `attention`, but keep the stored value as a
+                  // fallback for older builds that did not send it.
+                  const pendingConfig = roomSettings.waitingRoom || (waitingRoom
+                    ? {
+                      enabled: waitingRoom.enabled,
+                      mode: waitingRoom.mode,
+                      graceSeconds: waitingRoom.graceSeconds,
+                      scheduledAt: waitingRoom.scheduledAt || null,
+                      reconnectAllowanceSeconds: waitingRoom.reconnectAllowanceSeconds ?? 60
+                    }
+                    : null)
+                  const pendingAttention = newSettings?.attention || roomSettings.attention || {
+                    enabled: true,
+                    graceSeconds: 7
+                  }
+                  const mergedSettings = {
+                    ...newSettings,
+                    attention: pendingAttention,
+                    ...(pendingConfig ? { waitingRoom: pendingConfig } : {})
+                  }
+                  setRoomSettings(mergedSettings)
                   // Persist settings to backend
                   try {
                     await fetch(`${API_URL}/rooms/${room._id}`, {
@@ -1500,7 +1614,7 @@ function RoomDetailPage() {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                       },
-                      body: JSON.stringify({ settings: newSettings })
+                      body: JSON.stringify({ settings: mergedSettings })
                     })
                   } catch (err) {
                     console.error('Failed to save room settings:', err)
@@ -1526,6 +1640,22 @@ function RoomDetailPage() {
               </button>
             )}
           </div>
+
+          {/* Waiting-room console: held students, on-time/late filters, admit/reject controls */}
+          <WaitingRoomPanel
+            room={room}
+            token={token}
+            snapshot={waitingRoom}
+            onSnapshot={setWaitingRoom}
+            onAdmittedCount={setTotalParticipants}
+          />
+          <AdmittedParticipantsModal
+            room={room}
+            token={token}
+            open={showParticipants}
+            onClose={() => setShowParticipants(false)}
+            snapshot={waitingRoom}
+          />
 
           {/* Microphone and Transcription Row - 30/70 Split */}
           <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '470px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
@@ -2161,6 +2291,75 @@ function RoomDetailPage() {
         />
       )}
 
+      {/* Silent host-only presence notices: student left / rejoined, with the live budget figures. */}
+      {presenceToasts.length > 0 && (
+        <div
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            right: 18,
+            bottom: 18,
+            zIndex: 1400,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            maxWidth: 'min(360px, calc(100vw - 36px))',
+            pointerEvents: 'none'
+          }}
+        >
+          {presenceToasts.map((toast) => {
+            const left = toast.action === 'left'
+            const away = toast.action === 'away'
+            const returned = toast.action === 'returned'
+            const rejoined = toast.action === 'rejoined'
+            const tone = (left || away) ? '#d97706' : (rejoined || returned) ? '#0ea5e9' : '#10b981'
+            return (
+              <div
+                key={toast.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 9,
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-color)',
+                  boxShadow: '0 12px 32px rgba(15,23,42,0.18)',
+                  animation: 'presence-toast-in 0.25s ease'
+                }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tone, flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--text-primary)' }}>
+                  <strong style={{ fontWeight: 700 }}>{toast.name}</strong>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {left
+                      ? ' left the session'
+                      : away
+                        ? ' lost attention'
+                        : returned
+                          ? ' returned'
+                          : rejoined ? ' rejoined' : ' joined the session'}
+                  </span>
+                  {(away || left) && gapReasonLabel(toast.reason) && (
+                    <span style={{ color: 'var(--text-secondary)' }}> · {gapReasonLabel(toast.reason).toLowerCase()}</span>
+                  )}
+                  {left || away
+                    ? toast.reconnectRemainingSeconds != null && (
+                      <span style={{ color: 'var(--text-secondary)' }}> · {formatSpan(toast.reconnectRemainingSeconds)} budget left</span>
+                    )
+                    : toast.reconnectRemainingSeconds != null && (
+                      <span style={{ color: tone, fontWeight: 650 }}> · {formatSpan(toast.reconnectRemainingSeconds)} budget left</span>
+                    )}
+                </span>
+                <span style={{ fontSize: 10.5, color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                  {toast.at ? new Date(toast.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
@@ -2174,6 +2373,22 @@ function RoomDetailPage() {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.1); }
         }
+        @keyframes participant-count-down {
+          0% { transform: scale(1); opacity: 1; }
+          35% { transform: scale(0.82); opacity: 0.55; color: #dc2626; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes participant-count-up {
+          0% { transform: scale(1); opacity: 1; }
+          35% { transform: scale(1.12); opacity: 0.7; color: #10b981; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes presence-toast-in {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .participant-count-down { animation: participant-count-down 0.7s ease; }
+        .participant-count-up { animation: participant-count-up 0.7s ease; }
       `}</style>
     </div>
   )

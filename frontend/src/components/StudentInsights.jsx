@@ -2,12 +2,19 @@ import React, { useState } from 'react'
 import { Columns, StepLine, Legend, OptionBar, COLORS, rateBand, textTone } from './InsightCharts'
 import { scoreTicks, questionTicks, formatDuration } from '../lib/insightsFormat'
 import { StatTile, TileGrid, SectionHeader, SectionLabel, HeroSummary, SectionNav, cardStyle, QPill, QuestionBox } from './InsightUI'
-import { ArrowLeftRight, Award, ChartColumn, Check, CircleCheck, FileText, Flame, RotateCcw, Search, Star, Timer, TrendingDown, TrendingUp, X } from 'lucide-react'
+import { ArrowLeftRight, Award, ChartColumn, Check, CircleCheck, Clock, FileText, Flame, RotateCcw, Search, Star, Timer, TrendingDown, TrendingUp, X } from 'lucide-react'
 import { Ico } from './icons'
 
 const card = cardStyle
 const hint = { margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }
 const sm = { fontSize: '12px', color: 'var(--text-secondary)' }
+const fmtSpan = (sec) => {
+  if (sec === null || sec === undefined || !Number.isFinite(Number(sec))) return '—'
+  const total = Math.max(0, Math.round(Number(sec)))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 const LETTERS = 'ABCDEFGHIJ'
 
 // A student's own results against the class. `insights.me` comes from GET /responses/insights/:roomId
@@ -48,7 +55,8 @@ export default function StudentInsights({ insights, isMobile }) {
           me.rankHidden
             ? { icon: Award, label: 'Your rank', value: 'Hidden', sub: 'the leaderboard is anonymous', tint: '#f59e0b' }
             : { icon: Award, label: 'Your rank', value: me.rank ? `#${me.rank}` : '—', sub: me.of ? `of ${me.of} who answered` : '', tint: '#f59e0b', tone: me.rank ? '#d97706' : undefined },
-          { icon: Star, label: 'Your points', value: `${me.points}`, sub: me.classMedianScore !== null ? `class median ${me.classMedianScore} · ${vs(me.points, me.classMedianScore)}` : `of ${me.maxPossible} possible`, tint: '#8b5cf6', progress: me.maxPossible ? (me.points / me.maxPossible) * 100 : undefined },
+          { icon: Star, label: 'Your points', value: `${me.points}`, sub: me.attendance && me.attendance.penaltyPercent > 0 ? `${me.attendance.rawPoints} earned − ${me.attendance.penaltyPercent}% missed time = ${me.points}` : me.classMedianScore !== null ? `class median ${me.classMedianScore} · ${vs(me.points, me.classMedianScore)}` : `of ${me.maxPossible} possible`, tint: '#8b5cf6', progress: me.maxPossible ? (me.points / me.maxPossible) * 100 : undefined },
+          ...(me.attendance ? [{ icon: Clock, label: 'Attendance', value: `${Math.max(0, Math.round(100 - (me.attendance.penaltyPercent || 0)))}%`, sub: `${fmtSpan(me.attendance.presentSeconds)} present · ${fmtSpan(me.attendance.missedSeconds)} missed${me.attendance.forgivenSeconds > 0 ? ` · ${fmtSpan(me.attendance.forgivenSeconds)} forgiven (connection lost)` : ''}${me.attendance.excused ? ' · excused' : me.attendance.penaltyPercent > 0 ? ` · −${me.attendance.penaltyPercent}% points` : ''}`, tint: '#0ea5e9' }] : []),
           { icon: CircleCheck, label: 'Your correct rate', value: me.correctRate !== null ? `${me.correctRate}%` : '—', sub: `${me.correct} of ${me.answered} correct` + (me.classCorrectRate !== null ? ` · class ${me.classCorrectRate}% · ${vs(me.correctRate, me.classCorrectRate)}` : ''), tint: COLORS.good, tone: me.correctRate !== null ? rateBand(me.correctRate).color : undefined, progress: me.correctRate, progressColor: me.correctRate !== null ? rateBand(me.correctRate).color : undefined },
           { icon: Timer, label: 'Your median time', value: me.medianResponseTime !== null ? `${me.medianResponseTime}s` : '—', sub: me.classMedianResponseTime !== null ? `class ${me.classMedianResponseTime}s · faster on ${me.fasterThanClass} of ${me.answered}` : '', tint: '#0ea5e9' },
           { icon: Flame, label: 'Best streak', value: `${me.bestStreak}`, sub: 'correct answers in a row', tint: '#ef4444' },

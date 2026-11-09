@@ -1,22 +1,27 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
-import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, School, TrendingUp } from 'lucide-react'
 import { renderIcon } from './icons'
+
 
 const menuItems = {
   teacher: [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/teacher' },
+    { id: 'classes', label: 'Classes', icon: School, path: '/teacher/classes' },
     { id: 'create-room', label: 'Create Room', icon: Plus, path: '/teacher/create-room' },
     { id: 'manage-room', label: 'Manage Room', icon: Settings, path: '/teacher/manage-room' },
     { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/teacher/room-history' },
   ],
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/student' },
+    { id: 'classes', label: 'Classes', icon: School, path: '/student/classes' },
     { id: 'join-room', label: 'Join Room', icon: LinkIcon, path: '/student/join-room' },
+   // { id: 'performance', label: 'Our Growth', icon: TrendingUp, path: '/student/performance' },
     { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/student/room-history' },
   ]
 }
+
 
 const MOBILE_QUERY = '(max-width: 768px)'
 const EXPANDED_W = 240
@@ -166,6 +171,7 @@ export default function Sidebar({ user }) {
           {showLabels && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', opacity: 0.75, padding: '8px 12px 8px' }}>Menu</div>}
           {items.map((item) => {
             const isActive = location.pathname === item.path ||
+              (item.id === 'classes' && location.pathname.startsWith(item.path)) ||
               (item.id === 'dashboard' && (location.pathname === '/teacher' || location.pathname === '/student'))
             return (
               <button

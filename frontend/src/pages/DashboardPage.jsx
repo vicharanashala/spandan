@@ -7,6 +7,7 @@ import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import useIsMobile from '../hooks/useIsMobile'
 import useNow from '../hooks/useNow'
+import { classApi } from '../lib/api'
 import { PageHeader, pageWash, greeting, dateLabel, LiveClock, inputStyle, primaryButton, ChoiceCard, RoomCard, Pill, EmptyState } from '../components/AppUI'
 import { StatTile, TileGrid, SectionLabel, SectionHeader, cardStyle } from '../components/InsightUI'
 import { ChartColumn, CircleDot, Clapperboard, Hand, Inbox, Library, MessageSquare, Mic, Plus } from 'lucide-react'
@@ -25,6 +26,8 @@ function DashboardPage() {
   const [videoUrl, setVideoUrl] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [classes, setClasses] = useState([])
+  const [createError, setCreateError] = useState('')
 
   // Video Mode needs a Chromium browser (getDisplayMedia tab-audio capture on the teacher side).
   const isChromium = /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent)
@@ -37,15 +40,41 @@ function DashboardPage() {
     totalResponses: 0
   })
 
+  const { socket } = useSocketStore()
+
+  const fetchClassesList = async () => {
+    try {
+      const data = await classApi.getAll()
+      setClasses(data.classes || [])
+    } catch (err) {
+      // non-fatal
+    }
+  }
+
   // Initial setup
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchRooms()
       fetchTeacherStats()
+      fetchClassesList()
     }
     setChecked(true)
   }, [token])
+
+  useEffect(() => {
+    if (!socket) return
+    const refresh = () => {
+      fetchRooms()
+      fetchClassesList()
+    }
+    socket.on('class:session-started', refresh)
+    socket.on('class:updated', refresh)
+    return () => {
+      socket.off('class:session-started', refresh)
+      socket.off('class:updated', refresh)
+    }
+  }, [socket])
 
   const fetchTeacherStats = async () => {
     try {
@@ -102,9 +131,14 @@ function DashboardPage() {
   }, [checked, token, navigate])
 
   const handleCreateRoom = async () => {
+    if (hasLiveClassSession) {
+      setCreateError('End the current live session first.')
+      return
+    }
     if (!roomName.trim()) return
     if (mode === 'video' && !isValidYouTube(videoUrl)) return
     setIsCreating(true)
+    setCreateError('')
     try {
       const settings = { mode }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
@@ -112,8 +146,10 @@ function DashboardPage() {
       setRoomName('')
       setVideoUrl('')
       setMode('normal')
+      await fetchRooms()
     } catch (err) {
       console.error('Failed to create room:', err)
+      setCreateError(err.message || 'Failed to create room')
     } finally {
       setIsCreating(false)
     }
@@ -145,9 +181,13 @@ function DashboardPage() {
     )
   }
 
-  const disabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
+  const hasLiveClassSession = Boolean(
+    (classes && classes.some(c => c.activeSession)) ||
+    (rooms && rooms.some(r => r.classId && !r.endedAt && r.isActive !== false))
+  )
+  const disabled = isCreating || hasLiveClassSession || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
   const activeRooms = (rooms || []).filter(r => !r.endedAt)
-  const firstName = (user?.name || 'Teacher').split(' ')[0]
+  const displayName = user?.name || 'Teacher'
 
   return (
     <div style={{
@@ -172,7 +212,7 @@ function DashboardPage() {
         boxSizing: 'border-box'
       }}>
         <PageHeader isMobile={isMobile} icon={Hand} eyebrow={<>{dateLabel(now)} · <LiveClock /></>}
-          title={`${greeting(now)}, ${firstName}!`} subtitle="Manage your rooms and questions" />
+          title={`${greeting(now)}, ${displayName}!`} subtitle="Manage your rooms and questions" />
 
         {/* Dashboard content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '28px 32px 32px', maxWidth: '100%', boxSizing: 'border-box', background: pageWash }}>
@@ -189,7 +229,47 @@ function DashboardPage() {
           {/* Create Room Section */}
           <SectionLabel>Start a session</SectionLabel>
           <div data-tour="create-room" className="insight-card" style={cardStyle(isMobile)}>
-            <SectionHeader icon={Plus} title="Create New Room" hint="Give it a name and pick how you will teach. Students join with the room code." />
+            <SectionHeader
+              icon={Plus}
+              title="Create New Room"
+              hint={
+                hasLiveClassSession
+                  ? 'A live class session is in progress. End the current live session first.'
+                  : 'Give it a name and pick how you will teach. Students join with the room code.'
+              }
+            />
+            {hasLiveClassSession && (
+              <div style={{
+                padding: '10px 14px',
+                borderRadius: '12px',
+                background: 'color-mix(in srgb, #f59e0b 12%, var(--bg-card))',
+                border: '1px solid color-mix(in srgb, #f59e0b 35%, transparent)',
+                color: '#d97706',
+                marginBottom: '14px',
+                fontSize: '13px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <CircleDot size={16} className="app-pulse" />
+                <span>End the current live session first.</span>
+              </div>
+            )}
+            {createError && (
+              <div style={{
+                padding: '10px 14px',
+                borderRadius: '12px',
+                background: 'color-mix(in srgb, #ef4444 12%, var(--bg-card))',
+                border: '1px solid color-mix(in srgb, #ef4444 35%, transparent)',
+                color: '#ef4444',
+                marginBottom: '14px',
+                fontSize: '13px',
+                fontWeight: 600
+              }}>
+                {createError}
+              </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div style={{ display: 'flex', gap: '12px', flexDirection: isMobile ? 'column' : 'row' }}>
                 <input
@@ -197,13 +277,19 @@ function DashboardPage() {
                   className="app-input"
                   value={roomName}
                   onChange={(e) => setRoomName(e.target.value)}
-                  placeholder="Room name, e.g. DBMS Lecture 12"
+                  placeholder={hasLiveClassSession ? 'End the current live session first' : 'Room name, e.g. DBMS Lecture 12'}
                   aria-label="Room name"
+                  disabled={hasLiveClassSession}
                   style={inputStyle({ flex: 1 })}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
                 />
                 {!isMobile && (
-                  <button onClick={handleCreateRoom} disabled={disabled} style={primaryButton(disabled)}>
+                  <button
+                    onClick={handleCreateRoom}
+                    disabled={disabled}
+                    title={hasLiveClassSession ? 'End the current live session first.' : undefined}
+                    style={primaryButton(disabled)}
+                  >
                     {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
                   </button>
                 )}
@@ -255,7 +341,12 @@ function DashboardPage() {
               )}
               {/* phones: the button comes below the Normal / Video selector, at full width */}
               {isMobile && (
-                <button onClick={handleCreateRoom} disabled={disabled} style={primaryButton(disabled, { width: '100%' })}>
+                <button
+                  onClick={handleCreateRoom}
+                  disabled={disabled}
+                  title={hasLiveClassSession ? 'End the current live session first.' : undefined}
+                  style={primaryButton(disabled, { width: '100%' })}
+                >
                   {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
                 </button>
               )}
@@ -270,20 +361,25 @@ function DashboardPage() {
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>Loading rooms…</div>
           ) : activeRooms.length > 0 ? (
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(270px, 1fr))', gap: '16px' }}>
-              {activeRooms.map((room) => (
-                <RoomCard
-                  key={room._id}
-                  icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
-                  tint={room.settings?.mode === 'video' ? '#ec4899' : 'var(--accent)'}
-                  title={room.name}
-                  code={room.code}
-                  status={<span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}><Pill tone="#10b981" dot>Active</Pill>{room.settings?.mode === 'video' && <Pill tone="#ec4899">Video</Pill>}</span>}
-                  meta={[`${room.questionCount || 0} question${room.questionCount === 1 ? '' : 's'}`]}
-                  actionLabel="Manage →"
-                  onOpen={() => navigate(`/teacher/room/${room._id}`)}
-                  onAction={() => navigate(`/teacher/room/${room._id}`)}
-                />
-              ))}
+              {activeRooms.map((room) => {
+                const isClass = Boolean(room.classId)
+                const classObj = isClass ? classes?.find(c => String(c._id) === String(room.classId?._id || room.classId)) : null
+                const displayCode = isClass ? (classObj?.code || (typeof room.classId === 'object' ? room.classId?.code : null)) : room.code
+                return (
+                  <RoomCard
+                    key={room._id}
+                    icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
+                    tint={room.settings?.mode === 'video' ? '#ec4899' : 'var(--accent)'}
+                    title={room.name}
+                    code={displayCode}
+                    status={<span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}><Pill tone="#10b981" dot>Active</Pill>{room.settings?.mode === 'video' && <Pill tone="#ec4899">Video</Pill>}</span>}
+                    meta={[`${room.questionCount || 0} question${room.questionCount === 1 ? '' : 's'}`]}
+                    actionLabel="Manage →"
+                    onOpen={() => navigate(`/teacher/room/${room._id}`)}
+                    onAction={() => navigate(`/teacher/room/${room._id}`)}
+                  />
+                )
+              })}
             </div>
           ) : (
             <EmptyState icon={Inbox} title="No active rooms" description="Create your first room above. It will appear here while it is open." />

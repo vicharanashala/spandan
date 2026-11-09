@@ -43,7 +43,18 @@ export const createRoomSchema = z.object({
     showResultsImmediately: z.boolean().optional(),
     requireCorrectAnswer: z.boolean().optional(),
     mode: z.enum(['normal', 'video']).optional(),
-    videoUrl: z.string().max(500).optional()
+    videoUrl: z.string().max(500).optional(),
+    waitingRoom: z.object({
+      enabled: z.boolean().optional(),
+      mode: z.enum(['automatic', 'manual']).optional(),
+      graceSeconds: z.number().int().min(0).max(3600).optional(),
+      scheduledAt: z.union([z.string().datetime(), z.null()]).optional(),
+      reconnectAllowanceSeconds: z.number().int().min(0).max(3600).optional()
+    }).optional(),
+    attention: z.object({
+      enabled: z.boolean().optional(),
+      graceSeconds: z.number().int().min(0).max(300).optional()
+    }).optional()
   }).optional()
 })
 
@@ -70,7 +81,18 @@ export const roomSettingsSchema = z.object({
   }).optional(),
   anonymousLeaderboard: z.boolean().optional(),
   anonymityPercent: z.number().int().min(0).max(100).optional(),   // dialog 0-100
-  revealBottomToStudents: z.boolean().optional()
+  revealBottomToStudents: z.boolean().optional(),
+  waitingRoom: z.object({
+    enabled: z.boolean().optional(),
+    mode: z.enum(['automatic', 'manual']).optional(),
+    graceSeconds: z.number().int().min(0).max(3600).optional(),
+    scheduledAt: z.union([z.string().datetime(), z.null()]).optional(),
+    reconnectAllowanceSeconds: z.number().int().min(0).max(3600).optional()
+  }).optional(),
+  attention: z.object({
+    enabled: z.boolean().optional(),
+    graceSeconds: z.number().int().min(0).max(300).optional()
+  }).optional()
 })
 
 // Body of PUT /rooms/:id. The same route saves settings ({ settings }), edits the video link

@@ -36,12 +36,72 @@ export const api = {
     return this.handleResponse(response)
   },
 
+  async patch(endpoint, data) {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      method: 'PATCH',
+      headers: getHeaders(),
+      body: JSON.stringify(data)
+    })
+    return this.handleResponse(response)
+  },
+
   async delete(endpoint) {
     const response = await fetch(`${API_URL}${endpoint}`, {
       method: 'DELETE',
       headers: getHeaders()
     })
     return this.handleResponse(response)
+  },
+
+  async postFormData(endpoint, formData) {
+    const { token } = useAuthStore.getState()
+    const headers = {
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    }
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData
+    })
+    return this.handleResponse(response)
+  },
+
+  async downloadBlob(endpoint, fallbackFilename = 'download') {
+    const { token } = useAuthStore.getState()
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      method: 'GET',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    })
+    if (!response.ok) {
+      let errMsg = 'Download failed'
+      try {
+        const errJson = await response.json()
+        errMsg = errJson.error || errMsg
+      } catch (e) {}
+      throw new Error(errMsg)
+    }
+
+    const disposition = response.headers.get('Content-Disposition')
+    let filename = fallbackFilename
+    if (disposition && disposition.includes('filename=')) {
+      const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
+      if (match && match[1]) {
+        filename = match[1].replace(/['"]/g, '').trim()
+      }
+    }
+
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+    return { success: true, filename }
   },
 
   async handleResponse(response) {
@@ -88,4 +148,20 @@ export const questionApi = {
   getResults: (id) => api.get(`/questions/${id}/results`)
 }
 
-export default api
+export const classApi = {
+  create: (name, settings) => api.post('/classes', { name, settings }),
+  getAll: () => api.get('/classes'),
+  getById: (id) => api.get(`/classes/${id}`),
+  join: (code) => api.post('/classes/join', { code }),
+  getSessions: (id) => api.get(`/classes/${id}/sessions`),
+  createSession: (id, data) => api.post(`/classes/${id}/sessions`, data),
+  getStats: (id) => api.get(`/classes/${id}/stats`),
+  getMembers: (id) => api.get(`/classes/${id}/members`),
+  getMemberPerformance: (id, studentId) => api.get(`/classes/${id}/members/${studentId}/performance`),
+  updateMember: (id, studentId, action) => api.patch(`/classes/${id}/members/${studentId}`, { action }),
+  archive: (id) => api.post(`/classes/${id}/archive`),
+  restore: (id) => api.post(`/classes/${id}/restore`),
+  exportCsv: (id, filename) => api.downloadBlob(`/classes/${id}/export`, filename)
+}
+
+export default api

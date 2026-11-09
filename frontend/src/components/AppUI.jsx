@@ -126,17 +126,100 @@ export function ChoiceCard({ icon, title, description, active, onClick, tint = '
   )
 }
 
-// Room code chip with a copy button.
-export function CodeChip({ code }) {
+// Room / class code chip with a copy button.
+export function CodeChip({ code, variant = 'default' }) {
+  if (!code) return null
   const [copied, setCopied] = useState(false)
   const copy = (e) => {
     e.stopPropagation()
-    try { navigator.clipboard?.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1400) } catch (err) { /* ignore */ }
+    try {
+      navigator.clipboard?.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (err) { /* ignore */ }
   }
+
+  const isHeader = variant === 'header'
+
+  const containerStyle = isHeader
+    ? {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 8px 3px 10px',
+        borderRadius: 10,
+        background: 'rgba(255, 255, 255, 0.16)',
+        border: '1px solid rgba(255, 255, 255, 0.35)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.14)',
+        color: '#ffffff'
+      }
+    : {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 8px 3px 10px',
+        borderRadius: 10,
+        background: 'color-mix(in srgb, var(--accent) 12%, var(--bg-card))',
+        border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border-color))',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)'
+      }
+
+  const codeStyle = isHeader
+    ? {
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontWeight: 750,
+        letterSpacing: '0.14em',
+        color: '#ffffff',
+        fontSize: 13,
+        textShadow: '0 1px 2px rgba(0, 0, 0, 0.25)'
+      }
+    : {
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontWeight: 750,
+        letterSpacing: '0.12em',
+        color: 'var(--text-primary)',
+        fontSize: 13
+      }
+
+  const buttonStyle = {
+    border: 'none',
+    background: copied
+      ? '#10b981'
+      : isHeader
+        ? 'rgba(255, 255, 255, 0.22)'
+        : 'color-mix(in srgb, var(--accent) 14%, transparent)',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 11,
+    padding: copied ? '2px 7px' : '3px 5px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    color: copied ? '#ffffff' : isHeader ? '#ffffff' : 'var(--text-secondary)',
+    transition: 'all 0.15s ease'
+  }
+
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 6px 4px 10px', borderRadius: 10, background: tintBg('var(--accent)', 9), border: `1px solid ${tintBg('var(--accent)', 22)}` }}>
-      <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontWeight: 700, letterSpacing: '0.12em', color: 'var(--accent)', fontSize: 13 }}>{code}</span>
-      <button type="button" onClick={copy} aria-label={`Copy room code ${code}`} title="Copy code" style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, padding: '2px 4px', display: 'inline-flex', color: 'var(--text-secondary)' }}>{copied ? <Check size={13} strokeWidth={2.5} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}</button>
+    <span style={containerStyle}>
+      <span style={codeStyle}>{code}</span>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={copied ? 'Code copied to clipboard' : `Copy code ${code}`}
+        title={copied ? 'Copied!' : 'Copy code'}
+        style={buttonStyle}
+      >
+        {copied ? (
+          <>
+            <Check size={12} strokeWidth={2.8} aria-hidden="true" />
+            <span style={{ fontWeight: 700, fontSize: 11, letterSpacing: '0.02em' }}>Copied</span>
+          </>
+        ) : (
+          <Copy size={13} aria-hidden="true" />
+        )}
+      </button>
     </span>
   )
 }

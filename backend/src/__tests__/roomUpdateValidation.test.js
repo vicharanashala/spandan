@@ -83,4 +83,23 @@ describe('PUT /rooms/:id body (roomUpdateSchema)', () => {
     expect(roomSettingsSchema.safeParse(fullSettings).success).toBe(true)
     expect(roomSettingsSchema.safeParse({ segmentTime: 30 }).success).toBe(false)
   })
+
+  describe('attention tracking', () => {
+    it('accepts the dialog payload (on/off + grace 0..300)', () => {
+      expect(ok({ settings: { ...fullSettings, attention: { enabled: true, graceSeconds: 7 } } })).toBe(true)
+      expect(ok({ settings: { ...fullSettings, attention: { enabled: false, graceSeconds: 0 } } })).toBe(true)
+      expect(ok({ settings: { ...fullSettings, attention: { enabled: true, graceSeconds: 300 } } })).toBe(true)
+      expect(ok({ settings: { ...fullSettings, attention: {} } })).toBe(true)
+    })
+
+    it('rejects a non-boolean enabled flag', () => {
+      expect(ok({ settings: { attention: { enabled: 'yes' } } })).toBe(false)
+    })
+
+    it('rejects a grace period outside 0..300 or fractional', () => {
+      expect(ok({ settings: { attention: { graceSeconds: -1 } } })).toBe(false)
+      expect(ok({ settings: { attention: { graceSeconds: 301 } } })).toBe(false)
+      expect(ok({ settings: { attention: { graceSeconds: 7.5 } } })).toBe(false)
+    })
+  })
 })

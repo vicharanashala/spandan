@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
@@ -10,6 +10,8 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import SoundToggle from '../components/SoundToggle'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
+import useAttentionTracker from '../hooks/useAttentionTracker'
+import { classApi } from '../lib/api'
 import { API_URL } from '../config.js'
 import { installUnlockOnInteraction, playStudentQuestion, unlockAudio } from '../lib/sounds'
 import { Bell, Check, CircleCheck, Clapperboard, ClipboardList, Hourglass, Lightbulb, Mic, TriangleAlert, Trophy, X } from 'lucide-react'
@@ -21,6 +23,44 @@ import { Ico } from '../components/icons'
 // delay in [0, this) before navigating. Scoring is unaffected — the session is already over.
 const RESULTS_NAV_JITTER_MS = 4000
 
+// Teacher-facing wording for the reason a student's presence interval closed.
+const AWAY_REASON_LABELS = {
+  'tab-hidden': 'this tab is hidden',
+  'window-blur': 'another window has focus',
+  frozen: 'this tab stopped responding',
+  untracked: 'Spandan could not confirm this tab was active',
+  leave: 'you left the session',
+  disconnect: 'the connection dropped',
+  attention: 'the Spandan window lost focus'
+}
+
+const normalizeQuestionData = (data) => {
+  if (!data) return null
+  if (data.question && typeof data.question === 'object') {
+    const inner = data.question
+    return {
+      ...inner,
+      _id: inner._id || inner.id || data.questionId || data._id,
+      question: typeof inner.question === 'string' ? inner.question : (inner.question?.question || inner.text || ''),
+      options: inner.options || [],
+      type: inner.type || data.type || 'MCQ',
+      timeToAnswer: inner.timeToAnswer || data.timer || 30,
+      timer: data.timer || inner.timeToAnswer || 30,
+      startTime: data.startTime || Date.now()
+    }
+  }
+  return {
+    ...data,
+    _id: data._id || data.id || data.questionId,
+    question: typeof data.question === 'string' ? data.question : (data.question?.question || data.text || ''),
+    options: data.options || [],
+    type: data.type || 'MCQ',
+    timeToAnswer: data.timeToAnswer || data.timer || 30,
+    timer: data.timer || data.timeToAnswer || 30,
+    startTime: data.startTime || Date.now()
+  }
+}
+
 function StudentRoomPage() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
@@ -28,21 +68,56 @@ function StudentRoomPage() {
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { joinRoomByCode, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
+  const location = useLocation()
 
   const [room, setRoom] = useState(null)
+  const [classCode, setClassCode] = useState(location.state?.classCode || '')
+  const [className, setClassName] = useState(location.state?.className || '')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const [currentQuestion, setCurrentQuestion] = useState(null)
   const [selectedOptions, setSelectedOptions] = useState([]) // Array for MSQ support
   const [submitted, setSubmitted] = useState(false)
+  // Set when POST /responses refuses an answer because the student was marked away. The optimistic
+  // "submitted" lock is rolled back so they can answer again once presence reopens.
+  const [awayAnswerRejected, setAwayAnswerRejected] = useState(false)
   const [hasAnsweredPoll, setHasAnsweredPoll] = useState(false) // Track if student has answered at least one poll
   const [timeLeft, setTimeLeft] = useState(0)
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
   const [sessionEnded, setSessionEnded] = useState(false) // room ended → show interstitial while we stagger navigation
+  // Waiting-room state for this student: { enabled, mode, graceSeconds, status, onTime, joinedAt }.
+  // When status is 'waiting' or 'rejected' the live session UI is replaced by a holding screen.
+  const [waitingRoom, setWaitingRoom] = useState(null)
+  const [waitNow, setWaitNow] = useState(() => Date.now())
+  const refreshAfterAdmitRef = useRef(null)
   const timerIntervalRef = useRef(null)
   const resultsNavTimerRef = useRef(null)
+  // The room this page actually joined, captured for leave cleanup. Keeping it in a ref lets the
+  // unmount/navigation path emit `room:leave` with the CURRENT code, instead of the null `room` from
+  // the join effect's first-render closure.
+  const activeRoomRef = useRef(null)
+  const leaveSentRef = useRef(false)
+
+  // ── Attention tracking ───────────────────────────────────────────────────────────────────────
+  // A room setting can switch this off (legacy rooms with no settings.attention are enabled). It is
+  // suspended while the student is held in the waiting room or after the session has ended.
+  const attentionConfig = room?.settings?.attention || {}
+  const attentionEnabled = attentionConfig.enabled !== false
+  const attentionGraceSeconds = Number.isFinite(Number(attentionConfig.graceSeconds))
+    ? Number(attentionConfig.graceSeconds)
+    : 7
+  const heldByWaitingRoom = !!(waitingRoom?.enabled &&
+    (waitingRoom.status === 'waiting' || waitingRoom.status === 'rejected'))
+  const attention = useAttentionTracker({
+    socket,
+    roomCode: room?.code || roomCode,
+    enabled: attentionEnabled && !heldByWaitingRoom && !sessionEnded,
+    graceSeconds: attentionGraceSeconds
+  })
+  const answerLocked = attention.blocked
+  const awayReasonLabel = AWAY_REASON_LABELS[attention.reason] || AWAY_REASON_LABELS.attention
 
   // Video mode: students watch independently (pause + rewind allowed, no forward-seek), and the
   // player pauses locally while a question is live.
@@ -94,50 +169,81 @@ function StudentRoomPage() {
     if (!token || !socket) return
     setAuthToken(token)
     joinSession()
-    return () => {
-      if (room?.code) {
-        leaveRoom(room.code, user._id)
-      }
-    }
   }, [token, socket])
 
+  // Leave on unmount / room change using the values captured after the join completed. This is
+  // separate from the join effect so a navigation cleanup never reads the stale `room` from the
+  // first render (which used to skip `room:leave` entirely).
+  useEffect(() => {
+    if (!room?.code || !user?._id) {
+      activeRoomRef.current = null
+      return undefined
+    }
+    activeRoomRef.current = { roomCode: room.code, userId: user._id }
+    leaveSentRef.current = false
+    return () => {
+      const active = activeRoomRef.current
+      activeRoomRef.current = null
+      if (!active || leaveSentRef.current) return
+      leaveSentRef.current = true
+      leaveRoom(active.roomCode, active.userId)
+    }
+  }, [room?.code, user?._id, leaveRoom])
 
+  // Live countdown to the end of the on-time grace window while the student waits.
+  useEffect(() => {
+    if (!waitingRoom?.graceEndsAt) return undefined
+    setWaitNow(Date.now())
+    const id = setInterval(() => setWaitNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [waitingRoom?.graceEndsAt])
+
+  const handleQuestionStarted = useCallback((data) => {
+    if (!data) return
+    const q = normalizeQuestionData(data)
+    if (!q) return
+
+    // Clear any existing timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current)
+      timerIntervalRef.current = null
+    }
+
+    setCurrentQuestion(q)
+    setSelectedOptions([])
+    setSubmitted(false)
+    setAwayAnswerRejected(false)
+
+    let initialTime = q.timer || q.timeToAnswer || 30
+    if (q.startTime && q.timer) {
+      const elapsedSeconds = Math.floor((Date.now() - q.startTime) / 1000)
+      if (elapsedSeconds > 0 && elapsedSeconds < q.timer) {
+        initialTime = q.timer - elapsedSeconds
+      } else if (elapsedSeconds >= q.timer) {
+        initialTime = 1
+      }
+    }
+    setTimeLeft(initialTime)
+
+    timerIntervalRef.current = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(timerIntervalRef.current)
+          timerIntervalRef.current = null
+          // Time expired - refresh from MongoDB only if room/user available
+          if (room?._id && user?._id) {
+            fetchPastResponses(room._id, user._id)
+          }
+          setCurrentQuestion(null)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }, [room?._id, user?._id])
 
   useEffect(() => {
     if (!socket) return
-
-    const handleQuestionStarted = (data) => {
-      setCurrentQuestion(data)
-      setSelectedOptions([])
-      setSubmitted(false)
-      setTimeLeft(data.timer || 30)
-      
-      if (data.question && data.question.timeToAnswer) {
-        setTimeLeft(data.question.timeToAnswer)
-      }
-      
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-    }
 
     const handleQuestionEnded = (data) => {
       // Clear timer if running
@@ -156,32 +262,7 @@ function StudentRoomPage() {
 
     const handleNewQuestion = (question) => {
       // Handle manually created questions from teacher
-      // Clear any existing timer
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current)
-        timerIntervalRef.current = null
-      }
-      
-      setCurrentQuestion(question)
-      setSelectedOptions([])
-      setSubmitted(false)
-      setTimeLeft(question.timeToAnswer || 30)
-      
-      timerIntervalRef.current = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(timerIntervalRef.current)
-            timerIntervalRef.current = null
-            // Time expired - refresh from MongoDB only if room/user available
-            if (room?._id && user?._id) {
-              fetchPastResponses(room._id, user._id)
-            }
-            setCurrentQuestion(null)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
+      handleQuestionStarted(question)
     }
 
     // Self-heal after a socket reconnect: the store re-joins the room automatically, but a
@@ -207,6 +288,27 @@ function StudentRoomPage() {
       if (r === 'blocked') setSoundBlocked(true)
     }
 
+    // Waiting-room pushes arrive on the student's private user channel.
+    const handleWaitingJoined = (data) => {
+      setWaitingRoom(prev => ({
+        ...(prev || {}),
+        enabled: true,
+        status: 'waiting',
+        mode: data?.mode || prev?.mode || 'automatic',
+        onTime: data?.onTime !== false,
+        joinedAt: data?.joinedAt || prev?.joinedAt
+      }))
+    }
+    const handleWaitingAdmitted = (data) => {
+      setWaitingRoom(prev => ({ ...(prev || {}), status: 'admitted' }))
+      // The server already moved this socket into the live room channel; pull the current question
+      // and past responses so the live UI is ready the moment the holding screen disappears.
+      refreshAfterAdmitRef.current?.(data)
+    }
+    const handleWaitingRejected = () => {
+      setWaitingRoom(prev => ({ ...(prev || {}), status: 'rejected' }))
+    }
+
     socket.on('question:started', handleQuestionStarted)
     socket.on('question:ended', handleQuestionEnded)
     socket.on('new_question', handleNewQuestion)
@@ -214,6 +316,9 @@ function StudentRoomPage() {
     socket.on('video:pause', handleVideoPause)
     socket.on('video:resume', handleVideoResume)
     socket.on('questions:ready', handleQuestionsReady)
+    socket.on('waiting:joined', handleWaitingJoined)
+    socket.on('waiting:admitted', handleWaitingAdmitted)
+    socket.on('waiting:rejected', handleWaitingRejected)
     socket.on('connect', handleReconnect)
     socket.on('room:ended', () => {
       // Show the interstitial immediately, but stagger the actual navigation across a jitter window
@@ -233,36 +338,121 @@ function StudentRoomPage() {
       socket.off('video:pause', handleVideoPause)
       socket.off('video:resume', handleVideoResume)
       socket.off('questions:ready', handleQuestionsReady)
+      socket.off('waiting:joined', handleWaitingJoined)
+      socket.off('waiting:admitted', handleWaitingAdmitted)
+      socket.off('waiting:rejected', handleWaitingRejected)
       socket.off('connect', handleReconnect)
       socket.off('room:ended')
       if (resultsNavTimerRef.current) clearTimeout(resultsNavTimerRef.current)
     }
   }, [socket, navigate, room?._id])
 
+  const fetchActiveQuestionForRoom = async (roomId, currentQId) => {
+    if (!roomId || !token) return null
+    try {
+      const qRes = await fetch(`${API_URL}/questions?roomId=${roomId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!qRes.ok) return null
+      const qData = await qRes.json()
+      const questions = qData.questions || []
+      if (questions.length === 0) return null
+
+      let targetQ = null
+      if (currentQId) {
+        targetQ = questions.find(q => String(q._id) === String(currentQId))
+      }
+      if (!targetQ && currentQId) {
+        targetQ = questions[0]
+      }
+      if (!targetQ) return null
+
+      if (targetQ.closeAt && new Date(targetQ.closeAt) <= new Date()) {
+        return null
+      }
+
+      if (user?._id) {
+        const rRes = await fetch(`${API_URL}/responses/room/${roomId}/student/${user._id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (rRes.ok) {
+          const rData = await rRes.json()
+          const answered = (rData.questions || []).some(
+            p => String(p._id) === String(targetQ._id) && p.answered
+          )
+          if (answered) return null
+        }
+      }
+
+      return targetQ
+    } catch (err) {
+      console.warn('[StudentRoom] Failed to recover active question:', err)
+      return null
+    }
+  }
+
   const joinSession = async () => {
     setIsLoading(true)
     try {
       const roomData = await joinRoomByCode(roomCode)
       setRoom(roomData)
-      if (user?._id && socket) {
-        // Join via socket - room:joined confirms the student was added to RoomMember
-        return new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            socket.off('room:joined', handleRoomJoined)
-            // Still fetch even if timeout - RoomMember should already exist from HTTP join
-            fetchPastResponses(roomData._id, user._id)
-            resolve()
-          }, 3000)
+      const membership = roomData?.waitingRoom || null
+      setWaitingRoom(membership)
+      const isHeldByWaitingRoom = !!(membership?.enabled &&
+        (membership.status === 'waiting' || membership.status === 'rejected'))
+      // Extract class code/name from populated classId
+      if (roomData?.classId) {
+        if (typeof roomData.classId === 'object') {
+          if (roomData.classId.code && !classCode) setClassCode(roomData.classId.code)
+          if (roomData.classId.name && !className) setClassName(roomData.classId.name)
+        } else if (typeof roomData.classId === 'string') {
+          classApi.getById(roomData.classId).then(res => {
+            if (res?.class?.code) setClassCode(res.class.code)
+            if (res?.class?.name) setClassName(res.class.name)
+          }).catch(() => {})
+        }
+      }
 
+      // Late-join active question recovery: if the room already has a current/active question,
+      // recover it and set it as currentQuestion with timer so the student can still answer.
+      // Waiting/rejected students must not receive it.
+      let activeQ = isHeldByWaitingRoom ? null : (roomData?.activeQuestion || null)
+      if (!isHeldByWaitingRoom && !activeQ && (roomData?.currentQuestion || roomData?._id)) {
+        activeQ = await fetchActiveQuestionForRoom(roomData._id, roomData.currentQuestion)
+      }
+      if (activeQ) {
+        handleQuestionStarted(activeQ)
+      }
+
+      if (user?._id && socket) {
+        // Join via socket - room:joined confirms the student was added to RoomMember. A waiting
+        // student gets waiting:joined instead (they are held outside the live room channel).
+        return new Promise((resolve) => {
+          const finish = () => {
+            clearTimeout(timeout)
+            socket.off('room:joined', handleRoomJoined)
+            socket.off('waiting:joined', handleRoomJoined)
+            socket.off('waiting:rejected', handleRoomJoined)
+          }
           const handleRoomJoined = (data) => {
-            if (data.roomCode === roomData.code) {
-              clearTimeout(timeout)
-              socket.off('room:joined', handleRoomJoined)
-              fetchPastResponses(roomData._id, user._id)
+            if (!data?.roomCode || data.roomCode === roomData.code) {
+              finish()
+              if (!isHeldByWaitingRoom && user?._id) {
+                fetchPastResponses(roomData._id, user._id)
+              }
               resolve()
             }
           }
+          const timeout = setTimeout(() => {
+            finish()
+            // Still fetch even if timeout - RoomMember should already exist from HTTP join
+            if (!isHeldByWaitingRoom) fetchPastResponses(roomData._id, user._id)
+            resolve()
+          }, 3000)
+
           socket.on('room:joined', handleRoomJoined)
+          socket.on('waiting:joined', handleRoomJoined)
+          socket.on('waiting:rejected', handleRoomJoined)
           joinRoom(roomData.code, user._id)
         })
       }
@@ -303,20 +493,46 @@ function StudentRoomPage() {
     }
   }
 
+  // After the teacher admits this student, pull the full room state (active question + history) so
+  // the live UI is ready as soon as the holding screen disappears. The socket was already moved into
+  // the live room channel by the server when it emitted waiting:admitted.
+  useEffect(() => {
+    refreshAfterAdmitRef.current = async () => {
+      try {
+        const roomData = await joinRoomByCode(roomCode)
+        setRoom(roomData)
+        if (roomData?.waitingRoom) setWaitingRoom(roomData.waitingRoom)
+        if (roomData?.activeQuestion) handleQuestionStarted(roomData.activeQuestion)
+        if (user?._id) fetchPastResponses(roomData._id, user._id)
+      } catch (err) {
+        console.error('[StudentRoom] Failed to refresh after admission:', err)
+      }
+    }
+    return () => { refreshAfterAdmitRef.current = null }
+  }, [roomCode, user?._id, token])
+
   const handleSubmitAnswer = async () => {
     if (selectedOptions.length === 0 || submitted || !currentQuestion) return
+    // While the window is away/unfocused the server has closed presence and would reject the
+    // answer. Refuse locally too, so the student is never shown a false "submitted" state.
+    if (attention.blocked) {
+      setAwayAnswerRejected(true)
+      return
+    }
 
-    const questionId = currentQuestion._id || currentQuestion.question?._id
-    const tta = currentQuestion.timeToAnswer || 30
+    const questionId = currentQuestion._id || currentQuestion.id || currentQuestion.questionId || currentQuestion.question?._id
+    const tta = currentQuestion.timeToAnswer || currentQuestion.timer || 30
     // Freeze responseTime at CLICK time. Scoring is based on this value, NOT on when the request
     // is actually sent, so the send-jitter below can never change a student's points.
     const responseTime = tta - timeLeft
     const roomId = room?._id
     const studentId = user?._id
+    const hadAnsweredPoll = hasAnsweredPoll
 
     // Lock the UI immediately so the student sees their answer registered and cannot double-submit,
     // even though the network POST itself is deferred by a small random delay.
     setSubmitted(true)
+    setAwayAnswerRejected(false)
     setHasAnsweredPoll(true) // Prevent accidental leave after answering
 
     // Client-side jitter: spread submissions across 0–2s so a synchronized classroom of 500+ does
@@ -350,6 +566,16 @@ function StudentRoomPage() {
       const saveData = await saveResponse.json()
       console.log('[StudentRoom] Response saved:', saveData)
 
+      // Presence closed between click and POST (tab hidden / window lost focus / another app took
+      // focus). The answer was NOT recorded: roll back the optimistic lock so the student can answer
+      // again after returning.
+      if (saveResponse.status === 409 && saveData?.code === 'AWAY') {
+        setSubmitted(false)
+        setAwayAnswerRejected(true)
+        setHasAnsweredPoll(hadAnsweredPoll)
+        return
+      }
+
       // Phase 1: the server emits the throttled leaderboard/answer-count updates itself from this
       // authenticated POST — the client no longer emits points:update / response:submit. The
       // leaderboard (incl. this student's own row) refreshes once per segment, not per submit.
@@ -363,7 +589,12 @@ function StudentRoomPage() {
   }
 
   const leaveSession = () => {
-    if (room?.code) {
+    const active = activeRoomRef.current
+    if (active) {
+      leaveSentRef.current = true
+      leaveRoom(active.roomCode, active.userId)
+    } else if (room?.code && user?._id) {
+      leaveSentRef.current = true
       leaveRoom(room.code, user._id)
     }
     navigate('/student')
@@ -434,6 +665,230 @@ function StudentRoomPage() {
     )
   }
 
+  if (waitingRoom?.enabled && waitingRoom.status === 'waiting') {
+    const onTime = waitingRoom.onTime !== false
+    const joinedLabel = waitingRoom.joinedAt
+      ? new Date(waitingRoom.joinedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : 'just now'
+    const scheduledLabel = waitingRoom.scheduledAt
+      ? new Date(waitingRoom.scheduledAt).toLocaleString([], {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+      : ''
+    const graceLeftMs = waitingRoom.graceEndsAt
+      ? new Date(waitingRoom.graceEndsAt).getTime() - waitNow
+      : 0
+    const graceOpen = graceLeftMs > 0
+    const graceTotal = Math.max(0, Math.ceil(graceLeftMs / 1000))
+    const graceLeftLabel = `${Math.floor(graceTotal / 60)}:${String(graceTotal % 60).padStart(2, '0')}`
+    const allowanceSeconds = Math.max(0, Number(waitingRoom.reconnectAllowanceSeconds) || 0)
+    const allowanceLabel = allowanceSeconds >= 60
+      ? `${Math.floor(allowanceSeconds / 60)}m${allowanceSeconds % 60 ? ` ${allowanceSeconds % 60}s` : ''}`
+      : `${allowanceSeconds}s`
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{
+          flex: 1,
+          marginLeft: 'var(--sidebar-width, 240px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: isMobile ? '20px' : '32px',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{
+            maxWidth: 560,
+            width: '100%',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 24,
+            padding: isMobile ? '30px 20px' : '44px 40px',
+            textAlign: 'center',
+            boxShadow: '0 1px 2px rgba(16,24,40,0.04), 0 14px 36px rgba(16,24,40,0.08)'
+          }}>
+            <div style={{
+              width: 76,
+              height: 76,
+              borderRadius: '50%',
+              margin: '0 auto 20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+              color: 'var(--accent)'
+            }}>
+              <Hourglass size={36} />
+            </div>
+            <h1 style={{ margin: '0 0 10px', fontSize: isMobile ? 22 : 27, fontWeight: 800, letterSpacing: '-0.01em', color: 'var(--text-primary)' }}>
+              You&apos;re in the waiting room
+            </h1>
+            <p style={{ margin: '0 auto 22px', maxWidth: 420, fontSize: 15, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+              We&apos;ve let the host know you&apos;re here. You&apos;ll be admitted shortly — please keep this tab open.
+            </p>
+
+            <div style={{
+              display: 'inline-flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              padding: '10px 14px',
+              borderRadius: 14,
+              background: 'var(--bg-secondary, var(--nav-hover))',
+              border: '1px solid var(--border-color)',
+              marginBottom: 20
+            }}>
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 700,
+                background: onTime ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.14)',
+                color: onTime ? '#059669' : '#b45309'
+              }}>
+                <CircleCheck size={13} /> {onTime ? 'On time' : 'Late'}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                {room?.name || 'Live session'} · joined {joinedLabel}
+              </span>
+            </div>
+
+            {scheduledLabel && (
+              <p style={{ margin: '0 auto 18px', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Class scheduled for <strong style={{ color: 'var(--text-primary)' }}>{scheduledLabel}</strong>
+                {graceOpen
+                  ? <> · grace closes in <strong style={{ color: '#047857' }}>{graceLeftLabel}</strong></>
+                  : ' · grace window closed'}
+              </p>
+            )}
+
+            {allowanceSeconds > 0 && (
+              <p style={{ margin: '0 auto 18px', fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                If your connection drops, up to <strong style={{ color: 'var(--text-primary)' }}>{allowanceLabel}</strong> of missed time is excused automatically.
+              </p>
+            )}
+
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              fontSize: 13,
+              color: 'var(--text-secondary)'
+            }}>
+              <span style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: 'var(--accent)',
+                display: 'inline-block',
+                animation: 'pulse 1.4s ease-in-out infinite'
+              }} />
+              Waiting for the host to admit you…
+            </div>
+
+            <button
+              onClick={() => navigate('/student')}
+              style={{
+                marginTop: 24,
+                padding: '10px 18px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 10,
+                cursor: 'pointer',
+                fontSize: 13.5
+              }}
+            >
+              Leave waiting room
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (waitingRoom?.enabled && waitingRoom.status === 'rejected') {
+    return (
+      <div style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--bg-primary)',
+        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+      }}>
+        <Sidebar user={user} />
+        <div style={{
+          flex: 1,
+          marginLeft: 'var(--sidebar-width, 240px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: isMobile ? '20px' : '32px',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{
+            maxWidth: 520,
+            width: '100%',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 24,
+            padding: isMobile ? '30px 20px' : '44px 40px',
+            textAlign: 'center',
+            boxShadow: '0 1px 2px rgba(16,24,40,0.04), 0 14px 36px rgba(16,24,40,0.08)'
+          }}>
+            <div style={{
+              width: 76,
+              height: 76,
+              borderRadius: '50%',
+              margin: '0 auto 20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(220,38,38,0.1)',
+              color: '#dc2626'
+            }}>
+              <X size={36} />
+            </div>
+            <h1 style={{ margin: '0 0 10px', fontSize: isMobile ? 22 : 26, fontWeight: 800, color: 'var(--text-primary)' }}>
+              The host didn&apos;t admit you
+            </h1>
+            <p style={{ margin: '0 auto 24px', maxWidth: 400, fontSize: 15, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+              Your request to join {room?.name ? `“${room.name}”` : 'this session'} was declined. Ask your teacher to let you in.
+            </p>
+            <button
+              onClick={() => navigate('/student')}
+              style={{
+                padding: '12px 22px',
+                background: 'var(--accent-solid)',
+                color: 'white',
+                border: 'none',
+                borderRadius: 10,
+                cursor: 'pointer',
+                fontSize: 14,
+                fontWeight: 600
+              }}
+            >
+              Back to dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (sessionEnded) {
     return (
       <div style={{
@@ -474,7 +929,7 @@ function StudentRoomPage() {
       <Sidebar user={user} />
       
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
-        <PageHeader isMobile={isMobile} icon={room.settings?.mode === 'video' ? Clapperboard : Mic} eyebrow="Live session" title={room.name} subtitle={<>Code <strong style={{ letterSpacing: '0.1em' }}>{room.code}</strong></>} />
+        <PageHeader isMobile={isMobile} icon={room.settings?.mode === 'video' ? Clapperboard : Mic} eyebrow="Live session" title={room.name} subtitle={room?.classId ? (className ? <>Class <strong>{className}</strong>{classCode ? <> · Code <strong style={{ letterSpacing: '0.1em' }}>{classCode}</strong></> : null}</> : (classCode ? <>Class code <strong style={{ letterSpacing: '0.1em' }}>{classCode}</strong></> : <>Class session</>)) : (<>Code <strong style={{ letterSpacing: '0.1em' }}>{room.code}</strong></>)} />
 
         {/* Content */}
         <div style={{ flex: 1, padding: isMobile ? '16px' : '32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
@@ -490,6 +945,35 @@ function StudentRoomPage() {
                 Answer quickly — points reward speed. Tap the ⓘ button in the header for the full guide.
               </span>
               <button onClick={dismissHint} aria-label="Dismiss hint" style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '16px', cursor: 'pointer', padding: '4px', display: 'inline-flex' }}><X size={16} aria-hidden="true" /></button>
+            </div>
+          )}
+
+          {/* Attention banner: the student is away (tab hidden / window unfocused) or returning. */}
+          {attention.away && (
+            <div role="alert" style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 12,
+              padding: '12px 16px',
+              marginBottom: '16px',
+              borderRadius: 12,
+              border: `1px solid ${attention.returning ? 'rgba(14,165,233,0.4)' : 'rgba(217,119,6,0.45)'}`,
+              background: attention.returning ? 'rgba(14,165,233,0.1)' : 'rgba(245,158,11,0.12)',
+              color: 'var(--text-primary)'
+            }}>
+              <span style={{ display: 'inline-flex', color: attention.returning ? '#0ea5e9' : '#b45309', flexShrink: 0, marginTop: 1 }}>
+                <Ico as={TriangleAlert} />
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>
+                  {attention.returning ? 'Welcome back — restoring your attendance…' : 'You are marked away'}
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 2, lineHeight: 1.5 }}>
+                  {attention.returning
+                    ? 'Answers unlock as soon as the server confirms you are present again.'
+                    : `Detected because ${awayReasonLabel}. This time counts against your absence budget, and poll answers are paused. Return to this tab to continue.`}
+                </div>
+              </div>
             </div>
           )}
 
@@ -623,13 +1107,34 @@ function StudentRoomPage() {
 
               {/* Question */}
               <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', marginBottom: isMobile ? '24px' : '32px', wordBreak: 'break-word' }}>
-                {currentQuestion.question}
+                {typeof currentQuestion.question === 'string'
+                  ? currentQuestion.question
+                  : (currentQuestion.question?.question || currentQuestion.text || '')}
               </h2>
 
               {/* Options */}
+              {answerLocked && (
+                <div role="status" style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 14px',
+                  marginBottom: '16px',
+                  borderRadius: 10,
+                  background: 'rgba(0,0,0,0.18)',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  fontSize: 13,
+                  fontWeight: 600
+                }}>
+                  <Ico as={TriangleAlert} />
+                  {attention.returning
+                    ? 'Reconnecting your attendance — answers unlock in a moment.'
+                    : 'Answers are paused while you are away. Return to the Spandan window to answer.'}
+                </div>
+              )}
               <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
-                {currentQuestion.options && currentQuestion.options.map((option, index) => {
-                  const isMSQ = currentQuestion.type === 'MSQ'
+                {(currentQuestion.options || currentQuestion.question?.options || []).map((option, index) => {
+                  const isMSQ = (currentQuestion.type || currentQuestion.question?.type) === 'MSQ'
                   const isSelected = isMSQ 
                     ? selectedOptions.includes(index)
                     : selectedOptions.length === 1 && selectedOptions[0] === index
@@ -637,7 +1142,7 @@ function StudentRoomPage() {
                   const optionLabel = String.fromCharCode(65 + index)
                   
                   const handleOptionClick = () => {
-                    if (submitted) return
+                    if (submitted || answerLocked) return
                     if (isMSQ) {
                       // MSQ: Toggle selection
                       setSelectedOptions(prev => 
@@ -655,7 +1160,7 @@ function StudentRoomPage() {
                     <button
                       key={index}
                       onClick={handleOptionClick}
-                      disabled={submitted}
+                      disabled={submitted || answerLocked}
                       style={{
                         width: '100%',
                         minHeight: '48px',
@@ -669,7 +1174,8 @@ function StudentRoomPage() {
                         color: 'white',
                         fontSize: isMobile ? '16px' : '18px',
                         textAlign: 'left',
-                        cursor: submitted ? 'default' : 'pointer',
+                        cursor: (submitted || answerLocked) ? 'default' : 'pointer',
+                        opacity: answerLocked && !submitted ? 0.65 : 1,
                         display: 'flex',
                         alignItems: 'center',
                         gap: isMobile ? '12px' : '16px'
@@ -727,23 +1233,43 @@ function StudentRoomPage() {
                   </p>
                 </div>
               ) : (
-                <button
-                  onClick={handleSubmitAnswer}
-                  disabled={selectedOptions.length === 0}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    background: selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)',
-                    color: selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)',
-                    border: 'none',
-                    borderRadius: '12px',
-                    fontSize: '16px',
-                    fontWeight: '600',
-                    cursor: selectedOptions.length > 0 ? 'pointer' : 'not-allowed'
-                  }}
-                >
-                  Submit Answer
-                </button>
+                <>
+                  {awayAnswerRejected && !answerLocked && (
+                    <div role="alert" style={{
+                      marginBottom: '12px',
+                      padding: '10px 14px',
+                      borderRadius: 10,
+                      background: 'rgba(220,38,38,0.18)',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      fontSize: '13px',
+                      fontWeight: 600
+                    }}>
+                      <Ico as={TriangleAlert} /> Your previous answer was not recorded because you were
+                      away. Please answer again.
+                    </div>
+                  )}
+                  <button
+                    onClick={handleSubmitAnswer}
+                    disabled={selectedOptions.length === 0 || answerLocked}
+                    style={{
+                      width: '100%',
+                      padding: '16px',
+                      background: answerLocked
+                        ? 'rgba(255,255,255,0.15)'
+                        : (selectedOptions.length > 0 ? '#ffd700' : 'rgba(255,255,255,0.2)'),
+                      color: answerLocked
+                        ? 'rgba(255,255,255,0.65)'
+                        : (selectedOptions.length > 0 ? '#1f2937' : 'rgba(255,255,255,0.5)'),
+                      border: 'none',
+                      borderRadius: '12px',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      cursor: (selectedOptions.length > 0 && !answerLocked) ? 'pointer' : 'not-allowed'
+                    }}
+                  >
+                    {answerLocked ? 'Return to the Spandan window to answer' : 'Submit Answer'}
+                  </button>
+                </>
               )}
             </div>
           )}
