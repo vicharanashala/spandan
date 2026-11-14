@@ -1,22 +1,28 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
-import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, Library } from 'lucide-react'
 import { renderIcon } from './icons'
 
+
 const menuItems = {
-  teacher: [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/teacher' },
-    { id: 'create-room', label: 'Create Room', icon: Plus, path: '/teacher/create-room' },
-    { id: 'manage-room', label: 'Manage Room', icon: Settings, path: '/teacher/manage-room' },
-    { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/teacher/room-history' },
-  ],
+  
+teacher: [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/teacher' },
+  { id: 'create-room', label: 'Create Room', icon: Plus, path: '/teacher/create-room' },
+  { id: 'manage-room', label: 'Manage Room', icon: Settings, path: '/teacher/manage-room' },
+  { id: 'question-bank', label: 'Question Bank', icon: Library, path: '/teacher/question-bank' },
+  { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/teacher/room-history' },
+],
+
+    
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/student' },
     { id: 'join-room', label: 'Join Room', icon: LinkIcon, path: '/student/join-room' },
     { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/student/room-history' },
   ]
 }
+
 
 const MOBILE_QUERY = '(max-width: 768px)'
 const EXPANDED_W = 240

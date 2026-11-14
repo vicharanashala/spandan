@@ -1,21 +1,21 @@
 import crypto from 'crypto'
 import EmailOtp from '../models/EmailOtp.js'
 import { sendRegistrationOtp } from './emailService.js'
-
+ 
 // --- Tunables (env-overridable; defaults per the agreed design) ---
 const OTP_TTL_MS         = Number(process.env.OTP_TTL_MS)         || 10 * 60 * 1000 // 10 min
 const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_MS) || 60 * 1000 // 60 s
 const OTP_MAX_SENDS      = Number(process.env.OTP_MAX_SENDS)      || 5   // per email per window
 const OTP_MAX_ATTEMPTS   = Number(process.env.OTP_MAX_ATTEMPTS)   || 5   // verify attempts per code
-
+ 
 const norm = (e) => (e || '').trim().toLowerCase()
 const genOtp = () => String(crypto.randomInt(0, 1_000_000)).padStart(6, '0') // crypto-random 000000–999999
 // Hash at rest, salted by email so a leaked hash can't be reused for another address. A short-lived
 // 6-digit code + the 5-attempt cap + TTL make sha256 sufficient (no need for a slow KDF here).
 const hashOtp = (email, otp) => crypto.createHash('sha256').update(`${norm(email)}:${otp}`).digest('hex')
-
+ 
 const fail = (msg, code) => { const e = new Error(msg); e.code = code; return e }
-
+ 
 // Step 1: generate + email a code, enforcing resend cooldown and per-email send cap.
 export async function requestRegistrationOtp(email, name) {
   const e = norm(email)
@@ -40,10 +40,28 @@ export async function requestRegistrationOtp(email, name) {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   )
-  await sendRegistrationOtp(e, name, otp) // throws if the email fails → route returns 500
+ 
+  try {
+    await sendRegistrationOtp(e, name, otp) // throws if the email fails
+  } catch (err) {
+    // Always show the REAL reason (bad SMTP login, timeout, missing env vars, ...) in the terminal.
+    console.error('[otp] Email sending FAILED:', err.code, '-', err.message)
+ 
+    if (process.env.NODE_ENV === 'production') {
+      // Production: behave exactly as before -> route returns 500 "Failed to send verification code".
+      throw err
+    }
+ 
+    // DEVELOPMENT ONLY: email is not working, so print the code here and carry on.
+    // Look at this terminal window, copy the 6-digit code, and type it in the app.
+    console.warn('==================================================')
+    console.warn(`[DEV] OTP for ${e} is: ${otp}`)
+    console.warn('==================================================')
+  }
+ 
   return { expiresInSec: Math.round(OTP_TTL_MS / 1000) }
 }
-
+ 
 // Step 2: verify a code. Throws (with .code) on invalid/expired/too-many-attempts; deletes the doc on
 // success (single use) and when attempts are exhausted.
 export async function verifyRegistrationOtp(email, otp) {
@@ -64,3 +82,4 @@ export async function verifyRegistrationOtp(email, otp) {
   await EmailOtp.deleteOne({ email: e }) // single-use
   return true
 }
+ 
