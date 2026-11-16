@@ -227,7 +227,7 @@ export function CodeChip({ code, variant = 'default' }) {
 // Small status pill (Live, Video, Ended …).
 export function Pill({ children, tone = 'var(--accent)', dot }) {
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, color: toneText(tone), background: tintBg(tone, 12), border: `1px solid ${tintBg(tone, 26)}`, whiteSpace: 'nowrap' }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, color: toneText(tone), background: tintBg(tone, 12), border: `1px solid ${tintBg(tone, 26)}`, whiteSpace: 'nowrap', flexShrink: 0 }}>
       {dot && <span aria-hidden="true" className="app-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: tone }} />}
       {children}
     </span>

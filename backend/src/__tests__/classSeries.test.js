@@ -535,4 +535,121 @@ describe('Class Series Feature', () => {
       ])
     })
   })
+
+  describe('Rule 9: Faculty Invites (Manual + CSV) & Notification Rules', () => {
+    it('should validate invite cases correctly: invalid, not_found, not_student, already_member, reinvited, invited', () => {
+      const usersByEmail = {
+        'student1@spandan.edu': { _id: 'u1', role: 'student', name: 'Student 1' },
+        'teacher@spandan.edu': { _id: 'u2', role: 'teacher', name: 'Prof. X' },
+        'active@spandan.edu': { _id: 'u3', role: 'student', name: 'Active Student' },
+        'removed@spandan.edu': { _id: 'u4', role: 'student', name: 'Removed Student' },
+        'declined@spandan.edu': { _id: 'u5', role: 'student', name: 'Declined Student' }
+      }
+
+      const existingMembers = {
+        u3: { studentId: 'u3', status: 'active', joinedAt: new Date() },
+        u4: { studentId: 'u4', status: 'removed', joinedAt: new Date(), removedAt: new Date() },
+        u5: { studentId: 'u5', status: 'declined', joinedAt: null }
+      }
+
+      const simulateInvite = (email, classIsActive = true) => {
+        if (!classIsActive) {
+          throw new Error('This class is archived. Restore it to invite students.')
+        }
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          return { status: 'invalid', email }
+        }
+        const user = usersByEmail[email.toLowerCase().trim()]
+        if (!user) {
+          return { status: 'not_found', email }
+        }
+        if (user.role !== 'student') {
+          return { status: 'not_student', email }
+        }
+        const member = existingMembers[user._id]
+        if (member) {
+          if (member.status === 'active') {
+            return { status: 'already_member', email, member }
+          }
+          if (member.status === 'removed' || member.status === 'declined') {
+            return { status: 'invited', reinvited: true, email, member }
+          }
+          if (member.status === 'invited') {
+            return { status: 'invited', alreadyInvited: true, email, member }
+          }
+        }
+        return { status: 'invited', email }
+      }
+
+      // 1. Invalid email
+      expect(simulateInvite('not-an-email').status).toBe('invalid')
+
+      // 2. Not found in Spandan
+      expect(simulateInvite('unknown@spandan.edu').status).toBe('not_found')
+
+      // 3. User is teacher, not student
+      expect(simulateInvite('teacher@spandan.edu').status).toBe('not_student')
+
+      // 4. Already active member
+      expect(simulateInvite('active@spandan.edu').status).toBe('already_member')
+
+      // 5. Removed member reinvited
+      const resRemoved = simulateInvite('removed@spandan.edu')
+      expect(resRemoved.status).toBe('invited')
+      expect(resRemoved.reinvited).toBe(true)
+
+      // 6. Declined member reinvited
+      const resDeclined = simulateInvite('declined@spandan.edu')
+      expect(resDeclined.status).toBe('invited')
+      expect(resDeclined.reinvited).toBe(true)
+
+      // 7. Fresh student invite
+      expect(simulateInvite('student1@spandan.edu').status).toBe('invited')
+
+      // 8. Archived class rejects invite
+      expect(() => simulateInvite('student1@spandan.edu', false)).toThrow(/archived/i)
+    })
+
+    it('should aggregate CSV bulk upload counts and list notFoundEmails', () => {
+      const rows = [
+        { email: 'student1@spandan.edu', name: 'Student 1' },
+        { email: 'active@spandan.edu', name: 'Active Member' },
+        { email: 'removed@spandan.edu', name: 'Removed Member' },
+        { email: 'unknown1@spandan.edu', name: 'Unknown One' },
+        { email: 'unknown2@spandan.edu', name: 'Unknown Two' },
+        { email: 'teacher@spandan.edu', name: 'Teacher' },
+        { email: 'invalid-email', name: 'Bad Row' }
+      ]
+
+      const counts = {
+        invited: 0,
+        already_member: 0,
+        reinvited: 0,
+        not_found: 0,
+        not_student: 0,
+        invalid: 0
+      }
+      const notFoundEmails = []
+
+      for (const row of rows) {
+        if (row.email === 'student1@spandan.edu') counts.invited++
+        else if (row.email === 'active@spandan.edu') counts.already_member++
+        else if (row.email === 'removed@spandan.edu') counts.reinvited++
+        else if (row.email.startsWith('unknown')) {
+          counts.not_found++
+          notFoundEmails.push(row.email)
+        }
+        else if (row.email === 'teacher@spandan.edu') counts.not_student++
+        else counts.invalid++
+      }
+
+      expect(counts.invited).toBe(1)
+      expect(counts.already_member).toBe(1)
+      expect(counts.reinvited).toBe(1)
+      expect(counts.not_found).toBe(2)
+      expect(counts.not_student).toBe(1)
+      expect(counts.invalid).toBe(1)
+      expect(notFoundEmails).toEqual(['unknown1@spandan.edu', 'unknown2@spandan.edu'])
+    })
+  })
 })

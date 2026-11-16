@@ -5,6 +5,7 @@ import RoomMember from '../models/RoomMember.js'
 import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import User from '../models/User.js'
+import Notification from '../models/Notification.js'
 import { createRoom } from './roomService.js'
 
 export const createClass = async ({ name, teacherId, settings = {} }) => {
@@ -257,8 +258,26 @@ export const joinClassByCode = async (code, studentId) => {
     }
   }
 
-  if (member.status === 'removed') {
-    // Student rejoining after being removed -> status becomes pending (needs teacher approval)
+  if (member.status === 'invited') {
+    // Student was invited by teacher and now joins via class code -> activated immediately!
+    member.status = 'active'
+    member.joinedAt = member.joinedAt || new Date()
+    member.approvedAt = new Date()
+    await member.save()
+    await Notification.updateMany(
+      { userId: studentId, classId: cls._id, status: 'pending' },
+      { status: 'accepted', readAt: new Date() }
+    )
+    return {
+      class: cls,
+      member,
+      status: 'active',
+      message: 'Enrolled in class successfully'
+    }
+  }
+
+  if (member.status === 'removed' || member.status === 'declined') {
+    // Student rejoining after being removed or declining -> status becomes pending (needs teacher approval)
     // Same document is preserved!
     member.status = 'pending'
     await member.save()
@@ -617,7 +636,9 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
 
   return {
     active: activeMembers,
+    invited: enriched.filter(m => m.status === 'invited'),
     pending: enriched.filter(m => m.status === 'pending'),
+    declined: enriched.filter(m => m.status === 'declined'),
     removed: enriched.filter(m => m.status === 'removed'),
     totalClassSessions,
     avgAttendance
@@ -904,3 +925,265 @@ export const getClassStats = async (classId, teacherId) => {
     avgAttendance
   }
 }
+
+export const inviteStudentToClass = async ({ classId, teacherId, email, name }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can invite students')
+    err.status = 403
+    throw err
+  }
+
+  if (cls.isActive === false) {
+    const err = new Error('This class is archived. Restore it to invite students.')
+    err.status = 400
+    throw err
+  }
+
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    return { status: 'invalid', email: email || '', message: 'Email address is required' }
+  }
+
+  const normalizedEmail = email.trim().toLowerCase()
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  if (!emailRegex.test(normalizedEmail)) {
+    return { status: 'invalid', email: normalizedEmail, message: 'Invalid email address format' }
+  }
+
+  const teacher = await User.findById(teacherId).select('name email').lean()
+  const student = await User.findOne({ email: normalizedEmail })
+  if (!student) {
+    return { status: 'not_found', email: normalizedEmail, message: 'No Spandan account found with this email' }
+  }
+
+  if (student.role !== 'student') {
+    return { status: 'not_student', email: normalizedEmail, message: 'User is registered as an instructor/admin, not a student' }
+  }
+
+  let member = await ClassMember.findOne({ classId: cls._id, studentId: student._id })
+
+  if (member) {
+    if (member.status === 'active') {
+      return { status: 'already_member', email: normalizedEmail, student, member, message: 'Student is already an active member of this class' }
+    }
+
+    if (member.status === 'invited') {
+      // Refresh pending notification
+      await Notification.findOneAndUpdate(
+        { userId: student._id, classId: cls._id, status: 'pending' },
+        {
+          readAt: null,
+          fromUserId: teacherId,
+          payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+        },
+        { upsert: true, new: true }
+      )
+      return { status: 'invited', alreadyInvited: true, email: normalizedEmail, student, member, message: 'Student already has a pending invite' }
+    }
+
+    // Re-invite student who was previously removed, pending, or declined
+    const wasReinvited = member.status === 'removed' || member.status === 'declined'
+    member.status = 'invited'
+    await member.save()
+
+    await Notification.findOneAndUpdate(
+      { userId: student._id, classId: cls._id },
+      {
+        status: 'pending',
+        readAt: null,
+        fromUserId: teacherId,
+        payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+      },
+      { upsert: true, new: true }
+    )
+
+    return {
+      status: 'invited',
+      reinvited: wasReinvited,
+      email: normalizedEmail,
+      student,
+      member,
+      message: wasReinvited ? 'Re-invited student to class' : 'Invited student to class'
+    }
+  }
+
+  // Brand new member
+  member = new ClassMember({
+    classId: cls._id,
+    studentId: student._id,
+    status: 'invited',
+    joinedAt: null
+  })
+  await member.save()
+
+  await Notification.create({
+    userId: student._id,
+    type: 'class_invite',
+    classId: cls._id,
+    fromUserId: teacherId,
+    status: 'pending',
+    payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+  })
+
+  return {
+    status: 'invited',
+    email: normalizedEmail,
+    student,
+    member,
+    message: 'Invited student to class successfully'
+  }
+}
+
+export const inviteStudentsFromCsv = async ({ classId, teacherId, rows }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can invite students')
+    err.status = 403
+    throw err
+  }
+
+  if (cls.isActive === false) {
+    const err = new Error('This class is archived. Restore it to invite students.')
+    err.status = 400
+    throw err
+  }
+
+  if (!Array.isArray(rows)) {
+    const err = new Error('Invalid CSV rows data')
+    err.status = 400
+    throw err
+  }
+
+  if (rows.length > 200) {
+    const err = new Error('Maximum 200 students can be imported in a single batch.')
+    err.status = 400
+    throw err
+  }
+
+  const counts = {
+    invited: 0,
+    already_member: 0,
+    reinvited: 0,
+    not_found: 0,
+    not_student: 0,
+    invalid: 0
+  }
+
+  const notFoundEmails = []
+  const results = []
+
+  for (const row of rows) {
+    const email = row.email || row.Email || row['student email'] || row['Student Email'] || row['student_email'] || row['EMAIL'] || ''
+    const name = row.name || row.Name || row['student name'] || row['Student Name'] || row['student_name'] || row['NAME'] || ''
+
+    if (!email || !String(email).trim()) {
+      counts.invalid++
+      results.push({ email: '', status: 'invalid', message: 'Missing email' })
+      continue
+    }
+
+    const res = await inviteStudentToClass({ classId, teacherId, email: String(email).trim(), name: String(name).trim() })
+    results.push(res)
+
+    if (res.status === 'invited') {
+      if (res.reinvited) counts.reinvited++
+      else counts.invited++
+    } else if (res.status === 'already_member') {
+      counts.already_member++
+    } else if (res.status === 'not_found') {
+      counts.not_found++
+      if (!notFoundEmails.includes(res.email)) notFoundEmails.push(res.email)
+    } else if (res.status === 'not_student') {
+      counts.not_student++
+    } else if (res.status === 'invalid') {
+      counts.invalid++
+    }
+  }
+
+  return {
+    total: rows.length,
+    counts,
+    notFoundEmails,
+    results
+  }
+}
+
+export const cancelClassInvite = async ({ classId, teacherId, memberId }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can manage invites')
+    err.status = 403
+    throw err
+  }
+
+  const member = await ClassMember.findOne({ _id: memberId, classId })
+  if (!member) {
+    const err = new Error('Membership record not found')
+    err.status = 404
+    throw err
+  }
+
+  if (member.status !== 'invited') {
+    const err = new Error('Can only cancel invites for students with status invited')
+    err.status = 400
+    throw err
+  }
+
+  // Update notification to declined
+  await Notification.updateMany(
+    { userId: member.studentId, classId: cls._id, status: 'pending' },
+    { status: 'declined', readAt: new Date() }
+  )
+
+  if (!member.joinedAt) {
+    // If student never joined, remove the invited document
+    await ClassMember.deleteOne({ _id: member._id })
+  } else {
+    // If student had previous attendance history, soft-remove
+    member.status = 'declined'
+    await member.save()
+  }
+
+  return { success: true, message: 'Invite cancelled successfully' }
+}
+
+export const getClassPeopleDashboard = async (classId, teacherId) => {
+  const membersData = await getClassMembersWithPerformance(classId, teacherId)
+
+  return {
+    active: membersData.active,
+    invited: membersData.invited || [],
+    pending: membersData.pending || [],
+    declined: membersData.declined || [],
+    removed: membersData.removed || [],
+    stats: {
+      activeCount: membersData.active.length,
+      invitedCount: (membersData.invited || []).length,
+      pendingCount: (membersData.pending || []).length,
+      declinedCount: (membersData.declined || []).length,
+      removedCount: (membersData.removed || []).length,
+      totalCount: membersData.active.length + (membersData.invited || []).length + (membersData.pending || []).length + (membersData.declined || []).length + (membersData.removed || []).length
+    },
+    totalClassSessions: membersData.totalClassSessions,
+    avgAttendance: membersData.avgAttendance
+  }
+}
+

@@ -5,4 +5,6 @@ export { default as Response } from './Response.js'
 export { default as RoomMember } from './RoomMember.js'
 export { default as PasswordResetToken } from './PasswordResetToken.js'
 export { default as Class } from './Class.js'
-export { default as ClassMember } from './ClassMember.js'
+export { default as ClassMember } from './ClassMember.js'
+export { default as Notification } from './Notification.js'
+

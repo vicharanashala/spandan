@@ -291,7 +291,7 @@ export default function TeacherClassesPage() {
                         inset: '0 0 auto 0',
                         height: 3,
                         background: isArchived
-                          ? '#f59e0b'
+                          ? '#64748b'
                           : hasLive
                             ? 'linear-gradient(90deg, #10b981, #34d399)'
                             : 'linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent))'
@@ -311,12 +311,12 @@ export default function TeacherClassesPage() {
                           fontSize: 20,
                           flexShrink: 0,
                           background: isArchived
-                            ? 'color-mix(in srgb, #f59e0b 12%, transparent)'
+                            ? 'color-mix(in srgb, #64748b 12%, transparent)'
                             : hasLive
                               ? 'color-mix(in srgb, #10b981 12%, transparent)'
                               : 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                          color: isArchived ? '#f59e0b' : hasLive ? '#10b981' : 'var(--accent)',
-                          border: `1px solid ${isArchived ? 'color-mix(in srgb, #f59e0b 25%, transparent)' : hasLive ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
+                          color: isArchived ? '#64748b' : hasLive ? '#10b981' : 'var(--accent)',
+                          border: `1px solid ${isArchived ? 'color-mix(in srgb, #64748b 25%, transparent)' : hasLive ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
                         }}
                       >
                         {renderIcon(School, 20)}
@@ -338,10 +338,10 @@ export default function TeacherClassesPage() {
                         >
                           {cls.name}
                         </h3>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', minWidth: 0 }}>
                           <CodeChip code={cls.code} />
                           {isArchived ? (
-                            <Pill tone="#f59e0b">Archived</Pill>
+                            <Pill tone="#64748b">Archived</Pill>
                           ) : (
                             <>
                               {hasLive && (
