@@ -115,6 +115,7 @@ export const getStudentClasses = async (studentId) => {
       teacher: cls.teacher,
       isActive: cls.isActive,
       memberStatus: m.status,
+      previousStatus: m.previousStatus || null,
       joinedAt: m.joinedAt,
       totalSessions: sessionCountMap.get(String(cls._id)) || 0,
       activeSession: activeSession ? { _id: activeSession._id, name: activeSession.name, code: activeSession.code } : null

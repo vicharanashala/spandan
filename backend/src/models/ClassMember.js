@@ -41,7 +41,7 @@ const classMemberSchema = new mongoose.Schema({
   },
   previousStatus: {
     type: String,
-    enum: ['active', 'pending', 'removed', 'invited', 'declined', null],
+    enum: ['active', 'pending', 'removed', 'invited', 'declined'],
     default: null
   }
 }, {

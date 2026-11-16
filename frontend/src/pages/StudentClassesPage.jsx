@@ -428,7 +428,11 @@ export default function StudentClassesPage() {
                     fontSize: 12.5,
                     color: '#b45309'
                   }}>
-                    Awaiting teacher approval to re-join this class.
+                    {cls.previousStatus === 'removed'
+                      ? 'Previously removed. Awaiting teacher approval to re-join this class.'
+                      : cls.previousStatus === 'declined' || cls.previousStatus === 'invited'
+                        ? 'Previously declined invite. Awaiting teacher approval to join this class.'
+                        : 'Awaiting teacher approval to join this class.'}
                   </div>
                 </div>
               ))}

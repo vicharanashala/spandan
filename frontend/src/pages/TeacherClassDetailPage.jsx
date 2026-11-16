@@ -540,15 +540,17 @@ export default function TeacherClassDetailPage() {
               <ArrowLeft size={14} /> Classes
             </button>
             {isArchived ? (
-              <button
-                type="button"
-                data-tour="archive-class"
-                onClick={handleRestoreClass}
-                disabled={isArchiving}
-                style={primaryButton(isArchiving, { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 })}
-              >
-                <ArchiveRestore size={14} /> {isArchiving ? 'Restoring...' : 'Restore class'}
-              </button>
+              <span data-tour="archive-class">
+                <button
+                  type="button"
+                  data-tour="restore-class"
+                  onClick={handleRestoreClass}
+                  disabled={isArchiving}
+                  style={primaryButton(isArchiving, { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 })}
+                >
+                  <ArchiveRestore size={14} /> {isArchiving ? 'Restoring...' : 'Restore class'}
+                </button>
+              </span>
             ) : (
               <button
                 type="button"
@@ -1139,9 +1141,9 @@ export default function TeacherClassDetailPage() {
                 />
                 <StatTile
                   icon={CircleAlert}
-                  label="Pending Re-join"
+                  label="Pending Approval"
                   value={pendingMembers.length}
-                  sub="Code-based requests"
+                  sub="Requires your approval"
                   tint="#f59e0b"
                   isMobile={isMobile}
                 />
@@ -1396,7 +1398,7 @@ export default function TeacherClassDetailPage() {
                       Pending Join Requests ({pendingMembers.length})
                     </h3>
                     <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      Join requests — approve to restore to active roster
+                      Join requests — approve to add to active roster
                     </span>
                   </div>
 
@@ -1445,7 +1447,9 @@ export default function TeacherClassDetailPage() {
                                   <Pill tone="#ef4444">Removed</Pill>
                                 ) : isFromDecline ? (
                                   <Pill tone="#64748b">Declined</Pill>
-                                ) : null}
+                                ) : (
+                                  <Pill tone="#f59e0b">New Request</Pill>
+                                )}
                               </div>
                               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                                 {req.email} · <span style={{ fontStyle: 'italic' }}>{reasonText}</span>
@@ -1607,7 +1611,13 @@ export default function TeacherClassDetailPage() {
                                 ) : status === 'invited' ? (
                                   <Pill tone="#0ea5e9">Invited</Pill>
                                 ) : status === 'pending' ? (
-                                  <Pill tone="#f59e0b">Pending Re-Join</Pill>
+                                  <Pill tone="#f59e0b">
+                                    {student.previousStatus === 'declined' || student.previousStatus === 'invited'
+                                      ? 'Pending (Declined)'
+                                      : student.previousStatus === 'removed'
+                                        ? 'Pending (Removed)'
+                                        : 'Pending'}
+                                  </Pill>
                                 ) : status === 'declined' ? (
                                   <Pill tone="#64748b">Declined</Pill>
                                 ) : (

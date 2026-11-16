@@ -72,7 +72,12 @@ export default function Sidebar({ user }) {
   const fetchUnread = () => {
     if (role !== 'student') return
     notificationApi.getAll()
-      .then(res => setUnreadNotifications(res.notifications?.length || res.unreadCount || 0))
+      .then(res => {
+        const count = Array.isArray(res?.notifications)
+          ? res.notifications.length
+          : (res?.unreadCount ?? 0)
+        setUnreadNotifications(count)
+      })
       .catch(() => {})
   }
 
