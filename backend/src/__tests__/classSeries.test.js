@@ -6,7 +6,9 @@
 // 4. Performance aggregation & CSV export format
 // 5. Late-join active question recovery
 
+import mongoose from 'mongoose'
 import { isSessionBeforeJoin, getSessionMembershipCoverage, getFirstTimelineDate } from '../services/classService.js'
+import ClassMember from '../models/ClassMember.js'
 
 describe('Class Series Feature', () => {
   describe('Rule 1: Global One Active Session Across All Classes', () => {
@@ -710,6 +712,77 @@ describe('Class Series Feature', () => {
       expect(counts.not_student).toBe(1)
       expect(counts.invalid).toBe(1)
       expect(notFoundEmails).toEqual(['unknown1@spandan.edu', 'unknown2@spandan.edu'])
+    })
+  })
+
+  describe('Rule 10: ClassMember Mongoose Schema Alignment', () => {
+    it('should validate status enum accepts active, pending, removed, invited, declined', () => {
+      const allowedStatuses = ['active', 'pending', 'removed', 'invited', 'declined']
+      for (const status of allowedStatuses) {
+        const doc = new ClassMember({
+          classId: new mongoose.Types.ObjectId(),
+          studentId: new mongoose.Types.ObjectId(),
+          status
+        })
+        const err = doc.validateSync()
+        expect(err).toBeUndefined()
+        expect(doc.status).toBe(status)
+      }
+    })
+
+    it('should reject invalid status strings', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        status: 'suspended'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeDefined()
+      expect(err.errors.status).toBeDefined()
+    })
+
+    it('should accept invitedAt, declinedAt, and previousStatus fields', () => {
+      const invitedDate = new Date('2026-10-01T10:00:00Z')
+      const declinedDate = new Date('2026-10-02T10:00:00Z')
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        status: 'declined',
+        invitedAt: invitedDate,
+        declinedAt: declinedDate,
+        previousStatus: 'invited'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeUndefined()
+      expect(doc.invitedAt).toEqual(invitedDate)
+      expect(doc.declinedAt).toEqual(declinedDate)
+      expect(doc.previousStatus).toBe('invited')
+    })
+
+    it('should allow null for previousStatus and optional timestamps', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        previousStatus: null,
+        invitedAt: null,
+        declinedAt: null,
+        removedAt: null,
+        approvedAt: null
+      })
+      const err = doc.validateSync()
+      expect(err).toBeUndefined()
+      expect(doc.previousStatus).toBeNull()
+    })
+
+    it('should reject invalid previousStatus values', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        previousStatus: 'banned'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeDefined()
+      expect(err.errors.previousStatus).toBeDefined()
     })
   })
 })
