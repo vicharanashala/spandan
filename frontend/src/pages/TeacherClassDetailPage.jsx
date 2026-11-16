@@ -520,7 +520,7 @@ export default function TeacherClassDetailPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>CLASS SERIES</span>
               <span style={{ opacity: 0.6 }}>•</span>
-              <CodeChip code={cls.code || ''} variant="header" />
+              <span data-tour="class-code"><CodeChip code={cls.code || ''} variant="header" /></span>
               {isArchived ? (
                 <Pill tone="#64748b">Archived</Pill>
               ) : (
@@ -542,6 +542,7 @@ export default function TeacherClassDetailPage() {
             {isArchived ? (
               <button
                 type="button"
+                data-tour="archive-class"
                 onClick={handleRestoreClass}
                 disabled={isArchiving}
                 style={primaryButton(isArchiving, { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 })}
@@ -551,6 +552,7 @@ export default function TeacherClassDetailPage() {
             ) : (
               <button
                 type="button"
+                data-tour="archive-class"
                 onClick={() => setShowArchiveModal(true)}
                 disabled={hasActiveSession || isArchiving}
                 title={hasActiveSession ? 'End active session before archiving' : 'Archive this class series'}
@@ -665,7 +667,7 @@ export default function TeacherClassDetailPage() {
           </TileGrid>
 
           {/* Tab Navigation: Sessions & Roster | People | Performance */}
-          <div style={{
+          <div data-tour="class-tabs" style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -699,6 +701,7 @@ export default function TeacherClassDetailPage() {
 
             <button
               type="button"
+              data-tour="people-panel"
               onClick={() => setActiveTab('people')}
               style={{
                 display: 'inline-flex',
@@ -761,7 +764,7 @@ export default function TeacherClassDetailPage() {
               {/* 2. Start New Session Guard & Actions */}
               <SectionLabel>Live Session Control</SectionLabel>
 
-          <div style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
+          <div data-tour="start-session" style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
             <SectionHeader
               icon={Play}
               title="Session Manager"

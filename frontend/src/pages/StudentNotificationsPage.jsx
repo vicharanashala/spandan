@@ -178,6 +178,7 @@ export default function StudentNotificationsPage() {
             Pending Invitations
           </SectionLabel>
 
+          <div data-tour="notification-list">
           {isLoading ? (
             <div style={{
               padding: '48px 0',
@@ -202,13 +203,15 @@ export default function StudentNotificationsPage() {
                 title="No new notifications"
                 description="You're all caught up! When an instructor invites you to join a recurring class series, it will appear here for you to accept."
               >
-                <button
-                  type="button"
-                  onClick={() => navigate('/student/classes')}
-                  style={primaryButton(false, { display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 12 })}
-                >
-                  <School size={15} /> Go to My Classes
-                </button>
+                <div data-tour="accept-invite">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/student/classes')}
+                    style={primaryButton(false, { display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 12 })}
+                  >
+                    <School size={15} /> Go to My Classes
+                  </button>
+                </div>
               </EmptyState>
             </div>
           ) : (
@@ -288,7 +291,7 @@ export default function StudentNotificationsPage() {
                       </div>
                     </div>
 
-                    <div style={{
+                    <div data-tour="accept-invite" style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: 8,
@@ -338,6 +341,7 @@ export default function StudentNotificationsPage() {
               })}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

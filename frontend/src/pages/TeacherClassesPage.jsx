@@ -133,6 +133,7 @@ export default function TeacherClassesPage() {
         >
           <button
             type="button"
+            data-tour="create-class"
             onClick={() => setShowCreateModal(true)}
             style={primaryButton(false, { display: 'inline-flex', alignItems: 'center', gap: 8 })}
           >
@@ -229,6 +230,7 @@ export default function TeacherClassesPage() {
 
           <SectionLabel>Your Classes</SectionLabel>
 
+          <div data-tour="classes-list">
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
               <div style={{
@@ -387,6 +389,7 @@ export default function TeacherClassesPage() {
               })}
             </div>
           )}
+          </div>
         </div>
       </div>
 

@@ -179,7 +179,7 @@ export default function StudentClassesPage() {
 
           {/* Join Class by Code Card */}
           <SectionLabel>Join a Class</SectionLabel>
-          <div style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
+          <div data-tour="join-class-code" style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
             <SectionHeader
               icon={Plus}
               title="Enter Class Code"
@@ -220,6 +220,7 @@ export default function StudentClassesPage() {
             Enrolled Classes
           </SectionLabel>
 
+          <div data-tour="classes-list">
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
               <div style={{
@@ -433,6 +434,7 @@ export default function StudentClassesPage() {
               ))}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

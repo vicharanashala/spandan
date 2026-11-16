@@ -240,7 +240,7 @@ export default function StudentClassDetailPage() {
           )}
 
           {/* Tab Navigation: Sessions & Roster | Performance */}
-          <div style={{
+          <div data-tour="class-tabs" style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -367,7 +367,7 @@ export default function StudentClassDetailPage() {
                 Session History
               </SectionLabel>
 
-              <div style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden' }}>
+              <div data-tour="session-history" style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden' }}>
                 {sessions.length === 0 ? (
                   <div style={{ padding: 32 }}>
                     <EmptyState
