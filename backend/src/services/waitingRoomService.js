@@ -64,6 +64,24 @@ export const getGraceDeadline = (room) => {
 export const isOnTime = (room, at = new Date()) =>
   new Date(at).getTime() <= getGraceDeadline(room).getTime()
 
+/**
+ * Automatic mode is a timed mode: on-time students are admitted as they join (no teacher click),
+ * and the room switches to manual once the grace window closes so later arrivals wait for review.
+ * Persists the switch the first time it runs after the deadline; afterwards it is a no-op.
+ */
+export const syncWaitingRoomMode = async (room, at = new Date()) => {
+  if (!room) return room
+  const config = getWaitingRoomConfig(room)
+  if (!config.enabled || config.mode !== 'automatic') return room
+  if (isOnTime(room, at)) return room
+  const updated = await Room.findByIdAndUpdate(
+    room._id,
+    { $set: { 'settings.waitingRoom.mode': 'manual' } },
+    { new: true }
+  )
+  return updated || room
+}
+
 export const admittedFilter = (roomId) => ({ roomId, ...ADMITTED_STATUS_FILTER })
 
 export const countAdmitted = (roomId) => RoomMember.countDocuments(admittedFilter(roomId))
@@ -73,12 +91,20 @@ const serializeMember = (member, room = null, now = new Date()) => {
     ? member.studentId
     : null
   const usage = room ? computeReconnectUsage({ member, room, at: now }) : null
+  const status = member.status || 'admitted'
+  // Waiting students have no presence interval (the attendance clock only starts on admission), so
+  // `leftAt` is the live connection marker: it stays null while at least one waiting socket is open
+  // and is set by room:leave / socket disconnect. Admitted members keep using their presence state.
+  const online = status === 'waiting'
+    ? member.leftAt == null
+    : (usage ? usage.present : member.leftAt == null)
   return {
     _id: String(member._id),
     studentId: String(student?._id || member.studentId),
     name: student?.name || 'Student',
     email: student?.email || '',
-    status: member.status || 'admitted',
+    status,
+    online,
     onTime: member.onTime !== false,
     joinedAt: member.joinedAt,
     admittedAt: member.admittedAt || null,
@@ -123,6 +149,9 @@ const byJoinOrder = (a, b) => new Date(a.joinedAt) - new Date(b.joinedAt)
  * join order, each entry carrying its on-time/late tag.
  */
 export const buildWaitingRoomSnapshot = async (room) => {
+  // Lazy mode transition: automatic stops accepting on-time students the moment the grace window
+  // closes, even if no later student has joined (the teacher's console then shows manual controls).
+  room = await syncWaitingRoomMode(room)
   const config = getWaitingRoomConfig(room)
   const now = new Date()
   const members = await RoomMember.find({ roomId: room._id })
@@ -131,7 +160,10 @@ export const buildWaitingRoomSnapshot = async (room) => {
     .lean()
 
   const serialized = members.map((m) => serializeMember(m, room, now))
-  const waiting = serialized.filter(m => m.status === 'waiting').sort(byJoinOrder)
+  // Only students whose waiting socket is still connected belong in the queue. A student who closed
+  // the tab, navigated away or dropped offline is marked with leftAt and disappears immediately; if
+  // they come back, ensureMembership clears leftAt and they reappear at their original queue slot.
+  const waiting = serialized.filter(m => m.status === 'waiting' && m.online).sort(byJoinOrder)
   const rejected = serialized.filter(m => m.status === 'rejected').sort(byJoinOrder)
   const admitted = serialized.filter(m => m.status !== 'waiting' && m.status !== 'rejected').sort(byJoinOrder)
   const attention = getAttentionConfig(room)
@@ -166,14 +198,20 @@ export const buildWaitingRoomSnapshot = async (room) => {
  * Resolve (and create when needed) a student's membership for a room.
  *
  * - Waiting room off  -> admitted immediately (legacy behaviour).
- * - Waiting room on   -> new members are held as 'waiting'; an existing admitted member keeps their
- *                        admitted state across reloads; a rejected member stays rejected.
- * - joinedAt/onTime are NEVER rewritten for an existing waiting member, so reloads cannot push a
- *   student to the back of the admission queue or flip their on-time tag.
+ * - Automatic mode    -> a student who joins inside the grace window is admitted immediately; once
+ *                        the grace window closes the room is switched to manual and later arrivals
+ *                        are held as 'waiting'.
+ * - Manual mode       -> new members are held as 'waiting' for the teacher to admit.
+ * - Existing admitted members keep their state across reloads; a rejected member stays rejected.
+ * - joinedAt/onTime are NEVER rewritten for an existing student, so reloads cannot push them to the
+ *   back of the admission queue or flip their on-time tag.
  */
 export const ensureMembership = async ({ room, studentId, at = new Date() }) => {
-  const config = getWaitingRoomConfig(room)
-  const existing = await RoomMember.findOne({ roomId: room._id, studentId })
+  // Apply the timed automatic -> manual switch before deciding this student's state.
+  const activeRoom = await syncWaitingRoomMode(room, at)
+  const config = getWaitingRoomConfig(activeRoom)
+  const joinedOnTime = isOnTime(activeRoom, at)
+  const existing = await RoomMember.findOne({ roomId: activeRoom._id, studentId })
 
   if (!config.enabled) {
     if (existing) {
@@ -186,7 +224,7 @@ export const ensureMembership = async ({ room, studentId, at = new Date() }) => 
       return existing
     }
     return RoomMember.create({
-      roomId: room._id,
+      roomId: activeRoom._id,
       studentId,
       joinedAt: at,
       status: 'admitted',
@@ -195,15 +233,37 @@ export const ensureMembership = async ({ room, studentId, at = new Date() }) => 
     })
   }
 
-  if (existing) return existing
+  if (existing) {
+    if (existing.status === 'waiting') {
+      // Automatic mode admits the on-time cohort without waiting for the teacher. This also covers
+      // a student who was held by the old automatic behaviour and reloads inside the grace window.
+      if (config.mode === 'automatic' && joinedOnTime) {
+        existing.status = 'admitted'
+        existing.admittedAt = existing.admittedAt || at
+        existing.rejectedAt = null
+        existing.leftAt = null
+        existing.lastSeenAt = at
+        await existing.save()
+      } else if (existing.leftAt != null) {
+        // A returning waiting student re-enters the queue at their original join position. Clear the
+        // offline marker written when they left so the teacher sees them again, without touching
+        // joinedAt/onTime (which would flip their queue position or on-time tag).
+        existing.leftAt = null
+        existing.lastSeenAt = at
+        await existing.save()
+      }
+    }
+    return existing
+  }
 
+  const autoAdmit = config.mode === 'automatic' && joinedOnTime
   return RoomMember.create({
-    roomId: room._id,
+    roomId: activeRoom._id,
     studentId,
     joinedAt: at,
-    status: 'waiting',
-    onTime: isOnTime(room, at),
-    admittedAt: null
+    status: autoAdmit ? 'admitted' : 'waiting',
+    onTime: joinedOnTime,
+    admittedAt: autoAdmit ? at : null
   })
 }
 
@@ -274,18 +334,22 @@ const emitStudentState = (io, room, studentId, state, extra = {}) => {
 /**
  * Admit waiting students.
  *
- * automatic mode (teacher's first admit):
+ * Automatic mode normally admits on-time students as they join, so this bulk path only exists for
+ * stragglers held by an older room state:
  *   - default: every ON-TIME waiting student, in join order
  *   - all:     every waiting student (on-time + late)
  *   - the room then flips to manual so later joiners wait for individual review.
  *
- * manual mode:
+ * Manual mode:
  *   - all: true -> every waiting student in join order
  *   - otherwise -> the given studentIds
  */
 export const admitWaitingStudents = async ({ io, room, studentIds = [], all = false }) => {
+  room = await syncWaitingRoomMode(room)
   const config = getWaitingRoomConfig(room)
-  const baseFilter = { roomId: room._id, status: 'waiting' }
+  // Only students still on the waiting screen: an offline member is not in the teacher's queue, so
+  // "Admit all" must not silently admit someone the teacher cannot see.
+  const baseFilter = { roomId: room._id, status: 'waiting', leftAt: null }
 
   let targets = []
   if (all) {
@@ -365,7 +429,8 @@ export const admitWaitingStudents = async ({ io, room, studentIds = [], all = fa
  * they can't silently re-enter by refreshing, and the teacher console can still see them.
  */
 export const rejectWaitingStudents = async ({ io, room, studentIds = [], all = false }) => {
-  const baseFilter = { roomId: room._id, status: 'waiting' }
+  room = await syncWaitingRoomMode(room)
+  const baseFilter = { roomId: room._id, status: 'waiting', leftAt: null }
   let targets = []
   if (all) {
     targets = await RoomMember.find(baseFilter).sort({ joinedAt: 1 })

@@ -175,7 +175,7 @@ export function WaitingRoomPanel({ room, token, snapshot, onSnapshot, onAdmitted
             </div>
             <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--text-secondary)' }}>
               {mode === 'automatic'
-                ? `Students joining are held here. Your first admit releases everyone who joined within the ${Math.round((snapshot.graceSeconds || 0) / 60 * 10) / 10}-minute grace window, in join order, then switches to manual.`
+                ? `On-time students are admitted automatically as they join. When the ${Math.round((snapshot.graceSeconds || 0) / 60 * 10) / 10}-minute grace window closes, the room switches to manual and later arrivals wait for your review.`
                 : 'Review each student. Admitted students enter the live session instantly; rejected students stay out.'}
             </p>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -243,13 +243,16 @@ export function WaitingRoomPanel({ room, token, snapshot, onSnapshot, onAdmitted
               >
                 Reject all
               </button>
-              <button
-                onClick={() => post('mode', { mode: 'automatic' })}
-                disabled={!!busy}
-                style={actionButton('ghost', !!busy)}
-              >
-                Switch to automatic
-              </button>
+              {graceOpen && (
+                <button
+                  onClick={() => post('mode', { mode: 'automatic' })}
+                  disabled={!!busy}
+                  style={actionButton('ghost', !!busy)}
+                  title="Reopen automatic admission until the grace window closes"
+                >
+                  Switch to automatic
+                </button>
+              )}
             </>
           )}
         </div>

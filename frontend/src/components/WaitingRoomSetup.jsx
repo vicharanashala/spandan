@@ -181,7 +181,7 @@ export default function WaitingRoomSetup({ value, onChange, disabled = false }) 
                   <ShieldCheck size={14} /> Automatic
                 </span>
                 <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 3, lineHeight: 1.4 }}>
-                  First admit releases everyone inside the grace window, then switches to manual.
+                  Everyone who joins inside the grace window is admitted automatically; the room then switches to manual for later arrivals.
                 </span>
               </button>
               <button

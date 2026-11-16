@@ -17,7 +17,8 @@ import {
   ensureMembership,
   getWaitingRoomConfig,
   emitWaitingRoomUpdate,
-  emitPresenceEvent
+  emitPresenceEvent,
+  syncWaitingRoomMode
 } from './services/waitingRoomService.js'
 import { startPresence, endPresence, countPresent, getAttentionConfig } from './services/attendanceService.js'
 import {
@@ -587,6 +588,16 @@ const setSocketAttention = (socket, roomCode, entry) => {
   else delete socket.data.attention[roomCode]
 }
 
+// Does the user still have another socket on this room's WAITING screen? Waiting sockets join the
+// private user channel but not the live room channel, so aggregateAttention (which only looks at
+// sockets inside the room) cannot see them. Multi-tab aware: closing one waiting tab must not remove
+// a student whose other tab is still waiting.
+const hasOtherWaitingSocket = (sockets, roomCode, excludeId) => (sockets || []).some((s) =>
+  s.id !== excludeId &&
+  s.data?.joinedRooms?.has?.(roomCode) &&
+  !s.rooms?.has?.(roomCode)
+)
+
 // Serialize transition handling per user+room so two tabs flipping at the same instant cannot open
 // (or close) two presence intervals. Heartbeats never take this lock.
 const withAttentionLock = (key, fn) => {
@@ -864,7 +875,7 @@ io.on('connection', (socket) => {
 
       // Authorize BEFORE subscribing to the room channel: resolve the room and check that this
       // caller is allowed in (teacher must own it; student may join an active room by code).
-      const room = await Room.findByCode(roomCode)
+      let room = await Room.findByCode(roomCode)
       let isClassMember = false
       if (room?.classId && role === 'student') {
         const ClassMember = (await import('./models/ClassMember.js')).default
@@ -891,6 +902,9 @@ io.on('connection', (socket) => {
       let presenceEvent = null
       let pendingAttention = null
       if (role === 'student') {
+        // Timed automatic mode: on-time students are admitted immediately, and the room has already
+        // flipped to manual if the grace window has closed, so this student waits for review.
+        room = await syncWaitingRoomMode(room)
         const member = await ensureMembership({ room, studentId: userId })
         const config = getWaitingRoomConfig(room)
 
@@ -1062,11 +1076,18 @@ io.on('connection', (socket) => {
           let stillPresent = false
           try {
             const siblings = await io.in(`user:${userId}`).fetchSockets()
-            stillPresent = aggregateAttention(siblings, roomCode, { excludeId: socket.id }).anyActive
+            stillPresent = aggregateAttention(siblings, roomCode, { excludeId: socket.id }).anyActive ||
+              hasOtherWaitingSocket(siblings, roomCode, socket.id)
           } catch { /* best effort */ }
           if (!stillPresent) {
             const presence = await endPresence(room, userId, new Date(), 'leave')
-            if (presence?.closed) await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'leave' })
+            if (presence?.closed) {
+              await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'leave' })
+            } else if (presence?.member?.status === 'waiting') {
+              // Waiting students have no attendance interval, so endPresence closes nothing. They
+              // still have to leave the teacher's waiting list the moment their last socket goes.
+              await emitWaitingRoomUpdate(io, room)
+            }
           }
         }
         participantCount = await countPresent(room._id)
@@ -1256,19 +1277,29 @@ io.on('connection', (socket) => {
             try {
               setSocketAttention(socket, roomCode, null)
               const remaining = await io.in(`user:${userId}`).fetchSockets()
-              const stillInRoom = aggregateAttention(remaining, roomCode, { excludeId: socket.id }).anyActive
+              const stillInRoom = aggregateAttention(remaining, roomCode, { excludeId: socket.id }).anyActive ||
+                hasOtherWaitingSocket(remaining, roomCode, socket.id)
               if (stillInRoom) continue
               const room = await Room.findById(roomId).lean()
               if (!room || room.endedAt) continue
               // Re-check right before closing: a reload can reconnect while this async cleanup was
               // resolving the room, and the fresh socket must not be marked absent.
               const recheck = await io.in(`user:${userId}`).fetchSockets()
-              if (aggregateAttention(recheck, roomCode, { excludeId: socket.id }).anyActive) continue
+              if (
+                aggregateAttention(recheck, roomCode, { excludeId: socket.id }).anyActive ||
+                hasOtherWaitingSocket(recheck, roomCode, socket.id)
+              ) continue
               const presence = await endPresence(room, userId, new Date(), 'disconnect')
               // A tab close / network drop must dip the live head-count and show the teacher a
               // silent "left" notice, exactly like an explicit room:leave. A presence interval that
-              // was already closed (explicit leave) must not produce a second notice.
-              if (presence?.closed) await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'disconnect' })
+              // was already closed (explicit leave) must not produce a second notice. A waiting
+              // student has no interval at all, so refresh the waiting list instead so they stop
+              // showing as "waiting" to the teacher.
+              if (presence?.closed) {
+                await emitPresenceEvent(io, room, userId, 'left', new Date(), { reason: 'disconnect' })
+              } else if (presence?.member?.status === 'waiting') {
+                await emitWaitingRoomUpdate(io, room)
+              }
               const participants = await countPresent(room._id)
               io.to(roomCode).emit('room:left', { roomCode, participants })
             } catch { /* non-fatal */ }

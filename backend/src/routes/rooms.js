@@ -15,6 +15,7 @@ import {
   admitWaitingStudents,
   rejectWaitingStudents,
   setWaitingRoomMode,
+  syncWaitingRoomMode,
   listAdmittedParticipants,
   emitWaitingRoomUpdate
 } from '../services/waitingRoomService.js'
@@ -106,13 +107,12 @@ router.get('/:id', authenticate, async (req, res) => {
 // Join room by code (for students)
 router.get('/join/:code', authenticate, authorize('student'), async (req, res) => {
   try {
-    const room = await getRoomByCode(req.params.code)
+    let room = await getRoomByCode(req.params.code)
     
     // Check if room has ended
     if (room.endedAt) {
       return res.status(400).json({ error: 'This room has ended and can no longer be joined' })
     }
-
     // When linked to a class, enforce that the student is an active class member
     if (room.classId) {
       const ClassMember = (await import('../models/ClassMember.js')).default
@@ -126,8 +126,12 @@ router.get('/join/:code', authenticate, authorize('student'), async (req, res) =
       }
     }
     
-    // Resolve the membership (idempotent). With the waiting room on, a new student is held as
-    // 'waiting' and must be admitted by the teacher before they can see the live session.
+    // Timed automatic mode: switch to manual once the grace window has closed before resolving the
+    // membership, so on-time joiners are admitted and later joiners are held for review.
+    room = await syncWaitingRoomMode(room)
+
+    // Resolve the membership (idempotent). In automatic mode an on-time student is admitted
+    // immediately; after the grace window they are held as 'waiting' for teacher review.
     const member = await ensureMembership({ room, studentId: req.user._id })
     const config = getWaitingRoomConfig(room)
     const membership = {
