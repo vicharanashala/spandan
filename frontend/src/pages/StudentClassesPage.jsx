@@ -275,7 +275,7 @@ export default function StudentClassesPage() {
                         inset: '0 0 auto 0',
                         height: 3,
                         background: isArchived
-                          ? '#64748b'
+                          ? 'var(--badge-archived-border, #cbd5e1)'
                           : liveSession
                             ? 'linear-gradient(90deg, #10b981, #34d399)'
                             : 'linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent))'
@@ -295,12 +295,12 @@ export default function StudentClassesPage() {
                           fontSize: 20,
                           flexShrink: 0,
                           background: isArchived
-                            ? 'color-mix(in srgb, #64748b 12%, transparent)'
+                            ? 'var(--badge-archived-bg, #f1f5f9)'
                             : liveSession
                               ? 'color-mix(in srgb, #10b981 12%, transparent)'
                               : 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                          color: isArchived ? '#64748b' : liveSession ? '#10b981' : 'var(--accent)',
-                          border: `1px solid ${isArchived ? 'color-mix(in srgb, #64748b 25%, transparent)' : liveSession ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
+                          color: isArchived ? 'var(--badge-archived-color, #475569)' : liveSession ? '#10b981' : 'var(--accent)',
+                          border: `1px solid ${isArchived ? 'var(--badge-archived-border, #cbd5e1)' : liveSession ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
                         }}
                       >
                         {renderIcon(School, 20)}
@@ -330,7 +330,7 @@ export default function StudentClassesPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
                       <CodeChip code={cls.code} />
                       {isArchived ? (
-                        <Pill tone="#64748b">Archived</Pill>
+                        <Pill tone="archived">Archived</Pill>
                       ) : liveSession ? (
                         <Pill tone="#10b981" dot>Session Live Now</Pill>
                       ) : (
@@ -376,10 +376,10 @@ export default function StudentClassesPage() {
                           width: '100%',
                           fontSize: 12.5,
                           fontWeight: 600,
-                          color: 'var(--accent)'
+                          color: isArchived ? 'var(--text-secondary)' : 'var(--accent)'
                         }}>
                           <span>View Class</span>
-                          <ChevronRight size={16} />
+                          <ChevronRight size={16} color={isArchived ? 'var(--text-secondary)' : 'var(--accent)'} />
                         </div>
                       )}
                     </div>

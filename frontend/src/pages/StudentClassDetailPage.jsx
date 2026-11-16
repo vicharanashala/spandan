@@ -165,7 +165,7 @@ export default function StudentClassDetailPage() {
               <span style={{ opacity: 0.6 }}>•</span>
               <CodeChip code={cls.code || ''} variant="header" />
               {isArchived ? (
-                <Pill tone="#64748b">Archived</Pill>
+                <Pill variant="header">Archived</Pill>
               ) : (
                 activeSession && <Pill tone="#10b981" dot>Session Live</Pill>
               )}
@@ -194,8 +194,8 @@ export default function StudentClassDetailPage() {
             <div style={{
               padding: '14px 18px',
               borderRadius: 16,
-              background: 'color-mix(in srgb, #64748b 8%, var(--bg-card))',
-              border: '1px solid color-mix(in srgb, #64748b 25%, transparent)',
+              background: 'var(--banner-archived-bg, #f8fafc)',
+              border: '1px solid var(--banner-archived-border, #cbd5e1)',
               marginBottom: 20,
               display: 'flex',
               alignItems: 'center',
@@ -208,8 +208,8 @@ export default function StudentClassDetailPage() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'color-mix(in srgb, #64748b 16%, transparent)',
-                color: '#64748b',
+                background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                color: 'var(--banner-archived-icon-color, #475569)',
                 flexShrink: 0
               }}>
                 <Archive size={18} />

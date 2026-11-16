@@ -183,6 +183,16 @@ button, a { -webkit-tap-highlight-color: transparent; }
   --tint-info-bg: color-mix(in srgb, var(--accent) 9%, white); --tint-info-fg: var(--accent); --tint-info-border: var(--accent);
   --tint-warn-bg: #fef3c7;    --tint-warn-fg: #92400e;    --tint-warn-border: #f59e0b;
   --success-solid: #059669;   /* white text on it passes contrast (4.0:1) */
+
+  /* Neutral / Archived badge and banner tokens */
+  --badge-archived-bg: #f1f5f9;
+  --badge-archived-color: #475569;
+  --badge-archived-border: #cbd5e1;
+  --banner-archived-bg: #f8fafc;
+  --banner-archived-border: #cbd5e1;
+  --banner-archived-color: #475569;
+  --banner-archived-icon-bg: #e2e8f0;
+  --banner-archived-icon-color: #475569;
 }
 [data-theme="dark"] {
   --tint-success-bg: rgba(16,185,129,0.16); --tint-success-fg: #6ee7b7; --tint-success-border: #10b981;
@@ -190,6 +200,16 @@ button, a { -webkit-tap-highlight-color: transparent; }
   --tint-info-bg: color-mix(in srgb, var(--accent) 18%, transparent); --tint-info-fg: var(--accent); --tint-info-border: var(--accent);
   --tint-warn-bg: rgba(245,158,11,0.18);    --tint-warn-fg: #fcd34d;    --tint-warn-border: #fbbf24;
   --success-solid: #059669;
+
+  /* Dark mode neutral / Archived badge and banner tokens */
+  --badge-archived-bg: #334155;
+  --badge-archived-color: #e2e8f0;
+  --badge-archived-border: #475569;
+  --banner-archived-bg: #1e293b;
+  --banner-archived-border: #334155;
+  --banner-archived-color: #cbd5e1;
+  --banner-archived-icon-bg: #334155;
+  --banner-archived-icon-color: #94a3b8;
 }
 /* Sidebar logo = collapse toggle: a gentle lift on hover and a focus ring for the keyboard (no arrow overlay) */
 .sb-logo-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

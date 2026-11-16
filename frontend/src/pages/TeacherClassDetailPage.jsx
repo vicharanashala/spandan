@@ -522,7 +522,7 @@ export default function TeacherClassDetailPage() {
               <span style={{ opacity: 0.6 }}>•</span>
               <span data-tour="class-code"><CodeChip code={cls.code || ''} variant="header" /></span>
               {isArchived ? (
-                <Pill tone="#64748b">Archived</Pill>
+                <Pill variant="header">Archived</Pill>
               ) : (
                 hasActiveSession && <Pill tone="#10b981" dot>Session Live</Pill>
               )}
@@ -562,7 +562,7 @@ export default function TeacherClassDetailPage() {
                   gap: 6,
                   fontSize: 13,
                   color: 'var(--text-secondary)',
-                  borderColor: 'var(--border-color)'
+                  borderColor: '#94a3b8'
                 })}
               >
                 <Archive size={14} /> Archive class
@@ -783,8 +783,8 @@ export default function TeacherClassDetailPage() {
               <div style={{
                 padding: '16px 20px',
                 borderRadius: 16,
-                background: 'color-mix(in srgb, #64748b 8%, var(--bg-card))',
-                border: '1px solid color-mix(in srgb, #64748b 25%, transparent)',
+                background: 'var(--banner-archived-bg, #f8fafc)',
+                border: '1px solid var(--banner-archived-border, #cbd5e1)',
                 display: 'flex',
                 flexDirection: isMobile ? 'column' : 'row',
                 alignItems: isMobile ? 'flex-start' : 'center',
@@ -799,8 +799,8 @@ export default function TeacherClassDetailPage() {
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    background: 'color-mix(in srgb, #64748b 16%, transparent)',
-                    color: '#64748b',
+                    background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                    color: 'var(--banner-archived-icon-color, #475569)',
                     flexShrink: 0
                   }}>
                     <Archive size={20} />
@@ -810,7 +810,7 @@ export default function TeacherClassDetailPage() {
                       <span style={{ fontSize: 15, fontWeight: 750, color: 'var(--text-primary)' }}>
                         Class Series Archived
                       </span>
-                      <Pill tone="#64748b">Archived</Pill>
+                      <Pill tone="archived">Archived</Pill>
                     </div>
                     <p style={{ margin: '3px 0 0', fontSize: 13, color: 'var(--text-secondary)' }}>
                       All history, attendance, and analytics are preserved. Restore this class to launch new live sessions.
@@ -1170,14 +1170,26 @@ export default function TeacherClassDetailPage() {
                   ...cardStyle(isMobile),
                   padding: '16px 20px',
                   borderRadius: 16,
-                  background: 'color-mix(in srgb, #64748b 8%, var(--bg-card))',
-                  border: '1px solid color-mix(in srgb, #64748b 25%, transparent)',
+                  background: 'var(--banner-archived-bg, #f8fafc)',
+                  border: '1px solid var(--banner-archived-border, #cbd5e1)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 12,
                   marginBottom: 28
                 }}>
-                  <Archive size={20} color="#64748b" />
+                  <span style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 12,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                    color: 'var(--banner-archived-icon-color, #475569)',
+                    flexShrink: 0
+                  }}>
+                    <Archive size={20} />
+                  </span>
                   <div>
                     <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text-primary)' }}>
                       Class Series Archived
@@ -2499,8 +2511,9 @@ export default function TeacherClassDetailPage() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'color-mix(in srgb, #64748b 14%, transparent)',
-                color: '#64748b'
+                background: 'var(--badge-archived-bg, #f1f5f9)',
+                color: 'var(--badge-archived-color, #475569)',
+                border: '1px solid var(--badge-archived-border, #cbd5e1)'
               }}>
                 <Archive size={20} />
               </span>
@@ -2537,10 +2550,10 @@ export default function TeacherClassDetailPage() {
                   fontSize: 13.5,
                   fontWeight: 650,
                   cursor: isArchiving ? 'not-allowed' : 'pointer',
-                  border: 'none',
-                  background: '#64748b',
+                  border: '1px solid #475569',
+                  background: '#475569',
                   color: '#fff',
-                  boxShadow: '0 4px 14px rgba(100,116,139,0.30)'
+                  boxShadow: '0 4px 14px rgba(71,85,105,0.25)'
                 }}
               >
                 {isArchiving ? 'Archiving...' : 'Archive class'}

@@ -246,7 +246,7 @@ export default function StudentNotificationsPage() {
                         inset: '0 0 auto 0',
                         height: 3,
                         background: isArchived
-                          ? '#64748b'
+                          ? 'var(--badge-archived-border, #cbd5e1)'
                           : 'linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent))'
                       }}
                     />
@@ -280,7 +280,7 @@ export default function StudentNotificationsPage() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
                           {classCode && <CodeChip code={classCode} />}
                           {isArchived ? (
-                            <Pill tone="#64748b">Archived</Pill>
+                            <Pill tone="archived">Archived</Pill>
                           ) : (
                             <Pill tone="var(--accent)">Class Invite</Pill>
                           )}
