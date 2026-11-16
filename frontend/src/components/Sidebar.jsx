@@ -4,6 +4,7 @@ import SpandanIcon from './SpandanIcon'
 import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, School, TrendingUp, Bell } from 'lucide-react'
 import { renderIcon } from './icons'
 import { notificationApi } from '../lib/api'
+import useSocketStore from '../stores/socketStore'
 
 
 const menuItems = {
@@ -65,14 +66,44 @@ export default function Sidebar({ user }) {
   // Close the mobile drawer on navigation.
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
 
+  const { socket } = useSocketStore()
   const [unreadNotifications, setUnreadNotifications] = useState(0)
 
-  useEffect(() => {
+  const fetchUnread = () => {
     if (role !== 'student') return
     notificationApi.getAll()
       .then(res => setUnreadNotifications(res.notifications?.length || res.unreadCount || 0))
       .catch(() => {})
+  }
+
+  useEffect(() => {
+    fetchUnread()
   }, [role, location.pathname])
+
+  useEffect(() => {
+    if (role !== 'student') return
+
+    const handleUpdate = () => {
+      fetchUnread()
+    }
+
+    if (socket) {
+      socket.on('notification:new', handleUpdate)
+      socket.on('notification:updated', handleUpdate)
+      socket.on('class:member-updated', handleUpdate)
+    }
+
+    window.addEventListener('spandan:notifications-changed', handleUpdate)
+
+    return () => {
+      if (socket) {
+        socket.off('notification:new', handleUpdate)
+        socket.off('notification:updated', handleUpdate)
+        socket.off('class:member-updated', handleUpdate)
+      }
+      window.removeEventListener('spandan:notifications-changed', handleUpdate)
+    }
+  }, [socket, role])
 
   const persistCollapsed = (val) => { setCollapsed(val); localStorage.setItem('sidebarCollapsed', val ? '1' : '0') }
 

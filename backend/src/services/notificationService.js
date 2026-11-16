@@ -120,12 +120,14 @@ export const declineNotification = async (notificationId, studentId) => {
 
   if (member && member.status === 'invited') {
     member.status = 'declined'
+    member.declinedAt = now
     await member.save()
   }
 
   return {
     success: true,
-    message: 'Invite declined'
+    message: 'Invite declined',
+    classId: notification.classId
   }
 }
 

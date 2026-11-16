@@ -414,8 +414,16 @@ export default function StudentClassDetailPage() {
                               <td style={{ padding: '14px 18px' }}>
                                 {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <Pill tone="var(--text-secondary)">Before joined</Pill>
-                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
-                                  <Pill tone="#f59e0b">Removed</Pill>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal' ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#f59e0b">Removed</Pill>
+                                  </div>
+                                ) : sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined' ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#64748b">Declined</Pill>
+                                  </div>
                                 ) : sess.attended ? (
                                   <Pill tone="#10b981">Attended</Pill>
                                 ) : (
@@ -426,8 +434,10 @@ export default function StudentClassDetailPage() {
                               <td style={{ padding: '14px 18px' }}>
                                 {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not enrolled yet</span>
-                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
-                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not in class</span>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal' ? (
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}><span>Removed from class</span> · <span>Not in class</span></span>
+                                ) : sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined' ? (
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Declined invite</span>
                                 ) : sess.attended ? (
                                   sess.totalQuestions === 0 ? (
                                     <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>No polls in this session</span>

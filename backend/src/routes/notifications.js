@@ -33,6 +33,7 @@ router.post('/:id/accept', authenticate, authorize('student'), async (req, res) 
         member: result.member
       })
       io.emit('class:updated', { classId: result.class._id })
+      io.emit('notification:updated', { userId: req.user._id })
     }
 
     res.json(result)
@@ -49,9 +50,11 @@ router.post('/:id/decline', authenticate, authorize('student'), async (req, res)
     const io = req.app.get('io')
     if (io) {
       io.emit('class:member-updated', {
+        classId: result.classId,
         studentId: req.user._id,
         status: 'declined'
       })
+      io.emit('notification:updated', { userId: req.user._id })
     }
 
     res.json(result)

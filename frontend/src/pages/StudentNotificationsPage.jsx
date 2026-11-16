@@ -50,15 +50,19 @@ export default function StudentNotificationsPage() {
   useEffect(() => {
     if (!socket) return
 
-    const handleNewNotification = (data) => {
+    const handleNotificationEvent = (data) => {
       if (!data?.userId || String(data.userId) === String(user?._id)) {
         fetchNotifications()
       }
     }
 
-    socket.on('notification:new', handleNewNotification)
+    socket.on('notification:new', handleNotificationEvent)
+    socket.on('notification:updated', handleNotificationEvent)
+    socket.on('class:member-updated', handleNotificationEvent)
     return () => {
-      socket.off('notification:new', handleNewNotification)
+      socket.off('notification:new', handleNotificationEvent)
+      socket.off('notification:updated', handleNotificationEvent)
+      socket.off('class:member-updated', handleNotificationEvent)
     }
   }, [socket, user])
 
@@ -69,6 +73,7 @@ export default function StudentNotificationsPage() {
     try {
       const res = await notificationApi.accept(notification._id)
       setNotifications(prev => prev.filter(n => n._id !== notification._id))
+      window.dispatchEvent(new CustomEvent('spandan:notifications-changed'))
       const className = notification.class?.name || notification.payload?.className || 'the class'
       setSuccessMsg(`Enrolled in ${className} successfully! You can now access all past and live sessions.`)
     } catch (err) {
@@ -85,6 +90,7 @@ export default function StudentNotificationsPage() {
     try {
       await notificationApi.decline(notification._id)
       setNotifications(prev => prev.filter(n => n._id !== notification._id))
+      window.dispatchEvent(new CustomEvent('spandan:notifications-changed'))
       setSuccessMsg('Invitation declined.')
     } catch (err) {
       setError(err.message || 'Failed to decline invitation')

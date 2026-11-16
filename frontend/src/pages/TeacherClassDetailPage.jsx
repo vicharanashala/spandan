@@ -1378,85 +1378,104 @@ export default function TeacherClassDetailPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                     <CircleAlert size={18} color="#f59e0b" />
                     <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
-                      Pending Re-Join Requests ({pendingMembers.length})
+                      Pending Join Requests ({pendingMembers.length})
                     </h3>
                     <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      Students who previously were removed and entered the class code again.
+                      Join requests — approve to restore to active roster
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {pendingMembers.map((req) => (
-                      <div
-                        key={req._id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '10px 14px',
-                          borderRadius: 12,
-                          background: 'var(--bg-card)',
-                          border: '1px solid var(--border-color)'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{
-                            width: 32,
-                            height: 32,
-                            borderRadius: '50%',
-                            background: 'var(--accent-gradient)',
-                            color: '#fff',
+                    {pendingMembers.map((req) => {
+                      const isFromRemoval = req.previousStatus === 'removed' || (!req.previousStatus && req.removedAt)
+                      const isFromDecline = req.previousStatus === 'declined' || req.previousStatus === 'invited'
+                      const reasonText = isFromRemoval
+                        ? 'Previously removed; requested to join with class code'
+                        : isFromDecline
+                          ? 'Previously declined or did not accept invite; requested to join with class code'
+                          : 'Requested to join with class code'
+
+                      return (
+                        <div
+                          key={req._id}
+                          style={{
                             display: 'flex',
                             alignItems: 'center',
-                            justifyContent: 'center',
-                            fontWeight: 700,
-                            fontSize: 13
-                          }}>
-                            {req.name?.charAt(0)?.toUpperCase() || 'S'}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>{req.name}</div>
-                            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{req.email}</div>
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <button
-                            type="button"
-                            onClick={() => handleMemberAction(req.studentId || req._id, 'approve')}
-                            style={{
-                              padding: '6px 12px',
-                              borderRadius: 10,
-                              fontSize: 12.5,
-                              fontWeight: 650,
-                              cursor: 'pointer',
-                              border: 'none',
-                              background: '#10b981',
+                            justifyContent: 'space-between',
+                            padding: '10px 14px',
+                            borderRadius: 12,
+                            background: 'var(--bg-card)',
+                            border: '1px solid var(--border-color)'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: '50%',
+                              background: 'var(--accent-gradient)',
                               color: '#fff',
-                              display: 'inline-flex',
+                              display: 'flex',
                               alignItems: 'center',
-                              gap: 4
-                            }}
-                          >
-                            <UserCheck size={14} /> Approve
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleMemberAction(req.studentId || req._id, 'reject')}
-                            style={ghostButton({
-                              padding: '6px 12px',
-                              fontSize: 12.5,
-                              color: '#ef4444',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4
-                            })}
-                          >
-                            <X size={14} /> Reject
-                          </button>
+                              justifyContent: 'center',
+                              fontWeight: 700,
+                              fontSize: 13
+                            }}>
+                              {req.name?.charAt(0)?.toUpperCase() || 'S'}
+                            </div>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>{req.name}</div>
+                                {isFromRemoval ? (
+                                  <Pill tone="#ef4444">Removed</Pill>
+                                ) : isFromDecline ? (
+                                  <Pill tone="#64748b">Declined</Pill>
+                                ) : null}
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                                {req.email} · <span style={{ fontStyle: 'italic' }}>{reasonText}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button
+                              type="button"
+                              onClick={() => handleMemberAction(req.studentId || req._id, 'approve')}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: 10,
+                                fontSize: 12.5,
+                                fontWeight: 650,
+                                cursor: 'pointer',
+                                border: 'none',
+                                background: '#10b981',
+                                color: '#fff',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4
+                              }}
+                            >
+                              <UserCheck size={14} /> Approve
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMemberAction(req.studentId || req._id, 'reject')}
+                              style={ghostButton({
+                                padding: '6px 12px',
+                                fontSize: 12.5,
+                                color: '#ef4444',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4
+                              })}
+                            >
+                              <X size={14} /> Reject
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -2092,7 +2111,8 @@ export default function TeacherClassDetailPage() {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       {studentPerformance.sessions.map((sess) => {
                         const isPreJoin = sess.status === 'before_join' || sess.isBeforeJoin
-                        const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval
+                        const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal'
+                        const isDeclined = sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined'
                         return (
                           <div
                             key={sess.roomId}
@@ -2117,7 +2137,15 @@ export default function TeacherClassDetailPage() {
                                 {isPreJoin ? (
                                   <Pill tone="var(--text-secondary)">Before joined</Pill>
                                 ) : isRemoved ? (
-                                  <Pill tone="#f59e0b">Removed</Pill>
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#f59e0b">Removed</Pill>
+                                  </div>
+                                ) : isDeclined ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#64748b">Declined</Pill>
+                                  </div>
                                 ) : sess.attended ? (
                                   <Pill tone="#10b981">Attended</Pill>
                                 ) : (
@@ -2136,7 +2164,11 @@ export default function TeacherClassDetailPage() {
                                 </span>
                               ) : isRemoved ? (
                                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                  Not in class
+                                  <span>Removed from class</span> · <span>Not in class</span>
+                                </span>
+                              ) : isDeclined ? (
+                                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  Declined invite
                                 </span>
                               ) : sess.attended ? (
                                 sess.totalQuestions === 0 ? (
@@ -2464,8 +2496,8 @@ export default function TeacherClassDetailPage() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'color-mix(in srgb, #f59e0b 14%, transparent)',
-                color: '#f59e0b'
+                background: 'color-mix(in srgb, #64748b 14%, transparent)',
+                color: '#64748b'
               }}>
                 <Archive size={20} />
               </span>
@@ -2503,9 +2535,9 @@ export default function TeacherClassDetailPage() {
                   fontWeight: 650,
                   cursor: isArchiving ? 'not-allowed' : 'pointer',
                   border: 'none',
-                  background: '#f59e0b',
+                  background: '#64748b',
                   color: '#fff',
-                  boxShadow: '0 4px 14px rgba(245,158,11,0.30)'
+                  boxShadow: '0 4px 14px rgba(100,116,139,0.30)'
                 }}
               >
                 {isArchiving ? 'Archiving...' : 'Archive class'}

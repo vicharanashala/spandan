@@ -84,6 +84,7 @@ router.post('/join', authenticate, authorize('student'), async (req, res) => {
         status: result.status,
         member: result.member
       })
+      io.emit('notification:updated', { userId: req.user._id })
     }
 
     res.json({
@@ -261,6 +262,7 @@ router.patch('/:id/members/:studentId', authenticate, authorize('teacher'), requ
         member: result.member,
         action
       })
+      io.emit('notification:updated', { userId: req.params.studentId })
     }
 
     res.json(result)
@@ -323,6 +325,7 @@ router.post('/:id/invites/csv', authenticate, authorize('teacher'), requireAppro
     const io = req.app.get('io')
     if (io) {
       io.emit('class:member-updated', { classId: req.params.id })
+      io.emit('notification:new', {})
     }
 
     res.json(result)
@@ -343,6 +346,7 @@ router.delete('/:id/invites/:memberId', authenticate, authorize('teacher'), requ
     const io = req.app.get('io')
     if (io) {
       io.emit('class:member-updated', { classId: req.params.id })
+      io.emit('notification:updated', {})
     }
 
     res.json(result)
