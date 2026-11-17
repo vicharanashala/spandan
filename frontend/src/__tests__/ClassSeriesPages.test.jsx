@@ -285,6 +285,62 @@ describe('TeacherClassDetailPage', () => {
     expect(screen.getByText(/1 missed/)).toBeInTheDocument()
   })
 
+  it('opens centered student performance modal from Performance tab, locks body scroll, and closes on Escape / X', async () => {
+    render(
+      <MemoryRouter initialEntries={['/teacher/classes/class-1']}>
+        <Routes>
+          <Route path="/teacher/classes/:id" element={<TeacherClassDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    // Switch to Performance tab
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Performance/i })).toBeInTheDocument()
+    })
+    const perfTab = screen.getByRole('button', { name: /Performance/i })
+    fireEvent.click(perfTab)
+
+    await waitFor(() => {
+      expect(screen.getByText('Alice Smith')).toBeInTheDocument()
+    })
+
+    expect(document.body.style.overflow).not.toBe('hidden')
+
+    // Click View on Alice Smith
+    const viewButtons = screen.getAllByRole('button', { name: /View/ })
+    fireEvent.click(viewButtons[0])
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('hidden')
+
+    // Verify modal header has student details
+    expect(screen.getByRole('heading', { name: 'Alice Smith', level: 3 })).toBeInTheDocument()
+    expect(screen.getAllByText('alice@uni.edu').length).toBeGreaterThanOrEqual(1)
+
+    // Press Escape to close modal
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(document.body.style.overflow).not.toBe('hidden')
+
+    // Reopen and close via Close button (X)
+    fireEvent.click(viewButtons[0])
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('hidden')
+
+    const closeBtn = screen.getByRole('button', { name: /Close/i })
+    fireEvent.click(closeBtn)
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(document.body.style.overflow).not.toBe('hidden')
+  })
+
   it('handles archiving and restoring classes with confirmation and state updates', async () => {
     // When class is active and no session is live
     classApi.getById.mockResolvedValueOnce({

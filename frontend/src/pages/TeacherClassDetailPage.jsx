@@ -293,6 +293,28 @@ export default function TeacherClassDetailPage() {
     }
   }, [socket, classId])
 
+  // Handle escape key and lock body scroll while student performance modal is open
+  useEffect(() => {
+    if (!selectedStudent) return
+
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setSelectedStudent(null)
+        setStudentPerformance(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = originalOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [selectedStudent])
+
   const handleStartSession = async (e) => {
     e?.preventDefault()
     if (!sessionName.trim() || isStartingSession) return
@@ -1988,38 +2010,57 @@ export default function TeacherClassDetailPage() {
       </div>
 
 
-      {/* Slide-over / Modal: Person-Wise Performance Panel */}
+      {/* Centered Modal Overlay: Person-Wise Performance Panel */}
       {selectedStudent && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15,23,42,0.65)',
-          backdropFilter: 'blur(4px)',
-          zIndex: 85,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'center' : 'flex-end',
-          boxSizing: 'border-box'
-        }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="student-performance-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedStudent(null)
+              setStudentPerformance(null)
+            }
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.65)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 95,
+            display: 'flex',
+            alignItems: isMobile ? 'stretch' : 'center',
+            justifyContent: 'center',
+            padding: isMobile ? 0 : 20,
+            boxSizing: 'border-box'
+          }}
+        >
           <div style={{
-            width: isMobile ? '100%' : '520px',
+            width: isMobile ? '100%' : 'min(920px, 92vw)',
             maxWidth: '100%',
-            height: isMobile ? '90vh' : '100vh',
+            height: isMobile ? '100%' : 'auto',
+            maxHeight: isMobile ? '100vh' : '86vh',
             background: 'var(--bg-card)', // Solid opaque background
-            borderLeft: isMobile ? 'none' : '1px solid var(--border-color)',
-            borderRadius: isMobile ? '20px 20px 0 0' : 0,
+            border: isMobile ? 'none' : '1px solid var(--border-color)',
+            borderRadius: isMobile ? 0 : 16,
             display: 'flex',
             flexDirection: 'column',
-            boxShadow: '-10px 0 35px rgba(0,0,0,0.22)',
-            overflow: 'hidden'
+            boxShadow: isMobile ? 'none' : '0 20px 45px rgba(0,0,0,0.30)',
+            overflow: 'hidden',
+            boxSizing: 'border-box'
           }}>
-            {/* Header */}
+            {/* Header: sticky inside the dialog */}
             <div style={{
-              padding: '20px 24px',
+              position: 'sticky',
+              top: 0,
+              zIndex: 2,
+              background: 'var(--bg-card)',
+              padding: isMobile ? '16px 18px' : '20px 24px',
               borderBottom: '1px solid var(--border-color)',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between'
+              justifyContent: 'space-between',
+              flexShrink: 0
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{
@@ -2032,12 +2073,13 @@ export default function TeacherClassDetailPage() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   fontWeight: 700,
-                  fontSize: 16
+                  fontSize: 16,
+                  flexShrink: 0
                 }}>
                   {selectedStudent.name?.charAt(0)?.toUpperCase() || 'S'}
                 </div>
                 <div>
-                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  <h3 id="student-performance-modal-title" style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
                     {selectedStudent.name}
                   </h3>
                   <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-secondary)' }}>
@@ -2047,15 +2089,26 @@ export default function TeacherClassDetailPage() {
               </div>
               <button
                 type="button"
+                aria-label="Close"
                 onClick={() => { setSelectedStudent(null); setStudentPerformance(null) }}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: 4 }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  padding: 6,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </div>
 
-            {/* Content */}
-            <div style={{ flex: 1, padding: '24px', overflowY: 'auto' }}>
+            {/* Content: body scrolls inside the dialog */}
+            <div style={{ flex: 1, padding: isMobile ? '18px 16px' : '24px 28px', overflowY: 'auto' }}>
               {studentPerfLoading ? (
                 <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
                   <div style={{
@@ -2073,7 +2126,7 @@ export default function TeacherClassDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   <SectionLabel>Class Performance Summary</SectionLabel>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                     <StatTile
                       icon={Library}
                       label="Attendance"
