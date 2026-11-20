@@ -23,6 +23,7 @@ import AdminPage from './pages/AdminPage'
 import TermsPage from './pages/TermsPage'
 import TermsGate from './components/TermsGate'
 import { isTokenExpired } from './lib/jwt.js'
+import TeacherQuestionBankPage from './pages/TeacherQuestionBankPage'
 
 function App() {
   const { isDark } = useThemeStore()
@@ -88,11 +89,13 @@ function App() {
             <CreateRoomPage />
           </ProtectedRoute>
         } />
-        <Route path="/teacher/manage-room" element={
+        <Route path="/teacher/question-bank" element={
           <ProtectedRoute allowedRoles={['teacher']}>
-            <ManageRoomPage />
+             <TeacherQuestionBankPage />
           </ProtectedRoute>
         } />
+
+        
         <Route path="/teacher/profile" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <ProfilePage />
