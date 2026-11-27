@@ -144,6 +144,36 @@ router.post('/accept-terms', authenticateAllowPendingTerms, async (req, res) => 
   }
 })
 
+// Research opt-out (Terms section 8): the signed-in user reads or changes ONLY their own choice. There
+// is deliberately no route that lists other users' choices; the fields are select:false on the model.
+router.get('/research-opt-out', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('+researchOptOut +researchOptOutAt').lean()
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    res.json({ optedOut: !!user.researchOptOut, optedOutAt: user.researchOptOutAt || null })
+  } catch (error) {
+    res.status(500).json({ error: 'Could not load your research choice, please try again' })
+  }
+})
+
+router.put('/research-opt-out', authenticate, async (req, res) => {
+  try {
+    if (typeof req.body?.optOut !== 'boolean') {
+      return res.status(400).json({ error: 'optOut must be true or false' })
+    }
+    const optOut = req.body.optOut
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { researchOptOut: optOut, researchOptOutAt: optOut ? new Date() : null } },
+      { new: true }
+    ).select('+researchOptOut +researchOptOutAt').lean()
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    res.json({ optedOut: !!user.researchOptOut, optedOutAt: user.researchOptOutAt || null })
+  } catch (error) {
+    res.status(500).json({ error: 'Could not save your research choice, please try again' })
+  }
+})
+
 // GET /check-email/:email removed: it was an unauthenticated account-enumeration oracle (returned
 // whether an email is registered) with no callers. Email availability is covered by POST /register
 // (returns "email already registered") and the OTP signup flow.

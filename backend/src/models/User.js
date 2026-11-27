@@ -150,6 +150,20 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // Research opt-out (Terms section 8). Set only by the user themself via PUT /auth/research-opt-out.
+  // select:false keeps it out of every query result (including lean() and populate()) unless a query
+  // asks for it explicitly, so no teacher or admin view can show who opted out. Only the research
+  // export run by the operations staff member reads it.
+  researchOptOut: {
+    type: Boolean,
+    default: false,
+    select: false
+  },
+  researchOptOutAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
   isActive: {
     type: Boolean,
     default: true
@@ -186,6 +200,8 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const obj = this.toObject()
   delete obj.password
+  delete obj.researchOptOut
+  delete obj.researchOptOutAt
   // Lets the client decide whether to show the accept-terms screen without knowing the version.
   obj.termsAccepted = obj.termsVersion === TERMS_VERSION
   return obj

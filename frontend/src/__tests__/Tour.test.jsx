@@ -12,6 +12,7 @@ jest.mock('../stores/authStore', () => {
 import { MemoryRouter } from 'react-router-dom'
 import Tour from '../components/Tour'
 import useTourStore, { hasSeenTour, markTourSeen } from '../stores/tourStore'
+import useResearchOptOutStore from '../stores/researchOptOutStore'
 
 // A fake dashboard: sidebar, create-room and help-button present; active-rooms (step 3) optional.
 const Page = ({ withActiveRooms = false }) => (
@@ -26,6 +27,7 @@ const Page = ({ withActiveRooms = false }) => (
 beforeEach(() => {
   window.localStorage.clear()
   jest.useFakeTimers()
+  useResearchOptOutStore.setState({ isOpen: false })
   useTourStore.setState({ active: null, step: 0, direction: 1 })
   mockUpdateUser.mockClear()
   mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: {} }, updateUser: mockUpdateUser }
@@ -104,8 +106,9 @@ describe('Tour', () => {
     expect(hasSeenTour({ tourSeen: {} }, 'dashboard')).toBe(false)
     expect(hasSeenTour(null, 'console')).toBe(false)
     await markTourSeen('console')                      // teacher: writes the memo + the record
-    expect(hasSeenTour({ tourSeen: {} }, 'console')).toBe(true)   // stale user object, memo wins
-    expect(hasSeenTour({ tourSeen: {} }, 'dashboard')).toBe(false)
+    expect(hasSeenTour({ _id: 't1', tourSeen: {} }, 'console')).toBe(true)   // stale user object, memo wins
+    expect(hasSeenTour({ _id: 't1', tourSeen: {} }, 'dashboard')).toBe(false)
+    expect(hasSeenTour({ _id: 't2', tourSeen: {} }, 'console')).toBe(false)  // memo is per user, not per browser
     global.fetch.mockClear(); mockUpdateUser.mockClear()
     mockAuth = { token: 'tok', user: { _id: 's1', role: 'student', tourSeen: {} }, updateUser: mockUpdateUser }
     await markTourSeen('s-session')
@@ -116,7 +119,36 @@ describe('Tour', () => {
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
+  it('does not start a tour while the research opt-out dialog is open; starts once it is closed', () => {
+    mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: { 'research-notice': 'x' } }, updateUser: mockUpdateUser }
+    act(() => useResearchOptOutStore.getState().open())   // e.g. opened from the notice's "Research opt-out" button
+    render(<MemoryRouter initialEntries={['/teacher']}><Page withActiveRooms /><Tour /></MemoryRouter>)
+    act(() => { jest.advanceTimersByTime(2000) })
+    expect(useTourStore.getState().active).toBeNull()
+    act(() => useResearchOptOutStore.getState().close())
+    act(() => { jest.advanceTimersByTime(800) })
+    expect(useTourStore.getState().active).toBe('dashboard')
+  })
+
+  it('a second account on the same browser still gets the research notice and its own tours', async () => {
+    // Account 1 closes the research notice and finishes the dashboard tour on this browser.
+    mockAuth = { token: 'tok', user: { _id: 'u1', role: 'student', tourSeen: {} }, updateUser: mockUpdateUser }
+    await markTourSeen('research-notice')
+    await markTourSeen('s-dashboard')
+    expect(hasSeenTour({ _id: 'u1', tourSeen: {} }, 'research-notice')).toBe(true)
+    // Account 2 signs in on the same browser: nothing has been seen for it yet.
+    expect(hasSeenTour({ _id: 'u2', tourSeen: {} }, 'research-notice')).toBe(false)
+    expect(hasSeenTour({ _id: 'u2', tourSeen: {} }, 's-dashboard')).toBe(false)
+    // So account 2's tour waits for its own research notice instead of starting at once.
+    mockAuth = { token: 'tok', user: { _id: 'u2', role: 'student', tourSeen: {} }, updateUser: mockUpdateUser }
+    render(<MemoryRouter initialEntries={['/student']}><Page withActiveRooms /><Tour /></MemoryRouter>)
+    act(() => { jest.advanceTimersByTime(2000) })
+    expect(useTourStore.getState().active).toBeNull()
+  })
+
   it('auto-starts the page tour on first visit (teacher dashboard), not when already seen, and for students too', () => {
+    // The one-time research notice comes first; tours auto-start only once it has been seen.
+    mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: { 'research-notice': 'x' } }, updateUser: mockUpdateUser }
     const { unmount } = render(<MemoryRouter initialEntries={['/teacher']}><Page withActiveRooms /><Tour /></MemoryRouter>)
     expect(useTourStore.getState().active).toBeNull()
     act(() => { jest.advanceTimersByTime(800) })
@@ -124,17 +156,25 @@ describe('Tour', () => {
     act(() => useTourStore.getState().stop('skipped'))
     unmount()
 
-    mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: { dashboard: '2026-10-14' } }, updateUser: mockUpdateUser }
+    mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: { dashboard: '2026-10-14', 'research-notice': 'x' } }, updateUser: mockUpdateUser }
     window.localStorage.clear()
     const r2 = render(<MemoryRouter initialEntries={['/teacher']}><Page withActiveRooms /><Tour /></MemoryRouter>)
     act(() => { jest.advanceTimersByTime(1000) })
     expect(useTourStore.getState().active).toBeNull()
     r2.unmount()
 
-    mockAuth = { token: 'tok', user: { _id: 's1', role: 'student', tourSeen: {} }, updateUser: mockUpdateUser }
+    mockAuth = { token: 'tok', user: { _id: 's1', role: 'student', tourSeen: { 'research-notice': 'x' } }, updateUser: mockUpdateUser }
     render(<MemoryRouter initialEntries={['/student/join-room']}><div data-tour="join-code" /><Tour /></MemoryRouter>)
     act(() => { jest.advanceTimersByTime(800) })
     expect(useTourStore.getState().active).toBe('s-join-room')
     expect(screen.getByRole('dialog', { name: /step 1 of 2/i })).toBeInTheDocument()
+  })
+
+  it('waits while the research notice has not been seen yet', () => {
+    window.localStorage.clear()
+    mockAuth = { token: 'tok', user: { _id: 't1', role: 'teacher', tourSeen: {} }, updateUser: mockUpdateUser }
+    render(<MemoryRouter initialEntries={['/teacher']}><Page withActiveRooms /><Tour /></MemoryRouter>)
+    act(() => { jest.advanceTimersByTime(1000) })
+    expect(useTourStore.getState().active).toBeNull()
   })
 })

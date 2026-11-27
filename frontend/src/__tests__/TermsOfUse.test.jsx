@@ -1,6 +1,6 @@
 // Terms of Use on registration: the Sign up form shows the 18+/terms checkbox, and both "Create Account"
 // and "Continue with Google" stay disabled until it is ticked. Sign in is unaffected. Also checks the
-// shared terms content renders the highlighted Research Use section.
+// shared terms content renders the highlighted Research section.
 import React from 'react'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -54,7 +54,7 @@ describe('registration terms checkbox', () => {
 })
 
 describe('terms content', () => {
-  it('renders every section with Research Use highlighted and the contact email', () => {
+  it('renders every section with Research highlighted and the contact email', () => {
     render(<TermsContent />)
     for (const s of TERMS_SECTIONS) expect(screen.getByText(s.title)).toBeInTheDocument()
     expect(TERMS_SECTIONS.filter((s) => s.highlight).map((s) => s.id)).toEqual(['research'])

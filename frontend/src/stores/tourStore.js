@@ -6,9 +6,14 @@ import { tourSteps } from '../content/tours'
 // Seen = on the user record (cross-device truth) OR a per-browser memo written the moment a tour ends.
 // The memo covers the short window in which GET /auth/me can still serve a cached user without the
 // flag (the API caches authenticated users briefly per instance), so a reload never replays a tour.
-const memoKey = (id) => `spandan.tourSeen.${id}`
-const memoSeen = (id) => { try { return localStorage.getItem(memoKey(id)) === '1' } catch (e) { return false } }
-export const hasSeenTour = (user, id) => !!user?.tourSeen?.[id] || memoSeen(id)
+// The memo is keyed by user id: on a shared computer, one account closing a tour or the research
+// notice must not hide it from the next account signing in on the same browser.
+const memoKey = (userId, id) => `spandan.tourSeen.${userId}.${id}`
+const memoSeen = (userId, id) => {
+  if (!userId) return false
+  try { return localStorage.getItem(memoKey(userId, id)) === '1' } catch (e) { return false }
+}
+export const hasSeenTour = (user, id) => !!user?.tourSeen?.[id] || memoSeen(user?._id, id)
 
 // Persist "seen" on the user record (teachers and students) via PUT /auth/profile. Optimistic: the
 // local user is updated first so the tour never re-fires in this session even if the request fails.
@@ -16,7 +21,7 @@ export async function markTourSeen(id) {
   const { token, user, updateUser } = useAuthStore.getState()
   if (!token || !user) return
   const seenAt = new Date().toISOString()
-  try { localStorage.setItem(memoKey(id), '1') } catch (e) { /* ignore */ }
+  if (user._id) { try { localStorage.setItem(memoKey(user._id, id), '1') } catch (e) { /* ignore */ } }
   updateUser({ ...user, tourSeen: { ...(user.tourSeen || {}), [id]: seenAt } })
   try {
     const res = await fetch(`${API_URL}/auth/profile`, {

@@ -22,6 +22,8 @@ import Tour from './components/Tour'
 import AdminPage from './pages/AdminPage'
 import TermsPage from './pages/TermsPage'
 import TermsGate from './components/TermsGate'
+import ResearchNoticeGate from './components/ResearchNoticeGate'
+import ResearchOptOutDialog from './components/ResearchOptOutDialog'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -73,6 +75,10 @@ function App() {
       <Tour />
       {/* Blocking accept-terms screen for signed-in accounts that have not accepted the current terms. */}
       <TermsGate />
+      {/* One-time research notice, shown after the terms are accepted. */}
+      <ResearchNoticeGate />
+      {/* Research opt-out dialog, opened from the sidebar button above the profile card. */}
+      <ResearchOptOutDialog />
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />

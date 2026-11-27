@@ -13,17 +13,17 @@ export const TERMS_CONTACT_EMAIL = 'dled@iitrpr.ac.in'
 export const TERMS_TICKED_KEY = 'spandan-terms-ticked'
 
 export const TERMS_CHECKBOX_LABEL =
-  'I confirm that I am 18 years of age or older and I agree to the Spandan Terms of Use and Privacy Notice, including the Research Use section.'
+  'I confirm that I am 18 years of age or older and I agree to the Spandan Terms of Use and Privacy Notice.'
 
 // Each section: { id, title, paragraphs?: string[], bullets?: string[], highlight?: boolean }.
-// `highlight` renders the section in an accented box (used for Research Use).
+// `highlight` renders the section in an accented box (used for Research).
 export const TERMS_SECTIONS = [
   {
     id: 'about',
     title: '1. About Spandan',
     paragraphs: [
       `Spandan is a live classroom polling platform run by the ${TERMS_OPERATOR} ("we", "us"). Teachers run live sessions, Spandan prepares draft questions from the lecture, the teacher approves them, and students answer during class.`,
-      'By creating an account, or by continuing to use an existing account, you agree to these terms.'
+      'By creating an account and using Spandan, you agree to these terms.'
     ]
   },
   {
@@ -76,17 +76,18 @@ export const TERMS_SECTIONS = [
     title: '7. How we use your data',
     paragraphs: [
       'We use your data to run sessions, show results and leaderboards, give teachers analytics on class engagement, keep the service secure, and improve Spandan.',
+      'To prepare draft questions, lecture text is sent to an external AI service, which may process it outside India. Only lecture text is sent, before any names in it are removed; no account details or answers are sent.',
       'Your Spandan results may also be shown to you on the dashboard of a partner learning platform you are enrolled on.'
     ]
   },
   {
     id: 'research',
-    title: '8. Research use',
+    title: '8. Research',
     highlight: true,
     paragraphs: [
-      `Spandan is part of an educational research project at the ${TERMS_OPERATOR}. Data from Spandan sessions (your answers, response times, scores and participation, and the session transcripts and questions) may be analysed and used in research publications and in research datasets.`,
-      'Anything published or shared is anonymised or aggregated so that no individual can be identified. Names and email addresses are never published.',
-      'By accepting these terms you consent to this research use of your Spandan data.'
+      `Spandan sessions are part of an educational research study at the ${TERMS_OPERATOR}, approved by the Institutional Ethics Committee (Humans), IIT Ropar. Data from Spandan sessions (your answers, response times, scores and participation, and the session transcripts and questions) may be used in this research, only after a lab staff member outside the research team has removed names and email addresses and replaced them with codes.`,
+      'Anything published or shared is anonymised or aggregated so that no individual can be identified.',
+      'You can opt out of research use at any time until 30 days after your programme or course ends, with the Research opt-out button in the sidebar. Opting out does not affect your use of Spandan, your marks, points or certificates. Details are in the research notice.'
     ]
   },
   {
@@ -100,8 +101,8 @@ export const TERMS_SECTIONS = [
     id: 'retention',
     title: '10. Data retention and your rights',
     paragraphs: [
-      'We keep your data for as long as the Spandan project runs. When the project ends, your personal data is deleted or anonymised.',
-      `You may ask to access, correct or delete your data, or withdraw your consent, by writing to ${TERMS_CONTACT_EMAIL}. Withdrawing consent ends your use of Spandan. It does not affect anonymised data that has already been used in research.`
+      'We keep your account data for as long as you use Spandan and the lab runs the platform. When the platform is closed, your personal data is deleted.',
+      `You may ask to access, correct or delete your data by writing to ${TERMS_CONTACT_EMAIL}. To stop research use of your data, use the Research opt-out button (Section 8).`
     ]
   },
   {
@@ -115,7 +116,7 @@ export const TERMS_SECTIONS = [
     id: 'changes',
     title: '12. Changes to these terms',
     paragraphs: [
-      'We may update these terms. If we make an important change, you will be asked to accept the new version the next time you use Spandan.'
+      'If these terms change in any important way, you will be asked to accept them again the next time you use Spandan.'
     ]
   },
   {

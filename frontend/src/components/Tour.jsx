@@ -3,6 +3,8 @@ import { useLocation } from 'react-router-dom'
 import useTourStore, { hasSeenTour } from '../stores/tourStore'
 import useAuthStore from '../stores/authStore'
 import { tourSteps, tourForPath } from '../content/tours'
+import { RESEARCH_NOTICE_ID } from '../content/research.js'
+import useResearchOptOutStore from '../stores/researchOptOutStore'
 
 const PAD = 8
 const CARD_W = 340
@@ -21,6 +23,7 @@ export default function Tour() {
   const { active, step, next, back, stop, direction, start } = useTourStore()
   const { user, isAuthenticated } = useAuthStore()
   const { pathname } = useLocation()
+  const optOutOpen = useResearchOptOutStore((s) => s.isOpen)
   const steps = active ? tourSteps(active) : null
   const current = steps ? steps[step] : null
   const [rect, setRect] = useState(null)
@@ -29,11 +32,16 @@ export default function Tour() {
   useEffect(() => {
     if (active) { stop('skipped'); return }
     if (!isAuthenticated || !user?.role) return
+    // Wait while the one-time research notice is open, and while the research opt-out dialog is open
+    // (the notice's own "Research opt-out" button opens it); the tour starts once both are closed.
+    if (!hasSeenTour(user, RESEARCH_NOTICE_ID) || optOutOpen) return
     const id = tourForPath(pathname, user.role)
     if (!id || hasSeenTour(user, id)) return
-    const t = setTimeout(() => { if (!useTourStore.getState().active) start(id) }, AUTO_START_MS)
+    const t = setTimeout(() => {
+      if (!useTourStore.getState().active && !useResearchOptOutStore.getState().isOpen) start(id)
+    }, AUTO_START_MS)
     return () => clearTimeout(t)
-  }, [pathname, user?._id, isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pathname, user?._id, isAuthenticated, !!user?.tourSeen?.[RESEARCH_NOTICE_ID], optOutOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useLayoutEffect(() => {
     if (!current) { setRect(null); return }

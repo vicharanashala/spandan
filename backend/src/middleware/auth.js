@@ -56,9 +56,10 @@ const makeAuthenticate = ({ requireTerms }) => async (req, res, next) => {
     if (cached && cached.expires > Date.now()) {
       user = cached.user
       // The cache is per instance, so an acceptance recorded by ANOTHER backend instance is not seen
-      // here until the TTL ends. Before refusing on the terms gate, re-read this user once. Only
+      // here until the TTL ends. Re-read a not-yet-accepted user once, on the terms gate AND on
+      // GET /auth/me (otherwise a reload right after accepting can show the terms screen again). Only
       // not-yet-accepted accounts pay this read, and their client is held on the accept-terms screen.
-      if (requireTerms && !hasAcceptedCurrentTerms(user)) user = await loadFresh()
+      if (!hasAcceptedCurrentTerms(user)) user = await loadFresh()
     } else {
       user = await loadFresh()
     }

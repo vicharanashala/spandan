@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
-import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, FlaskConical, Menu, X } from 'lucide-react'
 import { renderIcon } from './icons'
+import useResearchOptOutStore from '../stores/researchOptOutStore'
 
 const menuItems = {
   teacher: [
@@ -28,6 +29,7 @@ export default function Sidebar({ user }) {
   const navigate = useNavigate()
   const location = useLocation()
   const role = user?.role || 'student'
+  const openResearchOptOut = useResearchOptOutStore((s) => s.open)
   const baseItems = menuItems[role] || menuItems.student
   // Admins get an extra "Approvals" entry at the end. (The old "Manual" entry is gone: help now
   // lives in the ⓘ drawer in every page header.)
@@ -199,8 +201,23 @@ export default function Sidebar({ user }) {
           })}
         </nav>
 
-        {/* User card → profile */}
+        {/* User card → profile, with the research opt-out button (Terms of Use, Section 8) just above it */}
         <div style={{ padding: showLabels ? '12px' : '12px 0', borderTop: '1px solid var(--border-color)' }}>
+          <button
+            onClick={openResearchOptOut}
+            title="Research opt-out"
+            aria-label="Research opt-out"
+            className="sb-item"
+            style={{
+              width: showLabels ? '100%' : '48px', height: showLabels ? 'auto' : '40px', margin: showLabels ? '0 0 8px' : '0 auto 8px',
+              display: 'flex', alignItems: 'center', justifyContent: showLabels ? 'flex-start' : 'center', gap: '8px',
+              padding: showLabels ? '6px 10px' : '0', border: 'none', borderRadius: '10px', background: 'transparent',
+              color: 'var(--text-secondary)', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer', textAlign: 'left'
+            }}
+          >
+            <FlaskConical size={showLabels ? 15 : 18} aria-hidden="true" />
+            {showLabels && <span style={{ whiteSpace: 'nowrap', textDecoration: 'underline', textUnderlineOffset: 3 }}>Research opt-out</span>}
+          </button>
           <button
             onClick={() => navigate(profilePath)}
             title="Your profile"

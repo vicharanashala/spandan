@@ -148,6 +148,15 @@ describe('existing accounts must accept before using Spandan', () => {
     expect((await request(app).get('/api/protected').set('Authorization', auth)).status).toBe(200)
   })
 
+  it('GET /auth/me also sees an acceptance recorded by another backend instance', async () => {
+    const user = await makeUser()
+    const auth = `Bearer ${generateToken(user._id)}`
+    expect((await request(app).get('/api/auth/me').set('Authorization', auth)).body.user.termsAccepted).toBe(false) // cached here
+    // Simulate the other instance handling accept-terms: the DB changes, this instance's cache is NOT cleared.
+    await User.updateOne({ _id: user._id }, { $set: { termsVersion: TERMS_VERSION, termsAcceptedAt: new Date() } })
+    expect((await request(app).get('/api/auth/me').set('Authorization', auth)).body.user.termsAccepted).toBe(true)
+  })
+
   it('keeps teacher-approval behaviour: pending teacher still gets TEACHER_NOT_APPROVED, approved teacher gets the terms gate', async () => {
     const pending = await makeUser({ role: 'teacher', teacherApprovalStatus: 'pending' })
     const r1 = await request(app).get('/api/protected').set('Authorization', `Bearer ${generateToken(pending._id)}`)
