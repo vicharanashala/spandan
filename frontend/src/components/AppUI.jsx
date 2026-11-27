@@ -224,11 +224,61 @@ export function CodeChip({ code, variant = 'default' }) {
   )
 }
 
-// Small status pill (Live, Video, Ended …).
-export function Pill({ children, tone = 'var(--accent)', dot }) {
+// Small status pill (Live, Video, Ended, Archived …).
+// variant: 'default' | 'header' | 'frosted'
+export function Pill({ children, tone = 'var(--accent)', dot, variant = 'default', style = {} }) {
+  const isArchived = tone === 'archived' || tone === '#64748b'
+  const isHeader = variant === 'header' || variant === 'frosted'
+
+  const customStyle = isHeader
+    ? {
+        background: 'rgba(255, 255, 255, 0.14)',
+        color: '#f8fafc',
+        border: '1px solid rgba(255, 255, 255, 0.28)',
+        boxShadow: '0 1px 4px rgba(0, 0, 0, 0.12)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+      }
+    : isArchived
+      ? {
+          background: 'var(--badge-archived-bg, #f1f5f9)',
+          color: 'var(--badge-archived-color, #475569)',
+          border: '1px solid var(--badge-archived-border, #cbd5e1)',
+        }
+      : {
+          color: toneText(tone),
+          background: tintBg(tone, 12),
+          border: `1px solid ${tintBg(tone, 26)}`,
+        }
+
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, color: toneText(tone), background: tintBg(tone, 12), border: `1px solid ${tintBg(tone, 26)}`, whiteSpace: 'nowrap' }}>
-      {dot && <span aria-hidden="true" className="app-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: tone }} />}
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 10px',
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
+        ...customStyle,
+        ...style
+      }}
+    >
+      {dot && (
+        <span
+          aria-hidden="true"
+          className="app-pulse"
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: isHeader ? '#f8fafc' : isArchived ? 'var(--badge-archived-color, #475569)' : tone
+          }}
+        />
+      )}
       {children}
     </span>
   )

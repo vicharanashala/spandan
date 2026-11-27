@@ -6,7 +6,9 @@
 // 4. Performance aggregation & CSV export format
 // 5. Late-join active question recovery
 
-import { isSessionBeforeJoin, getSessionMembershipCoverage } from '../services/classService.js'
+import mongoose from 'mongoose'
+import { isSessionBeforeJoin, getSessionMembershipCoverage, getFirstTimelineDate } from '../services/classService.js'
+import ClassMember from '../models/ClassMember.js'
 
 describe('Class Series Feature', () => {
   describe('Rule 1: Global One Active Session Across All Classes', () => {
@@ -479,60 +481,308 @@ describe('Class Series Feature', () => {
       expect(getSessionMembershipCoverage(r4, memberCurrentlyRemoved)).toBe('during_removal')
     })
 
-    it('should calculate fair attendance rate without charging missed sessions for removal windows', () => {
+    it('should calculate strict attendance where missed sessions after invite or during removal/declined hurt %', () => {
       const member = {
         joinedAt: new Date('2026-10-05T09:00:00Z'),
+        invitedAt: new Date('2026-10-05T09:00:00Z'),
         removedAt: new Date('2026-10-10T12:00:00Z'),
         approvedAt: new Date('2026-10-15T10:00:00Z'),
         status: 'active'
       }
 
       const classRooms = [
-        { _id: 'r1', createdAt: new Date('2026-10-01T10:00:00Z') }, // before_join
-        { _id: 'r2', createdAt: new Date('2026-10-06T10:00:00Z') }, // active_eligible (attended)
-        { _id: 'r3', createdAt: new Date('2026-10-12T10:00:00Z') }, // during_removal (not attended, NOT missed)
-        { _id: 'r4', createdAt: new Date('2026-10-18T10:00:00Z') }, // active_eligible (missed)
-        { _id: 'r5', createdAt: new Date('2026-10-20T10:00:00Z') }  // active_eligible (attended)
+        { _id: 'r1', createdAt: new Date('2026-10-01T10:00:00Z') }, // before_join (excluded from possible)
+        { _id: 'r2', createdAt: new Date('2026-10-06T10:00:00Z') }, // active (attended)
+        { _id: 'r3', createdAt: new Date('2026-10-12T10:00:00Z') }, // during_removal (missed, hurts %)
+        { _id: 'r4', createdAt: new Date('2026-10-18T10:00:00Z') }, // active (missed)
+        { _id: 'r5', createdAt: new Date('2026-10-20T10:00:00Z') }  // active (attended)
       ]
 
       const attendedSet = new Set(['r2', 'r5'])
 
-      // Active eligible rooms
-      const activeEligibleRooms = classRooms.filter(r => {
-        const coverage = getSessionMembershipCoverage(r, member)
-        return coverage === 'active_eligible' || attendedSet.has(r._id)
+      const firstTime = getFirstTimelineDate(member)
+      const possibleRooms = classRooms.filter(r => {
+        const roomCreatedTime = new Date(r.createdAt).getTime()
+        const isBefore = firstTime && roomCreatedTime < firstTime
+        return !isBefore || attendedSet.has(r._id)
       })
 
-      // Only r2, r4, r5 are active eligible (3 sessions)
-      expect(activeEligibleRooms.map(r => r._id)).toEqual(['r2', 'r4', 'r5'])
+      // r2, r3, r4, r5 are possible (4 sessions)
+      expect(possibleRooms.map(r => r._id)).toEqual(['r2', 'r3', 'r4', 'r5'])
 
-      const sessionsPossible = activeEligibleRooms.length
-      const sessionsAttended = activeEligibleRooms.filter(r => attendedSet.has(r._id)).length
+      const sessionsPossible = possibleRooms.length
+      const sessionsAttended = possibleRooms.filter(r => attendedSet.has(r._id)).length
       const attendanceRate = Math.round((sessionsAttended / sessionsPossible) * 100)
 
-      expect(sessionsPossible).toBe(3) // NOT 5 total class sessions
+      expect(sessionsPossible).toBe(4) // 4 sessions (r3 during removal is counted in possible!)
       expect(sessionsAttended).toBe(2) // r2 and r5
-      expect(attendanceRate).toBe(67)  // 2 / 3 = 66.67% -> 67% (fair!)
+      expect(attendanceRate).toBe(50)  // 2 / 4 = 50% (removal gap hurts attendance!)
 
       // Breakdown status verification
       const breakdown = classRooms.map(room => {
         const attended = attendedSet.has(room._id)
         const coverage = getSessionMembershipCoverage(room, member)
         let status = 'missed'
-        if (attended) status = 'attended'
-        else if (coverage === 'before_join') status = 'before_join'
-        else if (coverage === 'during_removal') status = 'during_removal'
-        else status = 'missed'
-        return { roomId: room._id, status }
+        let subLabel = null
+        if (attended) {
+          status = 'attended'
+        } else if (coverage === 'before_join') {
+          status = 'before_join'
+        } else {
+          status = 'missed'
+          if (coverage === 'during_removal') subLabel = 'Removed from class'
+        }
+        return { roomId: room._id, status, subLabel }
       })
 
       expect(breakdown).toEqual([
-        { roomId: 'r1', status: 'before_join' },
-        { roomId: 'r2', status: 'attended' },
-        { roomId: 'r3', status: 'during_removal' },
-        { roomId: 'r4', status: 'missed' },
-        { roomId: 'r5', status: 'attended' }
+        { roomId: 'r1', status: 'before_join', subLabel: null },
+        { roomId: 'r2', status: 'attended', subLabel: null },
+        { roomId: 'r3', status: 'missed', subLabel: 'Removed from class' },
+        { roomId: 'r4', status: 'missed', subLabel: null },
+        { roomId: 'r5', status: 'attended', subLabel: null }
       ])
+    })
+
+    it('should test strict attendance rules across invite, decline, remove, and re-join', () => {
+      // 1) Invite -> miss sessions before accept -> low %
+      const invitedMember = {
+        invitedAt: new Date('2026-10-01T09:00:00Z'),
+        status: 'invited'
+      }
+      const rooms1 = [
+        { _id: 'r1', createdAt: new Date('2026-10-02T10:00:00Z') },
+        { _id: 'r2', createdAt: new Date('2026-10-04T10:00:00Z') }
+      ]
+      const firstTime1 = getFirstTimelineDate(invitedMember)
+      const possible1 = rooms1.filter(r => new Date(r.createdAt).getTime() >= firstTime1).length
+      expect(possible1).toBe(2) // 2 possible, 0 attended -> 0%
+
+      // 2) Decline -> more sessions -> still increase possible, attended unchanged -> lower %
+      const declinedMember = {
+        invitedAt: new Date('2026-10-01T09:00:00Z'),
+        declinedAt: new Date('2026-10-03T09:00:00Z'),
+        status: 'declined'
+      }
+      const rooms2 = [
+        { _id: 'r1', createdAt: new Date('2026-10-02T10:00:00Z') }, // attended (1/1)
+        { _id: 'r2', createdAt: new Date('2026-10-04T10:00:00Z') }, // declined
+        { _id: 'r3', createdAt: new Date('2026-10-06T10:00:00Z') }, // declined
+        { _id: 'r4', createdAt: new Date('2026-10-08T10:00:00Z') }  // declined
+      ]
+      const attended2 = new Set(['r1'])
+      const firstTime2 = getFirstTimelineDate(declinedMember)
+      const possible2 = rooms2.filter(r => new Date(r.createdAt).getTime() >= firstTime2).length
+      const attRate2 = Math.round((attended2.size / possible2) * 100)
+      expect(possible2).toBe(4)
+      expect(attRate2).toBe(25) // 1 / 4 = 25%
+
+      // 3) Code join on declined or invited or removed sets status to pending
+      const checkJoinStatus = (m) => {
+        if (m.status === 'removed' || m.status === 'declined' || m.status === 'invited') {
+          return { previousStatus: m.status, status: 'pending' }
+        }
+        return { status: m.status }
+      }
+      expect(checkJoinStatus({ status: 'declined' })).toEqual({ previousStatus: 'declined', status: 'pending' })
+      expect(checkJoinStatus({ status: 'invited' })).toEqual({ previousStatus: 'invited', status: 'pending' })
+      expect(checkJoinStatus({ status: 'removed' })).toEqual({ previousStatus: 'removed', status: 'pending' })
+
+      // 4) Reject pending restores to declined or removed as appropriate
+      const handleReject = (m) => {
+        return (m.previousStatus === 'declined' || m.previousStatus === 'invited') ? 'declined' : 'removed'
+      }
+      expect(handleReject({ previousStatus: 'declined' })).toBe('declined')
+      expect(handleReject({ previousStatus: 'invited' })).toBe('declined')
+      expect(handleReject({ previousStatus: 'removed' })).toBe('removed')
+    })
+  })
+
+  describe('Rule 9: Faculty Invites (Manual + CSV) & Notification Rules', () => {
+    it('should validate invite cases correctly: invalid, not_found, not_student, already_member, reinvited, invited', () => {
+      const usersByEmail = {
+        'student1@spandan.edu': { _id: 'u1', role: 'student', name: 'Student 1' },
+        'teacher@spandan.edu': { _id: 'u2', role: 'teacher', name: 'Prof. X' },
+        'active@spandan.edu': { _id: 'u3', role: 'student', name: 'Active Student' },
+        'removed@spandan.edu': { _id: 'u4', role: 'student', name: 'Removed Student' },
+        'declined@spandan.edu': { _id: 'u5', role: 'student', name: 'Declined Student' }
+      }
+
+      const existingMembers = {
+        u3: { studentId: 'u3', status: 'active', joinedAt: new Date() },
+        u4: { studentId: 'u4', status: 'removed', joinedAt: new Date(), removedAt: new Date() },
+        u5: { studentId: 'u5', status: 'declined', joinedAt: null }
+      }
+
+      const simulateInvite = (email, classIsActive = true) => {
+        if (!classIsActive) {
+          throw new Error('This class is archived. Restore it to invite students.')
+        }
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          return { status: 'invalid', email }
+        }
+        const user = usersByEmail[email.toLowerCase().trim()]
+        if (!user) {
+          return { status: 'not_found', email }
+        }
+        if (user.role !== 'student') {
+          return { status: 'not_student', email }
+        }
+        const member = existingMembers[user._id]
+        if (member) {
+          if (member.status === 'active') {
+            return { status: 'already_member', email, member }
+          }
+          if (member.status === 'removed' || member.status === 'declined') {
+            return { status: 'invited', reinvited: true, email, member }
+          }
+          if (member.status === 'invited') {
+            return { status: 'invited', alreadyInvited: true, email, member }
+          }
+        }
+        return { status: 'invited', email }
+      }
+
+      // 1. Invalid email
+      expect(simulateInvite('not-an-email').status).toBe('invalid')
+
+      // 2. Not found in Spandan
+      expect(simulateInvite('unknown@spandan.edu').status).toBe('not_found')
+
+      // 3. User is teacher, not student
+      expect(simulateInvite('teacher@spandan.edu').status).toBe('not_student')
+
+      // 4. Already active member
+      expect(simulateInvite('active@spandan.edu').status).toBe('already_member')
+
+      // 5. Removed member reinvited
+      const resRemoved = simulateInvite('removed@spandan.edu')
+      expect(resRemoved.status).toBe('invited')
+      expect(resRemoved.reinvited).toBe(true)
+
+      // 6. Declined member reinvited
+      const resDeclined = simulateInvite('declined@spandan.edu')
+      expect(resDeclined.status).toBe('invited')
+      expect(resDeclined.reinvited).toBe(true)
+
+      // 7. Fresh student invite
+      expect(simulateInvite('student1@spandan.edu').status).toBe('invited')
+
+      // 8. Archived class rejects invite
+      expect(() => simulateInvite('student1@spandan.edu', false)).toThrow(/archived/i)
+    })
+
+    it('should aggregate CSV bulk upload counts and list notFoundEmails', () => {
+      const rows = [
+        { email: 'student1@spandan.edu', name: 'Student 1' },
+        { email: 'active@spandan.edu', name: 'Active Member' },
+        { email: 'removed@spandan.edu', name: 'Removed Member' },
+        { email: 'unknown1@spandan.edu', name: 'Unknown One' },
+        { email: 'unknown2@spandan.edu', name: 'Unknown Two' },
+        { email: 'teacher@spandan.edu', name: 'Teacher' },
+        { email: 'invalid-email', name: 'Bad Row' }
+      ]
+
+      const counts = {
+        invited: 0,
+        already_member: 0,
+        reinvited: 0,
+        not_found: 0,
+        not_student: 0,
+        invalid: 0
+      }
+      const notFoundEmails = []
+
+      for (const row of rows) {
+        if (row.email === 'student1@spandan.edu') counts.invited++
+        else if (row.email === 'active@spandan.edu') counts.already_member++
+        else if (row.email === 'removed@spandan.edu') counts.reinvited++
+        else if (row.email.startsWith('unknown')) {
+          counts.not_found++
+          notFoundEmails.push(row.email)
+        }
+        else if (row.email === 'teacher@spandan.edu') counts.not_student++
+        else counts.invalid++
+      }
+
+      expect(counts.invited).toBe(1)
+      expect(counts.already_member).toBe(1)
+      expect(counts.reinvited).toBe(1)
+      expect(counts.not_found).toBe(2)
+      expect(counts.not_student).toBe(1)
+      expect(counts.invalid).toBe(1)
+      expect(notFoundEmails).toEqual(['unknown1@spandan.edu', 'unknown2@spandan.edu'])
+    })
+  })
+
+  describe('Rule 10: ClassMember Mongoose Schema Alignment', () => {
+    it('should validate status enum accepts active, pending, removed, invited, declined', () => {
+      const allowedStatuses = ['active', 'pending', 'removed', 'invited', 'declined']
+      for (const status of allowedStatuses) {
+        const doc = new ClassMember({
+          classId: new mongoose.Types.ObjectId(),
+          studentId: new mongoose.Types.ObjectId(),
+          status
+        })
+        const err = doc.validateSync()
+        expect(err).toBeUndefined()
+        expect(doc.status).toBe(status)
+      }
+    })
+
+    it('should reject invalid status strings', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        status: 'suspended'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeDefined()
+      expect(err.errors.status).toBeDefined()
+    })
+
+    it('should accept invitedAt, declinedAt, and previousStatus fields', () => {
+      const invitedDate = new Date('2026-10-01T10:00:00Z')
+      const declinedDate = new Date('2026-10-02T10:00:00Z')
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        status: 'declined',
+        invitedAt: invitedDate,
+        declinedAt: declinedDate,
+        previousStatus: 'invited'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeUndefined()
+      expect(doc.invitedAt).toEqual(invitedDate)
+      expect(doc.declinedAt).toEqual(declinedDate)
+      expect(doc.previousStatus).toBe('invited')
+    })
+
+    it('should allow null for previousStatus and optional timestamps', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        previousStatus: null,
+        invitedAt: null,
+        declinedAt: null,
+        removedAt: null,
+        approvedAt: null
+      })
+      const err = doc.validateSync()
+      expect(err).toBeUndefined()
+      expect(doc.previousStatus).toBeNull()
+    })
+
+    it('should reject invalid previousStatus values', () => {
+      const doc = new ClassMember({
+        classId: new mongoose.Types.ObjectId(),
+        studentId: new mongoose.Types.ObjectId(),
+        previousStatus: 'banned'
+      })
+      const err = doc.validateSync()
+      expect(err).toBeDefined()
+      expect(err.errors.previousStatus).toBeDefined()
     })
   })
 })

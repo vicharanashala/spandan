@@ -161,7 +161,18 @@ export const classApi = {
   updateMember: (id, studentId, action) => api.patch(`/classes/${id}/members/${studentId}`, { action }),
   archive: (id) => api.post(`/classes/${id}/archive`),
   restore: (id) => api.post(`/classes/${id}/restore`),
-  exportCsv: (id, filename) => api.downloadBlob(`/classes/${id}/export`, filename)
+  exportCsv: (id, filename) => api.downloadBlob(`/classes/${id}/export`, filename),
+  getPeople: (id) => api.get(`/classes/${id}/people`),
+  invite: (id, data) => api.post(`/classes/${id}/invites`, data),
+  inviteCsv: (id, rows) => api.post(`/classes/${id}/invites/csv`, { rows }),
+  cancelInvite: (id, memberId) => api.delete(`/classes/${id}/invites/${memberId}`)
+}
+
+export const notificationApi = {
+  getAll: () => api.get('/notifications'),
+  accept: (id) => api.post(`/notifications/${id}/accept`),
+  decline: (id) => api.post(`/notifications/${id}/decline`),
+  markRead: (id) => api.patch(`/notifications/${id}/read`)
 }
 
 export default api

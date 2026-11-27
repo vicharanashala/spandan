@@ -5,6 +5,7 @@ import RoomMember from '../models/RoomMember.js'
 import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import User from '../models/User.js'
+import Notification from '../models/Notification.js'
 import { createRoom } from './roomService.js'
 import { computeReconnectUsage } from './attendanceService.js'
 
@@ -115,6 +116,7 @@ export const getStudentClasses = async (studentId) => {
       teacher: cls.teacher,
       isActive: cls.isActive,
       memberStatus: m.status,
+      previousStatus: m.previousStatus || null,
       joinedAt: m.joinedAt,
       totalSessions: sessionCountMap.get(String(cls._id)) || 0,
       activeSession: activeSession ? { _id: activeSession._id, name: activeSession.name, code: activeSession.code } : null
@@ -258,16 +260,17 @@ export const joinClassByCode = async (code, studentId) => {
     }
   }
 
-  if (member.status === 'removed') {
-    // Student rejoining after being removed -> status becomes pending (needs teacher approval)
+  if (member.status === 'removed' || member.status === 'declined' || member.status === 'invited') {
+    // Code join on declined | invited | removed -> status pending for teacher approval
     // Same document is preserved!
+    member.previousStatus = member.status
     member.status = 'pending'
     await member.save()
     return {
       class: cls,
       member,
       status: 'pending',
-      message: 'Re-join request submitted. Waiting for teacher approval.'
+      message: 'Join request submitted. Waiting for teacher approval.'
     }
   }
 
@@ -298,18 +301,32 @@ export const updateMemberStatus = async (classId, studentId, teacherId, action) 
   if (action === 'approve') {
     member.status = 'active'
     member.approvedAt = new Date()
+    member.joinedAt = member.joinedAt || new Date()
+    member.previousStatus = null
     await member.save()
+    await Notification.updateMany(
+      { userId: studentId, classId, status: 'pending' },
+      { status: 'accepted', readAt: new Date() }
+    )
     return { member, message: 'Member approved and restored to active' }
   } else if (action === 'remove') {
     // Soft remove: all historical data kept, status set to removed
+    member.previousStatus = member.status
     member.status = 'removed'
     member.removedAt = new Date()
     await member.save()
     return { member, message: 'Member removed from class' }
   } else if (action === 'reject') {
-    // Teacher rejects re-join request: stays removed
-    member.status = 'removed'
-    member.removedAt = new Date()
+    // Teacher rejects re-join request: restore to declined or removed as appropriate
+    const targetStatus = (member.previousStatus === 'declined' || member.previousStatus === 'invited')
+      ? 'declined'
+      : 'removed'
+    member.status = targetStatus
+    if (targetStatus === 'removed') {
+      member.removedAt = member.removedAt || new Date()
+    } else {
+      member.declinedAt = member.declinedAt || new Date()
+    }
     await member.save()
     return { member, message: 'Join request rejected' }
   } else {
@@ -442,19 +459,34 @@ export const isSessionBeforeJoin = (room, joinedAt) => {
   return roomCreatedTime < joinedTime
 }
 
+export const getFirstTimelineDate = (member) => {
+  if (!member) return 0
+  const times = []
+  if (member.invitedAt) {
+    const t = new Date(member.invitedAt).getTime()
+    if (!isNaN(t)) times.push(t)
+  }
+  if (member.joinedAt) {
+    const t = new Date(member.joinedAt).getTime()
+    if (!isNaN(t)) times.push(t)
+  }
+  if (member.createdAt) {
+    const t = new Date(member.createdAt).getTime()
+    if (!isNaN(t)) times.push(t)
+  }
+  return times.length > 0 ? Math.min(...times) : 0
+}
+
 export const getSessionMembershipCoverage = (room, member) => {
   if (!room || !member) return 'active_eligible'
 
   const roomCreatedTime = new Date(room.createdAt).getTime()
   if (isNaN(roomCreatedTime)) return 'active_eligible'
 
-  const joinedTime = member.joinedAt
-    ? new Date(member.joinedAt).getTime()
-    : (member.createdAt ? new Date(member.createdAt).getTime() : 0)
+  const firstTime = getFirstTimelineDate(member)
 
-  // 1. before_join: room was created strictly before the student's first enrollment
-  // Rule: room.createdAt < member.joinedAt (strict Date compare)
-  if (joinedTime && roomCreatedTime < joinedTime) {
+  // 1. before_join: room was created strictly before the student's first enrollment or invite
+  if (firstTime && roomCreatedTime < firstTime) {
     return 'before_join'
   }
 
@@ -467,16 +499,32 @@ export const getSessionMembershipCoverage = (room, member) => {
       const isReactivated = member.status === 'active' && approvedTime > removedTime
 
       if (!isReactivated) {
-        // Member was never re-activated after that removal, or status is still removed / pending
         return 'during_removal'
       } else if (roomCreatedTime < approvedTime) {
-        // Room was held during removal window [removedAt, approvedAt)
         return 'during_removal'
       }
     }
   }
 
-  // 3. active_eligible: not before_join and not during_removal
+  // 3. during_declined:
+  if (member.status === 'declined' || member.declinedAt) {
+    const declinedTime = member.declinedAt
+      ? new Date(member.declinedAt).getTime()
+      : (member.invitedAt ? new Date(member.invitedAt).getTime() : 0)
+    if (declinedTime && roomCreatedTime >= declinedTime) {
+      const approvedTime = member.approvedAt ? new Date(member.approvedAt).getTime() : 0
+      const isReactivated = member.status === 'active' && approvedTime > declinedTime
+      if (!isReactivated || roomCreatedTime < approvedTime) {
+        return 'during_declined'
+      }
+    }
+  }
+
+  // 4. during_invited:
+  if (member.status === 'invited') {
+    return 'during_invited'
+  }
+
   return 'active_eligible'
 }
 
@@ -551,20 +599,21 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
     const attendedSet = studentAttendedRooms.get(sid) || new Set()
     const studentResps = studentResponses.get(sid) || []
 
-    const joinedAt = m.joinedAt || m.createdAt
-
-    // Active eligible sessions for this student (excludes before_join and during_removal windows)
-    const activeEligibleRooms = classRooms.filter(r => {
-      const coverage = getSessionMembershipCoverage(r, m)
-      return coverage === 'active_eligible' || attendedSet.has(String(r._id))
+    // Sessions possible: once under class (invited or joined), all sessions are possible!
+    // Only sessions strictly before first enrollment/invite are excluded (unless attended).
+    const firstTime = getFirstTimelineDate(m)
+    const possibleRooms = classRooms.filter(r => {
+      const roomCreatedTime = new Date(r.createdAt).getTime()
+      const isBefore = firstTime && roomCreatedTime < firstTime
+      return !isBefore || attendedSet.has(String(r._id))
     })
 
-    const sessionsPossible = activeEligibleRooms.length
-    const sessionsAttended = activeEligibleRooms.filter(r => attendedSet.has(String(r._id))).length
+    const sessionsPossible = possibleRooms.length
+    const sessionsAttended = possibleRooms.filter(r => attendedSet.has(String(r._id))).length
     const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
 
     // Polls launched and missed across attended eligible sessions
-    const attendedEligibleRooms = activeEligibleRooms.filter(r => attendedSet.has(String(r._id)))
+    const attendedEligibleRooms = possibleRooms.filter(r => attendedSet.has(String(r._id)))
     let pollsLaunched = 0
     let pollsMissed = 0
     let pollsAttempted = 0
@@ -595,7 +644,10 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
       email: student.email || '',
       profileImage: student.profileImage || null,
       status: m.status,
+      previousStatus: m.previousStatus || (m.removedAt ? 'removed' : null),
       joinedAt: m.joinedAt,
+      invitedAt: m.invitedAt,
+      declinedAt: m.declinedAt,
       removedAt: m.removedAt,
       approvedAt: m.approvedAt,
       sessionsAttended,
@@ -619,7 +671,9 @@ export const getClassMembersWithPerformance = async (classId, teacherId) => {
 
   return {
     active: activeMembers,
+    invited: enriched.filter(m => m.status === 'invited'),
     pending: enriched.filter(m => m.status === 'pending'),
+    declined: enriched.filter(m => m.status === 'declined'),
     removed: enriched.filter(m => m.status === 'removed'),
     totalClassSessions,
     avgAttendance
@@ -696,14 +750,25 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
     // not this room's membership row.
     const coverage = getSessionMembershipCoverage(room, member || { joinedAt })
     let status = 'missed'
+    let subLabel = null
+    let missReason = null
+
     if (attended) {
       status = 'attended'
     } else if (coverage === 'before_join') {
       status = 'before_join'
-    } else if (coverage === 'during_removal') {
-      status = 'during_removal'
     } else {
       status = 'missed'
+      if (coverage === 'during_removal') {
+        subLabel = 'Removed from class'
+        missReason = 'removed'
+      } else if (coverage === 'during_declined') {
+        subLabel = 'Declined invite'
+        missReason = 'declined'
+      } else if (coverage === 'during_invited') {
+        subLabel = 'Invited (not accepted)'
+        missReason = 'invited'
+      }
     }
 
     const pollsMissed = attended ? Math.max(0, totalQ - attempted) : 0
@@ -715,11 +780,14 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
       date: room.createdAt,
       endedAt: room.endedAt,
       isActive: room.isActive,
-      status, // 'attended' | 'missed' | 'before_join' | 'during_removal'
-      coverage, // 'active_eligible' | 'before_join' | 'during_removal'
+      status, // 'attended' | 'missed' | 'before_join'
+      coverage, // 'active_eligible' | 'before_join' | 'during_removal' | 'during_declined' | 'during_invited'
+      subLabel,
+      missReason,
       attended,
       isBeforeJoin: status === 'before_join',
-      isDuringRemoval: status === 'during_removal',
+      isDuringRemoval: coverage === 'during_removal',
+      isDuringDeclined: coverage === 'during_declined',
       totalQuestions: totalQ,
       pollsAttempted: attempted,
       pollsMissed,
@@ -732,18 +800,21 @@ export const getStudentPerformanceInClass = async (classId, studentId) => {
   // Ensure sessions are strictly sorted by createdAt descending
   sessionBreakdown.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
-  // Active eligible sessions for this student (excludes before_join and during_removal windows)
-  const activeEligibleRooms = classRooms.filter(r => {
-    const coverage = getSessionMembershipCoverage(r, member || { joinedAt })
-    return coverage === 'active_eligible' || attendedRoomIds.has(String(r._id))
+  // Sessions possible: once under class (invited or joined), all sessions are possible!
+  // Only sessions strictly before first enrollment/invite are excluded (unless attended).
+  const firstTime = getFirstTimelineDate(member || { joinedAt })
+  const possibleRooms = classRooms.filter(r => {
+    const roomCreatedTime = new Date(r.createdAt).getTime()
+    const isBefore = firstTime && roomCreatedTime < firstTime
+    return !isBefore || attendedRoomIds.has(String(r._id))
   })
 
-  const sessionsPossible = activeEligibleRooms.length
-  const sessionsAttended = activeEligibleRooms.filter(r => attendedRoomIds.has(String(r._id))).length
+  const sessionsPossible = possibleRooms.length
+  const sessionsAttended = possibleRooms.filter(r => attendedRoomIds.has(String(r._id))).length
   const attendanceRate = sessionsPossible > 0 ? Math.round((sessionsAttended / sessionsPossible) * 100) : 0
 
   // Polls launched, attempted, and missed across attended eligible sessions
-  const attendedEligibleRooms = activeEligibleRooms.filter(r => attendedRoomIds.has(String(r._id)))
+  const attendedEligibleRooms = possibleRooms.filter(r => attendedRoomIds.has(String(r._id)))
   let pollsLaunched = 0
   let pollsMissed = 0
   let pollsAttempted = 0
@@ -902,12 +973,14 @@ export const getClassStats = async (classId, teacherId) => {
   for (const m of activeMembers) {
     const sid = String(m.studentId)
     const attendedSet = attendedMap.get(sid) || new Set()
-    const activeEligible = rooms.filter(r => {
-      const coverage = getSessionMembershipCoverage(r, m)
-      return coverage === 'active_eligible' || attendedSet.has(String(r._id))
+    const firstTime = getFirstTimelineDate(m)
+    const possibleRooms = rooms.filter(r => {
+      const roomCreatedTime = new Date(r.createdAt).getTime()
+      const isBefore = firstTime && roomCreatedTime < firstTime
+      return !isBefore || attendedSet.has(String(r._id))
     })
-    const possible = activeEligible.length
-    const attended = activeEligible.filter(r => attendedSet.has(String(r._id))).length
+    const possible = possibleRooms.length
+    const attended = possibleRooms.filter(r => attendedSet.has(String(r._id))).length
     const rate = possible > 0 ? Math.round((attended / possible) * 100) : 0
     totalAttPct += rate
   }
@@ -924,3 +997,267 @@ export const getClassStats = async (classId, teacherId) => {
     avgAttendance
   }
 }
+
+export const inviteStudentToClass = async ({ classId, teacherId, email, name }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can invite students')
+    err.status = 403
+    throw err
+  }
+
+  if (cls.isActive === false) {
+    const err = new Error('This class is archived. Restore it to invite students.')
+    err.status = 400
+    throw err
+  }
+
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    return { status: 'invalid', email: email || '', message: 'Email address is required' }
+  }
+
+  const normalizedEmail = email.trim().toLowerCase()
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  if (!emailRegex.test(normalizedEmail)) {
+    return { status: 'invalid', email: normalizedEmail, message: 'Invalid email address format' }
+  }
+
+  const teacher = await User.findById(teacherId).select('name email').lean()
+  const student = await User.findOne({ email: normalizedEmail })
+  if (!student) {
+    return { status: 'not_found', email: normalizedEmail, message: 'No Spandan account found with this email' }
+  }
+
+  if (student.role !== 'student') {
+    return { status: 'not_student', email: normalizedEmail, message: 'User is registered as an instructor/admin, not a student' }
+  }
+
+  let member = await ClassMember.findOne({ classId: cls._id, studentId: student._id })
+
+  if (member) {
+    if (member.status === 'active') {
+      return { status: 'already_member', email: normalizedEmail, student, member, message: 'Student is already an active member of this class' }
+    }
+
+    if (member.status === 'invited') {
+      // Refresh pending notification
+      await Notification.findOneAndUpdate(
+        { userId: student._id, classId: cls._id, status: 'pending' },
+        {
+          readAt: null,
+          fromUserId: teacherId,
+          payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+        },
+        { upsert: true, new: true }
+      )
+      return { status: 'invited', alreadyInvited: true, email: normalizedEmail, student, member, message: 'Student already has a pending invite' }
+    }
+
+    // Re-invite student who was previously removed, pending, or declined
+    const wasReinvited = member.status === 'removed' || member.status === 'declined'
+    member.status = 'invited'
+    member.invitedAt = member.invitedAt || new Date()
+    await member.save()
+
+    await Notification.findOneAndUpdate(
+      { userId: student._id, classId: cls._id },
+      {
+        status: 'pending',
+        readAt: null,
+        fromUserId: teacherId,
+        payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+      },
+      { upsert: true, new: true }
+    )
+
+    return {
+      status: 'invited',
+      reinvited: wasReinvited,
+      email: normalizedEmail,
+      student,
+      member,
+      message: wasReinvited ? 'Re-invited student to class' : 'Invited student to class'
+    }
+  }
+
+  // Brand new member
+  member = new ClassMember({
+    classId: cls._id,
+    studentId: student._id,
+    status: 'invited',
+    invitedAt: new Date(),
+    joinedAt: null
+  })
+  await member.save()
+
+  await Notification.create({
+    userId: student._id,
+    type: 'class_invite',
+    classId: cls._id,
+    fromUserId: teacherId,
+    status: 'pending',
+    payload: { className: cls.name, classCode: cls.code, teacherName: teacher?.name || 'Instructor' }
+  })
+
+  return {
+    status: 'invited',
+    email: normalizedEmail,
+    student,
+    member,
+    message: 'Invited student to class successfully'
+  }
+}
+
+export const inviteStudentsFromCsv = async ({ classId, teacherId, rows }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can invite students')
+    err.status = 403
+    throw err
+  }
+
+  if (cls.isActive === false) {
+    const err = new Error('This class is archived. Restore it to invite students.')
+    err.status = 400
+    throw err
+  }
+
+  if (!Array.isArray(rows)) {
+    const err = new Error('Invalid CSV rows data')
+    err.status = 400
+    throw err
+  }
+
+  if (rows.length > 200) {
+    const err = new Error('Maximum 200 students can be imported in a single batch.')
+    err.status = 400
+    throw err
+  }
+
+  const counts = {
+    invited: 0,
+    already_member: 0,
+    reinvited: 0,
+    not_found: 0,
+    not_student: 0,
+    invalid: 0
+  }
+
+  const notFoundEmails = []
+  const results = []
+
+  for (const row of rows) {
+    const email = row.email || row.Email || row['student email'] || row['Student Email'] || row['student_email'] || row['EMAIL'] || ''
+    const name = row.name || row.Name || row['student name'] || row['Student Name'] || row['student_name'] || row['NAME'] || ''
+
+    if (!email || !String(email).trim()) {
+      counts.invalid++
+      results.push({ email: '', status: 'invalid', message: 'Missing email' })
+      continue
+    }
+
+    const res = await inviteStudentToClass({ classId, teacherId, email: String(email).trim(), name: String(name).trim() })
+    results.push(res)
+
+    if (res.status === 'invited') {
+      if (res.reinvited) counts.reinvited++
+      else counts.invited++
+    } else if (res.status === 'already_member') {
+      counts.already_member++
+    } else if (res.status === 'not_found') {
+      counts.not_found++
+      if (!notFoundEmails.includes(res.email)) notFoundEmails.push(res.email)
+    } else if (res.status === 'not_student') {
+      counts.not_student++
+    } else if (res.status === 'invalid') {
+      counts.invalid++
+    }
+  }
+
+  return {
+    total: rows.length,
+    counts,
+    notFoundEmails,
+    results
+  }
+}
+
+export const cancelClassInvite = async ({ classId, teacherId, memberId }) => {
+  const cls = await Class.findById(classId)
+  if (!cls) {
+    const err = new Error('Class not found')
+    err.status = 404
+    throw err
+  }
+
+  if (String(cls.teacher) !== String(teacherId)) {
+    const err = new Error('Only the class teacher can manage invites')
+    err.status = 403
+    throw err
+  }
+
+  const member = await ClassMember.findOne({ _id: memberId, classId })
+  if (!member) {
+    const err = new Error('Membership record not found')
+    err.status = 404
+    throw err
+  }
+
+  if (member.status !== 'invited') {
+    const err = new Error('Can only cancel invites for students with status invited')
+    err.status = 400
+    throw err
+  }
+
+  // Update notification to declined
+  await Notification.updateMany(
+    { userId: member.studentId, classId: cls._id, status: 'pending' },
+    { status: 'declined', readAt: new Date() }
+  )
+
+  if (!member.joinedAt) {
+    // If student never joined, remove the invited document
+    await ClassMember.deleteOne({ _id: member._id })
+  } else {
+    // If student had previous attendance history, soft-remove
+    member.status = 'declined'
+    await member.save()
+  }
+
+  return { success: true, message: 'Invite cancelled successfully' }
+}
+
+export const getClassPeopleDashboard = async (classId, teacherId) => {
+  const membersData = await getClassMembersWithPerformance(classId, teacherId)
+
+  return {
+    active: membersData.active,
+    invited: membersData.invited || [],
+    pending: membersData.pending || [],
+    declined: membersData.declined || [],
+    removed: membersData.removed || [],
+    stats: {
+      activeCount: membersData.active.length,
+      invitedCount: (membersData.invited || []).length,
+      pendingCount: (membersData.pending || []).length,
+      declinedCount: (membersData.declined || []).length,
+      removedCount: (membersData.removed || []).length,
+      totalCount: membersData.active.length + (membersData.invited || []).length + (membersData.pending || []).length + (membersData.declined || []).length + (membersData.removed || []).length
+    },
+    totalClassSessions: membersData.totalClassSessions,
+    avgAttendance: membersData.avgAttendance
+  }
+}
+

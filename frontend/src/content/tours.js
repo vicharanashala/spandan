@@ -85,6 +85,32 @@ export const TOURS = {
       { target: 'change-password', title: 'Change your password', body: 'Enter your current password and the new one twice. Forgot it? Use "Forgot Password?" on the sign-in screen.' },
     ],
   },
+  classes: {
+    role: 'teacher', path: /^\/teacher\/classes\/?$/,
+    steps: [
+      { target: 'classes-list', title: 'Your recurring classes',
+        body: 'Every class series you teach appears here. Open any class to view its sessions, roster, and cumulative performance.' },
+      { target: 'create-class', title: 'Create a new class',
+        body: 'Set up a recurring class series with a custom name and default mode. Spandan generates a permanent class code for your students.' },
+      { target: 'help-button', title: 'Help is one click away',
+        body: 'The ⓘ button opens the guide for this page, with search, and lets you replay any page\'s tour. Press ? to open it anywhere.' },
+    ],
+  },
+  'class-detail': {
+    role: 'teacher', path: /^\/teacher\/classes\/[^/]+\/?$/,
+    steps: [
+      { target: 'class-code', title: 'Class code',
+        body: 'Share this code with students (not session room codes). Students enter it on their Classes page to enroll once and stay for every session.' },
+      { target: 'class-tabs', title: 'Sessions, People, Performance',
+        body: 'Switch between launching live sessions, managing student enrollments and invites, and tracking whole-class and student-by-student performance.' },
+      { target: 'start-session', title: 'Start a class session',
+        body: 'Launch a new live session under this class. Enrolled students can join directly with one click from their class view.' },
+      { target: 'people-panel', title: 'People & invites',
+        body: 'Invite students individually by email or in bulk with CSV, approve re-join requests, and manage active students.' },
+      { target: 'archive-class', title: 'Archive class',
+        body: 'End the series without deleting history, sessions, or performance data. You can restore an archived class at any time.' },
+    ],
+  },
 
   // ───────────────────────────── Student ─────────────────────────────
   's-dashboard': {
@@ -126,6 +152,35 @@ export const TOURS = {
       { target: 'results-stats', title: 'How you did', body: 'Your rank, points, correct rate, median time, best streak and how many you answered, each next to the class figure. If the leaderboard is anonymous, your rank stays hidden.' },
       { target: 'results-timeline', title: 'You against the class', body: 'Your points through the session, and each question you got right or wrong next to how the class did.' },
       { target: 'question-analysis', title: 'Question by question', body: 'Your result, time and points on every question next to the class. Filter to Wrong or Not answered, and click a row for the correct answer, your pick and the explanation.' },
+    ],
+  },
+  's-classes': {
+    role: 'student', path: /^\/student\/classes\/?$/,
+    steps: [
+      { target: 'join-class-code', title: 'Join with class code',
+        body: 'Enter the six-character class code provided by your teacher to join their recurring class series.' },
+      { target: 'classes-list', title: 'Your enrolled classes',
+        body: 'All classes you have joined appear here. Open any class to view live sessions in progress, past session history, and your performance.' },
+      { target: 'help-button', title: 'Help is one click away',
+        body: 'The ⓘ button opens the guide for this page, with search, and lets you replay any page\'s tour. Press ? to open it anywhere.' },
+    ],
+  },
+  's-class-detail': {
+    role: 'student', path: /^\/student\/classes\/[^/]+\/?$/,
+    steps: [
+      { target: 'session-history', title: 'Class sessions',
+        body: 'Join live class sessions when active, and review dates and details for past sessions in this class series.' },
+      { target: 'class-tabs', title: 'Sessions and Performance',
+        body: 'Switch between session history and your personal performance metrics, attendance, and poll stats.' },
+    ],
+  },
+  's-notifications': {
+    role: 'student', path: /^\/student\/notifications\/?$/,
+    steps: [
+      { target: 'notification-list', title: 'Your invitations & notifications',
+        body: 'Class invitations from your teachers arrive here in real time.' },
+      { target: 'accept-invite', title: 'Accept or decline',
+        body: 'Click Accept to immediately join the class roster, or Decline to turn down the invitation.' },
     ],
   },
 }

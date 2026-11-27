@@ -112,7 +112,29 @@ jest.mock('../lib/api', () => ({
     createSession: jest.fn(),
     updateMember: jest.fn().mockResolvedValue({ success: true }),
     archive: jest.fn().mockResolvedValue({ success: true }),
-    restore: jest.fn().mockResolvedValue({ success: true })
+    restore: jest.fn().mockResolvedValue({ success: true }),
+    invite: jest.fn().mockResolvedValue({ status: 'invited' }),
+    inviteCsv: jest.fn().mockResolvedValue({ total: 1, counts: { invited: 1, already_member: 0, reinvited: 0, not_found: 0, not_student: 0, invalid: 0 } }),
+    cancelInvite: jest.fn().mockResolvedValue({ success: true }),
+    getPeople: jest.fn().mockResolvedValue({ active: [], invited: [], pending: [], declined: [], removed: [], stats: {} })
+  },
+  notificationApi: {
+    getAll: jest.fn().mockResolvedValue({
+      notifications: [
+        {
+          _id: 'n-1',
+          type: 'class_invite',
+          status: 'pending',
+          teacher: { name: 'Prof. Miller', email: 'miller@uni.edu' },
+          class: { _id: 'class-1', name: 'Distributed Systems 2026', code: 'DS2026', isActive: true },
+          createdAt: '2026-11-01'
+        }
+      ],
+      unreadCount: 1
+    }),
+    accept: jest.fn().mockResolvedValue({ success: true }),
+    decline: jest.fn().mockResolvedValue({ success: true }),
+    markRead: jest.fn().mockResolvedValue({ success: true })
   }
 }))
 
@@ -120,7 +142,8 @@ import TeacherClassesPage from '../pages/TeacherClassesPage'
 import TeacherClassDetailPage from '../pages/TeacherClassDetailPage'
 import StudentClassesPage from '../pages/StudentClassesPage'
 import StudentClassDetailPage from '../pages/StudentClassDetailPage'
-import { classApi } from '../lib/api'
+import StudentNotificationsPage from '../pages/StudentNotificationsPage'
+import { classApi, notificationApi } from '../lib/api'
 
 describe('TeacherClassesPage', () => {
   it('renders classes list with code, live pill, and overview statistics', async () => {
@@ -144,7 +167,7 @@ describe('TeacherClassesPage', () => {
 })
 
 describe('TeacherClassDetailPage', () => {
-  it('renders compact student table with columns: Avatar+Name, Email, Sessions attended, Polls attempted, Correct, Actions', async () => {
+  it('renders live session control and session history on Sessions tab, and compact table on Performance tab', async () => {
     render(
       <MemoryRouter initialEntries={['/teacher/classes/class-1']}>
         <Routes>
@@ -154,7 +177,7 @@ describe('TeacherClassDetailPage', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('Alice Smith')).toBeInTheDocument()
+      expect(screen.getAllByText('Lecture 4: Consensus').length).toBeGreaterThanOrEqual(1)
     })
 
     // Enforce Rule 1: message "End the current live session first" appears when session is live
@@ -189,7 +212,7 @@ describe('TeacherClassDetailPage', () => {
     expect(screen.getByText(/Show less/)).toBeInTheDocument()
   })
 
-  it('renders pending requests section with Approve and Reject buttons', async () => {
+  it('renders People tab with faculty invite dashboard, CSV upload, and pending requests section', async () => {
     render(
       <MemoryRouter initialEntries={['/teacher/classes/class-1']}>
         <Routes>
@@ -197,16 +220,29 @@ describe('TeacherClassDetailPage', () => {
         </Routes>
       </MemoryRouter>
     )
+
+    // Switch to People tab
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /People/i })).toBeInTheDocument()
+    })
+    const peopleTab = screen.getByRole('button', { name: /People/i })
+    fireEvent.click(peopleTab)
 
     await waitFor(() => {
-      expect(screen.getByText('Pending Pete')).toBeInTheDocument()
+      expect(screen.getAllByText('Pending Pete').length).toBeGreaterThanOrEqual(1)
     })
 
-    expect(screen.getByRole('button', { name: /Approve/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Approve/ }).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByRole('button', { name: /Reject/ }).length).toBeGreaterThanOrEqual(1)
+
+    // Check Faculty Invite dashboard components
+    expect(screen.getByText('Manual Invite')).toBeInTheDocument()
+    expect(screen.getByText('CSV Bulk Import')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Send invite/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Download template/i })).toBeInTheDocument()
   })
 
-  it('opens person-wise performance panel when clicking View on a student row', async () => {
+  it('opens person-wise performance panel when clicking View on a student row in People tab', async () => {
     render(
       <MemoryRouter initialEntries={['/teacher/classes/class-1']}>
         <Routes>
@@ -214,6 +250,13 @@ describe('TeacherClassDetailPage', () => {
         </Routes>
       </MemoryRouter>
     )
+
+    // Switch to People tab
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /People/i })).toBeInTheDocument()
+    })
+    const peopleTab = screen.getByRole('button', { name: /People/i })
+    fireEvent.click(peopleTab)
 
     await waitFor(() => {
       expect(screen.getByText('Alice Smith')).toBeInTheDocument()
@@ -240,6 +283,62 @@ describe('TeacherClassDetailPage', () => {
     expect(screen.getByText('Not in class')).toBeInTheDocument()
     expect(screen.getByText(/2 \/ 3 answered/)).toBeInTheDocument()
     expect(screen.getByText(/1 missed/)).toBeInTheDocument()
+  })
+
+  it('opens centered student performance modal from Performance tab, locks body scroll, and closes on Escape / X', async () => {
+    render(
+      <MemoryRouter initialEntries={['/teacher/classes/class-1']}>
+        <Routes>
+          <Route path="/teacher/classes/:id" element={<TeacherClassDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    // Switch to Performance tab
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Performance/i })).toBeInTheDocument()
+    })
+    const perfTab = screen.getByRole('button', { name: /Performance/i })
+    fireEvent.click(perfTab)
+
+    await waitFor(() => {
+      expect(screen.getByText('Alice Smith')).toBeInTheDocument()
+    })
+
+    expect(document.body.style.overflow).not.toBe('hidden')
+
+    // Click View on Alice Smith
+    const viewButtons = screen.getAllByRole('button', { name: /View/ })
+    fireEvent.click(viewButtons[0])
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('hidden')
+
+    // Verify modal header has student details
+    expect(screen.getByRole('heading', { name: 'Alice Smith', level: 3 })).toBeInTheDocument()
+    expect(screen.getAllByText('alice@uni.edu').length).toBeGreaterThanOrEqual(1)
+
+    // Press Escape to close modal
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(document.body.style.overflow).not.toBe('hidden')
+
+    // Reopen and close via Close button (X)
+    fireEvent.click(viewButtons[0])
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('hidden')
+
+    const closeBtn = screen.getByRole('button', { name: /Close/i })
+    fireEvent.click(closeBtn)
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(document.body.style.overflow).not.toBe('hidden')
   })
 
   it('handles archiving and restoring classes with confirmation and state updates', async () => {
@@ -447,5 +546,49 @@ describe('Student Class Views - Archived State', () => {
     expect(screen.getByText('No polls in this session')).toBeInTheDocument()
     expect(screen.getByText(/3 \/ 3 answered/)).toBeInTheDocument()
     expect(screen.getAllByText('Attended').length).toBeGreaterThanOrEqual(1)
+  })
+
+  describe('StudentNotificationsPage', () => {
+    it('renders pending class invitations with Accept and Decline buttons', async () => {
+      render(
+        <MemoryRouter initialEntries={['/student/notifications']}>
+          <Routes>
+            <Route path="/student/notifications" element={<StudentNotificationsPage />} />
+          </Routes>
+        </MemoryRouter>
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Distributed Systems 2026')).toBeInTheDocument()
+      })
+
+      expect(screen.getAllByText('Prof. Miller').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByRole('button', { name: /Accept/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Decline/i })).toBeInTheDocument()
+
+      // Click Accept
+      fireEvent.click(screen.getByRole('button', { name: /Accept/i }))
+      await waitFor(() => {
+        expect(notificationApi.accept).toHaveBeenCalledWith('n-1')
+      })
+    })
+
+    it('renders empty state when there are no pending notifications', async () => {
+      notificationApi.getAll.mockResolvedValueOnce({ notifications: [], unreadCount: 0 })
+
+      render(
+        <MemoryRouter initialEntries={['/student/notifications']}>
+          <Routes>
+            <Route path="/student/notifications" element={<StudentNotificationsPage />} />
+          </Routes>
+        </MemoryRouter>
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('No new notifications')).toBeInTheDocument()
+      })
+
+      expect(screen.getByRole('button', { name: /Go to My Classes/i })).toBeInTheDocument()
+    })
   })
 })

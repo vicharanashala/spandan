@@ -15,7 +15,7 @@ const classMemberSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['active', 'pending', 'removed'],
+    enum: ['active', 'pending', 'removed', 'invited', 'declined'],
     default: 'active',
     index: true
   },
@@ -23,12 +23,25 @@ const classMemberSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  invitedAt: {
+    type: Date,
+    default: null
+  },
+  declinedAt: {
+    type: Date,
+    default: null
+  },
   removedAt: {
     type: Date,
     default: null
   },
   approvedAt: {
     type: Date,
+    default: null
+  },
+  previousStatus: {
+    type: String,
+    enum: ['active', 'pending', 'removed', 'invited', 'declined'],
     default: null
   }
 }, {

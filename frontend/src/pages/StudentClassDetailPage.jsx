@@ -165,7 +165,7 @@ export default function StudentClassDetailPage() {
               <span style={{ opacity: 0.6 }}>•</span>
               <CodeChip code={cls.code || ''} variant="header" />
               {isArchived ? (
-                <Pill tone="#f59e0b">Archived</Pill>
+                <Pill variant="header">Archived</Pill>
               ) : (
                 activeSession && <Pill tone="#10b981" dot>Session Live</Pill>
               )}
@@ -194,8 +194,8 @@ export default function StudentClassDetailPage() {
             <div style={{
               padding: '14px 18px',
               borderRadius: 16,
-              background: 'color-mix(in srgb, #f59e0b 9%, var(--bg-card))',
-              border: '1px solid color-mix(in srgb, #f59e0b 30%, transparent)',
+              background: 'var(--banner-archived-bg, #f8fafc)',
+              border: '1px solid var(--banner-archived-border, #cbd5e1)',
               marginBottom: 20,
               display: 'flex',
               alignItems: 'center',
@@ -208,8 +208,8 @@ export default function StudentClassDetailPage() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'color-mix(in srgb, #f59e0b 16%, transparent)',
-                color: '#f59e0b',
+                background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                color: 'var(--banner-archived-icon-color, #475569)',
                 flexShrink: 0
               }}>
                 <Archive size={18} />
@@ -240,7 +240,7 @@ export default function StudentClassDetailPage() {
           )}
 
           {/* Tab Navigation: Sessions & Roster | Performance */}
-          <div style={{
+          <div data-tour="class-tabs" style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -367,7 +367,7 @@ export default function StudentClassDetailPage() {
                 Session History
               </SectionLabel>
 
-              <div style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden' }}>
+              <div data-tour="session-history" style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden' }}>
                 {sessions.length === 0 ? (
                   <div style={{ padding: 32 }}>
                     <EmptyState
@@ -414,8 +414,16 @@ export default function StudentClassDetailPage() {
                               <td style={{ padding: '14px 18px' }}>
                                 {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <Pill tone="var(--text-secondary)">Before joined</Pill>
-                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
-                                  <Pill tone="#f59e0b">Removed</Pill>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal' ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#f59e0b">Removed</Pill>
+                                  </div>
+                                ) : sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined' ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Pill tone="var(--text-secondary)">Missed</Pill>
+                                    <Pill tone="#64748b">Declined</Pill>
+                                  </div>
                                 ) : sess.attended ? (
                                   <Pill tone="#10b981">Attended</Pill>
                                 ) : (
@@ -426,8 +434,10 @@ export default function StudentClassDetailPage() {
                               <td style={{ padding: '14px 18px' }}>
                                 {sess.status === 'not_enrolled' || sess.status === 'before_join' || sess.isBeforeJoin ? (
                                   <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not enrolled yet</span>
-                                ) : sess.status === 'during_removal' || sess.isDuringRemoval ? (
-                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Not in class</span>
+                                ) : sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal' ? (
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}><span>Removed from class</span> · <span>Not in class</span></span>
+                                ) : sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined' ? (
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>Declined invite</span>
                                 ) : sess.attended ? (
                                   sess.totalQuestions === 0 ? (
                                     <span style={{ color: 'var(--text-secondary)', fontSize: 12.5, fontStyle: 'italic' }}>No polls in this session</span>

@@ -122,7 +122,7 @@ export const TERMS_SECTIONS = [
     id: 'contact',
     title: '13. Contact and grievances',
     paragraphs: [
-      `For questions, requests or complaints about Spandan or your data, contact the VLED team at ${TERMS_CONTACT_EMAIL}. These terms are governed by the laws of India.`
+      `For questions, requests or complaints about Spandan or your data, contact the VLED team at ${TERMS_CONTACT_EMAIL}. For your rights as a research participant, you may contact the Institutional Ethics Committee (Humans), IIT Ropar, at comm.inst.ethics@iitrpr.ac.in. These terms are governed by the laws of India.`
     ]
   }
 ]

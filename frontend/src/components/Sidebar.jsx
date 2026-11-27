@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import SpandanIcon from './SpandanIcon'
-import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, School, TrendingUp } from 'lucide-react'
+import { LayoutDashboard, Plus, Settings, History as HistoryIcon, Link as LinkIcon, ShieldCheck, Menu, X, School, TrendingUp, Bell } from 'lucide-react'
 import { renderIcon } from './icons'
+import { notificationApi } from '../lib/api'
+import useSocketStore from '../stores/socketStore'
 
 
 const menuItems = {
@@ -16,6 +18,7 @@ const menuItems = {
   student: [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/student' },
     { id: 'classes', label: 'Classes', icon: School, path: '/student/classes' },
+    { id: 'notifications', label: 'Notifications', icon: Bell, path: '/student/notifications' },
     { id: 'join-room', label: 'Join Room', icon: LinkIcon, path: '/student/join-room' },
    // { id: 'performance', label: 'Our Growth', icon: TrendingUp, path: '/student/performance' },
     { id: 'room-history', label: 'Room History', icon: HistoryIcon, path: '/student/room-history' },
@@ -62,6 +65,50 @@ export default function Sidebar({ user }) {
 
   // Close the mobile drawer on navigation.
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
+
+  const { socket } = useSocketStore()
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+
+  const fetchUnread = () => {
+    if (role !== 'student') return
+    notificationApi.getAll()
+      .then(res => {
+        const count = Array.isArray(res?.notifications)
+          ? res.notifications.length
+          : (res?.unreadCount ?? 0)
+        setUnreadNotifications(count)
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    fetchUnread()
+  }, [role, location.pathname])
+
+  useEffect(() => {
+    if (role !== 'student') return
+
+    const handleUpdate = () => {
+      fetchUnread()
+    }
+
+    if (socket) {
+      socket.on('notification:new', handleUpdate)
+      socket.on('notification:updated', handleUpdate)
+      socket.on('class:member-updated', handleUpdate)
+    }
+
+    window.addEventListener('spandan:notifications-changed', handleUpdate)
+
+    return () => {
+      if (socket) {
+        socket.off('notification:new', handleUpdate)
+        socket.off('notification:updated', handleUpdate)
+        socket.off('class:member-updated', handleUpdate)
+      }
+      window.removeEventListener('spandan:notifications-changed', handleUpdate)
+    }
+  }, [socket, role])
 
   const persistCollapsed = (val) => { setCollapsed(val); localStorage.setItem('sidebarCollapsed', val ? '1' : '0') }
 
@@ -195,11 +242,42 @@ export default function Sidebar({ user }) {
               >
                 {isActive && showLabels && <span aria-hidden="true" style={{ position: 'absolute', left: -12, top: 8, bottom: 8, width: 4, borderRadius: '0 4px 4px 0', background: 'var(--accent)' }} />}
                 <span aria-hidden="true" style={{
+                  position: 'relative',
                   width: 32, height: 32, flexShrink: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
                   background: isActive ? 'var(--bg-card)' : 'color-mix(in srgb, var(--text-secondary) 8%, transparent)',
                   boxShadow: isActive ? '0 2px 6px rgba(16,24,40,0.10)' : 'none'
-                }}>{renderIcon(item.icon, 18)}</span>
-                {showLabels && <span style={{ whiteSpace: 'nowrap' }}>{item.label}</span>}
+                }}>
+                  {renderIcon(item.icon, 18)}
+                  {!showLabels && item.id === 'notifications' && unreadNotifications > 0 && (
+                    <span style={{
+                      position: 'absolute',
+                      top: 4,
+                      right: 4,
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: '#ef4444'
+                    }} />
+                  )}
+                </span>
+                {showLabels && (
+                  <span style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flex: 1, gap: 8 }}>
+                    <span>{item.label}</span>
+                    {item.id === 'notifications' && unreadNotifications > 0 && (
+                      <span style={{
+                        padding: '1px 7px',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        fontWeight: 750,
+                        background: '#ef4444',
+                        color: '#fff',
+                        lineHeight: 1.4
+                      }}>
+                        {unreadNotifications}
+                      </span>
+                    )}
+                  </span>
+                )}
               </button>
             )
           })}

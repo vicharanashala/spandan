@@ -133,6 +133,7 @@ export default function TeacherClassesPage() {
         >
           <button
             type="button"
+            data-tour="create-class"
             onClick={() => setShowCreateModal(true)}
             style={primaryButton(false, { display: 'inline-flex', alignItems: 'center', gap: 8 })}
           >
@@ -229,6 +230,7 @@ export default function TeacherClassesPage() {
 
           <SectionLabel>Your Classes</SectionLabel>
 
+          <div data-tour="classes-list">
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
               <div style={{
@@ -291,7 +293,7 @@ export default function TeacherClassesPage() {
                         inset: '0 0 auto 0',
                         height: 3,
                         background: isArchived
-                          ? '#f59e0b'
+                          ? 'var(--badge-archived-border, #cbd5e1)'
                           : hasLive
                             ? 'linear-gradient(90deg, #10b981, #34d399)'
                             : 'linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent))'
@@ -311,12 +313,12 @@ export default function TeacherClassesPage() {
                           fontSize: 20,
                           flexShrink: 0,
                           background: isArchived
-                            ? 'color-mix(in srgb, #f59e0b 12%, transparent)'
+                            ? 'var(--badge-archived-bg, #f1f5f9)'
                             : hasLive
                               ? 'color-mix(in srgb, #10b981 12%, transparent)'
                               : 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                          color: isArchived ? '#f59e0b' : hasLive ? '#10b981' : 'var(--accent)',
-                          border: `1px solid ${isArchived ? 'color-mix(in srgb, #f59e0b 25%, transparent)' : hasLive ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
+                          color: isArchived ? 'var(--badge-archived-color, #475569)' : hasLive ? '#10b981' : 'var(--accent)',
+                          border: `1px solid ${isArchived ? 'var(--badge-archived-border, #cbd5e1)' : hasLive ? 'color-mix(in srgb, #10b981 25%, transparent)' : 'color-mix(in srgb, var(--accent) 25%, transparent)'}`
                         }}
                       >
                         {renderIcon(School, 20)}
@@ -338,10 +340,10 @@ export default function TeacherClassesPage() {
                         >
                           {cls.name}
                         </h3>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', minWidth: 0 }}>
                           <CodeChip code={cls.code} />
                           {isArchived ? (
-                            <Pill tone="#f59e0b">Archived</Pill>
+                            <Pill tone="archived">Archived</Pill>
                           ) : (
                             <>
                               {hasLive && (
@@ -377,16 +379,17 @@ export default function TeacherClassesPage() {
                       paddingTop: 8,
                       borderTop: '1px solid var(--border-color)'
                     }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--accent)' }}>
-                        Manage Class
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: isArchived ? 'var(--text-secondary)' : 'var(--accent)' }}>
+                        {isArchived ? 'View Class' : 'Manage Class'}
                       </span>
-                      <ChevronRight size={16} color="var(--accent)" />
+                      <ChevronRight size={16} color={isArchived ? 'var(--text-secondary)' : 'var(--accent)'} />
                     </div>
                   </div>
                 )
               })}
             </div>
           )}
+          </div>
         </div>
       </div>
 

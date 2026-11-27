@@ -46,7 +46,12 @@ import {
   Award,
   CircleDot,
   Archive,
-  ArchiveRestore
+  ArchiveRestore,
+  Send,
+  Upload,
+  UserPlus,
+  AlertTriangle,
+  Mail
 } from 'lucide-react'
 import { Ico, renderIcon } from '../components/icons'
 
@@ -93,6 +98,144 @@ export default function TeacherClassDetailPage() {
   // Archive class modal & loading
   const [showArchiveModal, setShowArchiveModal] = useState(false)
   const [isArchiving, setIsArchiving] = useState(false)
+
+  // People / Invite state
+  const [manualName, setManualName] = useState('')
+  const [manualEmail, setManualEmail] = useState('')
+  const [isInviting, setIsInviting] = useState(false)
+  const [csvFile, setCsvFile] = useState(null)
+  const [csvParsedRows, setCsvParsedRows] = useState([])
+  const [isImportingCsv, setIsImportingCsv] = useState(false)
+  const [lastImportResult, setLastImportResult] = useState(null)
+  const [peopleFilter, setPeopleFilter] = useState('all')
+  const [successMsg, setSuccessMsg] = useState(null)
+
+  const handleDownloadTemplate = () => {
+    const csvContent = 'name,email\nJane Doe,jane@school.edu\nJohn Smith,john@school.edu\n'
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'students_invite_template.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleCsvFileChange = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setCsvFile(file)
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const text = event.target?.result || ''
+      const lines = text.split(/\r?\n/).filter(line => line.trim())
+      if (lines.length <= 1) {
+        setCsvParsedRows([])
+        return
+      }
+      const headerLine = lines[0]
+      const headers = headerLine.split(',').map(h => h.trim().toLowerCase().replace(/^["']|["']$/g, ''))
+      const emailIdx = headers.findIndex(h => h.includes('email'))
+      const nameIdx = headers.findIndex(h => h.includes('name'))
+
+      const rows = []
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i]
+        const cells = []
+        let current = ''
+        let inQuote = false
+        for (let c = 0; c < line.length; c++) {
+          const char = line[c]
+          if (char === '"') inQuote = !inQuote
+          else if (char === ',' && !inQuote) {
+            cells.push(current.trim().replace(/^["']|["']$/g, ''))
+            current = ''
+          } else {
+            current += char
+          }
+        }
+        cells.push(current.trim().replace(/^["']|["']$/g, ''))
+
+        const email = emailIdx >= 0 ? cells[emailIdx] : (cells[1] || cells[0] || '')
+        const name = nameIdx >= 0 ? cells[nameIdx] : (nameIdx === -1 && cells.length > 1 ? cells[0] : '')
+
+        if (email && email.includes('@')) {
+          rows.push({ name: name || '', email: email.trim() })
+        }
+      }
+      setCsvParsedRows(rows)
+    }
+    reader.readAsText(file)
+  }
+
+  const handleManualInvite = async (e) => {
+    e?.preventDefault()
+    if (!manualEmail.trim()) return
+    setIsInviting(true)
+    setError(null)
+    setSuccessMsg(null)
+    try {
+      const res = await classApi.invite(classId, { email: manualEmail.trim(), name: manualName.trim() })
+      if (res.status === 'invalid') {
+        setError(res.message || 'Invalid email format')
+      } else if (res.status === 'not_found') {
+        setError(`No Spandan account found for "${manualEmail}". Please ask the student to register on Spandan first.`)
+      } else if (res.status === 'not_student') {
+        setError(`"${manualEmail}" is registered as an instructor/admin, not a student.`)
+      } else if (res.status === 'already_member') {
+        setError(`"${manualEmail}" is already an active member of this class.`)
+      } else {
+        setSuccessMsg(res.reinvited ? `Re-invited ${manualEmail}` : `Invite sent to ${manualEmail}`)
+        setManualEmail('')
+        setManualName('')
+        fetchClassDetails()
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to send invite')
+    } finally {
+      setIsInviting(false)
+    }
+  }
+
+  const handleImportCsv = async () => {
+    if (!csvParsedRows.length) return
+    setIsImportingCsv(true)
+    setError(null)
+    setSuccessMsg(null)
+    try {
+      const res = await classApi.inviteCsv(classId, csvParsedRows)
+      setLastImportResult(res)
+      setCsvFile(null)
+      setCsvParsedRows([])
+      const totalInvited = (res.counts?.invited || 0) + (res.counts?.reinvited || 0)
+      setSuccessMsg(`Import finished: ${totalInvited} invited, ${res.counts?.already_member || 0} already enrolled, ${res.counts?.not_found || 0} not found.`)
+      fetchClassDetails()
+    } catch (err) {
+      setError(err.message || 'Failed to import CSV')
+    } finally {
+      setIsImportingCsv(false)
+    }
+  }
+
+  const handleCancelInvite = async (memberId) => {
+    try {
+      await classApi.cancelInvite(classId, memberId)
+      setSuccessMsg('Invitation cancelled')
+      fetchClassDetails()
+    } catch (err) {
+      setError(err.message || 'Failed to cancel invite')
+    }
+  }
+
+  const handleQuickReinvite = async (email, name) => {
+    try {
+      await classApi.invite(classId, { email, name })
+      setSuccessMsg(`Re-invited ${email}`)
+      fetchClassDetails()
+    } catch (err) {
+      setError(err.message || 'Failed to re-invite student')
+    }
+  }
 
   const fetchClassDetails = async () => {
     try {
@@ -154,6 +297,28 @@ export default function TeacherClassDetailPage() {
       socket.off('class:member-updated', handleMemberUpdated)
     }
   }, [socket, classId])
+
+  // Handle escape key and lock body scroll while student performance modal is open
+  useEffect(() => {
+    if (!selectedStudent) return
+
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setSelectedStudent(null)
+        setStudentPerformance(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = originalOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [selectedStudent])
 
   const handleStartSession = async (e) => {
     e?.preventDefault()
@@ -339,7 +504,26 @@ export default function TeacherClassDetailPage() {
   const activeElsewhereRoomId = teacherActiveSession?._id || allClasses.find(c => c.activeSession)?.activeSession?._id
 
   const activeMembers = membersData.active || []
+  const invitedMembers = membersData.invited || []
   const pendingMembers = membersData.pending || []
+  const declinedMembers = membersData.declined || []
+  const removedMembers = membersData.removed || []
+  const allRoster = [
+    ...activeMembers,
+    ...invitedMembers,
+    ...pendingMembers,
+    ...declinedMembers,
+    ...removedMembers
+  ]
+  const filteredRoster = peopleFilter === 'active'
+    ? activeMembers
+    : peopleFilter === 'invited'
+      ? invitedMembers
+      : peopleFilter === 'pending'
+        ? pendingMembers
+        : peopleFilter === 'removed'
+          ? [...removedMembers, ...declinedMembers]
+          : allRoster
   const visibleStudents = showAllStudents ? activeMembers : activeMembers.slice(0, INITIAL_STUDENT_COUNT)
 
   return (
@@ -371,9 +555,9 @@ export default function TeacherClassDetailPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>CLASS SERIES</span>
               <span style={{ opacity: 0.6 }}>•</span>
-              <CodeChip code={cls.code || ''} variant="header" />
+              <span data-tour="class-code"><CodeChip code={cls.code || ''} variant="header" /></span>
               {isArchived ? (
-                <Pill tone="#f59e0b">Archived</Pill>
+                <Pill variant="header">Archived</Pill>
               ) : (
                 hasActiveSession && <Pill tone="#10b981" dot>Session Live</Pill>
               )}
@@ -391,17 +575,21 @@ export default function TeacherClassDetailPage() {
               <ArrowLeft size={14} /> Classes
             </button>
             {isArchived ? (
-              <button
-                type="button"
-                onClick={handleRestoreClass}
-                disabled={isArchiving}
-                style={primaryButton(isArchiving, { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 })}
-              >
-                <ArchiveRestore size={14} /> {isArchiving ? 'Restoring...' : 'Restore class'}
-              </button>
+              <span data-tour="archive-class">
+                <button
+                  type="button"
+                  data-tour="restore-class"
+                  onClick={handleRestoreClass}
+                  disabled={isArchiving}
+                  style={primaryButton(isArchiving, { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 })}
+                >
+                  <ArchiveRestore size={14} /> {isArchiving ? 'Restoring...' : 'Restore class'}
+                </button>
+              </span>
             ) : (
               <button
                 type="button"
+                data-tour="archive-class"
                 onClick={() => setShowArchiveModal(true)}
                 disabled={hasActiveSession || isArchiving}
                 title={hasActiveSession ? 'End active session before archiving' : 'Archive this class series'}
@@ -410,8 +598,8 @@ export default function TeacherClassDetailPage() {
                   alignItems: 'center',
                   gap: 6,
                   fontSize: 13,
-                  color: hasActiveSession ? 'var(--text-secondary)' : '#f59e0b',
-                  borderColor: hasActiveSession ? 'var(--border-color)' : 'color-mix(in srgb, #f59e0b 35%, transparent)'
+                  color: 'var(--text-secondary)',
+                  borderColor: '#94a3b8'
                 })}
               >
                 <Archive size={14} /> Archive class
@@ -427,6 +615,33 @@ export default function TeacherClassDetailPage() {
           boxSizing: 'border-box',
           background: pageWash
         }}>
+          {successMsg && (
+            <div style={{
+              padding: '12px 16px',
+              borderRadius: 14,
+              background: 'color-mix(in srgb, #10b981 12%, var(--bg-card))',
+              border: '1px solid color-mix(in srgb, #10b981 35%, transparent)',
+              color: '#10b981',
+              marginBottom: 20,
+              fontSize: 14,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Check size={16} />
+                <span>{successMsg}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSuccessMsg(null)}
+                style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+
           {error && (
             <div style={{
               padding: '12px 16px',
@@ -488,8 +703,8 @@ export default function TeacherClassDetailPage() {
             />
           </TileGrid>
 
-          {/* Tab Navigation: Sessions & Roster | Performance */}
-          <div style={{
+          {/* Tab Navigation: Sessions & Roster | People | Performance */}
+          <div data-tour="class-tabs" style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -523,6 +738,42 @@ export default function TeacherClassDetailPage() {
 
             <button
               type="button"
+              data-tour="people-panel"
+              onClick={() => setActiveTab('people')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 18px',
+                borderRadius: '12px 12px 0 0',
+                border: 'none',
+                borderBottom: activeTab === 'people' ? '3px solid var(--accent)' : '3px solid transparent',
+                background: activeTab === 'people' ? 'color-mix(in srgb, var(--accent) 9%, transparent)' : 'transparent',
+                color: activeTab === 'people' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                fontWeight: activeTab === 'people' ? 750 : 600,
+                fontSize: 14,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <Users size={16} /> People
+              {pendingMembers.length > 0 && (
+                <span style={{
+                  padding: '1px 6px',
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 750,
+                  background: '#f59e0b',
+                  color: '#fff'
+                }}>
+                  {pendingMembers.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('performance')}
               style={{
                 display: 'inline-flex',
@@ -550,7 +801,7 @@ export default function TeacherClassDetailPage() {
               {/* 2. Start New Session Guard & Actions */}
               <SectionLabel>Live Session Control</SectionLabel>
 
-          <div style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
+          <div data-tour="start-session" style={{ ...cardStyle(isMobile), marginBottom: 28 }}>
             <SectionHeader
               icon={Play}
               title="Session Manager"
@@ -569,8 +820,8 @@ export default function TeacherClassDetailPage() {
               <div style={{
                 padding: '16px 20px',
                 borderRadius: 16,
-                background: 'color-mix(in srgb, #f59e0b 8%, var(--bg-card))',
-                border: '1px solid color-mix(in srgb, #f59e0b 30%, transparent)',
+                background: 'var(--banner-archived-bg, #f8fafc)',
+                border: '1px solid var(--banner-archived-border, #cbd5e1)',
                 display: 'flex',
                 flexDirection: isMobile ? 'column' : 'row',
                 alignItems: isMobile ? 'flex-start' : 'center',
@@ -585,8 +836,8 @@ export default function TeacherClassDetailPage() {
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    background: 'color-mix(in srgb, #f59e0b 16%, transparent)',
-                    color: '#f59e0b',
+                    background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                    color: 'var(--banner-archived-icon-color, #475569)',
                     flexShrink: 0
                   }}>
                     <Archive size={20} />
@@ -596,7 +847,7 @@ export default function TeacherClassDetailPage() {
                       <span style={{ fontSize: 15, fontWeight: 750, color: 'var(--text-primary)' }}>
                         Class Series Archived
                       </span>
-                      <Pill tone="#f59e0b">Archived</Pill>
+                      <Pill tone="archived">Archived</Pill>
                     </div>
                     <p style={{ margin: '3px 0 0', fontSize: 13, color: 'var(--text-secondary)' }}>
                       All history, attendance, and analytics are preserved. Restore this class to launch new live sessions.
@@ -899,140 +1150,316 @@ export default function TeacherClassDetailPage() {
             )}
           </div>
 
-          {/* 4. People Section = Compact List + Show More + Performance Panel + Pending Requests */}
-          <SectionLabel actions={<span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{activeMembers.length} active</span>}>
-            People & Attendance
-          </SectionLabel>
-
-          {/* Pending Requests Section (approval required on re-join) */}
-          {pendingMembers.length > 0 && (
-            <div style={{
-              ...cardStyle(isMobile),
-              border: '1px solid color-mix(in srgb, #f59e0b 35%, var(--border-color))',
-              background: 'color-mix(in srgb, #f59e0b 6%, var(--bg-card))',
-              marginBottom: 20
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <CircleAlert size={18} color="#f59e0b" />
-                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
-                  Pending Re-Join Requests ({pendingMembers.length})
-                </h3>
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  Students who previously left/were removed and entered the class code again.
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {pendingMembers.map((req) => (
-                  <div
-                    key={req._id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '10px 14px',
-                      borderRadius: 12,
-                      background: 'var(--bg-card)',
-                      border: '1px solid var(--border-color)'
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '50%',
-                        background: 'var(--accent-gradient)',
-                        color: '#fff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 700,
-                        fontSize: 13
-                      }}>
-                        {req.name?.charAt(0)?.toUpperCase() || 'S'}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>{req.name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{req.email}</div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <button
-                        type="button"
-                        onClick={() => handleMemberAction(req.studentId || req._id, 'approve')}
-                        style={{
-                          padding: '6px 12px',
-                          borderRadius: 10,
-                          fontSize: 12.5,
-                          fontWeight: 650,
-                          cursor: 'pointer',
-                          border: 'none',
-                          background: '#10b981',
-                          color: '#fff',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4
-                        }}
-                      >
-                        <UserCheck size={14} /> Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleMemberAction(req.studentId || req._id, 'reject')}
-                        style={ghostButton({
-                          padding: '6px 12px',
-                          fontSize: 12.5,
-                          color: '#ef4444',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4
-                        })}
-                      >
-                        <X size={14} /> Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          </>
           )}
 
-          {/* Enrolled Students: Roster Table */}
-          <div style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden' }}>
-            {activeMembers.length === 0 ? (
-              <div style={{ padding: 32 }}>
-                <EmptyState
+          {activeTab === 'people' && (
+            <>
+              {/* 1. Summary Tiles */}
+              <SectionLabel>Roster & Invites Overview</SectionLabel>
+              <TileGrid isMobile={isMobile} cols={isMobile ? 2 : 5} tour="class-people-stats">
+                <StatTile
                   icon={Users}
-                  title="No students enrolled yet"
-                  description={`Share the 6-character class code with your students to have them join:`}
-                >
-                  <div style={{ marginTop: 12 }}>
-                    <CodeChip code={cls.code || ''} />
+                  label="Active Members"
+                  value={activeMembers.length}
+                  sub="Enrolled in class"
+                  tint="#10b981"
+                  isMobile={isMobile}
+                />
+                <StatTile
+                  icon={Send}
+                  label="Invited"
+                  value={invitedMembers.length}
+                  sub="Waiting on student"
+                  tint="#0ea5e9"
+                  isMobile={isMobile}
+                />
+                <StatTile
+                  icon={CircleAlert}
+                  label="Pending Approval"
+                  value={pendingMembers.length}
+                  sub="Requires your approval"
+                  tint="#f59e0b"
+                  isMobile={isMobile}
+                />
+                <StatTile
+                  icon={UserX}
+                  label="Declined"
+                  value={declinedMembers.length}
+                  sub="Declined invites"
+                  tint="#64748b"
+                  isMobile={isMobile}
+                />
+                <StatTile
+                  icon={AlertTriangle}
+                  label="Last Import: Not Found"
+                  value={lastImportResult?.counts?.not_found || 0}
+                  sub="No Spandan account"
+                  tint="#64748b"
+                  isMobile={isMobile}
+                />
+              </TileGrid>
+
+              {/* 2. Add Students Section (Manual + CSV) */}
+              <SectionLabel>Add Students</SectionLabel>
+              {isArchived ? (
+                <div style={{
+                  ...cardStyle(isMobile),
+                  padding: '16px 20px',
+                  borderRadius: 16,
+                  background: 'var(--banner-archived-bg, #f8fafc)',
+                  border: '1px solid var(--banner-archived-border, #cbd5e1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  marginBottom: 28
+                }}>
+                  <span style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 12,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--banner-archived-icon-bg, #e2e8f0)',
+                    color: 'var(--banner-archived-icon-color, #475569)',
+                    flexShrink: 0
+                  }}>
+                    <Archive size={20} />
+                  </span>
+                  <div>
+                    <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      Class Series Archived
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
+                      Invitations and CSV bulk imports are disabled while archived. Restore this class to invite new students.
+                    </div>
                   </div>
-                </EmptyState>
-              </div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 13.5 }}>
-                  <thead>
-                    <tr style={{ background: 'color-mix(in srgb, var(--text-secondary) 5%, var(--bg-card))', borderBottom: '1px solid var(--border-color)' }}>
-                      <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Student</th>
-                      {!isMobile && <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Email</th>}
-                      <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</th>
-                      <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeMembers.map((student) => (
-                      <tr
-                        key={student._id}
+                </div>
+              ) : (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+                  gap: 20,
+                  marginBottom: 28
+                }}>
+                  {/* a) Manual Add */}
+                  <div style={{ ...cardStyle(isMobile), display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{
+                        width: 36, height: 36, borderRadius: 10,
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)'
+                      }}>
+                        <UserPlus size={18} />
+                      </span>
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>Manual Invite</div>
+                        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Quickly invite 1–2 students by email</div>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleManualInvite} style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+                      <input
+                        type="text"
+                        value={manualName}
+                        onChange={(e) => setManualName(e.target.value)}
+                        placeholder="Student name (optional)"
+                        style={inputStyle()}
+                      />
+                      <input
+                        type="email"
+                        required
+                        value={manualEmail}
+                        onChange={(e) => setManualEmail(e.target.value)}
+                        placeholder="Student email (required)"
+                        style={inputStyle()}
+                      />
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                        <button
+                          type="submit"
+                          disabled={isInviting || !manualEmail.trim()}
+                          style={primaryButton(isInviting || !manualEmail.trim(), {
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            fontSize: 13
+                          })}
+                        >
+                          <Send size={14} /> {isInviting ? 'Sending...' : 'Send invite'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* b) CSV Bulk Upload */}
+                  <div style={{ ...cardStyle(isMobile), display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{
+                          width: 36, height: 36, borderRadius: 10,
+                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          background: 'color-mix(in srgb, #10b981 12%, transparent)', color: '#10b981'
+                        }}>
+                          <FileSpreadsheet size={18} />
+                        </span>
+                        <div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>CSV Bulk Import</div>
+                          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Upload a roster of up to 200 students</div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleDownloadTemplate}
+                        style={ghostButton({
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          fontSize: 12,
+                          padding: '4px 8px'
+                        })}
+                      >
+                        <Download size={13} /> Download template
+                      </button>
+                    </div>
+
+                    <div style={{
+                      padding: '16px',
+                      borderRadius: 12,
+                      border: '1.5px dashed var(--border-color)',
+                      background: 'var(--input-bg)',
+                      textAlign: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 8
+                    }}>
+                      <input
+                        type="file"
+                        id="csv-file-input"
+                        accept=".csv"
+                        onChange={handleCsvFileChange}
+                        style={{ display: 'none' }}
+                      />
+                      <label
+                        htmlFor="csv-file-input"
                         style={{
-                          borderBottom: '1px solid var(--border-color)',
-                          transition: 'background 0.15s ease'
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          cursor: 'pointer',
+                          padding: '8px 16px',
+                          borderRadius: 10,
+                          background: 'var(--bg-card)',
+                          border: '1px solid var(--border-color)',
+                          fontSize: 13,
+                          fontWeight: 650,
+                          color: 'var(--text-primary)'
                         }}
                       >
-                        <td style={{ padding: '12px 18px' }}>
+                        <Upload size={14} /> Choose CSV File
+                      </label>
+                      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                        {csvFile ? `${csvFile.name} (${csvParsedRows.length} valid students found)` : 'Expected columns: name, email'}
+                      </span>
+                    </div>
+
+                    {csvParsedRows.length > 0 && (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                        <span style={{ fontSize: 12.5, color: '#10b981', fontWeight: 600 }}>
+                          Ready to import {csvParsedRows.length} {csvParsedRows.length === 1 ? 'student' : 'students'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleImportCsv}
+                          disabled={isImportingCsv}
+                          style={primaryButton(isImportingCsv, {
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            fontSize: 13,
+                            background: 'linear-gradient(135deg, #10b981, #059669)'
+                          })}
+                        >
+                          <Check size={14} /> {isImportingCsv ? 'Importing...' : 'Confirm & Import'}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Result panel with counts */}
+                    {lastImportResult && (
+                      <div style={{
+                        padding: '12px 14px',
+                        borderRadius: 12,
+                        background: 'color-mix(in srgb, var(--accent) 7%, var(--bg-card))',
+                        border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)',
+                        fontSize: 13,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6
+                      }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Import Results</div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <Pill tone="#10b981">{lastImportResult.counts.invited} invited</Pill>
+                          {lastImportResult.counts.reinvited > 0 && <Pill tone="#10b981">{lastImportResult.counts.reinvited} reinvited</Pill>}
+                          {lastImportResult.counts.already_member > 0 && <Pill tone="var(--accent)">{lastImportResult.counts.already_member} already enrolled</Pill>}
+                          {lastImportResult.counts.not_found > 0 && <Pill tone="#ef4444">{lastImportResult.counts.not_found} not registered</Pill>}
+                          {lastImportResult.counts.not_student > 0 && <Pill tone="#f59e0b">{lastImportResult.counts.not_student} not a student</Pill>}
+                          {lastImportResult.counts.invalid > 0 && <Pill tone="#64748b">{lastImportResult.counts.invalid} invalid rows</Pill>}
+                        </div>
+                        {lastImportResult.notFoundEmails?.length > 0 && (
+                          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                            <strong style={{ color: '#ef4444' }}>Notice:</strong> The following emails do not have a Spandan account yet: {lastImportResult.notFoundEmails.join(', ')}. Please ask them to register on Spandan first, then invite them.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 3. Pending Requests Section (approval required on re-join) */}
+              {pendingMembers.length > 0 && (
+                <div style={{
+                  ...cardStyle(isMobile),
+                  border: '1px solid color-mix(in srgb, #f59e0b 35%, var(--border-color))',
+                  background: 'color-mix(in srgb, #f59e0b 6%, var(--bg-card))',
+                  marginBottom: 24
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                    <CircleAlert size={18} color="#f59e0b" />
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      Pending Join Requests ({pendingMembers.length})
+                    </h3>
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      Join requests — approve to add to active roster
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {pendingMembers.map((req) => {
+                      const isFromRemoval = req.previousStatus === 'removed' || (!req.previousStatus && req.removedAt)
+                      const isFromDecline = req.previousStatus === 'declined' || req.previousStatus === 'invited'
+                      const reasonText = isFromRemoval
+                        ? 'Previously removed; requested to join with class code'
+                        : isFromDecline
+                          ? 'Previously declined or did not accept invite; requested to join with class code'
+                          : 'Requested to join with class code'
+
+                      return (
+                        <div
+                          key={req._id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '10px 14px',
+                            borderRadius: 12,
+                            background: 'var(--bg-card)',
+                            border: '1px solid var(--border-color)'
+                          }}
+                        >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <div style={{
                               width: 32,
@@ -1044,50 +1471,52 @@ export default function TeacherClassDetailPage() {
                               alignItems: 'center',
                               justifyContent: 'center',
                               fontWeight: 700,
-                              fontSize: 13,
-                              flexShrink: 0
+                              fontSize: 13
                             }}>
-                              {student.name?.charAt(0)?.toUpperCase() || 'S'}
+                              {req.name?.charAt(0)?.toUpperCase() || 'S'}
                             </div>
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 650, color: 'var(--text-primary)' }}>{student.name}</div>
-                              {isMobile && <div style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>{student.email}</div>}
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)' }}>{req.name}</div>
+                                {isFromRemoval ? (
+                                  <Pill tone="#ef4444">Removed</Pill>
+                                ) : isFromDecline ? (
+                                  <Pill tone="#64748b">Declined</Pill>
+                                ) : (
+                                  <Pill tone="#f59e0b">New Request</Pill>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                                {req.email} · <span style={{ fontStyle: 'italic' }}>{reasonText}</span>
+                              </div>
                             </div>
                           </div>
-                        </td>
 
-                        {!isMobile && (
-                          <td style={{ padding: '12px 18px', color: 'var(--text-secondary)', fontSize: 13 }}>
-                            {student.email}
-                          </td>
-                        )}
-
-                        <td style={{ padding: '12px 18px' }}>
-                          <Pill tone="#10b981">Active</Pill>
-                        </td>
-
-                        <td style={{ padding: '12px 18px', textAlign: 'right' }}>
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <button
                               type="button"
-                              onClick={() => handleViewPerformance(student)}
-                              title="View detailed performance"
-                              style={ghostButton({
-                                padding: '5px 10px',
+                              onClick={() => handleMemberAction(req.studentId || req._id, 'approve')}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: 10,
                                 fontSize: 12.5,
+                                fontWeight: 650,
+                                cursor: 'pointer',
+                                border: 'none',
+                                background: '#10b981',
+                                color: '#fff',
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 gap: 4
-                              })}
+                              }}
                             >
-                              <Eye size={13} /> View
+                              <UserCheck size={14} /> Approve
                             </button>
                             <button
                               type="button"
-                              onClick={() => setStudentToRemove(student)}
-                              title="Remove student from class (retaining historical data)"
+                              onClick={() => handleMemberAction(req.studentId || req._id, 'reject')}
                               style={ghostButton({
-                                padding: '5px 10px',
+                                padding: '6px 12px',
                                 fontSize: 12.5,
                                 color: '#ef4444',
                                 display: 'inline-flex',
@@ -1095,18 +1524,267 @@ export default function TeacherClassDetailPage() {
                                 gap: 4
                               })}
                             >
-                              <UserX size={13} /> Remove
+                              <X size={14} /> Reject
                             </button>
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* 4. Roster Table */}
+              <div style={{
+                display: 'flex',
+                alignItems: isMobile ? 'flex-start' : 'center',
+                justifyContent: 'space-between',
+                flexDirection: isMobile ? 'column' : 'row',
+                gap: 12,
+                marginBottom: 12
+              }}>
+                <SectionLabel style={{ margin: 0 }}>Class Roster</SectionLabel>
+
+                {/* Filter Pills */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  {[
+                    { id: 'all', label: `All (${allRoster.length})` },
+                    { id: 'active', label: `Active (${activeMembers.length})` },
+                    { id: 'invited', label: `Invited (${invitedMembers.length})` },
+                    { id: 'pending', label: `Pending (${pendingMembers.length})` },
+                    { id: 'removed', label: `Removed (${removedMembers.length + declinedMembers.length})` }
+                  ].map(f => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setPeopleFilter(f.id)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: 999,
+                        fontSize: 12,
+                        fontWeight: peopleFilter === f.id ? 700 : 550,
+                        border: '1px solid',
+                        borderColor: peopleFilter === f.id ? 'var(--accent)' : 'var(--border-color)',
+                        background: peopleFilter === f.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                        color: peopleFilter === f.id ? 'var(--accent)' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
-          </>
+
+              <div style={{ ...cardStyle(isMobile), padding: 0, overflow: 'hidden', marginBottom: 28 }}>
+                {filteredRoster.length === 0 ? (
+                  <div style={{ padding: 32 }}>
+                    <EmptyState
+                      icon={Users}
+                      title="No students found"
+                      description={peopleFilter === 'all'
+                        ? 'No students have been added to this class yet. Use the invite form above or share your class code.'
+                        : `No students match the "${peopleFilter}" filter.`}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 13.5 }}>
+                      <thead>
+                        <tr style={{ background: 'color-mix(in srgb, var(--text-secondary) 5%, var(--bg-card))', borderBottom: '1px solid var(--border-color)' }}>
+                          <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Student</th>
+                          {!isMobile && <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Email</th>}
+                          <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</th>
+                          <th style={{ padding: '14px 18px', fontWeight: 700, color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredRoster.map((student) => {
+                          const status = student.status
+                          return (
+                            <tr
+                              key={student._id}
+                              style={{
+                                borderBottom: '1px solid var(--border-color)',
+                                transition: 'background 0.15s ease'
+                              }}
+                            >
+                              <td style={{ padding: '12px 18px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <div style={{
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: '50%',
+                                    background: 'var(--accent-gradient)',
+                                    color: '#fff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: 700,
+                                    fontSize: 13,
+                                    flexShrink: 0
+                                  }}>
+                                    {student.name?.charAt(0)?.toUpperCase() || 'S'}
+                                  </div>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontWeight: 650, color: 'var(--text-primary)' }}>{student.name}</div>
+                                    {isMobile && <div style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>{student.email}</div>}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {!isMobile && (
+                                <td style={{ padding: '12px 18px', color: 'var(--text-secondary)', fontSize: 13 }}>
+                                  {student.email}
+                                </td>
+                              )}
+
+                              <td style={{ padding: '12px 18px' }}>
+                                {status === 'active' ? (
+                                  <Pill tone="#10b981">Active</Pill>
+                                ) : status === 'invited' ? (
+                                  <Pill tone="#0ea5e9">Invited</Pill>
+                                ) : status === 'pending' ? (
+                                  <Pill tone="#f59e0b">
+                                    {student.previousStatus === 'declined' || student.previousStatus === 'invited'
+                                      ? 'Pending (Declined)'
+                                      : student.previousStatus === 'removed'
+                                        ? 'Pending (Removed)'
+                                        : 'Pending'}
+                                  </Pill>
+                                ) : status === 'declined' ? (
+                                  <Pill tone="#64748b">Declined</Pill>
+                                ) : (
+                                  <Pill tone="#64748b">Removed</Pill>
+                                )}
+                              </td>
+
+                              <td style={{ padding: '12px 18px', textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                  {status === 'active' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleViewPerformance(student)}
+                                        title="View detailed performance"
+                                        style={ghostButton({
+                                          padding: '5px 10px',
+                                          fontSize: 12.5,
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 4
+                                        })}
+                                      >
+                                        <Eye size={13} /> View
+                                      </button>
+                                      {!isArchived && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setStudentToRemove(student)}
+                                          title="Remove student from class (retaining historical data)"
+                                          style={ghostButton({
+                                            padding: '5px 10px',
+                                            fontSize: 12.5,
+                                            color: '#ef4444',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                          })}
+                                        >
+                                          <UserX size={13} /> Remove
+                                        </button>
+                                      )}
+                                    </>
+                                  )}
+
+                                  {status === 'invited' && !isArchived && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCancelInvite(student._id)}
+                                      title="Cancel invite"
+                                      style={ghostButton({
+                                        padding: '5px 10px',
+                                        fontSize: 12.5,
+                                        color: '#ef4444',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4
+                                      })}
+                                    >
+                                      <X size={13} /> Cancel invite
+                                    </button>
+                                  )}
+
+                                  {status === 'pending' && !isArchived && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMemberAction(student.studentId || student._id, 'approve')}
+                                        style={{
+                                          padding: '5px 10px',
+                                          borderRadius: 8,
+                                          fontSize: 12,
+                                          fontWeight: 650,
+                                          cursor: 'pointer',
+                                          border: 'none',
+                                          background: '#10b981',
+                                          color: '#fff',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 4
+                                        }}
+                                      >
+                                        <UserCheck size={14} /> Approve
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMemberAction(student.studentId || student._id, 'reject')}
+                                        style={ghostButton({
+                                          padding: '5px 10px',
+                                          fontSize: 12,
+                                          color: '#ef4444',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 4
+                                        })}
+                                      >
+                                        <X size={13} /> Reject
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {(status === 'removed' || status === 'declined') && !isArchived && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleQuickReinvite(student.email, student.name)}
+                                      title="Re-invite student to this class"
+                                      style={ghostButton({
+                                        padding: '5px 10px',
+                                        fontSize: 12.5,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4
+                                      })}
+                                    >
+                                      <UserPlus size={13} /> Re-invite
+                                    </button>
+                                  )}
+
+                                  {isArchived && (
+                                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Read-only</span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {activeTab === 'performance' && (
@@ -1345,38 +2023,57 @@ export default function TeacherClassDetailPage() {
       </div>
 
 
-      {/* Slide-over / Modal: Person-Wise Performance Panel */}
+      {/* Centered Modal Overlay: Person-Wise Performance Panel */}
       {selectedStudent && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15,23,42,0.65)',
-          backdropFilter: 'blur(4px)',
-          zIndex: 85,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'center' : 'flex-end',
-          boxSizing: 'border-box'
-        }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="student-performance-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedStudent(null)
+              setStudentPerformance(null)
+            }
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.65)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 95,
+            display: 'flex',
+            alignItems: isMobile ? 'stretch' : 'center',
+            justifyContent: 'center',
+            padding: isMobile ? 0 : 20,
+            boxSizing: 'border-box'
+          }}
+        >
           <div style={{
-            width: isMobile ? '100%' : '520px',
+            width: isMobile ? '100%' : 'min(920px, 92vw)',
             maxWidth: '100%',
-            height: isMobile ? '90vh' : '100vh',
+            height: isMobile ? '100%' : 'auto',
+            maxHeight: isMobile ? '100vh' : '86vh',
             background: 'var(--bg-card)', // Solid opaque background
-            borderLeft: isMobile ? 'none' : '1px solid var(--border-color)',
-            borderRadius: isMobile ? '20px 20px 0 0' : 0,
+            border: isMobile ? 'none' : '1px solid var(--border-color)',
+            borderRadius: isMobile ? 0 : 16,
             display: 'flex',
             flexDirection: 'column',
-            boxShadow: '-10px 0 35px rgba(0,0,0,0.22)',
-            overflow: 'hidden'
+            boxShadow: isMobile ? 'none' : '0 20px 45px rgba(0,0,0,0.30)',
+            overflow: 'hidden',
+            boxSizing: 'border-box'
           }}>
-            {/* Header */}
+            {/* Header: sticky inside the dialog */}
             <div style={{
-              padding: '20px 24px',
+              position: 'sticky',
+              top: 0,
+              zIndex: 2,
+              background: 'var(--bg-card)',
+              padding: isMobile ? '16px 18px' : '20px 24px',
               borderBottom: '1px solid var(--border-color)',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between'
+              justifyContent: 'space-between',
+              flexShrink: 0
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{
@@ -1389,12 +2086,13 @@ export default function TeacherClassDetailPage() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   fontWeight: 700,
-                  fontSize: 16
+                  fontSize: 16,
+                  flexShrink: 0
                 }}>
                   {selectedStudent.name?.charAt(0)?.toUpperCase() || 'S'}
                 </div>
                 <div>
-                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  <h3 id="student-performance-modal-title" style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
                     {selectedStudent.name}
                   </h3>
                   <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-secondary)' }}>
@@ -1404,15 +2102,26 @@ export default function TeacherClassDetailPage() {
               </div>
               <button
                 type="button"
+                aria-label="Close"
                 onClick={() => { setSelectedStudent(null); setStudentPerformance(null); setExpandedSessionId(null) }}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: 4 }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  padding: 6,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </div>
 
-            {/* Content */}
-            <div style={{ flex: 1, padding: '24px', overflowY: 'auto' }}>
+            {/* Content: body scrolls inside the dialog */}
+            <div style={{ flex: 1, padding: isMobile ? '18px 16px' : '24px 28px', overflowY: 'auto' }}>
               {studentPerfLoading ? (
                 <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
                   <div style={{
@@ -1430,7 +2139,7 @@ export default function TeacherClassDetailPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   <SectionLabel>Class Performance Summary</SectionLabel>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                     <StatTile
                       icon={Library}
                       label="Attendance"
@@ -1497,7 +2206,8 @@ export default function TeacherClassDetailPage() {
                         const expanded = expandedSessionId === sessionKey
                         const rc = sess.reconnect
                         const isPreJoin = sess.status === 'before_join' || sess.isBeforeJoin
-                        const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval
+                        const isRemoved = sess.status === 'during_removal' || sess.isDuringRemoval || sess.coverage === 'during_removal'
+                        const isDeclined = sess.status === 'during_declined' || sess.isDuringDeclined || sess.coverage === 'during_declined'
                         return (
                           <div
                             key={sess.roomId}
@@ -1550,7 +2260,15 @@ export default function TeacherClassDetailPage() {
                                   {isPreJoin ? (
                                     <Pill tone="var(--text-secondary)">Before joined</Pill>
                                   ) : isRemoved ? (
-                                    <Pill tone="#f59e0b">Removed</Pill>
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      <Pill tone="var(--text-secondary)">Missed</Pill>
+                                      <Pill tone="#f59e0b">Removed</Pill>
+                                    </div>
+                                  ) : isDeclined ? (
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      <Pill tone="var(--text-secondary)">Missed</Pill>
+                                      <Pill tone="#64748b">Declined</Pill>
+                                    </div>
                                   ) : sess.attended ? (
                                     <Pill tone="#10b981">Attended</Pill>
                                   ) : (
@@ -1574,7 +2292,11 @@ export default function TeacherClassDetailPage() {
                                     </span>
                                   ) : isRemoved ? (
                                     <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                      Not in class
+                                      <span>Removed from class</span> · <span>Not in class</span>
+                                    </span>
+                                  ) : isDeclined ? (
+                                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                      Declined invite
                                     </span>
                                   ) : sess.attended ? (
                                     sess.totalQuestions === 0 ? (
@@ -1971,8 +2693,9 @@ export default function TeacherClassDetailPage() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'color-mix(in srgb, #f59e0b 14%, transparent)',
-                color: '#f59e0b'
+                background: 'var(--badge-archived-bg, #f1f5f9)',
+                color: 'var(--badge-archived-color, #475569)',
+                border: '1px solid var(--badge-archived-border, #cbd5e1)'
               }}>
                 <Archive size={20} />
               </span>
@@ -2009,10 +2732,10 @@ export default function TeacherClassDetailPage() {
                   fontSize: 13.5,
                   fontWeight: 650,
                   cursor: isArchiving ? 'not-allowed' : 'pointer',
-                  border: 'none',
-                  background: '#f59e0b',
+                  border: '1px solid #475569',
+                  background: '#475569',
                   color: '#fff',
-                  boxShadow: '0 4px 14px rgba(245,158,11,0.30)'
+                  boxShadow: '0 4px 14px rgba(71,85,105,0.25)'
                 }}
               >
                 {isArchiving ? 'Archiving...' : 'Archive class'}

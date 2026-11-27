@@ -26,6 +26,7 @@ import TeacherClassesPage from './pages/TeacherClassesPage'
 import TeacherClassDetailPage from './pages/TeacherClassDetailPage'
 import StudentClassesPage from './pages/StudentClassesPage'
 import StudentClassDetailPage from './pages/StudentClassDetailPage'
+import StudentNotificationsPage from './pages/StudentNotificationsPage'
 import TermsPage from './pages/TermsPage'
 import TermsGate from './components/TermsGate'
 import { isTokenExpired } from './lib/jwt.js'
@@ -188,6 +189,14 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={['student']}>
               <StudentClassDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/notifications"
+          element={
+            <ProtectedRoute allowedRoles={['student']}>
+              <StudentNotificationsPage />
             </ProtectedRoute>
           }
         />

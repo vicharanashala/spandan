@@ -13,7 +13,11 @@ import {
   getClassMembersWithPerformance,
   getStudentPerformanceInClass,
   exportClassCsv,
-  getClassStats
+  getClassStats,
+  inviteStudentToClass,
+  inviteStudentsFromCsv,
+  cancelClassInvite,
+  getClassPeopleDashboard
 } from '../services/classService.js'
 import { authenticate, authorize, requireApprovedTeacher } from '../middleware/auth.js'
 
@@ -80,6 +84,7 @@ router.post('/join', authenticate, authorize('student'), async (req, res) => {
         status: result.status,
         member: result.member
       })
+      io.emit('notification:updated', { userId: req.user._id })
     }
 
     res.json({
@@ -257,6 +262,7 @@ router.patch('/:id/members/:studentId', authenticate, authorize('teacher'), requ
         member: result.member,
         action
       })
+      io.emit('notification:updated', { userId: req.params.studentId })
     }
 
     res.json(result)
@@ -273,6 +279,87 @@ router.get('/:id/export', authenticate, authorize('teacher'), async (req, res) =
     res.setHeader('Content-Type', 'text/csv; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
     res.send(csv)
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// Invite single student to class (teacher only)
+router.post('/:id/invites', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+  try {
+    const { email, name } = req.body
+    const result = await inviteStudentToClass({
+      classId: req.params.id,
+      teacherId: req.user._id,
+      email,
+      name
+    })
+
+    const io = req.app.get('io')
+    if (io) {
+      if (result.student?._id) {
+        io.emit('notification:new', { userId: result.student._id })
+      }
+      io.emit('class:member-updated', {
+        classId: req.params.id,
+        status: result.status
+      })
+    }
+
+    res.json(result)
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// Bulk invite students from CSV (teacher only)
+router.post('/:id/invites/csv', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+  try {
+    const { rows } = req.body
+    const result = await inviteStudentsFromCsv({
+      classId: req.params.id,
+      teacherId: req.user._id,
+      rows: rows || []
+    })
+
+    const io = req.app.get('io')
+    if (io) {
+      io.emit('class:member-updated', { classId: req.params.id })
+      io.emit('notification:new', {})
+    }
+
+    res.json(result)
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// Cancel an invite (teacher only)
+router.delete('/:id/invites/:memberId', authenticate, authorize('teacher'), requireApprovedTeacher, async (req, res) => {
+  try {
+    const result = await cancelClassInvite({
+      classId: req.params.id,
+      teacherId: req.user._id,
+      memberId: req.params.memberId
+    })
+
+    const io = req.app.get('io')
+    if (io) {
+      io.emit('class:member-updated', { classId: req.params.id })
+      io.emit('notification:updated', {})
+    }
+
+    res.json(result)
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// People & Invites Dashboard data (teacher only)
+router.get('/:id/people', authenticate, authorize('teacher'), async (req, res) => {
+  try {
+    const data = await getClassPeopleDashboard(req.params.id, req.user._id)
+    res.json(data)
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message })
   }
