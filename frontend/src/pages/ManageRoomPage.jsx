@@ -4,6 +4,7 @@ import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import useIsMobile from '../hooks/useIsMobile'
+import { classApi } from '../lib/api'
 import { PageHeader, pageWash, primaryButton, RoomCard, Pill, EmptyState, iconButton } from '../components/AppUI'
 import { SectionLabel } from '../components/InsightUI'
 import { Clapperboard, Inbox, Mic, Plus, Settings, Trash2 } from 'lucide-react'
@@ -14,11 +15,13 @@ function ManageRoomPage() {
   const isMobile = useIsMobile()
   const { user, token } = useAuthStore()
   const { rooms, isLoading, fetchRooms, deleteRoom, setAuthToken } = useRoomStore()
+  const [classes, setClasses] = React.useState([])
 
   useEffect(() => {
     if (token) {
       setAuthToken(token)
       fetchRooms()
+      classApi.getAll().then(d => setClasses(d.classes || [])).catch(() => {})
     }
   }, [token])
 
@@ -52,13 +55,17 @@ function ManageRoomPage() {
             <div style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-secondary)' }}>Loading rooms…</div>
           ) : activeRooms.length > 0 ? (
             <div data-tour="room-list" style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-              {activeRooms.map((room, i) => (
+              {activeRooms.map((room, i) => {
+                const isClass = Boolean(room.classId)
+                const classObj = isClass ? classes?.find(c => String(c._id) === String(room.classId?._id || room.classId)) : null
+                const displayCode = isClass ? (classObj?.code || (typeof room.classId === 'object' ? room.classId?.code : null)) : room.code
+                return (
                 <RoomCard
                   key={room._id}
                   icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
                   tint={room.settings?.mode === 'video' ? '#ec4899' : 'var(--accent)'}
                   title={room.name}
-                  code={room.code}
+                  code={displayCode}
                   status={<span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}><Pill tone="#10b981" dot>Active</Pill>{room.settings?.mode === 'video' && <Pill tone="#ec4899">Video</Pill>}</span>}
                   meta={[`${room.questionCount || 0} question${room.questionCount === 1 ? '' : 's'}`]}
                   actionLabel="Manage →"
@@ -69,7 +76,7 @@ function ManageRoomPage() {
                     <button type="button" aria-label={`Delete room ${room.name}`} title="Delete room" onClick={(e) => { e.stopPropagation(); handleDeleteRoom(room._id) }} style={iconButton('#ef4444')}><Ico as={Trash2} /></button>
                   }
                 />
-              ))}
+              )})}
             </div>
           ) : (
             <EmptyState icon={Inbox} title="No active rooms" description="Rooms you create stay here until you end them.">

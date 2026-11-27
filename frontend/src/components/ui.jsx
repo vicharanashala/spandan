@@ -129,6 +129,8 @@ export function FeatureCard({ icon, title, description }) {
 }
 
 export function RoomCard({ room, onOpen, onDelete, onToggle }) {
+  const isClass = Boolean(room?.classId)
+  const displayCode = isClass ? (typeof room?.classId === 'object' ? room.classId?.code : null) : room?.code
   return (
     <div
       style={{
@@ -155,7 +157,7 @@ export function RoomCard({ room, onOpen, onDelete, onToggle }) {
           {room.name}
         </h4>
         <p style={{ fontSize: '14px', color: '#6b7280' }}>
-          Code: <strong style={{ color: 'var(--accent)' }}>{room.code}</strong> • 
+          {displayCode ? <>Code: <strong style={{ color: 'var(--accent)' }}>{displayCode}</strong> • </> : null}
           <span style={{ color: room.isActive ? '#10b981' : '#6b7280' }}>
             {room.isActive ? ' Active' : ' Inactive'}
           </span>

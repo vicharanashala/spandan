@@ -5,7 +5,7 @@
 // Each section: { id, role: 'teacher' | 'student' | 'both', icon, title, ordered?, adminOnly?,
 //                 routes: [RegExp] (pathnames this section is the best match for), body: [string] }
 
-import { CircleCheck, CircleHelp, Clapperboard, ClipboardPaste, Hand, History as HistoryIcon, KeyRound, LayoutDashboard, Link as LinkIcon, Maximize, Mic, PenLine, Plus, Rocket, Settings as SettingsIcon, ShieldCheck, SlidersHorizontal, TrendingUp, Trophy, User as UserIcon, UserPlus } from 'lucide-react'
+import { Archive, BarChart3, Bell, BookOpen, CircleCheck, CircleHelp, Clapperboard, ClipboardPaste, Hand, History as HistoryIcon, KeyRound, LayoutDashboard, Link as LinkIcon, Maximize, Mic, PenLine, Play, Plus, Rocket, School, Settings as SettingsIcon, ShieldCheck, SlidersHorizontal, TrendingUp, Trophy, User as UserIcon, UserPlus, Users } from 'lucide-react'
 
 const T = 'teacher', S = 'student', B = 'both', G = 'guest'  // G = signed-out landing page
 
@@ -60,7 +60,7 @@ export const HELP_SECTIONS = [
     body: [
       'After signing in you land on the dashboard. Four cards summarise your activity: Total Rooms, Active Rooms, Total Polls and Total Responses.',
       'Create New Room is right below the cards (name + Normal / Video). My Active Rooms lists each open room with its join code and question count; Manage → jumps straight back into its live console.',
-      'Sidebar: Dashboard (home), Create Room, Manage Room (open and administer active rooms), Room History (ended sessions, results, CSV export). Admins also see Approvals.',
+      'Sidebar: Dashboard (home), Classes (recurring class series), Create Room, Manage Room (open and administer active rooms), Room History (ended sessions, results, CSV export). Admins also see Approvals.',
     ],
   },
   {
@@ -190,12 +190,73 @@ export const HELP_SECTIONS = [
     ],
   },
 
+    {
+    id: 'classes-overview', role: T, icon: School, title: 'Class series (recurring classes)',
+    routes: [/^\/teacher\/classes\/?$/],
+    body: [
+      'Classes are long-lived recurring series (Google Classroom style) rather than one-off rooms. Create them for ongoing courses, cohorts, or semester lectures.',
+      'Each class has its own persistent class code, student roster, session history, and cumulative performance tracking across all sessions.',
+      'Open Classes from the sidebar to manage your classes. This is separate from Create Room, which launches a single standalone polling session.',
+      'Open any class to start new sessions, manage your student roster and invitations in the People tab, and view attendance and poll analytics in the Performance tab.',
+    ],
+  },
+  {
+    id: 'classes-create-code', role: T, icon: Plus, title: 'Creating a class & class code',
+    routes: [],
+    body: [
+      'Create a class anytime from the Classes page with "New Class". Provide a class name and preferred mode; Spandan issues a permanent six-character class code.',
+      'Share the CLASS code with your students — they enter it under My Classes to enroll. Do not rely on session room codes for class meetings, as class session room codes are kept internal.',
+      'Students can also be invited directly by email from the People tab, either individually or in bulk.',
+    ],
+  },
+  {
+    id: 'classes-people-invites', role: T, icon: Users, title: 'People tab — roster & invites',
+    routes: [/^\/teacher\/classes\/[^/]+\/?$/],
+    body: [
+      'Inside each class, three tabs keep your course organised: Sessions, People, and Performance.',
+      'The People tab tracks your roster across five categories: Active students, Invited (awaiting acceptance), Pending Re-join, Declined, and students Not Found on the last CSV upload.',
+      'Manual invite: enter a student\'s name and email anytime while the class is active to send an instant invitation.',
+      'Bulk CSV invite: download the CSV template, add student names and emails, and upload it. The summary reports invited students, existing members, invalid rows, and students without a Spandan account yet (not found).',
+      'Invited students must click Accept under Notifications in their account before becoming active members.',
+      'Pending re-join: if a removed or declined student enters the class code again, their request appears here for teacher approval or rejection.',
+      'Removing a student is soft (attendance and poll history are preserved). In archived classes, the roster becomes read-only and invitations are paused.',
+    ],
+  },
+  {
+    id: 'classes-sessions', role: T, icon: Play, title: 'Class sessions',
+    routes: [],
+    body: [
+      'Start a new session directly from the class Sessions tab with "Start New Session". You can choose Normal (mic) or Video mode.',
+      'Each teacher can run only one live class session at a time across all their classes; end any active session before launching another.',
+      'Enrolled students join the live session with one click from their class page; session room codes are hidden throughout the class UI.',
+      'Standalone Create Room remains available for one-off sessions that do not belong to a recurring class series.',
+    ],
+  },
+  {
+    id: 'classes-performance', role: T, icon: BarChart3, title: 'Class performance & attendance',
+    routes: [],
+    body: [
+      'The Performance tab provides overall class metrics, individual attendance rates, poll accuracy, and an Export CSV option.',
+      'Click any student row to open their drawer for a detailed history of every eligible session, their response count, and individual poll accuracy.',
+      'Attendance tracks all sessions after the student is tied to the class (invite or active). Gaps while declined or removed count toward expected attendance per class policy; sessions prior to initial enrollment are marked "Before joined" and do not penalise attendance.',
+    ],
+  },
+  {
+    id: 'classes-archive', role: T, icon: Archive, title: 'Archive & restore',
+    routes: [],
+    body: [
+      'Archiving ends a class series without deleting any history, roster data, session logs, or performance analytics.',
+      'While archived, teachers cannot start new sessions or send invites, and students cannot join with the class code. All past data remains fully viewable.',
+      'You can Restore the class at any time to resume running sessions and inviting students. Archived classes display a clear, muted gray badge.',
+    ],
+  },
+
   // ───────────────────────────── Student ─────────────────────────────
   {
     id: 's-getting-started', role: S, icon: Rocket, title: 'Getting started',
     routes: [],
     body: [
-      'Spandan is where your teacher\'s live poll questions appear. You join a session with a short code, answer each question against a timer, and watch your place on the leaderboard.',
+      'Spandan is where your teacher\'s live poll questions appear. Join one-off sessions with a room code, or join ongoing class series under Classes and accept invitations in Notifications.',
       'Create an account with the Learn role (active immediately) or sign in with Google. Use the Dark / Light button top-right to switch theme.',
       'Help is always one click away: the ⓘ button in the header opens this guide on the section for the page you are on, with search. Press ? to open it too. Every page has a short guided tour that runs on your first visit; replay it with "Take this page\'s tour" at the top of this popup.',
     ],
@@ -205,7 +266,7 @@ export const HELP_SECTIONS = [
     routes: [/^\/student\/?$/],
     body: [
       'The Quick Join box on your dashboard takes a room code and drops you straight into the session.',
-      'Sidebar: Dashboard (home), Join Room (same thing on its own page), Room History (your past sessions and personal results).',
+      'Sidebar: Dashboard (home), Classes (your enrolled class series), Notifications (invitations and updates), Join Room (one-off rooms), Room History (your past sessions and personal results).',
     ],
   },
   {
@@ -269,6 +330,35 @@ export const HELP_SECTIONS = [
     routes: [/^\/student\/room-history\/?$/],
     body: [
       'Room History lists the sessions you have taken part in, newest first. View Results reopens your personal results for that session.',
+    ],
+  },
+
+    {
+    id: 's-classes', role: S, icon: School, title: 'Your classes',
+    routes: [/^\/student\/classes\/?$/],
+    body: [
+      'Sidebar → Classes lists every recurring class series you belong to, with instructor name, active sessions, and status.',
+      'Join a class by entering the six-character class code from your teacher, or by accepting an invitation under Notifications.',
+      'Click any class card to open the class and view live sessions, past session history, and your personal performance across the series.',
+    ],
+  },
+  {
+    id: 's-class-invites', role: S, icon: Bell, title: 'Class invitations (Notifications)',
+    routes: [/^\/student\/notifications\/?$/],
+    body: [
+      'When a teacher invites you to join their class by email, an invitation appears on your Notifications page.',
+      'Review the class name and instructor, then click Accept to join the class immediately, or Decline.',
+      'If your teacher tried to invite you via CSV and said you were "not found", ensure your Spandan account is registered with the exact email address they used.',
+      'The bell icon and sidebar badge show unread invitations and updates in real time.',
+    ],
+  },
+  {
+    id: 's-class-detail', role: S, icon: BookOpen, title: 'Inside a class',
+    routes: [/^\/student\/classes\/[^/]+\/?$/],
+    body: [
+      'The Sessions tab displays any live session currently in progress with a Join Session button, along with a full history of past sessions and dates.',
+      'The Performance tab shows your personal attendance percentage, questions attempted versus launched, and overall accuracy for this class.',
+      'If the teacher has archived the class series, it is marked with an Archived badge. You can still review past sessions and results, but no new sessions can be joined.',
     ],
   },
 

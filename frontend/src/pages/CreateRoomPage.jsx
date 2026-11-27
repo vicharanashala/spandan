@@ -7,8 +7,10 @@ import Sidebar from '../components/Sidebar'
 import useIsMobile from '../hooks/useIsMobile'
 import { PageHeader, pageWash, inputStyle, primaryButton, ghostButton, toneText } from '../components/AppUI'
 import { SectionHeader, cardStyle } from '../components/InsightUI'
-import { Check, Clapperboard, FileText, Lightbulb, Mic, Plus } from 'lucide-react'
+import { Check, CircleDot, Clapperboard, FileText, Lightbulb, Mic, Plus } from 'lucide-react'
 import { Ico, renderIcon } from '../components/icons'
+import { classApi } from '../lib/api'
+import WaitingRoomSetup from '../components/WaitingRoomSetup'
 
 const label = { display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }
 
@@ -18,11 +20,15 @@ function CreateRoomPage() {
   const { createRoom, setAuthToken } = useRoomStore()
   const isMobile = useIsMobile()
 
+  const { socket } = useSocketStore()
   const [roomName, setRoomName] = useState('')
   const [mode, setMode] = useState('normal')
   const [videoUrl, setVideoUrl] = useState('')
+  // Waiting room defaults: enabled, automatic bulk admission, 2-minute on-time grace window.
+  const [waitingRoom, setWaitingRoom] = useState({ enabled: true, mode: 'automatic', graceSeconds: 120, scheduledAt: null, reconnectAllowanceSeconds: 60 })
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
+  const [hasLiveClassSession, setHasLiveClassSession] = useState(false)
 
   // Video Mode needs a Chromium browser (getDisplayMedia tab-audio capture on the teacher side).
   const isChromium = /Chrome|Edg/.test(navigator.userAgent) && !/OPR|Opera/.test(navigator.userAgent)
@@ -32,10 +38,39 @@ function CreateRoomPage() {
   React.useEffect(() => {
     if (token) {
       setAuthToken(token)
+      classApi.getAll()
+        .then(res => {
+          const live = (res.classes || []).some(c => c.activeSession)
+          setHasLiveClassSession(live)
+        })
+        .catch(() => {})
     }
   }, [token])
 
+  React.useEffect(() => {
+    if (!socket) return
+    const refresh = () => {
+      classApi.getAll()
+        .then(res => {
+          const live = (res.classes || []).some(c => c.activeSession)
+          setHasLiveClassSession(live)
+        })
+        .catch(() => {})
+    }
+    socket.on('class:session-started', refresh)
+    socket.on('class:updated', refresh)
+    return () => {
+      socket.off('class:session-started', refresh)
+      socket.off('class:updated', refresh)
+    }
+  }, [socket])
+
   const handleCreateRoom = async () => {
+    if (hasLiveClassSession) {
+      setError('End the current live session first.')
+      return
+    }
+
     if (!roomName.trim()) {
       setError('Please enter a room name')
       return
@@ -46,11 +81,16 @@ function CreateRoomPage() {
       return
     }
 
+    if (waitingRoom.scheduledAt && new Date(waitingRoom.scheduledAt).getTime() <= Date.now()) {
+      setError('The scheduled class time is already in the past. Pick a future date and time.')
+      return
+    }
+
     setIsCreating(true)
     setError('')
 
     try {
-      const settings = { mode }
+      const settings = { mode, waitingRoom }
       if (mode === 'video') settings.videoUrl = videoUrl.trim()
       const room = await createRoom(roomName.trim(), settings)
       navigate(`/teacher/room/${room._id}`)
@@ -61,7 +101,7 @@ function CreateRoomPage() {
     }
   }
 
-  const isDisabled = isCreating || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
+  const isDisabled = isCreating || hasLiveClassSession || !roomName.trim() || (mode === 'video' && !isValidYouTube(videoUrl))
 
   return (
     <div style={{
@@ -83,6 +123,25 @@ function CreateRoomPage() {
             {/* ---- left: the form ---- */}
             <div className="insight-card" style={{ ...cardStyle(isMobile), marginBottom: 0 }}>
               <SectionHeader icon={FileText} title="Room details" hint="Give your room a clear name so students can find it easily, then choose how you will teach." />
+
+              {hasLiveClassSession && (
+                <div role="alert" style={{
+                  background: 'color-mix(in srgb, #f59e0b 12%, var(--bg-card))',
+                  border: '1px solid color-mix(in srgb, #f59e0b 35%, transparent)',
+                  borderRadius: '12px',
+                  padding: '12px 14px',
+                  marginBottom: '16px',
+                  color: '#d97706',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <CircleDot size={18} className="app-pulse" />
+                  <span>End the current live session first.</span>
+                </div>
+              )}
 
               {error && (
                 <div role="alert" style={{ background: 'var(--tint-danger-bg)', border: '1px solid var(--tint-danger-border)', borderRadius: '12px', padding: '12px 14px', marginBottom: '16px', color: 'var(--tint-danger-fg)', fontSize: '14px' }}>
@@ -163,8 +222,18 @@ function CreateRoomPage() {
                 </div>
               )}
 
+              <div style={{ marginBottom: '22px' }}>
+                <WaitingRoomSetup value={waitingRoom} onChange={setWaitingRoom} disabled={isCreating} />
+              </div>
+
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', flexDirection: isMobile ? 'column-reverse' : 'row', paddingTop: 18, borderTop: '1px solid var(--border-color)' }}>
-                <button data-tour="create-button" onClick={handleCreateRoom} disabled={isDisabled} style={primaryButton(isDisabled, { width: isMobile ? '100%' : 'auto', padding: '13px 24px', fontSize: 15 })}>
+                <button
+                  data-tour="create-button"
+                  onClick={handleCreateRoom}
+                  disabled={isDisabled}
+                  title={hasLiveClassSession ? 'End the current live session first.' : undefined}
+                  style={primaryButton(isDisabled, { width: isMobile ? '100%' : 'auto', padding: '13px 24px', fontSize: 15 })}
+                >
                   {isCreating ? 'Creating…' : <><Ico as={Plus} /> Create Room</>}
                 </button>
                 <button onClick={() => navigate('/teacher')} style={ghostButton({ padding: '13px 20px', fontSize: '14px', width: isMobile ? '100%' : 'auto' })}>

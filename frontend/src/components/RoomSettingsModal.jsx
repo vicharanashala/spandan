@@ -22,10 +22,29 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
   useEffect(() => {
     if (isOpen) {
       // Clamp on open so a room saved under the old list (e.g. 20 or 30 min) shows an in-range value.
-      setLocalSettings({ ...settings, segmentTime: clampSegmentTime(settings?.segmentTime) })
+      setLocalSettings({
+        ...(settings || {}),
+        segmentTime: clampSegmentTime(settings?.segmentTime),
+        // Older rooms have no attention object: show the effective default (enabled, 7s grace).
+        attention: {
+          enabled: settings?.attention?.enabled !== false,
+          graceSeconds: Number.isFinite(Number(settings?.attention?.graceSeconds))
+            ? Math.max(0, Math.min(300, Math.floor(Number(settings.attention.graceSeconds))))
+            : 7
+        }
+      })
       loadProviders()
     }
   }, [isOpen, settings])
+
+  const patchAttention = (patch) => setLocalSettings(prev => ({
+    ...prev,
+    attention: {
+      enabled: prev?.attention?.enabled !== false,
+      graceSeconds: Number.isFinite(Number(prev?.attention?.graceSeconds)) ? Number(prev.attention.graceSeconds) : 7,
+      ...patch
+    }
+  }))
 
   const loadProviders = async () => {
     setLoadingProviders(true)
@@ -546,6 +565,89 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Attention Tracking */}
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
+            Attention Tracking
+          </label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[{ label: 'Off', value: false }, { label: 'On', value: true }].map(opt => {
+              const active = (localSettings?.attention?.enabled !== false) === opt.value
+              return (
+                <button
+                  key={opt.label}
+                  onClick={() => patchAttention({ enabled: opt.value })}
+                  style={{
+                    flex: 1,
+                    padding: '10px 16px',
+                    borderRadius: '8px',
+                    border: active ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                    background: active ? '#dbeafe' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: active ? '600' : '400'
+                  }}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {localSettings?.attention?.enabled !== false && (
+            <div style={{ marginTop: '12px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '13px',
+                fontWeight: '500',
+                color: 'var(--text-primary)'
+              }}>
+                Away grace period
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <input
+                  type="number"
+                  min="0"
+                  max="300"
+                  value={localSettings?.attention?.graceSeconds ?? 7}
+                  onChange={(e) => patchAttention({
+                    graceSeconds: Math.min(300, Math.max(0, parseInt(e.target.value, 10) || 0))
+                  })}
+                  style={{
+                    width: '100px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                    fontSize: '18px',
+                    fontWeight: '600',
+                    textAlign: 'center'
+                  }}
+                />
+                <span style={{ fontSize: '16px', color: 'var(--text-secondary)' }}>
+                  seconds (0-300)
+                </span>
+              </div>
+            </div>
+          )}
+
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Detects when this tab is hidden or the Spandan window loses focus (another tab, another
+            app, a second monitor). Brief switches under the grace period are ignored; longer ones
+            draw from the same absence budget and pause poll answers until the student returns.
+            It is a deterrent, not a hard lock — a website cannot block other applications.
+          </p>
         </div>
 
         {/* Save Button */}

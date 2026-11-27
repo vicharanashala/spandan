@@ -29,6 +29,8 @@ export function questionsToPrintHtml(insights, { answerKey = true } = {}) {
   const r = insights.room || {}
   const qs = insights.questions || []
   const date = r.createdAt ? new Date(r.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : ''
+  const isClass = Boolean(r.classId)
+  const codeLabel = isClass ? (r.classId?.code ? 'Class ' + r.classId.code : '') : (r.code ? 'Room ' + r.code : '')
   const title = `${r.name || 'Session'} — ${answerKey ? 'Questions with answer key' : 'Questions (student copy)'}`
   const body = qs.map((q) => `
     <section class="q">
@@ -49,7 +51,7 @@ export function questionsToPrintHtml(insights, { answerKey = true } = {}) {
   @media print { body { margin: 14mm; } }
 </style></head><body>
 <h1>${esc(title)}</h1>
-<div class="sub">${esc(r.code ? 'Room ' + r.code : '')}${date ? ' · ' + esc(date) : ''} · ${qs.length} question${qs.length === 1 ? '' : 's'}${answerKey ? '' : ' · answers not shown'}</div>
+<div class="sub">${esc(codeLabel)}${date ? (codeLabel ? ' · ' : '') + esc(date) : ''} · ${qs.length} question${qs.length === 1 ? '' : 's'}${answerKey ? '' : ' · answers not shown'}</div>
 ${body}
 </body></html>`
 }

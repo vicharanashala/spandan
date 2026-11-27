@@ -36,6 +36,12 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Original points before the end-of-session attendance deduction. Kept so excusing a student (or
+  // recomputing attendance) can restore the raw score instead of compounding the deduction.
+  pointsBeforeAttendance: {
+    type: Number,
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now

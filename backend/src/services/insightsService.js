@@ -84,6 +84,29 @@ export function computeRoomInsights({ room, questions, responses, members, trans
   const start = room?.createdAt ? new Date(room.createdAt) : null
   const end = room?.endedAt ? new Date(room.endedAt) : null
   const minuteOf = (d) => (start && d ? Math.max(0, (new Date(d).getTime() - start.getTime()) / 60000) : null)
+  // Attendance snapshot per member (written at room end by services/attendanceService.js). Used for
+  // the teacher's attendance breakdown and each student's own deduction note.
+  const memberById = new Map(members.map((m) => [sid(m.studentId), m]))
+  // Same 60-second floor the attendance engine applies, exposed so the results table can render the
+  // reconnect-budget meter next to each student's forgiven time.
+  const rawAllowance = Number(room?.settings?.waitingRoom?.reconnectAllowanceSeconds)
+  const reconnectAllowanceSeconds = Math.max(60, Math.min(3600, Number.isFinite(rawAllowance) ? Math.floor(rawAllowance) : 60))
+  const attendanceFor = (m) => ({
+    studentId: sid(m.studentId),
+    joinedAt: m.joinedAt || null,
+    onTime: m.onTime !== false,
+    excused: !!m.attendanceExcused,
+    finalized: !!m.attendanceFinalizedAt,
+    rejoins: Math.max(0, (Array.isArray(m.presence) ? m.presence.length : 0) - 1),
+    sessionSeconds: m.sessionSeconds ?? null,
+    presentSeconds: m.presentSeconds ?? null,
+    forgivenSeconds: m.forgivenSeconds ?? null,
+    missedSeconds: m.missedSeconds ?? null,
+    reconnectAllowanceSeconds,
+    penaltyPercent: m.penaltyPercent ?? null,
+    rawPoints: m.rawPoints ?? null,
+    adjustedPoints: m.adjustedPoints ?? null
+  })
   // First pass over ALL responses: each question's first-response time, and (when `me` blocks are
   // wanted) each student's own responses keyed by question plus their response times.
   const firstResponseAt = new Map()
@@ -270,6 +293,10 @@ export function computeRoomInsights({ room, questions, responses, members, trans
       questions: questionsOut.map((q) => ({ ...q, ...teacherQ.get(q.id) })),
       scores: { ...scores, students: rows.map(({ cells, ...r }) => r) },
       heatmap: { questionIds: questionsOut.map((q) => q.id), rows },
+      attendance: members
+        .filter((m) => m.attendanceFinalizedAt)
+        .map((m) => ({ ...who(sid(m.studentId)), ...attendanceFor(m) }))
+        .sort((a, b) => (b.penaltyPercent || 0) - (a.penaltyPercent || 0) || String(a.name).localeCompare(String(b.name))),
       anonymity: anonymous ? { percent: room?.settings?.anonymityPercent ?? 0 } : null
     }
   }
@@ -308,6 +335,7 @@ export function computeRoomInsights({ room, questions, responses, members, trans
           classCorrectRate: q.correctRate, classMedianResponseTime: q.medianResponseTime, maxPoints: q.points
         }
       })
+      const member = memberById.get(st)
       me.set(st, {
         rank: rankHidden ? null : (rankOf.get(st) ?? null), rankHidden, of: ranked.length,
         points: perStudent.get(st)?.points ?? 0, maxPossible: totals.maxPossible,
@@ -316,6 +344,8 @@ export function computeRoomInsights({ room, questions, responses, members, trans
         medianResponseTime: own.times.length ? round(median(own.times), 1) : null,
         fasterThanClass, bestStreak: best,
         classMedianScore: totals.medianScore, classCorrectRate: totals.overallCorrectRate, classMedianResponseTime: totals.medianResponseTime,
+        // Present/missed class time + the resulting points deduction (null until finalized).
+        attendance: member && member.attendanceFinalizedAt ? attendanceFor(member) : null,
         perQuestion
       })
     }

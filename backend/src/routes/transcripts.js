@@ -61,7 +61,11 @@ router.get('/room/:roomId', authenticate, async (req, res) => {
 
     // Check access: teacher owns room OR student is a member
     const isTeacher = room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
+    const isStudentMember = await RoomMember.findOne({
+      roomId,
+      studentId: currentUser._id,
+      status: { $nin: ['waiting', 'rejected'] }
+    })
 
     if (!isTeacher && !isStudentMember) {
       return res.status(403).json({ error: 'Not authorized to access transcripts for this room' })
@@ -95,7 +99,11 @@ router.get('/:roomId/:segmentIndex', authenticate, async (req, res) => {
 
     // Check access: teacher owns room OR student is a member
     const isTeacher = room.teacher.toString() === currentUser._id.toString()
-    const isStudentMember = await RoomMember.findOne({ roomId, studentId: currentUser._id })
+    const isStudentMember = await RoomMember.findOne({
+      roomId,
+      studentId: currentUser._id,
+      status: { $nin: ['waiting', 'rejected'] }
+    })
 
     if (!isTeacher && !isStudentMember) {
       return res.status(403).json({ error: 'Not authorized to access this transcript' })

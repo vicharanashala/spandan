@@ -4,6 +4,7 @@ import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import Sidebar from '../components/Sidebar'
 import useIsMobile from '../hooks/useIsMobile'
+import { classApi } from '../lib/api'
 import { PageHeader, pageWash, inputStyle, RoomCard, Pill, EmptyState, iconButton } from '../components/AppUI'
 import { SectionLabel } from '../components/InsightUI'
 import { API_URL } from '../config.js'
@@ -17,6 +18,7 @@ function RoomHistoryPage() {
   const { rooms, isLoading, fetchRooms, setAuthToken } = useRoomStore()
   const [downloadingId, setDownloadingId] = React.useState(null)
   const [query, setQuery] = React.useState('')
+  const [classes, setClasses] = React.useState([])
 
   // Download a room's complete results as a CSV (teacher-only endpoint; needs the auth
   // header, so we fetch as a Blob and trigger the download rather than using a plain link).
@@ -52,13 +54,20 @@ function RoomHistoryPage() {
       } else {
         fetchRooms()
       }
+      classApi.getAll().then(d => setClasses(d.classes || [])).catch(() => {})
     }
   }, [token, user?.role])
+
+  const getRoomDisplayCode = (r) => {
+    const isClass = Boolean(r.classId)
+    const classObj = isClass ? classes?.find(c => String(c._id) === String(r.classId?._id || r.classId)) : null
+    return isClass ? (classObj?.code || (typeof r.classId === 'object' ? r.classId?.code : null)) : r.code
+  }
 
   // Filter ended rooms for teacher view (newest first), then by the search box (name or code)
   const endedRooms = (rooms?.filter(r => r.endedAt) || []).slice().sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))
   const q = query.trim().toLowerCase()
-  const shown = q ? endedRooms.filter(r => (r.name || '').toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q)) : endedRooms
+  const shown = q ? endedRooms.filter(r => (r.name || '').toLowerCase().includes(q) || ((getRoomDisplayCode(r) || '')).toLowerCase().includes(q)) : endedRooms
   const isTeacher = user?.role === 'teacher'
 
   return (
@@ -87,7 +96,7 @@ function RoomHistoryPage() {
                   icon={room.settings?.mode === 'video' ? Clapperboard : Mic}
                   tint={room.settings?.mode === 'video' ? '#ec4899' : '#64748b'}
                   title={room.name}
-                  code={room.code}
+                  code={getRoomDisplayCode(room)}
                   status={<Pill tone="#64748b">{`Ended ${room.endedAt ? new Date(room.endedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''}`}</Pill>}
                   actionLabel="View Results →"
                   tourAction={i === 0 ? 'view-results' : undefined}
