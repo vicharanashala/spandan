@@ -3,10 +3,14 @@ import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
 import { installAuthFetchInterceptor } from './lib/authFetch.js'
+import { installAuthTabSync } from './lib/authTabSync.js'
 
 // Global 401 -> graceful re-login (see lib/authFetch.js). Installed before render so it covers the
 // very first request.
 installAuthFetchInterceptor()
+
+// Logout or account switch in one tab ends the session in every other tab (see lib/authTabSync.js).
+installAuthTabSync()
 
 // Silence debug logging in the deployed app; keep it on localhost for development. This is a runtime
 // gate (not a build-time strip) because the local build is served the same way as production — so
